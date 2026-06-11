@@ -6,11 +6,23 @@
  *   and from read queries. Nothing here mutates the world.
  */
 import { useSyncExternalStore } from 'react';
-import type { DocContent, FsIrisChangedEvent, IrisScanResult, RawTreeNode } from '@shared/types';
+import type {
+  DocContent,
+  DocType,
+  FsIrisChangedEvent,
+  IrisScanResult,
+  RawTreeNode,
+} from '@shared/types';
 import { CHANNELS } from '@shared/protocol';
 import { editorStore } from './editor-store';
 
 export type ProjectPhase = 'idle' | 'opening' | 'ready' | 'error';
+
+/** What the middle pane shows: a single doc, or a type-level collection
+ *  (issue panel etc.), optionally scoped to one workspace. */
+export type MiddleView =
+  | { kind: 'doc' }
+  | { kind: 'collection'; type: DocType; workspacePath: string | null };
 
 export interface ProjectState {
   phase: ProjectPhase;
@@ -22,6 +34,7 @@ export interface ProjectState {
   selectedPath: string | null;
   docLoading: boolean;
   docError: string | null;
+  view: MiddleView;
 }
 
 let state: ProjectState = {
@@ -33,6 +46,7 @@ let state: ProjectState = {
   selectedPath: null,
   docLoading: false,
   docError: null,
+  view: { kind: 'doc' },
 };
 
 const subscribers = new Set<() => void>();
@@ -105,10 +119,15 @@ export const projectStore = {
     }
   },
 
+  /** Open a type-level collection view (issue panel etc.). */
+  openCollection(type: DocType, workspacePath: string | null): void {
+    setState({ view: { kind: 'collection', type, workspacePath } });
+  },
+
   /** Select a doc: flush the previous editing session, open a new one. */
   async selectDoc(path: string): Promise<void> {
     await editorStore.flushBeforeSwitch();
-    setState({ selectedPath: path, docLoading: true, docError: null });
+    setState({ selectedPath: path, docLoading: true, docError: null, view: { kind: 'doc' } });
     try {
       const content = await window.api.invoke<{ path: string }, DocContent>(CHANNELS.DOC_READ, {
         path,

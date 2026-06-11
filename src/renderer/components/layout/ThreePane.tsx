@@ -12,7 +12,7 @@ import {
   ResizablePanelGroup,
 } from '@renderer/components/ui/resizable';
 import { LeftPane } from '@renderer/components/layout/LeftPane';
-import { DocView } from '@renderer/components/doc/DocView';
+import { MiddlePane } from '@renderer/components/layout/MiddlePane';
 import { RightPane } from '@renderer/components/layout/RightPane';
 
 export function ThreePane(): JSX.Element {
@@ -23,7 +23,7 @@ export function ThreePane(): JSX.Element {
       </ResizablePanel>
       <ResizableHandle />
       <ResizablePanel defaultSize={50} minSize={25}>
-        <DocView />
+        <MiddlePane />
       </ResizablePanel>
       <ResizableHandle />
       <ResizablePanel defaultSize={30} minSize={15}>

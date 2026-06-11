@@ -127,10 +127,20 @@ function TypeSection({
       <div className="flex items-center pr-1">
         <button
           type="button"
+          title={open ? '折叠' : '展开'}
           onClick={() => setOpen(!open)}
-          className="flex min-w-0 flex-1 items-center gap-1 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground"
+          className="px-2 py-0.5 text-muted-foreground hover:text-foreground"
         >
           {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        </button>
+        <button
+          type="button"
+          title={`打开 ${label} 集合视图`}
+          onClick={() =>
+            projectStore.openCollection(type, workspacePath === '.iris' ? null : workspacePath)
+          }
+          className="flex min-w-0 flex-1 items-center gap-1 py-0.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground"
+        >
           <Icon className="h-3 w-3" />
           {label}
           <span className="ml-1 font-normal text-muted-foreground/60">{visibleDocs.length}</span>
