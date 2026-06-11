@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+
+# Build outputs (build/ is reserved for electron-builder resources, not output)
+dist/
+out/
+release/
+*.tsbuildinfo
+
+# Electron-builder cache
+dist-electron/
+.electron-builder.cache/
+
+# Native module rebuild outputs
+**/node_modules/**/build/Release/
+**/node_modules/**/build/Debug/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Editor / IDE
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Test coverage
+coverage/
+
+# Vite cache
+.vite/
+.cache/
+
+# OS-specific
+desktop.ini
+
+# Claude Code local state (machine-specific permission grants etc.)
+.claude/

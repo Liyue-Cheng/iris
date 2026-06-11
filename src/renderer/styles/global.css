@@ -1,0 +1,178 @@
+/**
+ * Theme system — two-layer design tokens, architecture ported from Marina
+ * (technical-design.md 主题系统):
+ *
+ *   Layer 1  --rp-*        Rose Pine brand palette (namespaced, per variant;
+ *                          hex values carried over verbatim from Marina,
+ *                          including the Dawn WCAG contrast fixes)
+ *   Layer 2  shadcn tokens (--background / --foreground / --primary / ...)
+ *                          the ONLY api components consume. Marina's bespoke
+ *                          Layer-2 vocabulary is deliberately NOT reused —
+ *                          shadcn token names keep copied components pristine.
+ *
+ * Switching: [data-theme='...'] on <html> + color-scheme per variant.
+ * xterm.js does not read CSS variables — its themes live in
+ * src/renderer/theme/xterm-themes.ts and must be kept aligned by hand.
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ──────────────────────────────────────────────────────────────────
+ * Rose Pine (default dark)
+ * ────────────────────────────────────────────────────────────────── */
+[data-theme='rose-pine'] {
+  /* Layer 1 — Rose Pine palette */
+  --rp-base: #191724;
+  --rp-surface: #1f1d2e;
+  --rp-overlay: #26233a;
+  --rp-highlight-low: #21202e;
+  --rp-highlight-med: #403d52;
+  --rp-highlight-high: #524f67;
+  --rp-muted: #6e6a86;
+  --rp-subtle: #908caa;
+  --rp-text: #e0def4;
+  --rp-love: #eb6f92;
+  --rp-gold: #f6c177;
+  --rp-rose: #ebbcba;
+  --rp-pine: #31748f;
+  --rp-foam: #9ccfd8;
+  --rp-iris: #c4a7e7;
+
+  /* Layer 2 — shadcn tokens */
+  --background: var(--rp-base);
+  --foreground: var(--rp-text);
+  --card: var(--rp-surface);
+  --card-foreground: var(--rp-text);
+  --popover: var(--rp-overlay);
+  --popover-foreground: var(--rp-text);
+  --primary: var(--rp-iris);
+  --primary-foreground: var(--rp-base);
+  --secondary: var(--rp-overlay);
+  --secondary-foreground: var(--rp-text);
+  --muted: var(--rp-highlight-low);
+  --muted-foreground: var(--rp-muted);
+  --accent: var(--rp-highlight-med);
+  --accent-foreground: var(--rp-text);
+  --destructive: var(--rp-love);
+  --destructive-foreground: var(--rp-base);
+  --border: var(--rp-highlight-med);
+  --input: var(--rp-highlight-med);
+  --ring: var(--rp-iris);
+  --radius: 0.5rem;
+
+  color-scheme: dark;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+ * Rose Pine Dawn (light)
+ * Dawn muted carries Marina THM-1 contrast fix: #9893a5 → #6b6680
+ * (~3.0:1 → ~4.6:1 on #fffaf3), WCAG AA for body text.
+ * ────────────────────────────────────────────────────────────────── */
+[data-theme='rose-pine-dawn'] {
+  /* Layer 1 — Rose Pine Dawn palette */
+  --rp-base: #faf4ed;
+  --rp-surface: #fffaf3;
+  --rp-overlay: #f2e9e1;
+  --rp-highlight-low: #f4ede4;
+  --rp-highlight-med: #dfdad9;
+  --rp-highlight-high: #cecacd;
+  --rp-muted: #6b6680;
+  --rp-subtle: #797593;
+  --rp-text: #575279;
+  --rp-love: #b4637a;
+  --rp-gold: #ea9d34;
+  --rp-rose: #d7827e;
+  --rp-pine: #286983;
+  --rp-foam: #56949f;
+  --rp-iris: #907aa9;
+
+  /* Layer 2 — shadcn tokens */
+  --background: var(--rp-base);
+  --foreground: var(--rp-text);
+  --card: var(--rp-surface);
+  --card-foreground: var(--rp-text);
+  --popover: var(--rp-overlay);
+  --popover-foreground: var(--rp-text);
+  --primary: var(--rp-iris);
+  --primary-foreground: var(--rp-base);
+  --secondary: var(--rp-overlay);
+  --secondary-foreground: var(--rp-text);
+  --muted: var(--rp-highlight-low);
+  --muted-foreground: var(--rp-muted);
+  --accent: var(--rp-highlight-med);
+  --accent-foreground: var(--rp-text);
+  --destructive: var(--rp-love);
+  --destructive-foreground: var(--rp-base);
+  --border: var(--rp-highlight-med);
+  --input: var(--rp-highlight-med);
+  --ring: var(--rp-iris);
+  --radius: 0.5rem;
+
+  color-scheme: light;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+ * Rose Pine Moon (medium dark purple)
+ * ────────────────────────────────────────────────────────────────── */
+[data-theme='rose-pine-moon'] {
+  /* Layer 1 — Rose Pine Moon palette */
+  --rp-base: #232136;
+  --rp-surface: #2a273f;
+  --rp-overlay: #393552;
+  --rp-highlight-low: #2a283e;
+  --rp-highlight-med: #44415a;
+  --rp-highlight-high: #56526e;
+  --rp-muted: #6e6a86;
+  --rp-subtle: #908caa;
+  --rp-text: #e0def4;
+  --rp-love: #eb6f92;
+  --rp-gold: #f6c177;
+  --rp-rose: #ea9a97;
+  --rp-pine: #3e8fb0;
+  --rp-foam: #9ccfd8;
+  --rp-iris: #c4a7e7;
+
+  /* Layer 2 — shadcn tokens */
+  --background: var(--rp-base);
+  --foreground: var(--rp-text);
+  --card: var(--rp-surface);
+  --card-foreground: var(--rp-text);
+  --popover: var(--rp-overlay);
+  --popover-foreground: var(--rp-text);
+  --primary: var(--rp-iris);
+  --primary-foreground: var(--rp-base);
+  --secondary: var(--rp-overlay);
+  --secondary-foreground: var(--rp-text);
+  --muted: var(--rp-highlight-low);
+  --muted-foreground: var(--rp-muted);
+  --accent: var(--rp-highlight-med);
+  --accent-foreground: var(--rp-text);
+  --destructive: var(--rp-love);
+  --destructive-foreground: var(--rp-base);
+  --border: var(--rp-highlight-med);
+  --input: var(--rp-highlight-med);
+  --ring: var(--rp-iris);
+  --radius: 0.5rem;
+
+  color-scheme: dark;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    margin: 0;
+    overflow: hidden;
+    /* runtime override hook: settings.appearance.uiFontFamily */
+    font-family: var(--ui-font-family, 'LXGW WenKai', system-ui, sans-serif);
+  }
+}
