@@ -9,6 +9,8 @@ declare global {
     api: {
       invoke<P, R>(channel: string, payload?: P): Promise<R>;
       on<P>(channel: string, handler: (payload: P) => void): () => void;
+      /** Windows build number for xterm windowsPty; null off-Windows. */
+      windowsBuild: number | null;
     };
   }
 }

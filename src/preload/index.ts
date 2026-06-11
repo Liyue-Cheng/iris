@@ -7,6 +7,22 @@
  * contextIsolation is on; sandbox is off (ESM preload, see main/index.ts).
  */
 import { contextBridge, ipcRenderer } from 'electron';
+import { platform, release } from 'node:os';
+
+/**
+ * Windows build number (e.g. 22621), null elsewhere. @xterm/xterm 6.x's
+ * windowsPty option needs it to pick the right ConPTY workaround branch
+ * (>= 21376 modern reflow, else compat). Preload is the earliest sync spot
+ * to read os — the Terminal constructor reads window.api.windowsBuild
+ * without an IPC round trip (Marina's approach).
+ */
+const windowsBuild = ((): number | null => {
+  if (platform() !== 'win32') return null;
+  const parts = release().split('.');
+  if (parts.length < 3) return null;
+  const n = Number.parseInt(parts[2] ?? '0', 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+})();
 
 /** Invoke a main-process handler. Channel names from @shared/protocol. */
 async function invoke<P, R>(channel: string, payload?: P): Promise<R> {
@@ -25,6 +41,7 @@ function on<P>(channel: string, handler: (payload: P) => void): () => void {
 const api = {
   invoke,
   on,
+  windowsBuild,
 } as const;
 
 contextBridge.exposeInMainWorld('api', api);

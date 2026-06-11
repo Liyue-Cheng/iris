@@ -1,5 +1,13 @@
 # CLAUDE.md
 
+## Project management (Iris — dogfood)
+
+本项目用 Iris 管理自身（M3 起 dogfood）。所有 PM 文档在 `.iris/` 的类型文件夹里（`status/`、`issue/`、`report/`、`misc/`）。动手前：
+
+1. 读 `.iris/CONVENTIONS.md`（文件夹语义与写回规则）。
+2. 检查环境变量 `$FOCUS_DOC`——若存在，它指向用户当前聚焦的文档（相对项目根），先读它再行动。
+3. 不修改 `.iris/CONVENTIONS.md`。
+
 ## 这是什么项目
 
 Iris（暂定名）：一个 AI 原生、文档中心、终端驱动的项目管理工具。它是套在"一堆 markdown 文件 + 一池终端会话"上的最薄外壳：所有项目数据是 `.iris/` 下类型文件夹里的纯文本 md（文件系统即数据库），所有智能外包给用户本机的 agent CLI（claude/codex/...）。核心手势：选中文档 → 右键 → 用 X 打开 → 新终端注入 `FOCUS_DOC` 环境变量、裸启动 agent。

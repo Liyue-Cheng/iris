@@ -22,10 +22,29 @@ export const CHANNELS = {
   DOC_CREATE: 'doc:create',
   /** UI helper: native folder picker (returns a path or null; no side effect). */
   DIALOG_PICK_FOLDER: 'dialog:pick-folder',
+
+  /** Session verbs (instruction-backed). */
+  SESSION_OPEN: 'session:open',
+  SESSION_CLOSE: 'session:close',
+  /**
+   * Session streaming I/O — deliberately NOT instructions: keystrokes and
+   * resizes are continuous interaction inside one session, not discrete
+   * world-changing verbs; routing every keypress through the pipeline would
+   * only add latency and log noise. Documented CQRS deviation.
+   */
+  SESSION_INPUT: 'session:input',
+  SESSION_RESIZE: 'session:resize',
+  /** Queries. */
+  SESSION_LIST: 'session:list',
+  SESSION_SCROLLBACK: 'session:scrollback',
 } as const;
 
 export const EVENTS = {
   SETTINGS_CHANGED: 'evt:settings:changed',
   /** Batched .iris/ tree changes (chokidar, debounced in main). */
   FS_IRIS_CHANGED: 'evt:fs:iris-changed',
+  SESSION_OUTPUT: 'evt:session:output',
+  SESSION_STATE_CHANGED: 'evt:session:state-changed',
+  SESSION_EXITED: 'evt:session:exited',
+  SESSION_DESTROYED: 'evt:session:destroyed',
 } as const;

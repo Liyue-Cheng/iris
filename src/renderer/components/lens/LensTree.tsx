@@ -17,6 +17,16 @@ import {
   ScrollText,
 } from 'lucide-react';
 import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuLabel,
+  ContextMenuTrigger,
+} from '@renderer/components/ui/context-menu';
+import { aggregateDocState, useSessions } from '@renderer/stores/session-store';
+import { useSettings } from '@renderer/stores/settings-store';
+import { openSession } from '@renderer/lib/session-actions';
 import type { DocType, IrisDoc, IrisWorkspace } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
 import { docDisplayTitle, isActiveIssue } from '@renderer/lib/doc-utils';
@@ -31,32 +41,66 @@ const TYPE_META: Record<DocType, { label: string; icon: typeof Gauge }> = {
   misc: { label: 'misc', icon: NotebookPen },
 };
 
+/**
+ * Session status dot — the left pane is the attention-scheduling panel
+ * (软件定义书 §5): ● a session is working / ◐ idle, likely waiting for you /
+ * ○ exited only / blank when the doc has no sessions.
+ */
+function StatusDot({ docPath }: { docPath: string }): JSX.Element {
+  const { sessions } = useSessions();
+  const agg = aggregateDocState(sessions, docPath);
+  if (agg === 'active') {
+    return <span className="w-3 shrink-0 text-center text-[9px] text-[var(--rp-foam)]">●</span>;
+  }
+  if (agg === 'idle') {
+    return <span className="w-3 shrink-0 text-center text-[9px] text-[var(--rp-gold)]">◐</span>;
+  }
+  if (agg === 'exited') {
+    return <span className="w-3 shrink-0 text-center text-[9px] text-muted-foreground/60">○</span>;
+  }
+  return <span className="w-3 shrink-0" />;
+}
+
 function DocRow({ doc, archived }: { doc: IrisDoc; archived: boolean }): JSX.Element {
   const { selectedPath } = useProject();
+  const settings = useSettings();
   const selected = selectedPath === doc.path;
+  const agents = settings?.agents ?? [];
+
   return (
-    <button
-      type="button"
-      onClick={() => void projectStore.selectDoc(doc.path)}
-      className={cn(
-        'group flex w-full items-center gap-1.5 rounded-sm px-2 py-1 text-left text-[13px] leading-tight',
-        selected ? 'bg-accent text-accent-foreground' : 'hover:bg-muted',
-        archived && 'opacity-60',
-      )}
-      title={doc.path}
-    >
-      {/* M3 session status dot placeholder (○ = no session) */}
-      <span className="w-3 shrink-0 text-center text-[9px] text-muted-foreground/50">○</span>
-      <span className="truncate">{docDisplayTitle(doc)}</span>
-      {doc.frontmatterBroken && (
-        <FileWarning className="ml-auto h-3.5 w-3.5 shrink-0 text-destructive/80" />
-      )}
-      {doc.type === 'issue' && doc.status && !doc.frontmatterBroken && (
-        <span className="ml-auto shrink-0 rounded-sm bg-muted px-1 py-px text-[10px] text-muted-foreground">
-          {doc.status}
-        </span>
-      )}
-    </button>
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <button
+          type="button"
+          onClick={() => void projectStore.selectDoc(doc.path)}
+          className={cn(
+            'group flex w-full items-center gap-1.5 rounded-sm px-2 py-1 text-left text-[13px] leading-tight',
+            selected ? 'bg-accent text-accent-foreground' : 'hover:bg-muted',
+            archived && 'opacity-60',
+          )}
+          title={doc.path}
+        >
+          <StatusDot docPath={doc.path} />
+          <span className="truncate">{docDisplayTitle(doc)}</span>
+          {doc.frontmatterBroken && (
+            <FileWarning className="ml-auto h-3.5 w-3.5 shrink-0 text-destructive/80" />
+          )}
+          {doc.type === 'issue' && doc.status && !doc.frontmatterBroken && (
+            <span className="ml-auto shrink-0 rounded-sm bg-muted px-1 py-px text-[10px] text-muted-foreground">
+              {doc.status}
+            </span>
+          )}
+        </button>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuLabel className="max-w-56 truncate">{doc.name}</ContextMenuLabel>
+        {agents.map((a) => (
+          <ContextMenuItem key={a.id} onClick={() => void openSession(doc.path, a.id)}>
+            用 {a.label} 打开
+          </ContextMenuItem>
+        ))}
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 

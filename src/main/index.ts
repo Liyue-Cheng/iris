@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { JsonStore } from './persistence';
 import { SettingsManager, settingsFilePath } from './settings-manager';
 import { ProjectManager } from './project-manager';
+import { SessionManager } from './session-manager';
 import { registerIpcHandlers, wireBroadcasts } from './ipc';
 import { logger } from './logger';
 
@@ -22,6 +23,7 @@ console.log('[main] bootstrap starting');
 
 const settingsManager = new SettingsManager(new JsonStore(settingsFilePath()));
 const projectManager = new ProjectManager();
+const sessionManager = new SessionManager(settingsManager);
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -50,7 +52,7 @@ function createWindow(): BrowserWindow {
     logger.error('window', `render-process-gone: ${details.reason}`);
   });
 
-  const unwire = wireBroadcasts(settingsManager, projectManager, win);
+  const unwire = wireBroadcasts(settingsManager, projectManager, sessionManager, win);
   win.on('closed', unwire);
 
   if (isDev && process.env.ELECTRON_RENDERER_URL) {
@@ -71,7 +73,7 @@ app.whenReady().then(async () => {
   const source = await settingsManager.initialize();
   logger.info('main', `settings loaded from ${source} (${settingsFilePath()})`);
 
-  registerIpcHandlers(settingsManager, projectManager);
+  registerIpcHandlers(settingsManager, projectManager, sessionManager);
   createWindow();
 
   app.on('activate', () => {
@@ -86,6 +88,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  sessionManager.shutdown();
   void projectManager.close();
   void settingsManager.flush();
 });

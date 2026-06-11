@@ -39,6 +39,13 @@ export const DEFAULT_SETTINGS: Settings = {
   project: {
     lastRoot: null,
   },
+  agents: [
+    { id: 'claude', label: 'claude', command: 'claude' },
+    { id: 'shell', label: '终端', command: '' },
+  ],
+  advanced: {
+    activeIdleThresholdSeconds: 2,
+  },
 };
 
 const VALID_THEMES: ThemeId[] = ['rose-pine', 'rose-pine-dawn', 'rose-pine-moon'];
@@ -202,5 +209,23 @@ export function validateSettings(s: Settings): void {
   }
   if (s.project.lastRoot !== null && typeof s.project.lastRoot !== 'string') {
     throw new SettingsError('InvalidSettings', 'project.lastRoot must be a string or null');
+  }
+  if (!Array.isArray(s.agents) || s.agents.length === 0) {
+    throw new SettingsError('InvalidSettings', 'agents must be a non-empty array');
+  }
+  for (const a of s.agents) {
+    if (!a || typeof a.id !== 'string' || !a.id || typeof a.label !== 'string' || !a.label) {
+      throw new SettingsError('InvalidSettings', 'each agent needs non-empty id and label');
+    }
+    if (typeof a.command !== 'string') {
+      throw new SettingsError('InvalidSettings', `agent "${a.id}" command must be a string`);
+    }
+  }
+  const threshold = s.advanced.activeIdleThresholdSeconds;
+  if (typeof threshold !== 'number' || !Number.isFinite(threshold) || threshold < 0.1 || threshold > 60) {
+    throw new SettingsError(
+      'InvalidSettings',
+      `advanced.activeIdleThresholdSeconds=${threshold} out of range [0.1, 60]`,
+    );
   }
 }

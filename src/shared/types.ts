@@ -22,6 +22,24 @@ export interface Settings {
     /** Absolute path of the last opened project; reopened on startup. */
     lastRoot: string | null;
   };
+  /**
+   * Agent CLIs offered by the "open with X" gesture. The shell is dumb:
+   * these are plain command lines run in the user's own shell — no SDKs,
+   * no keys (software-definition.md 哑壳).
+   */
+  agents: AgentConfig[];
+  advanced: {
+    /** active → idle silence threshold (Marina-tuned default 2s, min 0.1). */
+    activeIdleThresholdSeconds: number;
+  };
+}
+
+export interface AgentConfig {
+  id: string;
+  /** Menu label, e.g. "claude". */
+  label: string;
+  /** Command line executed in the shell; '' means a bare shell. */
+  command: string;
 }
 
 /** Recursive partial, for settings updates. */
@@ -128,6 +146,56 @@ export interface DocContent {
   body: string;
   frontmatter: Record<string, unknown> | null;
   frontmatterBroken: boolean;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Sessions (M3) — model ported from Marina, anchor changed path → doc
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * active = a command is producing real output (quiet windows filtered)
+ * idle   = waiting at a prompt / waiting for user input
+ * exited = process ended; scrollback retained until the user closes it
+ */
+export type SessionState = 'active' | 'idle' | 'exited';
+
+export interface SessionInfo {
+  id: string;
+  /**
+   * The anchor (借鉴 Marina 的 path↔会话 → 文档↔会话): doc rel path, fixed
+   * at creation for the session's whole life. null = project-root session
+   * (no FOCUS_DOC injected — the unfocused fallback).
+   */
+  docPath: string | null;
+  agentId: string;
+  displayName: string;
+  projectRoot: string;
+  cols: number;
+  rows: number;
+  pid: number;
+  state: SessionState;
+  createdAt: number;
+  exitCode?: number;
+  exitedAt?: number;
+}
+
+export interface SessionOutputPayload {
+  sessionId: string;
+  /** base64 PTY bytes (8ms aggregation window in main). */
+  data: string;
+  /** Monotonic per-session sequence of the LAST chunk in this batch. */
+  seq: number;
+}
+
+export interface SessionStateChangedPayload {
+  sessionId: string;
+  patch: Partial<SessionInfo>;
+}
+
+export interface SessionExitedPayload {
+  sessionId: string;
+  exitCode: number;
+  signal?: number;
 }
 
 /** Batched fs change notification pushed by main (already debounced). */

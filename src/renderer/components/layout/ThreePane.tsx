@@ -13,15 +13,7 @@ import {
 } from '@renderer/components/ui/resizable';
 import { LeftPane } from '@renderer/components/layout/LeftPane';
 import { DocView } from '@renderer/components/doc/DocView';
-
-function Placeholder({ title, note }: { title: string; note: string }): JSX.Element {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center">
-      <div className="text-sm font-medium text-muted-foreground">{title}</div>
-      <div className="max-w-48 text-xs text-muted-foreground/70">{note}</div>
-    </div>
-  );
-}
+import { RightPane } from '@renderer/components/layout/RightPane';
 
 export function ThreePane(): JSX.Element {
   return (
@@ -35,9 +27,7 @@ export function ThreePane(): JSX.Element {
       </ResizablePanel>
       <ResizableHandle />
       <ResizablePanel defaultSize={30} minSize={15}>
-        <div className="h-full bg-card/50">
-          <Placeholder title="会话" note="M3：锚定于文档的终端会话" />
-        </div>
+        <RightPane />
       </ResizablePanel>
     </ResizablePanelGroup>
   );

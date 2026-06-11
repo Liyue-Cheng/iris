@@ -11,12 +11,53 @@
  * correct.
  */
 import { EVENTS } from '@shared/protocol';
-import type { FsIrisChangedEvent } from '@shared/types';
+import type {
+  FsIrisChangedEvent,
+  SessionExitedPayload,
+  SessionStateChangedPayload,
+} from '@shared/types';
 import { pipeline } from './index';
 import { projectStore } from '@renderer/stores/project-store';
 import { editorStore, readDocFromDisk } from '@renderer/stores/editor-store';
+import { sessionStore } from '@renderer/stores/session-store';
 
 export function wireInterrupts(): void {
+  // Session lifecycle events → interrupts → projection ISR. (Output bytes
+  // bypass this path entirely — they stream straight to the terminal view;
+  // routing 60 batches/s through the interrupt controller buys nothing.)
+  window.api.on<SessionStateChangedPayload>(EVENTS.SESSION_STATE_CHANGED, (event) => {
+    pipeline.interrupts.raise({
+      type: 'session.state-changed',
+      source: 'session-manager',
+      data: event,
+    });
+  });
+  window.api.on<SessionExitedPayload>(EVENTS.SESSION_EXITED, (event) => {
+    pipeline.interrupts.raise({ type: 'session.exited', source: 'session-manager', data: event });
+  });
+  window.api.on<{ sessionId: string }>(EVENTS.SESSION_DESTROYED, (event) => {
+    pipeline.interrupts.raise({
+      type: 'session.destroyed',
+      source: 'session-manager',
+      data: event,
+    });
+  });
+
+  pipeline.interrupts.register({
+    name: 'session-projection',
+    events: 'session.*',
+    onInterrupt: (event) => {
+      if (event.type === 'session.state-changed') {
+        const { sessionId, patch } = event.data as SessionStateChangedPayload;
+        sessionStore.handlePatch(sessionId, patch);
+      } else if (event.type === 'session.destroyed') {
+        const { sessionId } = event.data as { sessionId: string };
+        sessionStore.handleDestroyed(sessionId);
+      }
+      // session.exited needs no extra handling: the state-changed broadcast
+      // carries state='exited' + exitCode in the same breath.
+    },
+  });
   window.api.on<FsIrisChangedEvent>(EVENTS.FS_IRIS_CHANGED, (event) => {
     pipeline.interrupts.raise({
       type: 'fs.iris.changed',
