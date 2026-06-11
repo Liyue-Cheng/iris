@@ -1,0 +1,49 @@
+# electron-builder 配置（M5.5 临时打包 / M6 正式收口的基础）
+#
+# 参考 Marina 的同栈配置。当前只出 Windows portable 单 exe；nsis 安装器、
+# 图标、三方声明在 M6 补齐。
+#
+# 依赖纪律：dependencies 只留主进程运行时真正 require 的包（node-pty /
+# chokidar / gray-matter / @xterm/headless / @xterm/addon-serialize）——
+# renderer 侧全部被 vite 打进 out/renderer，留在 dependencies 只会进包占
+# 体积，且 front-cpu 是 file: 符号链接，跟进包会把整个本地仓库拖进来。
+
+appId: com.liyue-cheng.iris
+productName: Iris
+copyright: Copyright (c) 2026
+
+directories:
+  # dist/ 在 .gitignore 内；不用 release/ 是因为 Windows（Defender 扫描）
+  # 会短暂锁住上次解压的 tmp 目录,锁住的旧目录留在原地即可
+  output: dist/release/${version}
+  buildResources: build
+
+files:
+  - out/**/*
+  - package.json
+  - '!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,readme}'
+  - '!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}'
+  - '!**/node_modules/*.d.ts'
+  - '!**/node_modules/.bin'
+
+asar: true
+# node-pty 的 .node 原生二进制与 conpty 资源必须在 asar 外（进程加载器
+# 读不了 asar 虚拟文件系统）
+asarUnpack:
+  - node_modules/node-pty/**
+
+# 本机 node-gyp 工具链装不全（M3 已验证 node-pty 1.1.0 的 N-API prebuild
+# 直接可用），跳过 electron-builder 默认的原生模块重建。
+npmRebuild: false
+
+# 本机实时防护会锁住 electron-builder 刚解压的 Electron 目录,rename 必
+# EPERM。直接复用 node_modules 里现成的发行版,跳过下载+解压+rename。
+electronDist: node_modules/electron/dist
+
+win:
+  target:
+    - target: portable
+      arch: [x64]
+
+portable:
+  artifactName: ${productName}-${version}-portable.exe
