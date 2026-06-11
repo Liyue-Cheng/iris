@@ -74,7 +74,8 @@ interface ParsedFrontmatter {
 /**
  * Parse frontmatter tolerantly. Broken YAML degrades to "no metadata" with
  * the broken flag set — the doc still shows up (degrade loudly-visible,
- * never swallow silently).
+ * never swallow silently). Pure function, no logging — callers attach the
+ * file path to any warning (a pathless YAML error blames the wrong doc).
  */
 export function parseFrontmatter(text: string): ParsedFrontmatter {
   const hasFmFence = /^---\r?\n/.test(text);
@@ -90,10 +91,18 @@ export function parseFrontmatter(text: string): ParsedFrontmatter {
       frontmatter: Object.keys(data).length > 0 ? data : null,
       broken: false,
     };
-  } catch (err) {
-    logger.warn('scanner', `frontmatter parse failed: ${err instanceof Error ? err.message : err}`);
+  } catch {
     return { frontmatter: null, broken: true };
   }
+}
+
+/** Warn once per (path, mtime) — rescans are frequent, log spam isn't useful. */
+const warnedBrokenFm = new Map<string, number>();
+
+function warnBrokenFrontmatter(relPath: string, mtimeMs: number): void {
+  if (warnedBrokenFm.get(relPath) === mtimeMs) return;
+  warnedBrokenFm.set(relPath, mtimeMs);
+  logger.warn('scanner', `frontmatter broken in ${relPath} — degraded to no-metadata`);
 }
 
 function fmString(fm: Record<string, unknown> | null, key: string): string | null {
@@ -119,8 +128,10 @@ async function readDocMeta(
     logger.warn('scanner', `read failed for ${absPath}`, err);
   }
   const { frontmatter, broken } = parseFrontmatter(text);
+  const relPath = toRel(projectRoot, absPath);
+  if (broken) warnBrokenFrontmatter(relPath, mtimeMs);
   return {
-    path: toRel(projectRoot, absPath),
+    path: relPath,
     name: basename(absPath),
     type,
     workspacePath,
