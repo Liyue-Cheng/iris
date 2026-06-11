@@ -73,6 +73,20 @@ export function registerIpcHandlers(
       projectManager.readDoc(payload.path),
   );
 
+  ipcMain.handle(
+    CHANNELS.DOC_WRITE,
+    (_event, payload: { path: string; content: string }): Promise<{ path: string }> =>
+      projectManager.writeDoc(payload.path, payload.content),
+  );
+
+  ipcMain.handle(
+    CHANNELS.DOC_CREATE,
+    (
+      _event,
+      payload: { workspacePath: string; type: import('@shared/types').DocType; title: string },
+    ): Promise<{ path: string }> => projectManager.createDoc(payload),
+  );
+
   ipcMain.handle(CHANNELS.DIALOG_PICK_FOLDER, async (event): Promise<string | null> => {
     const result = await dialog.showOpenDialog({
       title: '打开项目文件夹',

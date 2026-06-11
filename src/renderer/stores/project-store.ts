@@ -8,6 +8,7 @@
 import { useSyncExternalStore } from 'react';
 import type { DocContent, FsIrisChangedEvent, IrisScanResult, RawTreeNode } from '@shared/types';
 import { CHANNELS } from '@shared/protocol';
+import { editorStore } from './editor-store';
 
 export type ProjectPhase = 'idle' | 'opening' | 'ready' | 'error';
 
@@ -19,8 +20,8 @@ export interface ProjectState {
   rawMode: boolean;
   rawTree: RawTreeNode | null;
   selectedPath: string | null;
-  docContent: DocContent | null;
   docLoading: boolean;
+  docError: string | null;
 }
 
 let state: ProjectState = {
@@ -30,8 +31,8 @@ let state: ProjectState = {
   rawMode: false,
   rawTree: null,
   selectedPath: null,
-  docContent: null,
   docLoading: false,
+  docError: null,
 };
 
 const subscribers = new Set<() => void>();
@@ -57,13 +58,14 @@ export const projectStore = {
 
   /** Commit hook of project.open. */
   handleOpened(scan: IrisScanResult): void {
+    editorStore.closeSession();
     setState({
       phase: 'ready',
       error: null,
       scan,
       rawTree: null,
       selectedPath: null,
-      docContent: null,
+      docError: null,
     });
     if (state.rawMode) void this.refreshRawTree();
   },
@@ -93,33 +95,36 @@ export const projectStore = {
       scanInFlight = false;
     }
 
-    // If the doc being previewed changed on disk, re-read it so the middle
-    // pane follows external edits live.
+    // Editor-side reaction to changes of the open doc (echo dedup, live
+    // reload, conflict flag, unlink) is handled by editorStore via the ISR
+    // in cpu/interrupts.ts — not here. But if the selected doc vanished,
+    // clear the selection.
     const sel = state.selectedPath;
-    if (sel && event.changes.some((c) => c.path === sel)) {
-      const stillExists = !event.changes.some((c) => c.kind === 'unlink' && c.path === sel);
-      if (stillExists) {
-        await this.selectDoc(sel);
-      } else {
-        setState({ selectedPath: null, docContent: null });
-      }
+    if (sel && event.changes.some((c) => c.kind === 'unlink' && c.path === sel)) {
+      setState({ selectedPath: null });
     }
   },
 
+  /** Select a doc: flush the previous editing session, open a new one. */
   async selectDoc(path: string): Promise<void> {
-    setState({ selectedPath: path, docLoading: true });
+    await editorStore.flushBeforeSwitch();
+    setState({ selectedPath: path, docLoading: true, docError: null });
     try {
       const content = await window.api.invoke<{ path: string }, DocContent>(CHANNELS.DOC_READ, {
         path,
       });
       // Ignore stale responses after a quick re-selection.
       if (state.selectedPath === path) {
-        setState({ docContent: content, docLoading: false });
+        editorStore.openSession(content);
+        setState({ docLoading: false });
       }
     } catch (err) {
       if (state.selectedPath === path) {
-        setState({ docContent: null, docLoading: false });
-        console.warn('[project-store] doc read failed', err);
+        editorStore.closeSession();
+        setState({
+          docLoading: false,
+          docError: err instanceof Error ? err.message : String(err),
+        });
       }
     }
   },

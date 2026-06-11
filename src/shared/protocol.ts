@@ -17,6 +17,9 @@ export const CHANNELS = {
   PROJECT_SCAN: 'project:scan',
   PROJECT_RAW_TREE: 'project:raw-tree',
   DOC_READ: 'doc:read',
+  /** Verbs (instruction-backed): write a doc verbatim / create a typed doc. */
+  DOC_WRITE: 'doc:write',
+  DOC_CREATE: 'doc:create',
   /** UI helper: native folder picker (returns a path or null; no side effect). */
   DIALOG_PICK_FOLDER: 'dialog:pick-folder',
 } as const;

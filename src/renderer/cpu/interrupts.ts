@@ -14,6 +14,7 @@ import { EVENTS } from '@shared/protocol';
 import type { FsIrisChangedEvent } from '@shared/types';
 import { pipeline } from './index';
 import { projectStore } from '@renderer/stores/project-store';
+import { editorStore, readDocFromDisk } from '@renderer/stores/editor-store';
 
 export function wireInterrupts(): void {
   window.api.on<FsIrisChangedEvent>(EVENTS.FS_IRIS_CHANGED, (event) => {
@@ -28,7 +29,21 @@ export function wireInterrupts(): void {
     name: 'iris-projection',
     events: 'fs.iris.*',
     onInterrupt: (event) => {
-      void projectStore.refreshFromFs(event.data as FsIrisChangedEvent);
+      const data = event.data as FsIrisChangedEvent;
+      // Tree projection: rescans are cheap and idempotent — no dedup needed.
+      void projectStore.refreshFromFs(data);
+      // Editor projection: dedup + conflict policy live inside the store
+      // (state compare against lastWritten — deterministic, no heuristics).
+      const open = editorStore.get();
+      if (!open) return;
+      for (const c of data.changes) {
+        if (c.path !== open.path) continue;
+        if (c.kind === 'unlink') {
+          editorStore.handleDiskUnlink(c.path);
+        } else if (c.kind === 'change' || c.kind === 'add') {
+          void editorStore.handleDiskChange(c.path, () => readDocFromDisk(c.path));
+        }
+      }
     },
   });
 }

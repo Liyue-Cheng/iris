@@ -8,9 +8,11 @@ import type { InstructionDefinition } from 'front-cpu';
 import { appISA } from './app-isa';
 import { settingsISA } from './settings-isa';
 import { projectISA } from './project-isa';
+import { docISA } from './doc-isa';
 
 export const ISA: Record<string, InstructionDefinition> = {
   ...appISA,
   ...settingsISA,
   ...projectISA,
+  ...docISA,
 };

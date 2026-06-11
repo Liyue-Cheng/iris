@@ -12,7 +12,7 @@ import {
   ResizablePanelGroup,
 } from '@renderer/components/ui/resizable';
 import { LeftPane } from '@renderer/components/layout/LeftPane';
-import { DocPreview } from '@renderer/components/doc/DocPreview';
+import { DocView } from '@renderer/components/doc/DocView';
 
 function Placeholder({ title, note }: { title: string; note: string }): JSX.Element {
   return (
@@ -31,7 +31,7 @@ export function ThreePane(): JSX.Element {
       </ResizablePanel>
       <ResizableHandle />
       <ResizablePanel defaultSize={50} minSize={25}>
-        <DocPreview />
+        <DocView />
       </ResizablePanel>
       <ResizableHandle />
       <ResizablePanel defaultSize={30} minSize={15}>

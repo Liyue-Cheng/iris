@@ -1,6 +1,7 @@
 import { TooltipProvider } from '@renderer/components/ui/tooltip';
 import { TitleBar } from '@renderer/components/layout/TitleBar';
 import { ThreePane } from '@renderer/components/layout/ThreePane';
+import { CreateDocDialog } from '@renderer/components/doc/CreateDocDialog';
 
 export function App(): JSX.Element {
   return (
@@ -11,6 +12,7 @@ export function App(): JSX.Element {
           <ThreePane />
         </div>
       </div>
+      <CreateDocDialog />
     </TooltipProvider>
   );
 }

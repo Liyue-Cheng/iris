@@ -262,6 +262,41 @@
   margin-right: 0.4em;
 }
 
+/* ──────────────────────────────────────────────────────────────────
+ * Crepe (Milkdown) re-theme: map --crepe-* onto the active theme tokens.
+ * .crepe-host .milkdown out-specifies the frame theme's .milkdown block
+ * regardless of CSS load order, and the var() indirection makes all three
+ * Rose Pine variants work from one override block.
+ * ────────────────────────────────────────────────────────────────── */
+.crepe-host .milkdown {
+  --crepe-color-background: transparent;
+  --crepe-color-on-background: var(--foreground);
+  --crepe-color-surface: var(--card);
+  --crepe-color-surface-low: var(--muted);
+  --crepe-color-on-surface: var(--foreground);
+  --crepe-color-on-surface-variant: var(--muted-foreground);
+  --crepe-color-outline: var(--rp-muted);
+  --crepe-color-primary: var(--rp-iris);
+  --crepe-color-secondary: var(--rp-overlay);
+  --crepe-color-on-secondary: var(--rp-text);
+  --crepe-color-inverse: var(--rp-highlight-med);
+  --crepe-color-on-inverse: var(--rp-text);
+  --crepe-color-inline-code: var(--rp-love);
+  --crepe-color-error: var(--rp-love);
+  --crepe-color-hover: var(--rp-highlight-low);
+  --crepe-color-selected: var(--rp-highlight-med);
+  --crepe-color-inline-area: var(--rp-overlay);
+  --crepe-font-title: var(--ui-font-family, 'LXGW WenKai', system-ui, sans-serif);
+  --crepe-font-default: var(--ui-font-family, 'LXGW WenKai', system-ui, sans-serif);
+  --crepe-font-code: 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+  height: 100%;
+}
+.crepe-host .milkdown .ProseMirror {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 1rem 1.5rem 4rem;
+}
+
 @layer base {
   * {
     @apply border-border;

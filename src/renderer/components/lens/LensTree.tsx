@@ -13,8 +13,10 @@ import {
   FileWarning,
   Gauge,
   NotebookPen,
+  Plus,
   ScrollText,
 } from 'lucide-react';
+import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
 import type { DocType, IrisDoc, IrisWorkspace } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
 import { docDisplayTitle, isActiveIssue } from '@renderer/lib/doc-utils';
@@ -62,36 +64,53 @@ function TypeSection({
   type,
   docs,
   archived,
+  workspacePath,
 }: {
   type: DocType;
   docs: IrisDoc[];
   archived: boolean;
+  workspacePath: string;
 }): JSX.Element | null {
   const [open, setOpen] = useState(true);
   const { label, icon: Icon } = TYPE_META[type];
 
   const visibleDocs = type === 'issue' && !archived ? docs.filter(isActiveIssue) : docs;
-  if (docs.length === 0) return null;
+  // Archived workspaces are frozen: hide empty sections AND the + button.
+  if (docs.length === 0 && archived) return null;
 
   return (
-    <div>
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-1 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground"
-      >
-        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        <Icon className="h-3 w-3" />
-        {label}
-        <span className="ml-1 font-normal text-muted-foreground/60">{visibleDocs.length}</span>
-      </button>
+    <div className="group/section">
+      <div className="flex items-center pr-1">
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className="flex min-w-0 flex-1 items-center gap-1 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground"
+        >
+          {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          <Icon className="h-3 w-3" />
+          {label}
+          <span className="ml-1 font-normal text-muted-foreground/60">{visibleDocs.length}</span>
+        </button>
+        {!archived && (
+          <button
+            type="button"
+            title={`新建 ${label} 文档`}
+            onClick={() => openCreateDialog({ workspacePath, type })}
+            className="rounded-sm p-0.5 text-muted-foreground/0 hover:bg-muted hover:!text-foreground group-hover/section:text-muted-foreground"
+          >
+            <Plus className="h-3 w-3" />
+          </button>
+        )}
+      </div>
       {open && (
         <div className="pb-1">
           {visibleDocs.map((d) => (
             <DocRow key={d.path} doc={d} archived={archived} />
           ))}
           {visibleDocs.length === 0 && (
-            <div className="px-7 py-0.5 text-[11px] text-muted-foreground/50">无活动 issue</div>
+            <div className="px-7 py-0.5 text-[11px] text-muted-foreground/50">
+              {type === 'issue' && docs.length > 0 ? '无活动 issue' : '空'}
+            </div>
           )}
         </div>
       )}
@@ -134,7 +153,13 @@ function WorkspaceSection({
       {open && (
         <div className={cn(archived && 'opacity-75')}>
           {TYPE_ORDER.map((t) => (
-            <TypeSection key={t} type={t} docs={byType(t)} archived={archived} />
+            <TypeSection
+              key={t}
+              type={t}
+              docs={byType(t)}
+              archived={archived}
+              workspacePath={ws.path}
+            />
           ))}
           {ws.children.map((c) => (
             <WorkspaceSection key={c.path} ws={c} depth={depth + 1} parentArchived={archived} />

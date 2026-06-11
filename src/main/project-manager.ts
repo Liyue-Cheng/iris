@@ -14,9 +14,10 @@
  */
 import { EventEmitter } from 'node:events';
 import { promises as fs } from 'node:fs';
-import { join, normalize, resolve, sep } from 'node:path';
+import { dirname, join, normalize, resolve, sep } from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
-import type { DocContent, FsIrisChangedEvent, IrisScanResult, RawTreeNode } from '@shared/types';
+import type { DocContent, DocType, FsIrisChangedEvent, IrisScanResult, RawTreeNode } from '@shared/types';
+import { slugify, yamlScalar } from '@shared/markdown-utils';
 import { parseFrontmatter, scanProject, scanRawTree } from './iris-scanner';
 import { logger } from './logger';
 
@@ -24,7 +25,13 @@ const DEBOUNCE_MS = 150;
 
 export class ProjectError extends Error {
   constructor(
-    public readonly code: 'NotADirectory' | 'NoProject' | 'OutsideProject' | 'ReadFailed',
+    public readonly code:
+      | 'NotADirectory'
+      | 'NoProject'
+      | 'OutsideProject'
+      | 'ReadFailed'
+      | 'WriteFailed'
+      | 'InvalidPayload',
     message: string,
   ) {
     super(`[ProjectManager] ${code}: ${message}`);
@@ -110,6 +117,83 @@ export class ProjectManager extends EventEmitter {
     const { frontmatter, broken } = parseFrontmatter(raw);
     const body = broken || frontmatter !== null ? stripFrontmatter(raw) : raw;
     return { path: relPath, raw, body, frontmatter, frontmatterBroken: broken };
+  }
+
+  /**
+   * Write a doc verbatim (doc.save instruction body). The renderer composed
+   * the exact bytes; main adds nothing — same atomic tmp+rename discipline
+   * as JsonStore so a crash never leaves a half-written doc.
+   */
+  async writeDoc(relPath: string, content: string): Promise<{ path: string }> {
+    const root = this.requireRoot();
+    if (typeof content !== 'string') {
+      throw new ProjectError('InvalidPayload', 'content must be a string');
+    }
+    const abs = this.resolveInside(root, relPath);
+    const tmp = `${abs}.tmp.${process.pid}.${Date.now()}`;
+    try {
+      await fs.mkdir(dirname(abs), { recursive: true });
+      await fs.writeFile(tmp, content, 'utf8');
+      await fs.rename(tmp, abs);
+    } catch (err) {
+      await fs.unlink(tmp).catch(() => {});
+      throw new ProjectError(
+        'WriteFailed',
+        `cannot write ${relPath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return { path: relPath };
+  }
+
+  /**
+   * Create a doc in a typed folder (doc.create instruction body).
+   * issue/report names get the protocol's date prefix (concurrent creation
+   * by multiple humans/agents must not collide); collisions append -2, -3…
+   */
+  async createDoc(payload: {
+    workspacePath: string;
+    type: DocType;
+    title: string;
+  }): Promise<{ path: string }> {
+    const root = this.requireRoot();
+    const { workspacePath, type, title } = payload;
+    if (!workspacePath || !type || typeof title !== 'string') {
+      throw new ProjectError('InvalidPayload', 'workspacePath, type and title are required');
+    }
+    const slug = slugify(title);
+    const today = new Date();
+    const datePrefix = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}-`;
+    const baseName = (type === 'issue' || type === 'report' ? datePrefix : '') + slug;
+
+    const dirAbs = this.resolveInside(root, `${workspacePath}/${type}`);
+    await fs.mkdir(dirAbs, { recursive: true });
+
+    let fileName = `${baseName}.md`;
+    for (let n = 2; ; n++) {
+      try {
+        await fs.access(join(dirAbs, fileName));
+        fileName = `${baseName}-${n}.md`; // exists → try next
+      } catch {
+        break; // free
+      }
+    }
+
+    const fmLines = [`title: ${yamlScalar(title)}`];
+    if (type === 'issue') fmLines.push('status: todo');
+    const content = `---\n${fmLines.join('\n')}\n---\n\n# ${title}\n`;
+
+    const relPath = `${workspacePath}/${type}/${fileName}`;
+    const abs = this.resolveInside(root, relPath);
+    try {
+      // wx: fail rather than overwrite if a race sneaks in after the probe
+      await fs.writeFile(abs, content, { encoding: 'utf8', flag: 'wx' });
+    } catch (err) {
+      throw new ProjectError(
+        'WriteFailed',
+        `cannot create ${relPath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return { path: relPath };
   }
 
   // ──────────────────────────────────────────────────────────────────
