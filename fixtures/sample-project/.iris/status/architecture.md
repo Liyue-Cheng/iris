@@ -21,4 +21,4 @@ reflects: a1b3c2d
 | core-service | HTTP + MQ | 你是猪 | users, orders |
 | worker       | MQ        | 你是猪 | jobs          |
 
-鉴权目前在 gateway 层用中间件实现，详见 `src/auth/`。
+鉴权目前在 gateway 层用中间件实现，详见 `src/auth/`。   

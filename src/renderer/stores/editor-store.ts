@@ -232,10 +232,15 @@ export const editorStore = {
       return;
     }
     // Echo of our own write → no information, skip.
-    if (lastWritten.get(path) === content.raw) return;
+    if (lastWritten.get(path) === content.raw) {
+      console.log(`[ISR doc-projection] 回声已去重（盘上内容 = 内存状态）: ${path}`);
+      return;
+    }
     if (!session.dirty) {
+      console.log(`[ISR doc-projection] 真实外部修改 → 重载编辑器: ${path}`);
       this.openSession(content); // live-follow external edits
     } else {
+      console.log(`[ISR doc-projection] 外部修改撞上未保存编辑 → 标记冲突: ${path}`);
       patch({ externalConflict: true });
     }
   },
