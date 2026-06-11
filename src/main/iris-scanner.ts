@@ -273,6 +273,20 @@ async function findWorkspaces(
   return out;
 }
 
+/** Read .iris/CONVENTIONS.md presence + frontmatter protocol version. */
+async function readConstitutionState(
+  irisAbs: string,
+): Promise<{ exists: boolean; protocol: number | null }> {
+  try {
+    const text = await fs.readFile(join(irisAbs, 'CONVENTIONS.md'), 'utf8');
+    const { frontmatter } = parseFrontmatter(text);
+    const p = frontmatter?.['protocol'];
+    return { exists: true, protocol: typeof p === 'number' ? p : null };
+  } catch {
+    return { exists: false, protocol: null };
+  }
+}
+
 /** Scan a project. Cheap full rescan (M1 granularity — .iris trees are small). */
 export async function scanProject(projectRoot: string): Promise<IrisScanResult> {
   const projectName = basename(projectRoot);
@@ -286,12 +300,22 @@ export async function scanProject(projectRoot: string): Promise<IrisScanResult> 
   }
 
   if (!hasIris) {
-    return { projectRoot, projectName, hasIris: false, root: null, scannedAt: Date.now() };
+    return {
+      projectRoot,
+      projectName,
+      hasIris: false,
+      root: null,
+      constitution: { exists: false, protocol: null },
+      scannedAt: Date.now(),
+    };
   }
 
-  const root = await scanWorkspaceDir(projectRoot, irisAbs, false);
+  const [root, constitution] = await Promise.all([
+    scanWorkspaceDir(projectRoot, irisAbs, false),
+    readConstitutionState(irisAbs),
+  ]);
   root.name = projectName; // root workspace displays the project's name
-  return { projectRoot, projectName, hasIris: true, root, scannedAt: Date.now() };
+  return { projectRoot, projectName, hasIris: true, root, constitution, scannedAt: Date.now() };
 }
 
 /** Raw file tree of .iris/ (escape-hatch view). Dirs first, then files. */

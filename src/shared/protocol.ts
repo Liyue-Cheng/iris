@@ -13,6 +13,15 @@ export const CHANNELS = {
   SETTINGS_UPDATE: 'settings:update',
   /** Verb (instruction-backed): open a project, start watching, persist lastRoot. */
   PROJECT_OPEN: 'project:open',
+  /** Verb: idempotent protocol scaffold (folders + constitution + AGENTS.md). */
+  PROJECT_INIT: 'project:init',
+  /** Verb: create a sub-workspace (human gesture only). */
+  WORKSPACE_CREATE: 'workspace:create',
+  /** Machine layer (~/.iris/CONVENTIONS.md): install template / state query. */
+  MACHINE_INSTALL_CONVENTIONS: 'machine:install-conventions',
+  MACHINE_CONVENTIONS_STATE: 'machine:conventions-state',
+  /** UI helper: reveal a path in the system file manager. */
+  SHELL_REVEAL: 'shell:reveal',
   /** Queries (projection reads — not instructions). */
   PROJECT_SCAN: 'project:scan',
   PROJECT_RAW_TREE: 'project:raw-tree',

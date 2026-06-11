@@ -125,7 +125,19 @@ export interface IrisScanResult {
   /** False when no .iris/ directory exists. */
   hasIris: boolean;
   root: IrisWorkspace | null;
+  /**
+   * Constitution presence + declared protocol version. The app only ever
+   * PROMPTS on mismatch — upgrading the constitution is a human gesture.
+   */
+  constitution: { exists: boolean; protocol: number | null };
   scannedAt: number;
+}
+
+/** project.init result — what the idempotent scaffold actually did. */
+export interface ProjectInitResult {
+  createdFolders: string[];
+  constitution: 'created' | 'already-exists';
+  agentsMd: 'created' | 'appended' | 'already-has-section';
 }
 
 /** Raw file-tree escape hatch (left pane toggle). */

@@ -3,7 +3,8 @@
  * empty states. The pane header carries the open-project and raw-toggle
  * affordances.
  */
-import { FolderOpen, ListTree, FolderTree, Loader2 } from 'lucide-react';
+import { useState } from 'react';
+import { FolderOpen, FolderPlus, ListTree, FolderTree, Loader2, TriangleAlert } from 'lucide-react';
 import { Button } from '@renderer/components/ui/button';
 import {
   Tooltip,
@@ -14,6 +15,9 @@ import { projectStore, useProject } from '@renderer/stores/project-store';
 import { pickAndOpenProject } from '@renderer/lib/project-actions';
 import { LensTree } from '@renderer/components/lens/LensTree';
 import { RawTree } from '@renderer/components/lens/RawTree';
+import { InitDialog } from '@renderer/components/project/InitDialog';
+import { CreateWorkspaceDialog } from '@renderer/components/project/CreateWorkspaceDialog';
+import { PROTOCOL_VERSION } from '@shared/protocol-version';
 
 function EmptyState({ children }: { children: React.ReactNode }): JSX.Element {
   return (
@@ -25,6 +29,14 @@ function EmptyState({ children }: { children: React.ReactNode }): JSX.Element {
 
 export function LeftPane(): JSX.Element {
   const { phase, error, scan, rawMode, rawTree } = useProject();
+  const [initOpen, setInitOpen] = useState(false);
+  const [wsOpen, setWsOpen] = useState(false);
+
+  const constitutionMissing = phase === 'ready' && !!scan?.hasIris && !scan.constitution.exists;
+  const protocolMismatch =
+    phase === 'ready' &&
+    !!scan?.constitution.exists &&
+    scan.constitution.protocol !== PROTOCOL_VERSION;
 
   return (
     <div className="flex h-full flex-col bg-card/50">
@@ -47,26 +59,59 @@ export function LeftPane(): JSX.Element {
             <TooltipContent>打开项目文件夹</TooltipContent>
           </Tooltip>
           {phase === 'ready' && scan?.hasIris && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-6 w-6"
-                  onClick={() => void projectStore.toggleRawMode()}
-                >
-                  {rawMode ? (
-                    <ListTree className="!size-3.5" />
-                  ) : (
-                    <FolderTree className="!size-3.5" />
-                  )}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{rawMode ? '切回透镜树' : '裸文件树（逃生舱）'}</TooltipContent>
-            </Tooltip>
+            <>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6"
+                    onClick={() => setWsOpen(true)}
+                  >
+                    <FolderPlus className="!size-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>新建工作区（人的手势）</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6"
+                    onClick={() => void projectStore.toggleRawMode()}
+                  >
+                    {rawMode ? (
+                      <ListTree className="!size-3.5" />
+                    ) : (
+                      <FolderTree className="!size-3.5" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{rawMode ? '切回透镜树' : '裸文件树（逃生舱）'}</TooltipContent>
+              </Tooltip>
+            </>
           )}
         </div>
       </div>
+
+      {constitutionMissing && (
+        <button
+          type="button"
+          onClick={() => setInitOpen(true)}
+          className="flex shrink-0 items-start gap-1.5 border-b bg-[var(--rp-gold)]/10 px-2 py-1.5 text-left text-[11px] text-[var(--rp-gold)] hover:bg-[var(--rp-gold)]/20"
+        >
+          <TriangleAlert className="mt-px h-3 w-3 shrink-0" />
+          缺少 .iris/CONVENTIONS.md —— agent 读不到宪法。点击补全。
+        </button>
+      )}
+      {protocolMismatch && (
+        <div className="flex shrink-0 items-start gap-1.5 border-b bg-[var(--rp-gold)]/10 px-2 py-1.5 text-[11px] text-[var(--rp-gold)]">
+          <TriangleAlert className="mt-px h-3 w-3 shrink-0" />
+          宪法 protocol={scan?.constitution.protocol ?? '缺失'}，本应用支持 {PROTOCOL_VERSION}。
+          宪法归你所有，应用不代改——请人工核对差异后更新。
+        </div>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {phase === 'idle' && (
@@ -100,8 +145,11 @@ export function LeftPane(): JSX.Element {
             <p>
               该项目还没有 <code className="rounded bg-muted px-1">.iris/</code>
             </p>
+            <Button size="sm" variant="secondary" onClick={() => setInitOpen(true)}>
+              初始化 Iris 协议
+            </Button>
             <p className="max-w-48 text-muted-foreground/70">
-              初始化向导在 M5 提供；当前可手建 .iris/ 与类型文件夹，文件一落盘这里就会亮起来。
+              也可以手建 .iris/ 与类型文件夹——协议不需要应用在场。
             </p>
           </EmptyState>
         )}
@@ -120,6 +168,13 @@ export function LeftPane(): JSX.Element {
           )
         )}
       </div>
+
+      <InitDialog
+        open={initOpen}
+        onClose={() => setInitOpen(false)}
+        missingConstitutionOnly={constitutionMissing}
+      />
+      <CreateWorkspaceDialog open={wsOpen} onClose={() => setWsOpen(false)} />
     </div>
   );
 }

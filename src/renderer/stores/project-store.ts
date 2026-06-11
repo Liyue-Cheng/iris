@@ -124,6 +124,18 @@ export const projectStore = {
     setState({ view: { kind: 'collection', type, workspacePath } });
   },
 
+  /** Explicit re-projection (used by init/workspace commits). */
+  async rescan(): Promise<void> {
+    if (state.phase !== 'ready') return;
+    try {
+      const scan = await window.api.invoke<undefined, IrisScanResult>(CHANNELS.PROJECT_SCAN);
+      setState({ scan });
+      if (state.rawMode) await this.refreshRawTree();
+    } catch (err) {
+      console.warn('[project-store] rescan failed', err);
+    }
+  },
+
   /** Select a doc: flush the previous editing session, open a new one. */
   async selectDoc(path: string): Promise<void> {
     await editorStore.flushBeforeSwitch();

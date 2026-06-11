@@ -16,9 +16,22 @@ import { EventEmitter } from 'node:events';
 import { promises as fs } from 'node:fs';
 import { dirname, join, normalize, resolve, sep } from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
-import type { DocContent, DocType, FsIrisChangedEvent, IrisScanResult, RawTreeNode } from '@shared/types';
+import type {
+  DocContent,
+  DocType,
+  FsIrisChangedEvent,
+  IrisScanResult,
+  ProjectInitResult,
+  RawTreeNode,
+} from '@shared/types';
+import { DOC_TYPES } from '@shared/types';
 import { slugify, yamlScalar } from '@shared/markdown-utils';
 import { parseFrontmatter, scanProject, scanRawTree } from './iris-scanner';
+import {
+  AGENTS_GUIDANCE,
+  AGENTS_GUIDANCE_MARKER,
+  CONSTITUTION_TEMPLATE,
+} from './iris-templates';
 import { logger } from './logger';
 
 const DEBOUNCE_MS = 150;
@@ -196,6 +209,89 @@ export class ProjectManager extends EventEmitter {
     return { path: relPath };
   }
 
+  /**
+   * Idempotent protocol scaffold (project.init / cold start §4 冷启动):
+   * ensure the four typed folders, write the constitution if absent (never
+   * overwrite — it's the human-authored contract), and append the guidance
+   * section to AGENTS.md exactly once (marker-checked). Touching the
+   * project root requires explicit user confirmation in the UI — this is
+   * the single sanctioned exception to 尊重边界.
+   */
+  async initIris(): Promise<ProjectInitResult> {
+    const root = this.requireRoot();
+    const irisAbs = join(root, '.iris');
+
+    const createdFolders: string[] = [];
+    for (const t of DOC_TYPES) {
+      const dir = join(irisAbs, t);
+      if (!(await exists(dir))) {
+        await fs.mkdir(dir, { recursive: true });
+        createdFolders.push(`.iris/${t}`);
+      }
+    }
+
+    let constitution: ProjectInitResult['constitution'] = 'already-exists';
+    const constitutionAbs = join(irisAbs, 'CONVENTIONS.md');
+    if (!(await exists(constitutionAbs))) {
+      await fs.writeFile(constitutionAbs, CONSTITUTION_TEMPLATE, { encoding: 'utf8', flag: 'wx' });
+      constitution = 'created';
+    }
+
+    let agentsMd: ProjectInitResult['agentsMd'];
+    const agentsAbs = join(root, 'AGENTS.md');
+    if (!(await exists(agentsAbs))) {
+      await fs.writeFile(agentsAbs, `${AGENTS_GUIDANCE}`, 'utf8');
+      agentsMd = 'created';
+    } else {
+      const current = await fs.readFile(agentsAbs, 'utf8');
+      if (current.includes(AGENTS_GUIDANCE_MARKER)) {
+        agentsMd = 'already-has-section';
+      } else {
+        const sep = current.endsWith('\n') ? '\n' : '\n\n';
+        await fs.appendFile(agentsAbs, `${sep}${AGENTS_GUIDANCE}`, 'utf8');
+        agentsMd = 'appended';
+      }
+    }
+
+    logger.info('project', `init: folders=[${createdFolders.join(', ')}] constitution=${constitution} agents=${agentsMd}`);
+    return { createdFolders, constitution, agentsMd };
+  }
+
+  /**
+   * Create a sub-workspace (workspace.create — a HUMAN gesture, agents
+   * never create workspaces unasked). Templates: 'standard' = the four
+   * typed folders; 'empty' = bare folder the user shapes later.
+   */
+  async createWorkspace(payload: {
+    parentPath: string;
+    name: string;
+    template: 'standard' | 'empty';
+  }): Promise<{ path: string }> {
+    const root = this.requireRoot();
+    const { parentPath, name, template } = payload;
+    const trimmed = (name ?? '').trim();
+    if (!trimmed || /[\\/:*?"<>|]/.test(trimmed) || trimmed.startsWith('.')) {
+      throw new ProjectError('InvalidPayload', `工作区名不合法: "${name}"`);
+    }
+    if ((DOC_TYPES as readonly string[]).includes(trimmed)) {
+      throw new ProjectError(
+        'InvalidPayload',
+        `"${trimmed}" 是类型文件夹的保留名（名字即类型），不能用作工作区名`,
+      );
+    }
+    const wsAbs = this.resolveInside(root, `${parentPath}/${trimmed}`);
+    if (await exists(wsAbs)) {
+      throw new ProjectError('WriteFailed', `"${parentPath}/${trimmed}" 已存在`);
+    }
+    await fs.mkdir(wsAbs, { recursive: true });
+    if (template === 'standard') {
+      for (const t of DOC_TYPES) {
+        await fs.mkdir(join(wsAbs, t), { recursive: true });
+      }
+    }
+    return { path: `${parentPath}/${trimmed}` };
+  }
+
   // ──────────────────────────────────────────────────────────────────
 
   private requireRoot(): string {
@@ -256,4 +352,13 @@ export class ProjectManager extends EventEmitter {
 export function stripFrontmatter(raw: string): string {
   const m = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(raw);
   return m ? raw.slice(m[0].length) : raw;
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await fs.access(path);
+    return true;
+  } catch {
+    return false;
+  }
 }

@@ -8,7 +8,7 @@
  * `ipc` executor (instructions declare `config: { channel }`); the query
  * channels are projection reads called directly by stores/ISRs.
  */
-import { dialog, ipcMain, type BrowserWindow } from 'electron';
+import { dialog, ipcMain, shell, type BrowserWindow } from 'electron';
 import { CHANNELS, EVENTS } from '@shared/protocol';
 import type {
   DeepPartial,
@@ -27,6 +27,7 @@ import type {
 import type { SettingsManager } from './settings-manager';
 import type { ProjectManager } from './project-manager';
 import type { SessionManager } from './session-manager';
+import { installMachineConventions, machineConventionsState } from './machine-layer';
 import { logger } from './logger';
 
 export function registerIpcHandlers(
@@ -67,6 +68,22 @@ export function registerIpcHandlers(
   );
 
   ipcMain.handle(CHANNELS.PROJECT_SCAN, (): Promise<IrisScanResult> => projectManager.scan());
+
+  ipcMain.handle(CHANNELS.PROJECT_INIT, () => projectManager.initIris());
+
+  ipcMain.handle(
+    CHANNELS.WORKSPACE_CREATE,
+    (_event, payload: { parentPath: string; name: string; template: 'standard' | 'empty' }) =>
+      projectManager.createWorkspace(payload),
+  );
+
+  ipcMain.handle(CHANNELS.MACHINE_CONVENTIONS_STATE, () => machineConventionsState());
+
+  ipcMain.handle(CHANNELS.MACHINE_INSTALL_CONVENTIONS, () => installMachineConventions());
+
+  ipcMain.handle(CHANNELS.SHELL_REVEAL, (_event, payload: { path: string }): void => {
+    shell.showItemInFolder(payload.path);
+  });
 
   ipcMain.handle(
     CHANNELS.PROJECT_RAW_TREE,
