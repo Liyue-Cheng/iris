@@ -11,6 +11,8 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from '@renderer/components/ui/resizable';
+import { LeftPane } from '@renderer/components/layout/LeftPane';
+import { DocPreview } from '@renderer/components/doc/DocPreview';
 
 function Placeholder({ title, note }: { title: string; note: string }): JSX.Element {
   return (
@@ -25,13 +27,11 @@ export function ThreePane(): JSX.Element {
   return (
     <ResizablePanelGroup direction="horizontal" autoSaveId="iris-three-pane">
       <ResizablePanel defaultSize={20} minSize={12}>
-        <div className="h-full bg-card/50">
-          <Placeholder title="文档树" note="M1：按工作区与类型组织的透镜树" />
-        </div>
+        <LeftPane />
       </ResizablePanel>
       <ResizableHandle />
       <ResizablePanel defaultSize={50} minSize={25}>
-        <Placeholder title="文档" note="M2：类型化头部 + 所见即所得编辑器" />
+        <DocPreview />
       </ResizablePanel>
       <ResizableHandle />
       <ResizablePanel defaultSize={30} minSize={15}>

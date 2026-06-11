@@ -1,0 +1,154 @@
+/**
+ * The lens tree (software-definition.md §5 左栏): workspaces as group
+ * levels, docs classified by type inside each. The issue section shows
+ * ACTIVE issues only; archived workspaces (inside report/) render grayed
+ * as one frozen block. Session status dots are placeholders until M3.
+ */
+import { useState } from 'react';
+import {
+  Archive,
+  ChevronDown,
+  ChevronRight,
+  CircleDot,
+  FileWarning,
+  Gauge,
+  NotebookPen,
+  ScrollText,
+} from 'lucide-react';
+import type { DocType, IrisDoc, IrisWorkspace } from '@shared/types';
+import { cn } from '@renderer/lib/utils';
+import { docDisplayTitle, isActiveIssue } from '@renderer/lib/doc-utils';
+import { projectStore, useProject } from '@renderer/stores/project-store';
+
+const TYPE_ORDER: DocType[] = ['status', 'issue', 'report', 'misc'];
+
+const TYPE_META: Record<DocType, { label: string; icon: typeof Gauge }> = {
+  status: { label: 'status', icon: Gauge },
+  issue: { label: 'issue', icon: CircleDot },
+  report: { label: 'report', icon: ScrollText },
+  misc: { label: 'misc', icon: NotebookPen },
+};
+
+function DocRow({ doc, archived }: { doc: IrisDoc; archived: boolean }): JSX.Element {
+  const { selectedPath } = useProject();
+  const selected = selectedPath === doc.path;
+  return (
+    <button
+      type="button"
+      onClick={() => void projectStore.selectDoc(doc.path)}
+      className={cn(
+        'group flex w-full items-center gap-1.5 rounded-sm px-2 py-1 text-left text-[13px] leading-tight',
+        selected ? 'bg-accent text-accent-foreground' : 'hover:bg-muted',
+        archived && 'opacity-60',
+      )}
+      title={doc.path}
+    >
+      {/* M3 session status dot placeholder (○ = no session) */}
+      <span className="w-3 shrink-0 text-center text-[9px] text-muted-foreground/50">○</span>
+      <span className="truncate">{docDisplayTitle(doc)}</span>
+      {doc.frontmatterBroken && (
+        <FileWarning className="ml-auto h-3.5 w-3.5 shrink-0 text-destructive/80" />
+      )}
+      {doc.type === 'issue' && doc.status && !doc.frontmatterBroken && (
+        <span className="ml-auto shrink-0 rounded-sm bg-muted px-1 py-px text-[10px] text-muted-foreground">
+          {doc.status}
+        </span>
+      )}
+    </button>
+  );
+}
+
+function TypeSection({
+  type,
+  docs,
+  archived,
+}: {
+  type: DocType;
+  docs: IrisDoc[];
+  archived: boolean;
+}): JSX.Element | null {
+  const [open, setOpen] = useState(true);
+  const { label, icon: Icon } = TYPE_META[type];
+
+  const visibleDocs = type === 'issue' && !archived ? docs.filter(isActiveIssue) : docs;
+  if (docs.length === 0) return null;
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-1 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground"
+      >
+        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        <Icon className="h-3 w-3" />
+        {label}
+        <span className="ml-1 font-normal text-muted-foreground/60">{visibleDocs.length}</span>
+      </button>
+      {open && (
+        <div className="pb-1">
+          {visibleDocs.map((d) => (
+            <DocRow key={d.path} doc={d} archived={archived} />
+          ))}
+          {visibleDocs.length === 0 && (
+            <div className="px-7 py-0.5 text-[11px] text-muted-foreground/50">无活动 issue</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WorkspaceSection({
+  ws,
+  depth,
+  parentArchived,
+}: {
+  ws: IrisWorkspace;
+  depth: number;
+  parentArchived: boolean;
+}): JSX.Element {
+  const [open, setOpen] = useState(true);
+  const archived = ws.archived || parentArchived;
+  const byType = (t: DocType): IrisDoc[] => ws.docs.filter((d) => d.type === t);
+
+  return (
+    <div className={cn(depth > 0 && 'ml-2 border-l border-border/60 pl-1')}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className={cn(
+          'flex w-full items-center gap-1 px-1 py-1 text-xs font-semibold',
+          archived ? 'text-muted-foreground/70' : 'text-foreground',
+        )}
+      >
+        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        <span className="truncate">{ws.name}</span>
+        {archived && (
+          <span className="ml-1 flex items-center gap-0.5 rounded-sm bg-muted px-1 py-px text-[10px] font-normal text-muted-foreground">
+            <Archive className="h-2.5 w-2.5" />
+            已归档
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className={cn(archived && 'opacity-75')}>
+          {TYPE_ORDER.map((t) => (
+            <TypeSection key={t} type={t} docs={byType(t)} archived={archived} />
+          ))}
+          {ws.children.map((c) => (
+            <WorkspaceSection key={c.path} ws={c} depth={depth + 1} parentArchived={archived} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function LensTree({ root }: { root: IrisWorkspace }): JSX.Element {
+  return (
+    <div className="px-1 py-1">
+      <WorkspaceSection ws={root} depth={0} parentArchived={false} />
+    </div>
+  );
+}

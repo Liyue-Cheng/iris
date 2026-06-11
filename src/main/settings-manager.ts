@@ -36,6 +36,9 @@ export const DEFAULT_SETTINGS: Settings = {
       "'Cascadia Mono', 'JetBrains Mono', 'Consolas', 'LXGW WenKai Mono', monospace",
     terminalFontSize: 13,
   },
+  project: {
+    lastRoot: null,
+  },
 };
 
 const VALID_THEMES: ThemeId[] = ['rose-pine', 'rose-pine-dawn', 'rose-pine-moon'];
@@ -196,5 +199,8 @@ export function validateSettings(s: Settings): void {
       'InvalidSettings',
       'appearance.terminalFontFamily must be a non-empty string',
     );
+  }
+  if (s.project.lastRoot !== null && typeof s.project.lastRoot !== 'string') {
+    throw new SettingsError('InvalidSettings', 'project.lastRoot must be a string or null');
   }
 }

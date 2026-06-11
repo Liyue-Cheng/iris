@@ -14,11 +14,17 @@
     "build": "npm run typecheck && electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.preload.json && tsc --noEmit -p tsconfig.web.json",
-    "smoke": "node scripts/smoke-launch.mjs"
+    "smoke": "node scripts/smoke-launch.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
+    "chokidar": "^5.0.0",
     "front-cpu": "file:../dashboard/cpu-pipeline",
-    "lucide-react": "^1.14.0"
+    "gray-matter": "^4.0.3",
+    "lucide-react": "^1.14.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@radix-ui/react-dialog": "^1.1.0",
@@ -42,6 +48,7 @@
     "tailwindcss": "^3.4.4",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "^5.5.2",
-    "vite": "^5.3.1"
+    "vite": "^5.3.1",
+    "vitest": "^1.6.1"
   }
 }

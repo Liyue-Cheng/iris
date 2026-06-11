@@ -11,8 +11,18 @@ export const CHANNELS = {
   APP_PING: 'app:ping',
   SETTINGS_GET: 'settings:get',
   SETTINGS_UPDATE: 'settings:update',
+  /** Verb (instruction-backed): open a project, start watching, persist lastRoot. */
+  PROJECT_OPEN: 'project:open',
+  /** Queries (projection reads — not instructions). */
+  PROJECT_SCAN: 'project:scan',
+  PROJECT_RAW_TREE: 'project:raw-tree',
+  DOC_READ: 'doc:read',
+  /** UI helper: native folder picker (returns a path or null; no side effect). */
+  DIALOG_PICK_FOLDER: 'dialog:pick-folder',
 } as const;
 
 export const EVENTS = {
   SETTINGS_CHANGED: 'evt:settings:changed',
+  /** Batched .iris/ tree changes (chokidar, debounced in main). */
+  FS_IRIS_CHANGED: 'evt:fs:iris-changed',
 } as const;

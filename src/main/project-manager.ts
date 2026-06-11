@@ -1,0 +1,175 @@
+/**
+ * @file src/main/project-manager.ts
+ * @purpose Current-project lifecycle: open/close, chokidar watch over .iris/,
+ *   debounced change batching, and the read queries (scan / raw tree /
+ *   doc read) scoped to the open project.
+ *
+ * v1 manages exactly one project at a time (software-definition.md §7).
+ * Opening a new project tears down the previous watcher.
+ *
+ * Watching follows the contract "files are the contract": Iris never parses
+ * agent output — every change, whether from the editor, an agent session or
+ * an external tool, arrives here as a file event and flows to the renderer
+ * as evt:fs:iris-changed, where an ISR re-projects.
+ */
+import { EventEmitter } from 'node:events';
+import { promises as fs } from 'node:fs';
+import { join, normalize, resolve, sep } from 'node:path';
+import chokidar, { type FSWatcher } from 'chokidar';
+import type { DocContent, FsIrisChangedEvent, IrisScanResult, RawTreeNode } from '@shared/types';
+import { parseFrontmatter, scanProject, scanRawTree } from './iris-scanner';
+import { logger } from './logger';
+
+const DEBOUNCE_MS = 150;
+
+export class ProjectError extends Error {
+  constructor(
+    public readonly code: 'NotADirectory' | 'NoProject' | 'OutsideProject' | 'ReadFailed',
+    message: string,
+  ) {
+    super(`[ProjectManager] ${code}: ${message}`);
+    this.name = 'ProjectError';
+  }
+}
+
+export class ProjectManager extends EventEmitter {
+  private projectRoot: string | null = null;
+  private watcher: FSWatcher | null = null;
+  private pendingChanges: FsIrisChangedEvent['changes'] = [];
+  private flushTimer: NodeJS.Timeout | null = null;
+
+  /** Absolute root of the currently open project (null when none). */
+  getRoot(): string | null {
+    return this.projectRoot;
+  }
+
+  /**
+   * Open a project: validate the directory, start watching its .iris/ tree
+   * (if present), and return the initial scan. Replaces any previous project.
+   */
+  async open(root: string): Promise<IrisScanResult> {
+    const abs = normalize(resolve(root));
+    let stat;
+    try {
+      stat = await fs.stat(abs);
+    } catch {
+      throw new ProjectError('NotADirectory', `cannot access ${abs}`);
+    }
+    if (!stat.isDirectory()) {
+      throw new ProjectError('NotADirectory', `${abs} is not a directory`);
+    }
+
+    await this.close();
+    this.projectRoot = abs;
+
+    const result = await scanProject(abs);
+    // Watch even when .iris/ doesn't exist yet: its later creation (manual
+    // mkdir or the M5 init wizard) must light the tree up without a restart.
+    this.startWatcher(abs);
+    logger.info('project', `opened ${abs} (hasIris=${result.hasIris})`);
+    return result;
+  }
+
+  async close(): Promise<void> {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.pendingChanges = [];
+    if (this.watcher) {
+      await this.watcher.close().catch(() => {});
+      this.watcher = null;
+    }
+    this.projectRoot = null;
+  }
+
+  /** Rescan the open project (projection query). */
+  async scan(): Promise<IrisScanResult> {
+    const root = this.requireRoot();
+    return scanProject(root);
+  }
+
+  async rawTree(): Promise<RawTreeNode | null> {
+    const root = this.requireRoot();
+    return scanRawTree(root);
+  }
+
+  /** Read one doc (projection query). Path must stay inside the project. */
+  async readDoc(relPath: string): Promise<DocContent> {
+    const root = this.requireRoot();
+    const abs = this.resolveInside(root, relPath);
+    let raw: string;
+    try {
+      raw = await fs.readFile(abs, 'utf8');
+    } catch (err) {
+      throw new ProjectError(
+        'ReadFailed',
+        `cannot read ${relPath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    const { frontmatter, broken } = parseFrontmatter(raw);
+    const body = broken || frontmatter !== null ? stripFrontmatter(raw) : raw;
+    return { path: relPath, raw, body, frontmatter, frontmatterBroken: broken };
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+
+  private requireRoot(): string {
+    if (!this.projectRoot) throw new ProjectError('NoProject', 'no project is open');
+    return this.projectRoot;
+  }
+
+  /** Path-traversal guard: resolved path must stay under the project root. */
+  private resolveInside(root: string, relPath: string): string {
+    const abs = normalize(resolve(root, relPath));
+    if (abs !== root && !abs.startsWith(root + sep)) {
+      throw new ProjectError('OutsideProject', `${relPath} escapes the project root`);
+    }
+    return abs;
+  }
+
+  private startWatcher(root: string): void {
+    const irisAbs = join(root, '.iris');
+    this.watcher = chokidar.watch(irisAbs, {
+      ignoreInitial: true,
+      // Editors/agents writing files produce write bursts; wait for quiet.
+      awaitWriteFinish: { stabilityThreshold: 80, pollInterval: 20 },
+    });
+
+    const push = (kind: FsIrisChangedEvent['changes'][number]['kind']) => (path: string) => {
+      if (!this.projectRoot) return;
+      const rel = path.slice(this.projectRoot.length + 1).split(sep).join('/');
+      this.pendingChanges.push({ kind, path: rel });
+      this.scheduleFlush();
+    };
+
+    this.watcher
+      .on('add', push('add'))
+      .on('change', push('change'))
+      .on('unlink', push('unlink'))
+      .on('addDir', push('addDir'))
+      .on('unlinkDir', push('unlinkDir'))
+      .on('error', (err) => logger.warn('project', 'watcher error', err));
+  }
+
+  /** Debounce: agents touch several files per task; one batch, one rescan. */
+  private scheduleFlush(): void {
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      if (!this.projectRoot || this.pendingChanges.length === 0) return;
+      const event: FsIrisChangedEvent = {
+        projectRoot: this.projectRoot,
+        changes: this.pendingChanges,
+      };
+      this.pendingChanges = [];
+      this.emit('irisChanged', event);
+    }, DEBOUNCE_MS);
+  }
+}
+
+/** Remove the frontmatter block (first `--- ... ---`) from raw text. */
+export function stripFrontmatter(raw: string): string {
+  const m = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(raw);
+  return m ? raw.slice(m[0].length) : raw;
+}

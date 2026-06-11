@@ -18,6 +18,10 @@ export interface Settings {
     terminalFontFamily: string;
     terminalFontSize: number;
   };
+  project: {
+    /** Absolute path of the last opened project; reopened on startup. */
+    lastRoot: string | null;
+  };
 }
 
 /** Recursive partial, for settings updates. */
@@ -38,4 +42,97 @@ export interface PingResult {
   time: string;
   /** Main-process pid — proves the round trip crossed process boundaries. */
   pid: number;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Protocol data model (software-definition.md §3) — read side, M1
+// ──────────────────────────────────────────────────────────────────
+
+/** The four built-in typed folders. v1 has no custom types. */
+export type DocType = 'status' | 'issue' | 'report' | 'misc';
+
+export const DOC_TYPES: readonly DocType[] = ['status', 'issue', 'report', 'misc'];
+
+/**
+ * One markdown document inside a typed folder. All paths are relative to
+ * the project root with forward slashes (the protocol's portable form;
+ * conversion to OS paths happens at the fs boundary in main).
+ */
+export interface IrisDoc {
+  /** e.g. ".iris/issue/2026-06-10-auth-refactor.md" */
+  path: string;
+  /** File name, e.g. "2026-06-10-auth-refactor.md" */
+  name: string;
+  /** Resolved via the nearest enclosing typed folder. */
+  type: DocType;
+  /** Path of the owning workspace dir, e.g. ".iris" or ".iris/spike-auth". */
+  workspacePath: string;
+  /** frontmatter `title:`, null when absent/unparseable. */
+  title: string | null;
+  /** frontmatter `status:` — a SOFT value; render literally, never validate. */
+  status: string | null;
+  /** Full parsed frontmatter (null when absent or broken). */
+  frontmatter: Record<string, unknown> | null;
+  /** True when frontmatter exists but failed to parse — degrade, don't hide. */
+  frontmatterBroken: boolean;
+  mtimeMs: number;
+}
+
+/**
+ * A workspace: any folder containing at least one typed folder. Inferred,
+ * never declared (no manifest, no registry). `.iris/` is the root workspace.
+ */
+export interface IrisWorkspace {
+  /** Relative dir path, e.g. ".iris" or ".iris/spike-auth". */
+  path: string;
+  /** Display name: folder name; the root workspace shows the project name. */
+  name: string;
+  /** Docs owned by this workspace (nearest-workspace rule), grouped by type at render time. */
+  docs: IrisDoc[];
+  /** Nested workspaces (recursive). */
+  children: IrisWorkspace[];
+  /**
+   * True when this workspace sits inside an ancestor's report/ folder —
+   * the archive gesture: a finished workspace moved into report/ freezes
+   * whole (renders grayed).
+   */
+  archived: boolean;
+}
+
+export interface IrisScanResult {
+  /** Absolute project root (OS form, display only). */
+  projectRoot: string;
+  /** Project folder name (root workspace display name). */
+  projectName: string;
+  /** False when no .iris/ directory exists. */
+  hasIris: boolean;
+  root: IrisWorkspace | null;
+  scannedAt: number;
+}
+
+/** Raw file-tree escape hatch (left pane toggle). */
+export interface RawTreeNode {
+  name: string;
+  /** Relative path from project root, forward slashes. */
+  path: string;
+  kind: 'dir' | 'file';
+  children?: RawTreeNode[];
+}
+
+/** doc:read response — frontmatter split from body for rendering. */
+export interface DocContent {
+  path: string;
+  /** Raw file text (source-mode / fallback rendering). */
+  raw: string;
+  /** Body with frontmatter stripped. */
+  body: string;
+  frontmatter: Record<string, unknown> | null;
+  frontmatterBroken: boolean;
+}
+
+/** Batched fs change notification pushed by main (already debounced). */
+export interface FsIrisChangedEvent {
+  projectRoot: string;
+  /** Coarse change kinds; M1 projections just rescan. */
+  changes: Array<{ kind: 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir'; path: string }>;
 }

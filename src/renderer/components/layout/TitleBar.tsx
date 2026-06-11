@@ -7,6 +7,7 @@ import { Moon, Sun, MoonStar, Palette, Activity } from 'lucide-react';
 import type { DeepPartial, PingResult, Settings, ThemeId } from '@shared/types';
 import { pipeline } from '@renderer/cpu';
 import { useSettings } from '@renderer/stores/settings-store';
+import { useProject } from '@renderer/stores/project-store';
 import { Button } from '@renderer/components/ui/button';
 import {
   DropdownMenu,
@@ -26,6 +27,16 @@ const THEME_LABELS: Record<ThemeId, { label: string; icon: typeof Moon }> = {
   'rose-pine-dawn': { label: 'Rosé Pine Dawn', icon: Sun },
   'rose-pine-moon': { label: 'Rosé Pine Moon', icon: MoonStar },
 };
+
+function ProjectCrumb(): JSX.Element | null {
+  const { phase, scan } = useProject();
+  if (phase !== 'ready' || !scan) return null;
+  return (
+    <span className="truncate text-xs text-muted-foreground" title={scan.projectRoot}>
+      — {scan.projectRoot}
+    </span>
+  );
+}
 
 export function TitleBar(): JSX.Element {
   const settings = useSettings();
@@ -56,7 +67,7 @@ export function TitleBar(): JSX.Element {
   return (
     <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-card px-3">
       <span className="text-sm font-semibold tracking-wide text-primary">Iris</span>
-      <span className="text-xs text-muted-foreground">M0 — 工程骨架</span>
+      <ProjectCrumb />
 
       <div className="ml-auto flex items-center gap-1.5">
         {pingState && (
