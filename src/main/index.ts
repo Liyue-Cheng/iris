@@ -55,6 +55,8 @@ function createWindow(): BrowserWindow {
 
   if (isDev && process.env.ELECTRON_RENDERER_URL) {
     void win.loadURL(process.env.ELECTRON_RENDERER_URL);
+    // Instruction logs (front-cpu debug console) print here.
+    win.webContents.openDevTools();
   } else {
     // loadURL instead of loadFile: loadFile + query options misbehave inside
     // packed asar (Marina lesson); plain file URL is the stable path.

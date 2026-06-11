@@ -7,6 +7,14 @@ import { wireInterrupts } from './cpu/interrupts';
 import { openProject } from './lib/project-actions';
 
 async function bootstrap(): Promise<void> {
+  // Dev-only: the front-cpu instruction console (separate debug entry, zero
+  // production cost). Importing it initializes the logging provider; every
+  // dispatch then prints payload/response/stage-timing to DevTools.
+  if (import.meta.env.DEV) {
+    const { cpuConsole } = await import('front-cpu/debug');
+    cpuConsole.setLocale('zh-CN');
+  }
+
   // Settings (theme included) load before first paint — no flash of the
   // wrong theme; index.html's static data-theme covers the load gap.
   await initSettingsStore();
