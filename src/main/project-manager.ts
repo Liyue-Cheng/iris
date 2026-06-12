@@ -193,7 +193,9 @@ export class ProjectManager extends EventEmitter {
 
     const fmLines = [`title: ${yamlScalar(title)}`];
     if (type === 'issue') fmLines.push('status: todo');
-    const content = `---\n${fmLines.join('\n')}\n---\n\n# ${title}\n`;
+    // No body H1: the typed header owns the title (frontmatter 不进正文编辑器);
+    // a scaffolded heading would render the title twice.
+    const content = `---\n${fmLines.join('\n')}\n---\n`;
 
     const relPath = `${workspacePath}/${type}/${fileName}`;
     const abs = this.resolveInside(root, relPath);

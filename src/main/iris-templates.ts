@@ -40,8 +40,10 @@ any depth: any folder containing typed folders is a **workspace**.
    enclosing \`$FOCUS_DOC\`**. Do not create new workspaces unless asked.
 3. **Stamping.** After changing anything a status doc tracks, regenerate
    that doc and restamp \`reflects:\` with current \`git HEAD\`.
-4. **Session journal.** After completing a task, append a short report
-   (\`report/YYYY-MM-DD-<slug>.md\`): what you did and why.
+4. **No unsolicited files.** Never create a new file — reports
+   included — unless the user explicitly asks for one. Editing the doc
+   \`$FOCUS_DOC\` points to is always allowed, and so are frontmatter
+   updates (e.g. \`status:\` transitions) on existing docs.
 5. **Naming.** New files in \`issue/\` and \`report/\` use a
    \`YYYY-MM-DD-<slug>.md\` prefix.
 6. **Soft state machine** for the \`status:\` field (deviate only when
@@ -79,6 +81,8 @@ Before doing work in this project:
    root). Read it before acting.
 
 Do not modify \`.iris/CONVENTIONS.md\` — it is the human-authored contract.
+Do not create new files under \`.iris/\` unless the user explicitly asks;
+editing the focused document is fine.
 `;
 
 /** Appendix C — ~/.iris/CONVENTIONS.md (machine layer), with TODO blanks. */
