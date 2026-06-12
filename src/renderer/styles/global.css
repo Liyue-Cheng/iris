@@ -297,6 +297,63 @@
   padding: 1rem 1.5rem 4rem;
 }
 
+/* ──────────────────────────────────────────────────────────────────
+ * Scrollbars.
+ *
+ * Anti-jitter: the editor's centered 48rem column shifts horizontally
+ * whenever the native scrollbar appears/disappears (its ~15px eats into
+ * the content box). `stable both-edges` reserves the gutter permanently
+ * and symmetrically, so the column never moves.
+ *
+ * Theming: one global ::-webkit-scrollbar block mapped to --rp-* tokens;
+ * all three Rose Pine variants follow via var() indirection. The standard
+ * `scrollbar-width` / `scrollbar-color` properties are deliberately NOT
+ * used — setting them disables the entire ::-webkit-scrollbar group in
+ * Chromium.
+ *
+ * The terminal is the one exception: xterm 6.x replaced the native
+ * .xterm-viewport scrollbar with a vscode-style DOM scrollbar
+ * (.xterm-scrollable-element), which webkit pseudo-elements cannot reach.
+ * Its colors come from theme.scrollbarSlider* in xterm-themes.ts (keep
+ * aligned with the tokens here by hand); the shape rules below only add
+ * what xterm's injected style does not set (radius + inset). It is an
+ * overlay scrollbar with vscode auto-fade — that part is by design.
+ * ────────────────────────────────────────────────────────────────── */
+.crepe-host {
+  scrollbar-gutter: stable both-edges;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: var(--rp-highlight-med);
+  border-radius: 5px;
+  /* transparent border + content-box clip: slim 6px visual bar,
+     full 10px hit target */
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--rp-highlight-high);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* xterm 6 DOM scrollbar — same 6px-bar-in-10px-gutter look as the webkit
+   thumb above. xterm injects `background: <theme color>` at runtime; that
+   shorthand resets background-clip, hence the !important. */
+.xterm .xterm-scrollable-element > .xterm-scrollbar > .xterm-slider {
+  border: 2px solid transparent;
+  border-radius: 5px;
+  background-clip: content-box !important;
+}
+
 @layer base {
   * {
     @apply border-border;
@@ -313,4 +370,13 @@
     /* runtime override hook: settings.appearance.uiFontFamily */
     font-family: var(--ui-font-family, 'LXGW WenKai', system-ui, sans-serif);
   }
+}
+
+/* Frameless window (frame:false): the title bar is the drag region;
+   interactive children must opt out or they swallow no clicks. */
+.app-region-drag {
+  -webkit-app-region: drag;
+}
+.app-region-no-drag {
+  -webkit-app-region: no-drag;
 }

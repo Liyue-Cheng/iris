@@ -1,11 +1,14 @@
 /**
- * Top bar: app identity + theme switcher + pipeline debug button.
- * M0 placeholder — project name / workspace breadcrumbs arrive with M1.
+ * Top bar: app identity + theme switcher + pipeline debug button. Doubles as
+ * the frameless window's drag region (frame:false) and hosts the Windows
+ * caption buttons; window verbs go through the window:* UI-helper channels.
  */
-import { useState } from 'react';
-import { Moon, Sun, MoonStar, Palette, Activity, Settings2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Moon, Sun, MoonStar, Palette, Activity, Settings2, Minus, Square, Copy, X, Cog } from 'lucide-react';
 import type { DeepPartial, PingResult, Settings, ThemeId } from '@shared/types';
-import { CHANNELS } from '@shared/protocol';
+import { CHANNELS, EVENTS } from '@shared/protocol';
+import { cn } from '@renderer/lib/utils';
+import { openSettingsView } from '@renderer/components/settings/SettingsView';
 import { pipeline } from '@renderer/cpu';
 import { useSettings } from '@renderer/stores/settings-store';
 import { useProject } from '@renderer/stores/project-store';
@@ -99,6 +102,56 @@ function MachineLayerMenu(): JSX.Element {
   );
 }
 
+/** Windows-layout caption buttons (minimize / maximize-restore / close). */
+function WindowControls(): JSX.Element {
+  const [maximized, setMaximized] = useState(false);
+
+  useEffect(() => {
+    void window.api
+      .invoke<undefined, boolean>(CHANNELS.WINDOW_IS_MAXIMIZED)
+      .then(setMaximized);
+    return window.api.on<{ maximized: boolean }>(EVENTS.WINDOW_MAXIMIZED_CHANGED, (e) =>
+      setMaximized(e.maximized),
+    );
+  }, []);
+
+  const caption =
+    'flex h-10 w-11 items-center justify-center text-muted-foreground hover:text-foreground';
+
+  return (
+    <div className="app-region-no-drag ml-1 flex shrink-0 self-start">
+      <button
+        type="button"
+        title="最小化"
+        className={cn(caption, 'hover:bg-muted')}
+        onClick={() => void window.api.invoke(CHANNELS.WINDOW_MINIMIZE)}
+      >
+        <Minus className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        title={maximized ? '还原' : '最大化'}
+        className={cn(caption, 'hover:bg-muted')}
+        onClick={() => void window.api.invoke(CHANNELS.WINDOW_MAXIMIZE_TOGGLE)}
+      >
+        {maximized ? (
+          <Copy className="h-3 w-3 -scale-x-100" />
+        ) : (
+          <Square className="h-3 w-3" />
+        )}
+      </button>
+      <button
+        type="button"
+        title="关闭"
+        className={cn(caption, 'hover:bg-[var(--rp-love)] hover:text-[var(--rp-base)]')}
+        onClick={() => void window.api.invoke(CHANNELS.WINDOW_CLOSE)}
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
 export function TitleBar(): JSX.Element {
   const settings = useSettings();
   const [pingState, setPingState] = useState<string | null>(null);
@@ -126,11 +179,11 @@ export function TitleBar(): JSX.Element {
   }
 
   return (
-    <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-card px-3">
+    <div className="app-region-drag flex h-10 shrink-0 items-center gap-2 border-b bg-card pl-3">
       <span className="text-sm font-semibold tracking-wide text-primary">Iris</span>
       <ProjectCrumb />
 
-      <div className="ml-auto flex items-center gap-1.5">
+      <div className="app-region-no-drag ml-auto flex items-center gap-1.5">
         {pingState && (
           <span className="text-xs text-muted-foreground" data-testid="ping-result">
             {pingState}
@@ -172,7 +225,18 @@ export function TitleBar(): JSX.Element {
         </DropdownMenu>
 
         <MachineLayerMenu />
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button variant="ghost" size="icon" onClick={openSettingsView}>
+              <Cog />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>设置</TooltipContent>
+        </Tooltip>
       </div>
+
+      <WindowControls />
     </div>
   );
 }

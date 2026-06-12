@@ -14,6 +14,7 @@
 import { useEffect, useRef } from 'react';
 import { Crepe } from '@milkdown/crepe';
 import { editorStore } from '@renderer/stores/editor-store';
+import { useSettings } from '@renderer/stores/settings-store';
 
 import '@milkdown/crepe/theme/common/style.css';
 import '@milkdown/crepe/theme/frame.css';
@@ -28,6 +29,7 @@ export function CrepeEditor({
   body: string;
 }): JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const blockEdit = useSettings()?.behavior.editorBlockEdit ?? false;
 
   useEffect(() => {
     const el = rootRef.current;
@@ -40,6 +42,7 @@ export function CrepeEditor({
       features: {
         [Crepe.Feature.AI]: false,
         [Crepe.Feature.Latex]: false,
+        [Crepe.Feature.BlockEdit]: blockEdit,
       },
     });
 
@@ -58,10 +61,13 @@ export function CrepeEditor({
       destroyed = true;
       void crepe.destroy();
     };
-    // Remount only on a different doc or an explicit generation bump —
-    // NOT on every keystroke's body prop drift.
+    // Remount only on a different doc, an explicit generation bump, or a
+    // BlockEdit toggle (Crepe features are fixed at create time) — NOT on
+    // every keystroke's body prop drift. The toggle lives in SettingsView,
+    // which replaces the three-pane body, so the editor is never mounted
+    // when the flag actually flips.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, generation]);
+  }, [path, generation, blockEdit]);
 
   return <div ref={rootRef} className="crepe-host h-full overflow-y-auto" />;
 }

@@ -22,6 +22,23 @@ export const CHANNELS = {
   MACHINE_CONVENTIONS_STATE: 'machine:conventions-state',
   /** UI helper: reveal a path in the system file manager. */
   SHELL_REVEAL: 'shell:reveal',
+  /**
+   * Clipboard bridge — main-side Electron clipboard module. Marina's lesson:
+   * navigator.clipboard needs web Permission API grants in the Electron
+   * file:// context and fails silently; the IPC bridge has no permission
+   * layer. UI helpers, same CQRS deviation class as WINDOW_*.
+   */
+  CLIPBOARD_READ_TEXT: 'clipboard:read-text',
+  CLIPBOARD_WRITE_TEXT: 'clipboard:write-text',
+  /**
+   * Window chrome for the frameless custom title bar. UI helpers, not verbs:
+   * minimize/maximize/close are window furniture, same CQRS deviation class
+   * as SESSION_INPUT.
+   */
+  WINDOW_MINIMIZE: 'window:minimize',
+  WINDOW_MAXIMIZE_TOGGLE: 'window:maximize-toggle',
+  WINDOW_CLOSE: 'window:close',
+  WINDOW_IS_MAXIMIZED: 'window:is-maximized',
   /** Queries (projection reads — not instructions). */
   PROJECT_SCAN: 'project:scan',
   PROJECT_RAW_TREE: 'project:raw-tree',
@@ -50,6 +67,8 @@ export const CHANNELS = {
 
 export const EVENTS = {
   SETTINGS_CHANGED: 'evt:settings:changed',
+  /** Maximize/restore state for the custom title bar's caption button. */
+  WINDOW_MAXIMIZED_CHANGED: 'evt:window:maximized-changed',
   /** Batched .iris/ tree changes (chokidar, debounced in main). */
   FS_IRIS_CHANGED: 'evt:fs:iris-changed',
   SESSION_OUTPUT: 'evt:session:output',

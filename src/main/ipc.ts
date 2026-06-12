@@ -8,7 +8,8 @@
  * `ipc` executor (instructions declare `config: { channel }`); the query
  * channels are projection reads called directly by stores/ISRs.
  */
-import { dialog, ipcMain, shell, type BrowserWindow } from 'electron';
+import { BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
+import { isAbsolute, join } from 'node:path';
 import { CHANNELS, EVENTS } from '@shared/protocol';
 import type {
   DeepPartial,
@@ -82,8 +83,63 @@ export function registerIpcHandlers(
   ipcMain.handle(CHANNELS.MACHINE_INSTALL_CONVENTIONS, () => installMachineConventions());
 
   ipcMain.handle(CHANNELS.SHELL_REVEAL, (_event, payload: { path: string }): void => {
-    shell.showItemInFolder(payload.path);
+    // Relative paths are project-root-relative (doc rows pass them as-is);
+    // absolute paths (machine layer) pass through untouched.
+    let target = payload.path;
+    if (!isAbsolute(target)) {
+      const root = projectManager.getRoot();
+      if (!root) return;
+      target = join(root, target);
+    }
+    shell.showItemInFolder(target);
   });
+
+  // ── clipboard (Electron module — bypasses web Permission API) ──────
+
+  ipcMain.handle(CHANNELS.CLIPBOARD_READ_TEXT, (): { text: string } => {
+    try {
+      return { text: clipboard.readText() };
+    } catch {
+      return { text: '' };
+    }
+  });
+
+  ipcMain.handle(
+    CHANNELS.CLIPBOARD_WRITE_TEXT,
+    (_event, payload: { text: string }): { ok: boolean } => {
+      try {
+        clipboard.writeText(payload.text);
+        return { ok: true };
+      } catch {
+        return { ok: false };
+      }
+    },
+  );
+
+  // ── window chrome (frameless title bar) ────────────────────────────
+
+  const senderWindow = (event: Electron.IpcMainInvokeEvent): BrowserWindow | null =>
+    BrowserWindow.fromWebContents(event.sender);
+
+  ipcMain.handle(CHANNELS.WINDOW_MINIMIZE, (event): void => {
+    senderWindow(event)?.minimize();
+  });
+
+  ipcMain.handle(CHANNELS.WINDOW_MAXIMIZE_TOGGLE, (event): void => {
+    const win = senderWindow(event);
+    if (!win) return;
+    if (win.isMaximized()) win.unmaximize();
+    else win.maximize();
+  });
+
+  ipcMain.handle(CHANNELS.WINDOW_CLOSE, (event): void => {
+    senderWindow(event)?.close();
+  });
+
+  ipcMain.handle(
+    CHANNELS.WINDOW_IS_MAXIMIZED,
+    (event): boolean => senderWindow(event)?.isMaximized() ?? false,
+  );
 
   ipcMain.handle(
     CHANNELS.PROJECT_RAW_TREE,
@@ -185,7 +241,11 @@ export function wireBroadcasts(
   const onState = (e: SessionStateChangedPayload): void => send(EVENTS.SESSION_STATE_CHANGED, e);
   const onExited = (e: SessionExitedPayload): void => send(EVENTS.SESSION_EXITED, e);
   const onDestroyed = (e: { sessionId: string }): void => send(EVENTS.SESSION_DESTROYED, e);
+  const onMaximize = (): void => send(EVENTS.WINDOW_MAXIMIZED_CHANGED, { maximized: true });
+  const onUnmaximize = (): void => send(EVENTS.WINDOW_MAXIMIZED_CHANGED, { maximized: false });
 
+  window.on('maximize', onMaximize);
+  window.on('unmaximize', onUnmaximize);
   settingsManager.on('settingsChanged', onSettings);
   projectManager.on('irisChanged', onIrisChanged);
   sessionManager.on('sessionOutput', onOutput);
@@ -193,6 +253,8 @@ export function wireBroadcasts(
   sessionManager.on('sessionExited', onExited);
   sessionManager.on('sessionDestroyed', onDestroyed);
   return () => {
+    window.off('maximize', onMaximize);
+    window.off('unmaximize', onUnmaximize);
     settingsManager.off('settingsChanged', onSettings);
     projectManager.off('irisChanged', onIrisChanged);
     sessionManager.off('sessionOutput', onOutput);

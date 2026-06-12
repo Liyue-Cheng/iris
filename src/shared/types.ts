@@ -17,6 +17,24 @@ export interface Settings {
     /** Terminal font stack (consumed from M3 on, declared now for stability). */
     terminalFontFamily: string;
     terminalFontSize: number;
+    /** xterm line-height multiplier (Marina default 1.2). */
+    terminalLineHeight: number;
+    /** Whole-window zoom. Applied by main via webContents.setZoomFactor —
+     *  native Chromium zoom, so popup positioning math stays intact (CSS
+     *  zoom is the known popover-misplacement trap). */
+    uiZoom: number;
+  };
+  behavior: {
+    /** Terminal selection lands on the clipboard automatically (Marina CPB-C2). */
+    selectOnCopy: boolean;
+    /** Terminal right click: context menu, or paste straight away. */
+    terminalRightClick: 'menu' | 'paste';
+    /** Confirm before closing the window while live sessions exist. */
+    confirmOnQuit: boolean;
+    /** Enable Crepe's BlockEdit feature: the hover block handle (＋ / drag)
+     *  plus the bundled slash menu. Off by default — the handle repositions
+     *  on every hovered block and reads as flicker. */
+    editorBlockEdit: boolean;
   };
   project: {
     /** Absolute path of the last opened project; reopened on startup. */
@@ -31,6 +49,10 @@ export interface Settings {
   advanced: {
     /** active → idle silence threshold (Marina-tuned default 2s, min 0.1). */
     activeIdleThresholdSeconds: number;
+    /** xterm renderer: 'auto' tries WebGL with DOM fallback; explicit
+     *  overrides are the WebGL-compat escape hatch (Marina PER-LINUX).
+     *  Applies to newly mounted terminals (sessions remount on switch). */
+    terminalRenderer: 'auto' | 'webgl' | 'dom';
   };
 }
 

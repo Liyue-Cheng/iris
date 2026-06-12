@@ -16,15 +16,32 @@ import { EventEmitter } from 'node:events';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { DeepPartial, Settings, ThemeId } from '@shared/types';
+import { getBuildType } from './build-type';
 import { JsonStore } from './persistence';
 
-/** Directory of Iris's machine-level namespace. */
+/**
+ * Directory of Iris's machine-level namespace — the protocol citizens
+ * (~/.iris/CONVENTIONS.md). Always the real ~/.iris regardless of build
+ * type: machine facts don't fork between dev and packaged.
+ */
 export function irisHomeDir(): string {
   return join(homedir(), '.iris');
 }
 
+/**
+ * Directory App-owned persistence lives in. Dev builds fork to ~/.iris-dev
+ * so `npm run dev` and a packaged exe on the same machine never trample each
+ * other's settings.json (Marina DEV-COEXIST lesson — there it was solved via
+ * per-productName userData; Iris's path is homedir-derived, so the fork is
+ * explicit here). Portable and installed share ~/.iris: same machine, same
+ * machine-level settings.
+ */
+export function appDataDir(): string {
+  return getBuildType() === 'dev' ? join(homedir(), '.iris-dev') : irisHomeDir();
+}
+
 export function settingsFilePath(): string {
-  return join(irisHomeDir(), 'settings.json');
+  return join(appDataDir(), 'settings.json');
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -35,6 +52,14 @@ export const DEFAULT_SETTINGS: Settings = {
     terminalFontFamily:
       "'Cascadia Mono', 'JetBrains Mono', 'Consolas', 'LXGW WenKai Mono', monospace",
     terminalFontSize: 13,
+    terminalLineHeight: 1.2,
+    uiZoom: 1.0,
+  },
+  behavior: {
+    selectOnCopy: true,
+    terminalRightClick: 'menu',
+    confirmOnQuit: true,
+    editorBlockEdit: false,
   },
   project: {
     lastRoot: null,
@@ -45,6 +70,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ],
   advanced: {
     activeIdleThresholdSeconds: 2,
+    terminalRenderer: 'auto',
   },
 };
 
@@ -195,6 +221,40 @@ export function validateSettings(s: Settings): void {
       `appearance.terminalFontSize=${size} out of range [8, 24]`,
     );
   }
+  const lineHeight = s.appearance.terminalLineHeight;
+  if (
+    typeof lineHeight !== 'number' ||
+    !Number.isFinite(lineHeight) ||
+    lineHeight < 1.0 ||
+    lineHeight > 2.0
+  ) {
+    throw new SettingsError(
+      'InvalidSettings',
+      `appearance.terminalLineHeight=${lineHeight} out of range [1.0, 2.0]`,
+    );
+  }
+  const zoom = s.appearance.uiZoom;
+  if (typeof zoom !== 'number' || !Number.isFinite(zoom) || zoom < 0.75 || zoom > 1.5) {
+    throw new SettingsError(
+      'InvalidSettings',
+      `appearance.uiZoom=${zoom} out of range [0.75, 1.5]`,
+    );
+  }
+  if (typeof s.behavior.selectOnCopy !== 'boolean') {
+    throw new SettingsError('InvalidSettings', 'behavior.selectOnCopy must be a boolean');
+  }
+  if (!['menu', 'paste'].includes(s.behavior.terminalRightClick)) {
+    throw new SettingsError(
+      'InvalidSettings',
+      `behavior.terminalRightClick="${s.behavior.terminalRightClick}" must be menu or paste`,
+    );
+  }
+  if (typeof s.behavior.confirmOnQuit !== 'boolean') {
+    throw new SettingsError('InvalidSettings', 'behavior.confirmOnQuit must be a boolean');
+  }
+  if (typeof s.behavior.editorBlockEdit !== 'boolean') {
+    throw new SettingsError('InvalidSettings', 'behavior.editorBlockEdit must be a boolean');
+  }
   if (typeof s.appearance.uiFontFamily !== 'string' || !s.appearance.uiFontFamily.trim()) {
     throw new SettingsError('InvalidSettings', 'appearance.uiFontFamily must be a non-empty string');
   }
@@ -226,6 +286,12 @@ export function validateSettings(s: Settings): void {
     throw new SettingsError(
       'InvalidSettings',
       `advanced.activeIdleThresholdSeconds=${threshold} out of range [0.1, 60]`,
+    );
+  }
+  if (!['auto', 'webgl', 'dom'].includes(s.advanced.terminalRenderer)) {
+    throw new SettingsError(
+      'InvalidSettings',
+      `advanced.terminalRenderer="${s.advanced.terminalRenderer}" must be auto / webgl / dom`,
     );
   }
 }
