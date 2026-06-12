@@ -2,7 +2,8 @@
  * Flatten the workspace tree into collection-view rows. Pure projection
  * helpers — deterministic, no fs access.
  */
-import type { DocType, IrisDoc, IrisWorkspace } from '@shared/types';
+import type { DocTodo, DocType, IrisDoc, IrisWorkspace } from '@shared/types';
+import { isActiveIssue } from './doc-utils';
 
 export interface CollectedDoc {
   doc: IrisDoc;
@@ -35,6 +36,35 @@ export function collectDocs(
     }
   };
   walk(root, false);
+  return out;
+}
+
+export interface CollectedTodo {
+  doc: IrisDoc;
+  todo: DocTodo;
+  workspaceName: string;
+  workspacePath: string;
+}
+
+/**
+ * All UNCHECKED tasks across ACTIVE, non-archived issues — the todo panel's
+ * read side. Scope mirrors the left lens: resolved/archived issues are
+ * settled history, their leftover boxes aren't actionable work.
+ */
+export function collectTodos(root: IrisWorkspace, workspacePath: string | null): CollectedTodo[] {
+  const out: CollectedTodo[] = [];
+  for (const item of collectDocs(root, 'issue', workspacePath)) {
+    if (item.archived || !isActiveIssue(item.doc)) continue;
+    for (const todo of item.doc.todos) {
+      if (todo.checked) continue;
+      out.push({
+        doc: item.doc,
+        todo,
+        workspaceName: item.workspaceName,
+        workspacePath: item.workspacePath,
+      });
+    }
+  }
   return out;
 }
 

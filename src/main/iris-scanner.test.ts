@@ -101,6 +101,26 @@ describe('scanProject on the sample fixture', () => {
     expect(allDocs).not.toContain('.iris/spike-auth/index.md');
   });
 
+  it('projects labels and body todos onto docs', async () => {
+    const { root } = await scanProject(FIXTURE);
+    const auth = root!.docs.find((d) => d.path === '.iris/issue/2026-06-10-auth-refactor.md')!;
+    expect(auth.labels).toEqual(['auth', 'refactor']);
+    expect(auth.todos.map((t) => [t.text, t.checked])).toEqual([
+      ['现状梳理', true],
+      ['策略表接口设计', false],
+      ['迁移现有三种格式', false],
+    ]);
+
+    const edge = root!.docs.find((d) => d.path === '.iris/issue/2026-06-12-todo-edge-cases.md')!;
+    expect(edge.labels).toEqual(['单标签']); // lone scalar → singleton, no comma heuristics
+    expect(edge.todos.map((t) => t.text)).toEqual([
+      '普通未勾选项',
+      '已勾选项',
+      '有序列表任务',
+      '嵌套任务',
+    ]);
+  });
+
   it('reports hasIris=false gracefully for a project without .iris/', async () => {
     const result = await scanProject(resolve(__dirname, '../../src'));
     expect(result.hasIris).toBe(false);

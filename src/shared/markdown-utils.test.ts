@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  extractTodos,
   getFrontmatterKey,
+  parseYamlFlowSeq,
   setFrontmatterKey,
+  setFrontmatterRawKey,
   slugify,
   splitFrontmatter,
+  yamlFlowSeq,
   yamlScalar,
 } from './markdown-utils';
 
@@ -69,6 +73,62 @@ describe('getFrontmatterKey', () => {
     expect(getFrontmatterKey('---\nstatus: todo\n---\n', 'status')).toBe('todo');
     expect(getFrontmatterKey('---\ntitle: "a: b"\n---\n', 'title')).toBe('a: b');
     expect(getFrontmatterKey('---\ntitle: x\n---\n', 'status')).toBeNull();
+  });
+});
+
+describe('setFrontmatterRawKey + yamlFlowSeq', () => {
+  it('writes an unquoted flow sequence as a single key line', () => {
+    const fm = '---\ntitle: x\n---\n';
+    expect(setFrontmatterRawKey(fm, 'labels', yamlFlowSeq(['bug', 'ui'])))
+      .toBe('---\ntitle: x\nlabels: [bug, ui]\n---\n');
+  });
+
+  it('quotes individual items that need it', () => {
+    expect(yamlFlowSeq(['a: b', '中文'])).toBe('["a: b", 中文]');
+  });
+});
+
+describe('parseYamlFlowSeq', () => {
+  it('round-trips what yamlFlowSeq writes', () => {
+    const cases = [['bug', 'ui'], ['a: b', '中文'], [], ["it's", 'x,y']];
+    for (const items of cases) {
+      expect(parseYamlFlowSeq(yamlFlowSeq(items))).toEqual(items);
+    }
+  });
+
+  it('treats a lone scalar as a singleton (mirror of the scanner)', () => {
+    expect(parseYamlFlowSeq('bug')).toEqual(['bug']);
+    expect(parseYamlFlowSeq('')).toEqual([]);
+  });
+});
+
+describe('extractTodos', () => {
+  it('extracts bullet and ordered tasks with full-file line numbers', () => {
+    const raw = '---\ntitle: x\n---\n\n- [ ] one\n- [x] two\n1. [ ] three\n';
+    const todos = extractTodos(raw);
+    expect(todos).toEqual([
+      { line: 4, checked: false, text: 'one', raw: '- [ ] one' },
+      { line: 5, checked: true, text: 'two', raw: '- [x] two' },
+      { line: 6, checked: false, text: 'three', raw: '1. [ ] three' },
+    ]);
+    // the line numbers index into the raw text's own line split
+    expect(raw.split(/\r?\n/)[todos[0]!.line]).toBe(todos[0]!.raw);
+  });
+
+  it('skips tasks inside fenced code (matching fence char and length)', () => {
+    const raw = '- [ ] real\n```md\n- [ ] fake\n~~~\n- [ ] still fake\n```\n- [ ] real again\n';
+    expect(extractTodos(raw).map((t) => t.text)).toEqual(['real', 'real again']);
+  });
+
+  it('ignores empty tasks and plain list items, keeps nested ones', () => {
+    const raw = '- [ ]\n- plain\n  - [ ] nested\n';
+    const todos = extractTodos(raw);
+    expect(todos).toEqual([{ line: 2, checked: false, text: 'nested', raw: '  - [ ] nested' }]);
+  });
+
+  it('handles CRLF and docs without frontmatter', () => {
+    const todos = extractTodos('# t\r\n- [X] caps\r\n');
+    expect(todos).toEqual([{ line: 1, checked: true, text: 'caps', raw: '- [X] caps' }]);
   });
 });
 

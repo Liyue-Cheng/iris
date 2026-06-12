@@ -3,15 +3,38 @@
  * never sees it). Title and status edit surgically (one key line each,
  * everything else byte-preserved) and persist immediately.
  *
- * `status:` is a SOFT value: the input offers the soft state machine as
- * datalist suggestions but accepts anything (键是硬的，值是软的).
+ * `status:` is a SOFT value: free-form input plus a menu that always
+ * shows the full soft state machine (键是硬的，值是软的). A native
+ * datalist is NOT usable here — it filters suggestions by the current
+ * value, so a field already holding `done` offers nothing else.
  */
 import { useEffect, useState } from 'react';
-import { Check, Code2, Eye, FileWarning, Loader2, TriangleAlert } from 'lucide-react';
+import {
+  Check,
+  ChevronDown,
+  Code2,
+  Eye,
+  FileWarning,
+  Loader2,
+  Plus,
+  Tag,
+  TriangleAlert,
+} from 'lucide-react';
 import type { DocType } from '@shared/types';
+import { parseYamlFlowSeq, yamlFlowSeq } from '@shared/markdown-utils';
 import { cn } from '@renderer/lib/utils';
 import { editorStore, type EditorSession } from '@renderer/stores/editor-store';
+import { useProject } from '@renderer/stores/project-store';
+import { SOFT_PRIORITIES } from '@renderer/lib/doc-utils';
+import { collectAllLabels } from '@renderer/lib/label-utils';
+import { LabelChip } from '@renderer/components/ui/label-chip';
 import { Button } from '@renderer/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@renderer/components/ui/dropdown-menu';
 import {
   Tooltip,
   TooltipContent,
@@ -42,14 +65,12 @@ function FieldInput({
   disabled,
   onCommit,
   className,
-  list,
 }: {
   value: string;
   placeholder: string;
   disabled: boolean;
   onCommit: (v: string) => void;
   className?: string;
-  list?: string;
 }): JSX.Element {
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
@@ -63,7 +84,6 @@ function FieldInput({
       value={draft}
       placeholder={placeholder}
       disabled={disabled}
-      {...(list !== undefined ? { list } : {})}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {
@@ -78,10 +98,85 @@ function FieldInput({
   );
 }
 
+/**
+ * Label editor — chips plus an add menu whose suggestions are the
+ * project-wide union of labels in use (no registry; see label-utils).
+ * Writes `labels:` as a single-line YAML flow sequence so the frontmatter
+ * line surgery applies.
+ */
+function LabelsEditor({ disabled }: { disabled: boolean }): JSX.Element {
+  const { scan } = useProject();
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const labels = parseYamlFlowSeq(editorStore.getFrontmatterField('labels') ?? '');
+  const candidates = (scan?.root ? collectAllLabels(scan.root) : []).filter(
+    (l) => !labels.includes(l),
+  );
+
+  const write = (next: string[]): void => {
+    void editorStore.setFrontmatterFieldRaw('labels', yamlFlowSeq(next));
+  };
+  const add = (label: string): void => {
+    const v = label.trim();
+    if (v !== '' && !labels.includes(v)) write([...labels, v]);
+    setDraft('');
+    setOpen(false);
+  };
+
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-1 px-1">
+      <Tag className="h-3 w-3 text-muted-foreground/60" />
+      {labels.map((l) => (
+        <LabelChip
+          key={l}
+          label={l}
+          onRemove={disabled ? undefined : () => write(labels.filter((x) => x !== l))}
+        />
+      ))}
+      {labels.length === 0 && (
+        <span className="text-[10px] text-muted-foreground/50">无标签</span>
+      )}
+      {!disabled && (
+        <DropdownMenu open={open} onOpenChange={setOpen}>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              title="添加标签"
+              className="rounded-full border border-dashed border-border/60 p-0.5 text-muted-foreground hover:border-border hover:text-foreground"
+            >
+              <Plus className="h-2.5 w-2.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <input
+              autoFocus
+              value={draft}
+              placeholder="新标签，回车添加"
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                e.stopPropagation(); // keep Radix typeahead out of the input
+                if (e.key === 'Enter') add(draft);
+              }}
+              className="mx-1 my-0.5 w-36 rounded-sm bg-muted/60 px-1.5 py-0.5 text-[12px] outline-none"
+            />
+            {candidates.map((c) => (
+              <DropdownMenuItem key={c} onClick={() => add(c)}>
+                <LabelChip label={c} />
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+    </div>
+  );
+}
+
 export function TypedHeader({ session }: { session: EditorSession }): JSX.Element {
   const type = typeOfPath(session.path);
   const title = editorStore.getFrontmatterField('title') ?? '';
   const status = editorStore.getFrontmatterField('status') ?? '';
+  const priority = editorStore.getFrontmatterField('priority') ?? '';
   // A structurally broken frontmatter block is shown, never auto-edited.
   const fmEditable = !looksBroken(session.fmBlock);
 
@@ -99,19 +194,71 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
           </span>
         )}
 
-        <FieldInput
-          value={status}
-          placeholder="status…"
-          disabled={!fmEditable}
-          onCommit={(v) => void editorStore.setFrontmatterField('status', v)}
-          list="iris-soft-statuses"
-          className="w-32 px-1.5 py-0.5 text-[11px] text-muted-foreground"
-        />
-        <datalist id="iris-soft-statuses">
-          {SOFT_STATUSES.map((s) => (
-            <option key={s} value={s} />
-          ))}
-        </datalist>
+        <span className="flex items-center rounded-sm">
+          <FieldInput
+            value={status}
+            placeholder="status…"
+            disabled={!fmEditable}
+            onCommit={(v) => void editorStore.setFrontmatterField('status', v)}
+            className="w-28 px-1.5 py-0.5 text-[11px] text-muted-foreground"
+          />
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                disabled={!fmEditable}
+                title="软状态机候选"
+                className="rounded-sm p-0.5 text-muted-foreground hover:bg-muted/60 disabled:opacity-40"
+              >
+                <ChevronDown className="h-3 w-3" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              {SOFT_STATUSES.map((s) => (
+                <DropdownMenuItem
+                  key={s}
+                  onClick={() => void editorStore.setFrontmatterField('status', s)}
+                >
+                  <span className="text-[12px]">{s}</span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </span>
+
+        {type === 'issue' && (
+          <span className="flex items-center rounded-sm">
+            <FieldInput
+              value={priority}
+              placeholder="priority…"
+              disabled={!fmEditable}
+              onCommit={(v) => void editorStore.setFrontmatterField('priority', v)}
+              className="w-20 px-1.5 py-0.5 text-[11px] text-muted-foreground"
+            />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  disabled={!fmEditable}
+                  title="优先级候选（软值）"
+                  className="rounded-sm p-0.5 text-muted-foreground hover:bg-muted/60 disabled:opacity-40"
+                >
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                {SOFT_PRIORITIES.map((p) => (
+                  <DropdownMenuItem
+                    key={p}
+                    onClick={() => void editorStore.setFrontmatterField('priority', p)}
+                  >
+                    <span className="text-[12px]">{p}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </span>
+        )}
 
         {!fmEditable && (
           <span className="flex items-center gap-1 rounded bg-destructive/15 px-1.5 py-0.5 text-[11px] text-destructive">
@@ -185,6 +332,8 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
         onCommit={(v) => void editorStore.setFrontmatterField('title', v)}
         className="mt-1 w-full px-1 text-lg font-semibold"
       />
+
+      {type === 'issue' && <LabelsEditor disabled={!fmEditable} />}
     </div>
   );
 }

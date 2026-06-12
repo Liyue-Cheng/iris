@@ -1,6 +1,7 @@
 ---
 title: 鉴权中间件重构
 status: in_progress
+labels: [auth, refactor]
 ---
 
 # 鉴权中间件重构

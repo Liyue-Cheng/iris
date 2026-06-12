@@ -94,6 +94,24 @@ export type DocType = 'status' | 'issue' | 'report' | 'misc';
 export const DOC_TYPES: readonly DocType[] = ['status', 'issue', 'report', 'misc'];
 
 /**
+ * One GFM task-list item, extracted by a literal line parse of a doc body
+ * (fenced code excluded). The read side of the todo panel.
+ */
+export interface DocTodo {
+  /** 0-based line index in the FULL file text (frontmatter lines included). */
+  line: number;
+  checked: boolean;
+  /** Task text with list marker and checkbox stripped (display form). */
+  text: string;
+  /**
+   * The exact line as scanned, without its EOL. Write-side surgery compares
+   * this against the line on disk before toggling — mismatch means the doc
+   * changed since the scan, so refuse and wait for the next scan.
+   */
+  raw: string;
+}
+
+/**
  * One markdown document inside a typed folder. All paths are relative to
  * the project root with forward slashes (the protocol's portable form;
  * conversion to OS paths happens at the fs boundary in main).
@@ -115,6 +133,14 @@ export interface IrisDoc {
   frontmatter: Record<string, unknown> | null;
   /** True when frontmatter exists but failed to parse — degrade, don't hide. */
   frontmatterBroken: boolean;
+  /**
+   * frontmatter `labels:` — SOFT values passed through verbatim. A YAML
+   * sequence yields its items; a lone scalar yields a singleton (literal
+   * parse, no comma-splitting heuristics); absent/other shapes yield [].
+   */
+  labels: string[];
+  /** GFM task-list items in the body (read side of the todo panel). */
+  todos: DocTodo[];
   mtimeMs: number;
 }
 

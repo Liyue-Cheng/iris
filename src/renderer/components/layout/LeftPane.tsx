@@ -4,7 +4,17 @@
  * affordances.
  */
 import { useState } from 'react';
-import { FolderOpen, FolderPlus, ListTree, FolderTree, Loader2, TriangleAlert } from 'lucide-react';
+import {
+  FolderOpen,
+  FolderPlus,
+  ListChecks,
+  ListTree,
+  FolderTree,
+  Loader2,
+  TriangleAlert,
+} from 'lucide-react';
+import { collectTodos } from '@renderer/lib/collect-docs';
+import { cn } from '@renderer/lib/utils';
 import { Button } from '@renderer/components/ui/button';
 import {
   Tooltip,
@@ -28,9 +38,12 @@ function EmptyState({ children }: { children: React.ReactNode }): JSX.Element {
 }
 
 export function LeftPane(): JSX.Element {
-  const { phase, error, scan, rawMode, rawTree } = useProject();
+  const { phase, error, scan, rawMode, rawTree, view } = useProject();
   const [initOpen, setInitOpen] = useState(false);
   const [wsOpen, setWsOpen] = useState(false);
+
+  const todoCount =
+    phase === 'ready' && scan?.root ? collectTodos(scan.root, null).length : 0;
 
   const constitutionMissing = phase === 'ready' && !!scan?.hasIris && !scan.constitution.exists;
   const protocolMismatch =
@@ -60,6 +73,29 @@ export function LeftPane(): JSX.Element {
           </Tooltip>
           {phase === 'ready' && scan?.hasIris && (
             <>
+              {scan.root && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className={cn(
+                        'relative h-6 w-6',
+                        view.kind === 'todos' && 'bg-accent text-accent-foreground',
+                      )}
+                      onClick={() => projectStore.openTodos(null)}
+                    >
+                      <ListChecks className="!size-3.5" />
+                      {todoCount > 0 && (
+                        <span className="absolute -right-px -top-px rounded-sm bg-muted px-0.5 text-[9px] leading-3 text-muted-foreground">
+                          {todoCount}
+                        </span>
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>待办面板（活动 issue 的未勾选任务项）</TooltipContent>
+                </Tooltip>
+              )}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button

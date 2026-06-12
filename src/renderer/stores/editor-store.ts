@@ -30,6 +30,7 @@ import type { DocContent } from '@shared/types';
 import {
   getFrontmatterKey,
   setFrontmatterKey,
+  setFrontmatterRawKey,
   splitFrontmatter,
 } from '@shared/markdown-utils';
 import { pipeline } from '@renderer/cpu';
@@ -86,6 +87,14 @@ function computeDirty(s: EditorSession): boolean {
 }
 
 /** Compose the exact file bytes to write. */
+/** Commit an edited frontmatter block and persist (no-op when unchanged). */
+async function applyFmBlock(fmBlock: string): Promise<void> {
+  if (!session || fmBlock === session.fmBlock) return;
+  const next = { ...session, fmBlock, fmChanged: true };
+  patch({ fmBlock, fmChanged: true, dirty: computeDirty(next) });
+  await editorStore.save();
+}
+
 function compose(s: EditorSession): string {
   if (s.mode === 'source') return s.sourceText;
   const bodyChanged =
@@ -150,11 +159,14 @@ export const editorStore = {
   /** Header field edit — surgical, then persists immediately. */
   async setFrontmatterField(key: string, value: string): Promise<void> {
     if (!session) return;
-    const fmBlock = setFrontmatterKey(session.fmBlock, key, value);
-    if (fmBlock === session.fmBlock) return;
-    const next = { ...session, fmBlock, fmChanged: true };
-    patch({ fmBlock, fmChanged: true, dirty: computeDirty(next) });
-    await this.save();
+    await applyFmBlock(setFrontmatterKey(session.fmBlock, key, value));
+  },
+
+  /** Same, but the value is a preformatted single-line YAML literal
+   *  (labels flow sequence) written without scalar quoting. */
+  async setFrontmatterFieldRaw(key: string, rawValue: string): Promise<void> {
+    if (!session) return;
+    await applyFmBlock(setFrontmatterRawKey(session.fmBlock, key, rawValue));
   },
 
   getFrontmatterField(key: string): string | null {
