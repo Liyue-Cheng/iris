@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { ChevronDown, ChevronRight, FileText, File, Folder } from 'lucide-react';
 import type { RawTreeNode } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
+import { DocContextMenu } from '@renderer/components/doc/DocContextMenu';
 import { projectStore, useProject } from '@renderer/stores/project-store';
 
 function Node({ node, depth }: { node: RawTreeNode; depth: number }): JSX.Element {
@@ -33,7 +34,7 @@ function Node({ node, depth }: { node: RawTreeNode; depth: number }): JSX.Elemen
 
   const isMd = node.name.toLowerCase().endsWith('.md');
   const selected = selectedPath === node.path;
-  return (
+  const row = (
     <button
       type="button"
       disabled={!isMd}
@@ -52,6 +53,12 @@ function Node({ node, depth }: { node: RawTreeNode; depth: number }): JSX.Elemen
       )}
       <span className="truncate">{node.name}</span>
     </button>
+  );
+  if (!isMd) return row;
+  return (
+    <DocContextMenu docPath={node.path} docName={node.name}>
+      {row}
+    </DocContextMenu>
   );
 }
 

@@ -7,8 +7,10 @@ import type { DocType, IrisWorkspace } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
 import { collectDocs, docDate } from '@renderer/lib/collect-docs';
 import { docDisplayTitle } from '@renderer/lib/doc-utils';
+import { setDocDragData } from '@renderer/lib/doc-drag';
 import { projectStore } from '@renderer/stores/project-store';
 import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
+import { DocContextMenu } from '@renderer/components/doc/DocContextMenu';
 import { Button } from '@renderer/components/ui/button';
 
 const TYPE_TITLE: Record<DocType, string> = {
@@ -61,28 +63,31 @@ export function SimpleList({
 
       <div className="min-h-0 flex-1 overflow-y-auto py-1">
         {rows.map((item) => (
-          <button
-            key={item.doc.path}
-            type="button"
-            onClick={() => void projectStore.selectDoc(item.doc.path)}
-            className={cn(
-              'flex w-full items-center gap-2 px-4 py-1.5 text-left text-[13px] hover:bg-muted/60',
-              item.archived && 'opacity-50',
-            )}
-            title={item.doc.path}
-          >
-            <span className="truncate">{docDisplayTitle(item.doc)}</span>
-            {item.doc.frontmatterBroken && (
-              <FileWarning className="h-3.5 w-3.5 shrink-0 text-destructive/80" />
-            )}
-            {item.archived && <Archive className="h-3 w-3 shrink-0 text-muted-foreground/60" />}
-            <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
-              {item.workspaceName}
-            </span>
-            <span className="w-24 shrink-0 text-right text-[11px] text-muted-foreground">
-              {docDate(item.doc)}
-            </span>
-          </button>
+          <DocContextMenu key={item.doc.path} docPath={item.doc.path} docName={item.doc.name}>
+            <button
+              type="button"
+              onClick={() => void projectStore.selectDoc(item.doc.path)}
+              draggable
+              onDragStart={(e) => setDocDragData(e.dataTransfer, item.doc.path)}
+              className={cn(
+                'flex w-full items-center gap-2 px-4 py-1.5 text-left text-[13px] hover:bg-muted/60',
+                item.archived && 'opacity-50',
+              )}
+              title={item.doc.path}
+            >
+              <span className="truncate">{docDisplayTitle(item.doc)}</span>
+              {item.doc.frontmatterBroken && (
+                <FileWarning className="h-3.5 w-3.5 shrink-0 text-destructive/80" />
+              )}
+              {item.archived && <Archive className="h-3 w-3 shrink-0 text-muted-foreground/60" />}
+              <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
+                {item.workspaceName}
+              </span>
+              <span className="w-24 shrink-0 text-right text-[11px] text-muted-foreground">
+                {docDate(item.doc)}
+              </span>
+            </button>
+          </DocContextMenu>
         ))}
         {rows.length === 0 && (
           <div className="px-4 py-8 text-center text-xs text-muted-foreground">空</div>

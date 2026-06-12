@@ -17,19 +17,12 @@ import {
   ScrollText,
 } from 'lucide-react';
 import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuLabel,
-  ContextMenuTrigger,
-} from '@renderer/components/ui/context-menu';
+import { DocContextMenu } from '@renderer/components/doc/DocContextMenu';
 import { aggregateDocState, useSessions } from '@renderer/stores/session-store';
-import { useSettings } from '@renderer/stores/settings-store';
-import { openSession } from '@renderer/lib/session-actions';
 import type { DocType, IrisDoc, IrisWorkspace } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
 import { docDisplayTitle, isActiveIssue } from '@renderer/lib/doc-utils';
+import { setDocDragData } from '@renderer/lib/doc-drag';
 import { projectStore, useProject } from '@renderer/stores/project-store';
 
 const TYPE_ORDER: DocType[] = ['status', 'issue', 'report', 'misc'];
@@ -63,44 +56,34 @@ function StatusDot({ docPath }: { docPath: string }): JSX.Element {
 
 function DocRow({ doc, archived }: { doc: IrisDoc; archived: boolean }): JSX.Element {
   const { selectedPath } = useProject();
-  const settings = useSettings();
   const selected = selectedPath === doc.path;
-  const agents = settings?.agents ?? [];
 
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <button
-          type="button"
-          onClick={() => void projectStore.selectDoc(doc.path)}
-          className={cn(
-            'group flex w-full items-center gap-1.5 rounded-sm px-2 py-1 text-left text-[13px] leading-tight',
-            selected ? 'bg-accent text-accent-foreground' : 'hover:bg-muted',
-            archived && 'opacity-60',
-          )}
-          title={doc.path}
-        >
-          <StatusDot docPath={doc.path} />
-          <span className="truncate">{docDisplayTitle(doc)}</span>
-          {doc.frontmatterBroken && (
-            <FileWarning className="ml-auto h-3.5 w-3.5 shrink-0 text-destructive/80" />
-          )}
-          {doc.type === 'issue' && doc.status && !doc.frontmatterBroken && (
-            <span className="ml-auto shrink-0 rounded-sm bg-muted px-1 py-px text-[10px] text-muted-foreground">
-              {doc.status}
-            </span>
-          )}
-        </button>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuLabel className="max-w-56 truncate">{doc.name}</ContextMenuLabel>
-        {agents.map((a) => (
-          <ContextMenuItem key={a.id} onClick={() => void openSession(doc.path, a.id)}>
-            用 {a.label} 打开
-          </ContextMenuItem>
-        ))}
-      </ContextMenuContent>
-    </ContextMenu>
+    <DocContextMenu docPath={doc.path} docName={doc.name}>
+      <button
+        type="button"
+        onClick={() => void projectStore.selectDoc(doc.path)}
+        draggable
+        onDragStart={(e) => setDocDragData(e.dataTransfer, doc.path)}
+        className={cn(
+          'group flex w-full items-center gap-1.5 rounded-sm px-2 py-1 text-left text-[13px] leading-tight',
+          selected ? 'bg-accent text-accent-foreground' : 'hover:bg-muted',
+          archived && 'opacity-60',
+        )}
+        title={doc.path}
+      >
+        <StatusDot docPath={doc.path} />
+        <span className="truncate">{docDisplayTitle(doc)}</span>
+        {doc.frontmatterBroken && (
+          <FileWarning className="ml-auto h-3.5 w-3.5 shrink-0 text-destructive/80" />
+        )}
+        {doc.type === 'issue' && doc.status && !doc.frontmatterBroken && (
+          <span className="ml-auto shrink-0 rounded-sm bg-muted px-1 py-px text-[10px] text-muted-foreground">
+            {doc.status}
+          </span>
+        )}
+      </button>
+    </DocContextMenu>
   );
 }
 
