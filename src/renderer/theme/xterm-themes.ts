@@ -19,6 +19,15 @@ export interface XtermTheme {
   cursor: string;
   cursorAccent: string;
   selectionBackground: string;
+  /** xterm 6.x custom scrollbar (vscode-style ScrollableElement) — keep in
+   *  sync with the global ::-webkit-scrollbar rules: slider = highlight-med,
+   *  hover = highlight-high, active = muted. */
+  scrollbarSliderBackground: string;
+  scrollbarSliderHoverBackground: string;
+  scrollbarSliderActiveBackground: string;
+  /** 1px outline the overview ruler always paints (enabled as a side effect
+   *  of setting scrollbar.width) — match background to keep it invisible. */
+  overviewRulerBorder: string;
   black: string;
   red: string;
   green: string;
@@ -72,6 +81,10 @@ export const XTERM_THEMES: Record<ThemeId, XtermTheme> = {
     cursor: '#e0def4',
     cursorAccent: '#191724',
     selectionBackground: '#403d52',
+    scrollbarSliderBackground: '#403d52',
+    scrollbarSliderHoverBackground: '#524f67',
+    scrollbarSliderActiveBackground: '#6e6a86',
+    overviewRulerBorder: '#191724',
     black: '#26233a',
     red: '#eb6f92',
     green: '#31748f',
@@ -98,6 +111,10 @@ export const XTERM_THEMES: Record<ThemeId, XtermTheme> = {
     cursor: '#575279',
     cursorAccent: '#faf4ed',
     selectionBackground: '#dfdad9',
+    scrollbarSliderBackground: '#dfdad9',
+    scrollbarSliderHoverBackground: '#cecacd',
+    scrollbarSliderActiveBackground: '#6b6680',
+    overviewRulerBorder: '#faf4ed',
     black: '#f2e9e1',
     red: '#b4637a',
     green: '#286983',
@@ -122,6 +139,10 @@ export const XTERM_THEMES: Record<ThemeId, XtermTheme> = {
     cursor: '#e0def4',
     cursorAccent: '#232136',
     selectionBackground: '#44415a',
+    scrollbarSliderBackground: '#44415a',
+    scrollbarSliderHoverBackground: '#56526e',
+    scrollbarSliderActiveBackground: '#6e6a86',
+    overviewRulerBorder: '#232136',
     black: '#393552',
     red: '#eb6f92',
     green: '#3e8fb0',
