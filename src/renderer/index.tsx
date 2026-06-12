@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './styles/global.css';
 import { App } from './App';
 import { initSettingsStore, getSettings } from './stores/settings-store';
+import { hydrateSessions } from './stores/session-store';
 import { wireInterrupts } from './cpu/interrupts';
 import { openProject } from './lib/project-actions';
 
@@ -19,6 +20,10 @@ async function bootstrap(): Promise<void> {
   // wrong theme; index.html's static data-theme covers the load gap.
   await initSettingsStore();
   wireInterrupts();
+  // Session projection is event-fed; a renderer reload starts it empty
+  // while the PTY pool lives on in main. Hydrate before first paint so
+  // surviving sessions are visible (and closeable) immediately.
+  await hydrateSessions();
 
   const container = document.getElementById('root');
   if (!container) throw new Error('#root not found');

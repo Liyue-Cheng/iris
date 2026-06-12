@@ -10,6 +10,7 @@
  */
 import { useSyncExternalStore } from 'react';
 import type { SessionInfo, SessionState } from '@shared/types';
+import { CHANNELS } from '@shared/protocol';
 
 export interface SessionStoreState {
   /** insertion-ordered */
@@ -49,12 +50,19 @@ export const sessionStore = {
   },
 
   handleDestroyed(sessionId: string): void {
+    const destroyed = state.sessions.find((s) => s.id === sessionId);
     const sessions = state.sessions.filter((s) => s.id !== sessionId);
+    // Fallback prefers a sibling under the same doc anchor — the right
+    // pane's list is filtered by anchor, so jumping to another doc's
+    // session would land on an invisible row.
+    const sibling = destroyed
+      ? [...sessions].reverse().find((s) => s.docPath === destroyed.docPath)
+      : undefined;
     setState({
       sessions,
       activeSessionId:
         state.activeSessionId === sessionId
-          ? (sessions[sessions.length - 1]?.id ?? null)
+          ? (sibling?.id ?? sessions[sessions.length - 1]?.id ?? null)
           : state.activeSessionId,
     });
   },
@@ -65,12 +73,67 @@ export const sessionStore = {
     }
   },
 
-  /** Project switch: main killed nothing (sessions belong to the app run),
-   *  but anchors point into another project — reset the projection. */
+  /**
+   * Doc↔terminal linkage: when a doc is selected on the left, stage its
+   * best session — state priority active > idle > exited, ties go to the
+   * most recently created (sessions[] is insertion-ordered). No session
+   * under this anchor → null, which the right pane renders as the
+   * doc-anchored launcher panel. Manual select() stands until the next
+   * doc selection.
+   */
+  syncToDoc(docPath: string): void {
+    const rank: Record<SessionState, number> = { active: 2, idle: 1, exited: 0 };
+    let best: SessionInfo | null = null;
+    for (const s of state.sessions) {
+      if (s.docPath !== docPath) continue;
+      if (!best || rank[s.state] >= rank[best.state]) best = s;
+    }
+    setState({ activeSessionId: best?.id ?? null });
+  },
+
+  /** Replace the whole projection with a fresh main-process snapshot
+   *  (boot hydration, project open, desync self-heal). */
   reset(sessions: SessionInfo[] = []): void {
     setState({ sessions, activeSessionId: sessions[sessions.length - 1]?.id ?? null });
   },
+
+  has(sessionId: string): boolean {
+    return state.sessions.some((s) => s.id === sessionId);
+  },
 };
+
+/**
+ * Pull the authoritative session list from main and reset the projection.
+ * The projection is otherwise event-fed only, so every renderer reload
+ * (dev full reload, Ctrl+R, crash recovery) starts it empty while the
+ * PTY pool lives on — this is the recovery path (issue 2026-06-12
+ * 会话投影丢失). Terminal content needs no extra care: TerminalView
+ * replays from main's headless mirror on mount.
+ */
+export async function hydrateSessions(): Promise<void> {
+  try {
+    const sessions = await window.api.invoke<undefined, SessionInfo[]>(CHANNELS.SESSION_LIST);
+    sessionStore.reset(sessions);
+  } catch (err) {
+    console.warn('[session-store] hydrate from main failed', err);
+  }
+}
+
+/**
+ * Last real terminal dims measured by TerminalView's fit(). New sessions
+ * spawn with these instead of a placeholder, so ConPTY never sees a
+ * spawn-then-resize (banner repaint / progress-bar reflow junk — Marina
+ * 用户勘误 #2). Module-level, not store state: nothing re-renders on it.
+ */
+let lastTerminalDims: { cols: number; rows: number } = { cols: 120, rows: 30 };
+
+export function setLastTerminalDims(dims: { cols: number; rows: number }): void {
+  lastTerminalDims = dims;
+}
+
+export function getLastTerminalDims(): { cols: number; rows: number } {
+  return lastTerminalDims;
+}
 
 export function useSessions(): SessionStoreState {
   return useSyncExternalStore(

@@ -19,7 +19,7 @@ import type {
 import { pipeline } from './index';
 import { projectStore } from '@renderer/stores/project-store';
 import { editorStore, readDocFromDisk } from '@renderer/stores/editor-store';
-import { sessionStore } from '@renderer/stores/session-store';
+import { hydrateSessions, sessionStore } from '@renderer/stores/session-store';
 
 export function wireInterrupts(): void {
   // Session lifecycle events → interrupts → projection ISR. (Output bytes
@@ -49,9 +49,23 @@ export function wireInterrupts(): void {
     onInterrupt: (event) => {
       if (event.type === 'session.state-changed') {
         const { sessionId, patch } = event.data as SessionStateChangedPayload;
+        // Self-heal: an event for a session this projection has never seen
+        // is deterministic proof of desync (a missed broadcast, a reload
+        // path we haven't met yet) — re-pull the full snapshot instead of
+        // patching into the void. State compare, no heuristics.
+        if (!sessionStore.has(sessionId)) {
+          void hydrateSessions();
+          return;
+        }
         sessionStore.handlePatch(sessionId, patch);
       } else if (event.type === 'session.destroyed') {
         const { sessionId } = event.data as { sessionId: string };
+        // Unknown id on destroy is the same desync evidence; the fresh
+        // list won't contain the destroyed session anyway.
+        if (!sessionStore.has(sessionId)) {
+          void hydrateSessions();
+          return;
+        }
         sessionStore.handleDestroyed(sessionId);
       }
       // session.exited needs no extra handling: the state-changed broadcast

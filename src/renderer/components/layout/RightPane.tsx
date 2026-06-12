@@ -4,6 +4,12 @@
  * project-root session is the unfocused fallback, opened from the +
  * menu here. Detach, not dispatch: sessions stay interactive, the user
  * walks away and comes back.
+ *
+ * The list is FILTERED by the left pane's selection: only the selected
+ * doc's sessions plus project-root sessions show (no doc selected →
+ * root sessions only). Other docs' sessions keep running invisibly.
+ * When the selected doc has no session, the terminal area becomes a
+ * doc-anchored launcher panel — spawn happens only on an explicit click.
  */
 import { Plus, X, FileText, FolderRoot } from 'lucide-react';
 import type { SessionInfo } from '@shared/types';
@@ -88,11 +94,28 @@ export function RightPane(): JSX.Element {
   const agents = settings?.agents ?? [];
   const projectReady = phase === 'ready';
 
+  // Anchor filter: selected doc's sessions + project-root sessions.
+  const visibleSessions = sessions.filter(
+    (s) => s.docPath === null || s.docPath === selectedPath,
+  );
+  // Never show a terminal whose row is filtered out (e.g. right after a
+  // project switch restored an anchor outside the current selection).
+  const shownSessionId =
+    activeSessionId && visibleSessions.some((s) => s.id === activeSessionId)
+      ? activeSessionId
+      : null;
+  const selectedDocName = selectedPath?.split('/').pop()?.replace(/\.md$/i, '') ?? null;
+
   return (
     <div className="flex h-full flex-col bg-card/50">
       <div className="flex h-8 shrink-0 items-center gap-1 border-b px-2">
         <span className="text-xs font-medium text-muted-foreground">会话</span>
-        <span className="text-[10px] text-muted-foreground/60">{sessions.length}</span>
+        <span
+          className="text-[10px] text-muted-foreground/60"
+          title={sessions.length === visibleSessions.length ? undefined : `共 ${sessions.length} 个会话`}
+        >
+          {visibleSessions.length}
+        </span>
         <div className="ml-auto">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -127,22 +150,43 @@ export function RightPane(): JSX.Element {
         </div>
       </div>
 
-      {sessions.length > 0 && (
+      {visibleSessions.length > 0 && (
         <div className="max-h-40 shrink-0 overflow-y-auto border-b">
-          {sessions.map((s) => (
+          {visibleSessions.map((s) => (
             <SessionRow key={s.id} session={s} />
           ))}
         </div>
       )}
 
       <div className="min-h-0 flex-1">
-        {activeSessionId ? (
-          <TerminalView key={activeSessionId} sessionId={activeSessionId} />
+        {shownSessionId ? (
+          <TerminalView key={shownSessionId} sessionId={shownSessionId} />
+        ) : projectReady && selectedPath ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3 p-4 text-center">
+            <p className="max-w-56 truncate text-xs text-muted-foreground">
+              挂在 <span className="font-medium text-foreground">{selectedDocName}</span> 的新会话
+            </p>
+            <div className="flex w-48 flex-col gap-1.5">
+              {agents.map((a) => (
+                <Button
+                  key={a.id}
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void openSession(selectedPath, a.id)}
+                >
+                  用 {a.label} 打开
+                </Button>
+              ))}
+            </div>
+            <p className="max-w-52 text-[11px] text-muted-foreground/70">
+              项目根会话走上方 + 菜单。
+            </p>
+          </div>
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-xs text-muted-foreground">
             <p>没有会话。</p>
             <p className="max-w-52 text-muted-foreground/70">
-              在左栏右键一篇文档「用 X 打开」，或点上方 + 开一个项目根会话。
+              在左栏选中或右键一篇文档「用 X 打开」，或点上方 + 开一个项目根会话。
             </p>
           </div>
         )}

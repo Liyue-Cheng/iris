@@ -8,6 +8,7 @@ import type { InstructionDefinition } from 'front-cpu';
 import { CHANNELS } from '@shared/protocol';
 import type { IrisScanResult } from '@shared/types';
 import { projectStore } from '@renderer/stores/project-store';
+import { hydrateSessions } from '@renderer/stores/session-store';
 
 export const projectISA: Record<string, InstructionDefinition> = {
   'project.open': {
@@ -24,6 +25,10 @@ export const projectISA: Record<string, InstructionDefinition> = {
     config: { channel: CHANNELS.PROJECT_OPEN },
     commit: async (result: IrisScanResult) => {
       projectStore.handleOpened(result);
+      // Re-sync the session projection from main (the reset path the old
+      // sessionStore.reset comment promised but never wired). Single-project
+      // for now, so a full snapshot replace is exactly right.
+      await hydrateSessions();
     },
   },
 
