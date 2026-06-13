@@ -15,8 +15,10 @@ any depth: any folder containing typed folders is a **workspace**.
   frontmatter, stamped with the HEAD it reflects.
 - `issue/` — Things to do, bugs, open questions. Mark resolved by
   updating `status:` in frontmatter; do not delete.
-- `report/` — Append-only snapshots and session journals. Never edit an
-  existing report; add new files.
+- `report/` — Append-only snapshots and session journals. The body is
+  append-only: never rewrite an existing report; add new files.
+  Frontmatter is not: flipping `status:` between `Active` and
+  `Backlog` is allowed.
 - `misc/` — Human scratch space. Do not touch unless asked.
 
 ## Rules for you (the agent)
@@ -28,12 +30,21 @@ any depth: any folder containing typed folders is a **workspace**.
    enclosing `$FOCUS_DOC`**. Do not create new workspaces unless asked.
 3. **Stamping.** After changing anything a status doc tracks, regenerate
    that doc and restamp `reflects:` with current `git HEAD`.
-4. **Session journal.** After completing a task, append a short report
-   (`report/YYYY-MM-DD-<slug>.md`): what you did and why.
+4. **No unsolicited files.** Never create a new file — reports
+   included — unless the user explicitly asks for one. Editing the doc
+   `$FOCUS_DOC` points to is always allowed, and so are frontmatter
+   updates (e.g. `status:` transitions) on existing docs.
 5. **Naming.** New files in `issue/` and `report/` use a
    `YYYY-MM-DD-<slug>.md` prefix.
-6. **Soft state machine** for the `status:` field (deviate only when
-   reality demands): `todo` → `in_progress` → `blocked` / `done`.
+6. **Soft state machine** for the `status:` field — the stored value IS
+   the displayed value, so write it exactly as shown (deviate only when
+   reality demands). Issues: `Todo` → `In Progress` → `In Review` →
+   `Done`, with `Blocked` / `Canceled` as side states. Reports:
+   `Active` / `Backlog`. **Never resolve an issue unprompted.** A
+   transition to `Done` or `Canceled` (and a report to `Backlog`)
+   removes it from the active lens — those are the user's call. Advance up
+   to `In Review` on your own when reality warrants; closing one out
+   waits for the user to ask.
 7. **After a git merge**, do not hand-merge status docs — regenerate and
    restamp them.
 8. **Trust calibration.** Before relying on a status doc, compare its
