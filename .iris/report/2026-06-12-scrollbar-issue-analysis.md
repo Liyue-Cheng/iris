@@ -1,5 +1,6 @@
 ---
 title: 滚动条 issue 的成因分析与方案写回
+status: Backlog
 ---
 
 应用户要求分析 `issue/2026-06-12-markdown编辑器的进度条问题.md` 并把结论追加回该文档。
