@@ -29,6 +29,24 @@ export const sessionISA: Record<string, InstructionDefinition> = {
     },
   },
 
+  'session.reanchor': {
+    meta: {
+      description: 'Re-anchor a live session to another doc / the project root',
+      category: 'system',
+      resourceIdentifier: (p: { sessionId: string }) => [`session:${p.sessionId}`],
+      schedulingStrategy: 'serial',
+      priority: 5,
+      timeout: 5000,
+    },
+    executor: 'ipc',
+    config: { channel: CHANNELS.SESSION_REANCHOR },
+    commit: async (result: SessionInfo) => {
+      // The state-changed broadcast carries the same patch; applying the
+      // authoritative result here just removes the visible lag.
+      sessionStore.handlePatch(result.id, { docPath: result.docPath });
+    },
+  },
+
   'session.close': {
     meta: {
       description: 'Close and destroy a session (scrollback is discarded)',

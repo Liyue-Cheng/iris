@@ -16,6 +16,7 @@ import {
 } from '@renderer/components/ui/context-menu';
 import { useSettings } from '@renderer/stores/settings-store';
 import { openSession } from '@renderer/lib/session-actions';
+import { openDeleteDialog } from '@renderer/components/doc/DeleteDocDialog';
 
 export function DocContextMenu({
   docPath,
@@ -45,6 +46,13 @@ export function DocContextMenu({
           onClick={() => void window.api.invoke(CHANNELS.SHELL_REVEAL, { path: docPath })}
         >
           在资源管理器中显示
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          className="text-destructive focus:text-destructive"
+          onClick={() => openDeleteDialog({ docPath, docName })}
+        >
+          删除文件…
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>

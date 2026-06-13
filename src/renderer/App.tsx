@@ -2,6 +2,7 @@ import { TooltipProvider } from '@renderer/components/ui/tooltip';
 import { TitleBar } from '@renderer/components/layout/TitleBar';
 import { ThreePane } from '@renderer/components/layout/ThreePane';
 import { CreateDocDialog } from '@renderer/components/doc/CreateDocDialog';
+import { DeleteDocDialog } from '@renderer/components/doc/DeleteDocDialog';
 import { SettingsView, useSettingsViewOpen } from '@renderer/components/settings/SettingsView';
 
 export function App(): JSX.Element {
@@ -16,6 +17,7 @@ export function App(): JSX.Element {
         <div className="min-h-0 flex-1">{settingsOpen ? <SettingsView /> : <ThreePane />}</div>
       </div>
       <CreateDocDialog />
+      <DeleteDocDialog />
     </TooltipProvider>
   );
 }

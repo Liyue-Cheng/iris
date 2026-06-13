@@ -10,14 +10,30 @@
  *
  * AI feature stays off — Iris is a dumb shell; intelligence lives in the
  * user's own agent CLIs (software-definition.md 哑壳).
+ *
+ * Context menu (round-3 J 条): the standard edit quartet via the shared
+ * menu. Actions go through webContents (window:edit-action) — the only
+ * paste path with full clipboard fidelity (execCommand('paste') is
+ * privileged); focus returns to ProseMirror first so the action lands on
+ * the editor's preserved selection.
  */
 import { useEffect, useRef } from 'react';
 import { Crepe } from '@milkdown/crepe';
+import { CHANNELS } from '@shared/protocol';
 import { editorStore } from '@renderer/stores/editor-store';
 import { useSettings } from '@renderer/stores/settings-store';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from '@renderer/components/ui/context-menu';
 
 import '@milkdown/crepe/theme/common/style.css';
 import '@milkdown/crepe/theme/frame.css';
+
+type EditAction = 'cut' | 'copy' | 'paste' | 'selectAll';
 
 export function CrepeEditor({
   path,
@@ -69,5 +85,30 @@ export function CrepeEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, generation, blockEdit]);
 
-  return <div ref={rootRef} className="crepe-host h-full overflow-y-auto" />;
+  const editAction = (action: EditAction): void => {
+    // Radix closes the menu and juggles focus on select; wait a beat, put
+    // focus back into ProseMirror (its selection survives the round trip),
+    // then fire the webContents action on the now-focused editable.
+    window.setTimeout(() => {
+      rootRef.current?.querySelector<HTMLElement>('.ProseMirror')?.focus();
+      window.setTimeout(() => {
+        void window.api.invoke(CHANNELS.WINDOW_EDIT_ACTION, { action });
+      }, 0);
+    }, 50);
+  };
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div ref={rootRef} className="crepe-host h-full overflow-y-auto" />
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onClick={() => editAction('cut')}>剪切</ContextMenuItem>
+        <ContextMenuItem onClick={() => editAction('copy')}>复制</ContextMenuItem>
+        <ContextMenuItem onClick={() => editAction('paste')}>粘贴</ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onClick={() => editAction('selectAll')}>全选</ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
 }

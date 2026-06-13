@@ -278,6 +278,21 @@ export class SessionManager extends EventEmitter {
     this.destroySession(managed, 'user-closed');
   }
 
+  /**
+   * Re-anchor a live session to another doc (or the project root with null).
+   * Marina's anchoring model: the path edits the doc — the PTY itself is
+   * untouched, so the process keeps its original FOCUS_DOC env; the protocol
+   * explicitly tolerates that ("没被读，人补一句话就行"). Used by the
+   * delete-file gesture to keep orphaned terminals alive under the root.
+   */
+  reanchor(sessionId: string, docPath: string | null): SessionInfo {
+    const managed = this.sessions.get(sessionId);
+    if (!managed) throw new Error(`[session:reanchor] unknown session ${sessionId}`);
+    managed.info.docPath = docPath;
+    this.emitStateChanged(managed, { docPath });
+    return { ...managed.info };
+  }
+
   shutdown(): void {
     for (const sid of [...this.sessions.keys()]) {
       const managed = this.sessions.get(sid);

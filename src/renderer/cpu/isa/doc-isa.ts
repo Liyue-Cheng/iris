@@ -29,6 +29,21 @@ export const docISA: Record<string, InstructionDefinition> = {
     config: { channel: CHANNELS.DOC_WRITE },
   },
 
+  'doc.delete': {
+    meta: {
+      description: 'Delete a document (human UI gesture; .iris/ markdown only)',
+      category: 'task',
+      // Same resource as doc.save: a queued save of this doc must not race
+      // the unlink.
+      resourceIdentifier: (p: { path: string }) => [`doc:${p.path}`],
+      schedulingStrategy: 'serial',
+      priority: 5,
+      timeout: 10000,
+    },
+    executor: 'ipc',
+    config: { channel: CHANNELS.DOC_DELETE },
+  },
+
   'doc.create': {
     meta: {
       description: 'Create a typed document (date-prefixed in issue/ and report/)',
