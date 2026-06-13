@@ -79,7 +79,7 @@ export function TodoPanel({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center gap-2 border-b bg-card/30 px-4 py-2">
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b bg-card/30 px-4">
         <h2 className="text-sm font-semibold">
           待办
           {workspacePath && (
@@ -108,7 +108,7 @@ export function TodoPanel({
               className="flex w-full items-center gap-2 px-4 py-1.5 text-left hover:bg-muted/60"
               title={g.docPath}
             >
-              <span className="truncate text-[12px] font-semibold">{g.title}</span>
+              <span className="truncate text-[13px] font-semibold">{g.title}</span>
               <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-[10px] text-muted-foreground">
                 {g.items.length}
               </span>
@@ -126,7 +126,7 @@ export function TodoPanel({
                 <div
                   key={key}
                   className={cn(
-                    'group flex w-full items-start gap-2 py-1 pl-7 pr-4 text-left text-[13px] hover:bg-muted/40',
+                    'group flex w-full items-start gap-2 py-1.5 pl-7 pr-4 text-left text-sm hover:bg-muted/40',
                     isPending && 'opacity-60',
                   )}
                 >

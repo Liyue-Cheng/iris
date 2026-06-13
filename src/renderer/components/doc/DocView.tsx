@@ -37,7 +37,7 @@ export function DocView(): JSX.Element {
 
   if (!selectedPath) {
     return (
-      <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
         从左栏选择一篇文档
       </div>
     );

@@ -36,7 +36,7 @@ export function SimpleList({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center gap-2 border-b bg-card/30 px-4 py-2">
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b bg-card/30 px-4">
         <h2 className="text-sm font-semibold">
           {TYPE_TITLE[type]}
           {workspacePath && (
@@ -70,7 +70,7 @@ export function SimpleList({
               draggable
               onDragStart={(e) => setDocDragData(e.dataTransfer, item.doc.path)}
               className={cn(
-                'flex w-full items-center gap-2 px-4 py-1.5 text-left text-[13px] hover:bg-muted/60',
+                'flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted/60',
                 item.archived && 'opacity-50',
               )}
               title={item.doc.path}

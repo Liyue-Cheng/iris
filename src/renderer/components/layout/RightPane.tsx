@@ -1,17 +1,17 @@
 /**
- * Right pane — the session panel (软件定义书 §5 右栏): vertical session
- * list + the active session's terminal. Sessions anchor to docs; the
- * project-root session is the unfocused fallback, opened from the +
- * menu here. Detach, not dispatch: sessions stay interactive, the user
- * walks away and comes back.
+ * Right pane — the session panel (软件定义书 §5 右栏). Sessions anchor to
+ * docs; the project-root session is the unfocused fallback. Detach, not
+ * dispatch: sessions stay interactive, the user walks away and comes back.
  *
- * The list is FILTERED by the left pane's selection: only the selected
- * doc's sessions plus project-root sessions show (no doc selected →
- * root sessions only). Other docs' sessions keep running invisibly.
- * When the selected doc has no session, the terminal area becomes a
- * doc-anchored launcher panel — spawn happens only on an explicit click.
+ * Round-3 E-1/E-2 form: the pane shows ONLY the sessions of the middle
+ * pane's anchor — the selected doc's sessions, or the project-root sessions
+ * when the root node is selected (no mixing). The old session tab strip is
+ * gone; the header is a terminal BANNER: click to switch between this
+ * anchor's sessions (close lives in that menu), + on the right to spawn a
+ * new one. No session under the anchor → a full-page launch pad (Marina 式
+ * EmptyPathState, F-1): spawn happens only on an explicit click.
  */
-import { Plus, X, FileText, FolderRoot } from 'lucide-react';
+import { ChevronDown, Plus, X, FileText, FolderRoot, SquareTerminal } from 'lucide-react';
 import type { SessionInfo } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
 import { useSessions, sessionStore } from '@renderer/stores/session-store';
@@ -34,160 +34,180 @@ const STATE_DOT: Record<SessionInfo['state'], { glyph: string; cls: string; labe
   exited: { glyph: '○', cls: 'text-muted-foreground/60', label: '已退出' },
 };
 
-function anchorLabel(s: SessionInfo): string {
-  if (!s.docPath) return '项目根';
-  return s.docPath.split('/').pop()?.replace(/\.md$/i, '') ?? s.docPath;
-}
-
-function SessionRow({ session }: { session: SessionInfo }): JSX.Element {
-  const { activeSessionId } = useSessions();
-  const dot = STATE_DOT[session.state];
-  const selected = session.id === activeSessionId;
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={() => sessionStore.select(session.id)}
-      onKeyDown={(e) => e.key === 'Enter' && sessionStore.select(session.id)}
-      className={cn(
-        'group flex w-full cursor-pointer items-center gap-1.5 border-b border-border/40 px-2 py-1.5 text-left text-xs',
-        selected ? 'bg-accent text-accent-foreground' : 'hover:bg-muted/60',
-      )}
-      title={session.docPath ?? session.projectRoot}
-    >
-      <span className={cn('shrink-0 text-[10px]', dot.cls)} title={dot.label}>
-        {dot.glyph}
-      </span>
-      <span className="shrink-0 font-medium">{session.displayName}</span>
-      <span className="flex min-w-0 items-center gap-0.5 text-muted-foreground">
-        {session.docPath ? (
-          <FileText className="h-3 w-3 shrink-0" />
-        ) : (
-          <FolderRoot className="h-3 w-3 shrink-0" />
-        )}
-        <span className="truncate">{anchorLabel(session)}</span>
-      </span>
-      {session.state === 'exited' && (
-        <span className="shrink-0 text-[10px] text-muted-foreground/60">
-          exit {session.exitCode}
-        </span>
-      )}
-      <button
-        type="button"
-        title="关闭会话"
-        onClick={(e) => {
-          e.stopPropagation();
-          void closeSession(session.id);
-        }}
-        className="ml-auto shrink-0 rounded-sm p-0.5 opacity-0 hover:bg-muted group-hover:opacity-100"
-      >
-        <X className="h-3 w-3" />
-      </button>
-    </div>
-  );
-}
-
 export function RightPane(): JSX.Element {
   const { sessions, activeSessionId } = useSessions();
   const settings = useSettings();
-  const { phase, selectedPath } = useProject();
+  const { phase, selectedPath, view } = useProject();
   const agents = settings?.agents ?? [];
   const projectReady = phase === 'ready';
 
-  // Anchor filter: selected doc's sessions + project-root sessions.
-  const visibleSessions = sessions.filter(
-    (s) => s.docPath === null || s.docPath === selectedPath,
-  );
-  // Never show a terminal whose row is filtered out (e.g. right after a
-  // project switch restored an anchor outside the current selection).
-  const shownSessionId =
-    activeSessionId && visibleSessions.some((s) => s.id === activeSessionId)
-      ? activeSessionId
-      : null;
-  const selectedDocName = selectedPath?.split('/').pop()?.replace(/\.md$/i, '') ?? null;
+  // The pane's anchor mirrors the middle pane: a selected doc, or the
+  // project root (root node selected / nothing selected yet).
+  const anchor: string | null = view.kind === 'root' ? null : selectedPath;
+  const anchorName = anchor
+    ? (anchor.split('/').pop()?.replace(/\.md$/i, '') ?? anchor)
+    : '项目根';
+  const AnchorIcon = anchor ? FileText : FolderRoot;
+
+  const visibleSessions = sessions.filter((s) => s.docPath === anchor);
+  // Never show a terminal whose session is outside the current anchor; if
+  // the staged id points elsewhere but this anchor HAS sessions, fall back
+  // to the newest one (display-level only — no state mutation in render).
+  const shownSession =
+    visibleSessions.find((s) => s.id === activeSessionId) ??
+    visibleSessions[visibleSessions.length - 1] ??
+    null;
 
   return (
     <div className="flex h-full flex-col bg-card/50">
-      <div className="flex h-8 shrink-0 items-center gap-1 border-b px-2">
-        <span className="text-xs font-medium text-muted-foreground">会话</span>
-        <span
-          className="text-[10px] text-muted-foreground/60"
-          title={sessions.length === visibleSessions.length ? undefined : `共 ${sessions.length} 个会话`}
-        >
-          {visibleSessions.length}
-        </span>
-        <div className="ml-auto">
+      {/* Terminal banner — aligned (h-9) with the other panes' first rows. */}
+      <div className="flex h-9 shrink-0 items-center gap-1 border-b px-2">
+        {shownSession ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-6 w-6" disabled={!projectReady}>
-                <Plus className="!size-3.5" />
-              </Button>
+              <button
+                type="button"
+                title="切换该锚点下的会话"
+                className="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm px-1.5 py-1 text-left text-[13px] hover:bg-muted/60"
+              >
+                <span
+                  className={cn('shrink-0 text-[11px]', STATE_DOT[shownSession.state].cls)}
+                  title={STATE_DOT[shownSession.state].label}
+                >
+                  {STATE_DOT[shownSession.state].glyph}
+                </span>
+                <span className="shrink-0 font-medium">{shownSession.displayName}</span>
+                <span className="flex min-w-0 items-center gap-1 text-muted-foreground">
+                  <AnchorIcon className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">{anchorName}</span>
+                </span>
+                {shownSession.state === 'exited' && (
+                  <span className="shrink-0 text-[11px] text-muted-foreground/60">
+                    exit {shownSession.exitCode}
+                  </span>
+                )}
+                {visibleSessions.length > 1 && (
+                  <span className="shrink-0 text-[11px] text-muted-foreground/60">
+                    {visibleSessions.indexOf(shownSession) + 1}/{visibleSessions.length}
+                  </span>
+                )}
+                <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground/60" />
+              </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {selectedPath && (
-                <>
-                  <DropdownMenuLabel className="max-w-52 truncate">
-                    挂在 {selectedPath.split('/').pop()}
-                  </DropdownMenuLabel>
-                  {agents.map((a) => (
-                    <DropdownMenuItem
-                      key={`doc-${a.id}`}
-                      onClick={() => void openSession(selectedPath, a.id)}
-                    >
-                      用 {a.label} 打开
-                    </DropdownMenuItem>
-                  ))}
-                </>
-              )}
-              <DropdownMenuLabel>项目根（无聚焦兜底）</DropdownMenuLabel>
-              {agents.map((a) => (
-                <DropdownMenuItem key={`root-${a.id}`} onClick={() => void openSession(null, a.id)}>
-                  {a.label}
+            <DropdownMenuContent align="start" className="w-64">
+              <DropdownMenuLabel className="truncate">
+                {anchorName} 的会话
+              </DropdownMenuLabel>
+              {visibleSessions.map((s) => (
+                <DropdownMenuItem
+                  key={s.id}
+                  onClick={() => sessionStore.select(s.id)}
+                  className="group flex items-center gap-1.5"
+                >
+                  <span className={cn('shrink-0 text-[11px]', STATE_DOT[s.state].cls)}>
+                    {STATE_DOT[s.state].glyph}
+                  </span>
+                  <span className="shrink-0 font-medium">{s.displayName}</span>
+                  {s.state === 'exited' && (
+                    <span className="shrink-0 text-[11px] text-muted-foreground/60">
+                      exit {s.exitCode}
+                    </span>
+                  )}
+                  {s.id === shownSession.id && (
+                    <span className="shrink-0 text-[11px] text-muted-foreground/60">当前</span>
+                  )}
+                  <button
+                    type="button"
+                    title="关闭会话"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void closeSession(s.id);
+                    }}
+                    className="ml-auto shrink-0 rounded-sm p-0.5 opacity-0 hover:bg-muted group-hover:opacity-100"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
                 </DropdownMenuItem>
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
-        </div>
+        ) : (
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 px-1.5 text-[13px] text-muted-foreground">
+            <AnchorIcon className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{anchorName}</span>
+            <span className="shrink-0 text-[11px] text-muted-foreground/60">无会话</span>
+          </span>
+        )}
+
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 shrink-0"
+              title="新建会话"
+              disabled={!projectReady}
+            >
+              <Plus className="!size-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuLabel className="max-w-52 truncate">
+              {anchor ? `挂在 ${anchorName}` : '项目根（无聚焦兜底）'}
+            </DropdownMenuLabel>
+            {agents.map((a) => (
+              <DropdownMenuItem key={a.id} onClick={() => void openSession(anchor, a.id)}>
+                用 {a.label} 打开
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
-      {visibleSessions.length > 0 && (
-        <div className="max-h-40 shrink-0 overflow-y-auto border-b">
-          {visibleSessions.map((s) => (
-            <SessionRow key={s.id} session={s} />
-          ))}
-        </div>
-      )}
-
       <div className="min-h-0 flex-1">
-        {shownSessionId ? (
-          <TerminalView key={shownSessionId} sessionId={shownSessionId} />
-        ) : projectReady && selectedPath ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3 p-4 text-center">
-            <p className="max-w-56 truncate text-xs text-muted-foreground">
-              挂在 <span className="font-medium text-foreground">{selectedDocName}</span> 的新会话
-            </p>
-            <div className="flex w-48 flex-col gap-1.5">
+        {shownSession ? (
+          <TerminalView key={shownSession.id} sessionId={shownSession.id} />
+        ) : projectReady ? (
+          /* Full-page launch pad (F-1) — spawn only on explicit click. */
+          <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
+            <SquareTerminal className="h-10 w-10 text-muted-foreground/40" />
+            <div>
+              <p className="max-w-64 truncate text-sm">
+                {anchor ? (
+                  <>
+                    挂在 <span className="font-semibold">{anchorName}</span> 的新会话
+                  </>
+                ) : (
+                  <span className="font-semibold">项目根会话</span>
+                )}
+              </p>
+              <p className="mt-1 max-w-64 text-xs text-muted-foreground">
+                {anchor
+                  ? '终端将注入 FOCUS_DOC 指向这篇文档'
+                  : '不注入 FOCUS_DOC —— 无聚焦的兜底会话'}
+              </p>
+            </div>
+            <div className="flex w-64 flex-col gap-2">
               {agents.map((a) => (
                 <Button
                   key={a.id}
-                  size="sm"
                   variant="secondary"
-                  onClick={() => void openSession(selectedPath, a.id)}
+                  className="h-9 justify-start gap-2 px-4"
+                  onClick={() => void openSession(anchor, a.id)}
                 >
+                  <SquareTerminal className="!size-4 text-muted-foreground" />
                   用 {a.label} 打开
                 </Button>
               ))}
             </div>
-            <p className="max-w-52 text-[11px] text-muted-foreground/70">
-              项目根会话走上方 + 菜单。
+            <p className="max-w-64 text-xs text-muted-foreground/70">
+              会话锚定一经创建终生不变；同一文档可同时挂多个会话。
             </p>
           </div>
         ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-xs text-muted-foreground">
+          <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-sm text-muted-foreground">
             <p>没有会话。</p>
-            <p className="max-w-52 text-muted-foreground/70">
-              在左栏选中或右键一篇文档「用 X 打开」，或点上方 + 开一个项目根会话。
-            </p>
+            <p className="max-w-56 text-xs text-muted-foreground/70">先打开一个项目。</p>
           </div>
         )}
       </div>

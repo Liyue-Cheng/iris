@@ -82,13 +82,12 @@ export const sessionStore = {
    * doc selection.
    */
   syncToDoc(docPath: string): void {
-    const rank: Record<SessionState, number> = { active: 2, idle: 1, exited: 0 };
-    let best: SessionInfo | null = null;
-    for (const s of state.sessions) {
-      if (s.docPath !== docPath) continue;
-      if (!best || rank[s.state] >= rank[best.state]) best = s;
-    }
-    setState({ activeSessionId: best?.id ?? null });
+    setState({ activeSessionId: bestUnderAnchor(docPath)?.id ?? null });
+  },
+
+  /** Root-node linkage: stage the best project-root session (anchor null). */
+  syncToRoot(): void {
+    setState({ activeSessionId: bestUnderAnchor(null)?.id ?? null });
   },
 
   /** Replace the whole projection with a fresh main-process snapshot
@@ -101,6 +100,17 @@ export const sessionStore = {
     return state.sessions.some((s) => s.id === sessionId);
   },
 };
+
+/** Best session under one anchor: active > idle > exited, ties to newest. */
+function bestUnderAnchor(docPath: string | null): SessionInfo | null {
+  const rank: Record<SessionState, number> = { active: 2, idle: 1, exited: 0 };
+  let best: SessionInfo | null = null;
+  for (const s of state.sessions) {
+    if (s.docPath !== docPath) continue;
+    if (!best || rank[s.state] >= rank[best.state]) best = s;
+  }
+  return best;
+}
 
 /**
  * Pull the authoritative session list from main and reset the projection.

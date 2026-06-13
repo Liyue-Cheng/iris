@@ -53,8 +53,8 @@ export function LeftPane(): JSX.Element {
 
   return (
     <div className="flex h-full flex-col bg-card/50">
-      <div className="flex h-8 shrink-0 items-center gap-1 border-b px-2">
-        <span className="truncate text-xs font-medium text-muted-foreground">
+      <div className="flex h-9 shrink-0 items-center gap-1 border-b px-2">
+        <span className="truncate text-[13px] font-medium text-muted-foreground">
           {scan?.projectName ?? '未打开项目'}
         </span>
         <div className="ml-auto flex items-center">
@@ -63,10 +63,10 @@ export function LeftPane(): JSX.Element {
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-6 w-6"
+                className="h-7 w-7"
                 onClick={() => void pickAndOpenProject()}
               >
-                <FolderOpen className="!size-3.5" />
+                <FolderOpen className="!size-4" />
               </Button>
             </TooltipTrigger>
             <TooltipContent>打开项目文件夹</TooltipContent>
@@ -80,12 +80,12 @@ export function LeftPane(): JSX.Element {
                       variant="ghost"
                       size="icon"
                       className={cn(
-                        'relative h-6 w-6',
+                        'relative h-7 w-7',
                         view.kind === 'todos' && 'bg-accent text-accent-foreground',
                       )}
                       onClick={() => projectStore.openTodos(null)}
                     >
-                      <ListChecks className="!size-3.5" />
+                      <ListChecks className="!size-4" />
                       {todoCount > 0 && (
                         <span className="absolute -right-px -top-px rounded-sm bg-muted px-0.5 text-[9px] leading-3 text-muted-foreground">
                           {todoCount}
@@ -101,10 +101,10 @@ export function LeftPane(): JSX.Element {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-6 w-6"
+                    className="h-7 w-7"
                     onClick={() => setWsOpen(true)}
                   >
-                    <FolderPlus className="!size-3.5" />
+                    <FolderPlus className="!size-4" />
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>新建工作区（人的手势）</TooltipContent>
@@ -114,13 +114,13 @@ export function LeftPane(): JSX.Element {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-6 w-6"
+                    className="h-7 w-7"
                     onClick={() => void projectStore.toggleRawMode()}
                   >
                     {rawMode ? (
-                      <ListTree className="!size-3.5" />
+                      <ListTree className="!size-4" />
                     ) : (
-                      <FolderTree className="!size-3.5" />
+                      <FolderTree className="!size-4" />
                     )}
                   </Button>
                 </TooltipTrigger>

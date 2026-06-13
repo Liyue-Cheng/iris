@@ -57,7 +57,8 @@
   --accent-foreground: var(--rp-text);
   --destructive: var(--rp-love);
   --destructive-foreground: var(--rp-base);
-  --border: var(--rp-highlight-med);
+  /* 边框减弱 (round-3 E-6): VS Code-grade restraint — keep the hue, drop the weight */
+  --border: color-mix(in srgb, var(--rp-highlight-med) 38%, transparent);
   --input: var(--rp-highlight-med);
   --ring: var(--rp-iris);
   --radius: 0.5rem;
@@ -105,7 +106,8 @@
   --accent-foreground: var(--rp-text);
   --destructive: var(--rp-love);
   --destructive-foreground: var(--rp-base);
-  --border: var(--rp-highlight-med);
+  /* 边框减弱 (round-3 E-6): VS Code-grade restraint — keep the hue, drop the weight */
+  --border: color-mix(in srgb, var(--rp-highlight-med) 38%, transparent);
   --input: var(--rp-highlight-med);
   --ring: var(--rp-iris);
   --radius: 0.5rem;
@@ -151,7 +153,8 @@
   --accent-foreground: var(--rp-text);
   --destructive: var(--rp-love);
   --destructive-foreground: var(--rp-base);
-  --border: var(--rp-highlight-med);
+  /* 边框减弱 (round-3 E-6): VS Code-grade restraint — keep the hue, drop the weight */
+  --border: color-mix(in srgb, var(--rp-highlight-med) 38%, transparent);
   --input: var(--rp-highlight-med);
   --ring: var(--rp-iris);
   --radius: 0.5rem;

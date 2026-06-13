@@ -6,7 +6,7 @@
  * arrive in M1/M3. The "bootstrap starting" log line is the smoke-test
  * milestone (scripts/smoke-launch.mjs pattern-matches it).
  */
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow, dialog, screen } from 'electron';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { JsonStore } from './persistence';
@@ -14,6 +14,7 @@ import { SettingsManager, settingsFilePath } from './settings-manager';
 import { ProjectManager } from './project-manager';
 import { SessionManager } from './session-manager';
 import { registerIpcHandlers, wireBroadcasts } from './ipc';
+import { getBuildType } from './build-type';
 import { logger } from './logger';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -21,16 +22,49 @@ const isDev = !!process.env.ELECTRON_RENDERER_URL;
 
 console.log('[main] bootstrap starting');
 
+// Portable GPU-cache fix (issue 2026-06-13-portable-gpu-cache创建失败): the
+// single-instance lock below did NOT resolve the "Unable to create cache"
+// error, so the root cause isn't multi-instance lock contention — it's the
+// GPU shader disk cache failing to write under portable's constrained dir.
+// Disabling that cache removes the failing write (shader cache only speeds
+// up repeated shader compiles; steady-state is unaffected). Gated to
+// portable so dev/installed behavior is untouched. Must run before app ready.
+if (getBuildType() === 'portable') {
+  app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+}
+
+// Two instances sharing one Chromium profile (userData) also contend on the
+// disk cache locks — keep the single-instance lock regardless: v1 manages
+// one project at a time, so a second launch should focus the first window.
+if (!app.requestSingleInstanceLock()) {
+  console.log('[main] another instance holds the lock — quitting');
+  app.quit();
+}
+app.on('second-instance', () => {
+  const win = BrowserWindow.getAllWindows()[0];
+  if (win) {
+    if (win.isMinimized()) win.restore();
+    win.focus();
+  }
+});
+
 const settingsManager = new SettingsManager(new JsonStore(settingsFilePath()));
 const projectManager = new ProjectManager();
 const sessionManager = new SessionManager(settingsManager);
 
 function createWindow(): BrowserWindow {
+  // A coding tool carries a lot of information — open generously rather than
+  // cramming three panes into a small window (round-3 验收反馈). Target a
+  // large default but cap to the work area so small screens aren't overflowed.
+  const { workAreaSize } = screen.getPrimaryDisplay();
+  const width = Math.min(1680, Math.round(workAreaSize.width * 0.92));
+  const height = Math.min(1040, Math.round(workAreaSize.height * 0.92));
+
   const win = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    minWidth: 800,
-    minHeight: 500,
+    width,
+    height,
+    minWidth: Math.min(1180, workAreaSize.width),
+    minHeight: Math.min(720, workAreaSize.height),
     show: false,
     title: 'Iris',
     // Custom-drawn title bar (Marina M1-A): frame:false removes the OS bar;
