@@ -10,6 +10,8 @@ import { settingsISA } from './settings-isa';
 import { projectISA } from './project-isa';
 import { docISA } from './doc-isa';
 import { sessionISA } from './session-isa';
+import { stylesISA } from './styles-isa';
+import { agentISA } from './agent-isa';
 
 export const ISA: Record<string, InstructionDefinition> = {
   ...appISA,
@@ -17,4 +19,6 @@ export const ISA: Record<string, InstructionDefinition> = {
   ...projectISA,
   ...docISA,
   ...sessionISA,
+  ...stylesISA,
+  ...agentISA,
 };

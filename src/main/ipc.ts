@@ -29,6 +29,9 @@ import type { SettingsManager } from './settings-manager';
 import type { ProjectManager } from './project-manager';
 import type { SessionManager } from './session-manager';
 import { installMachineConventions, machineConventionsState } from './machine-layer';
+import { injectionState, installFocusScript, installHook } from './agent-injection';
+import { effectiveStyleMaps, writeProjectStyleMaps } from './style-maps-store';
+import type { StyleMaps, StyleMapsState } from '@shared/style-maps';
 import { logger } from './logger';
 
 export function registerIpcHandlers(
@@ -81,6 +84,16 @@ export function registerIpcHandlers(
   ipcMain.handle(CHANNELS.MACHINE_CONVENTIONS_STATE, () => machineConventionsState());
 
   ipcMain.handle(CHANNELS.MACHINE_INSTALL_CONVENTIONS, () => installMachineConventions());
+
+  // ── context-injection adapter (focus-context script + CLI hooks) ────
+
+  ipcMain.handle(CHANNELS.AGENT_INJECTION_STATE, () => injectionState());
+
+  ipcMain.handle(CHANNELS.AGENT_INSTALL_FOCUS_SCRIPT, () => installFocusScript());
+
+  ipcMain.handle(CHANNELS.AGENT_INSTALL_HOOK, (_event, payload: { cliId: string }) =>
+    installHook(payload.cliId),
+  );
 
   ipcMain.handle(CHANNELS.SHELL_REVEAL, (_event, payload: { path: string }): void => {
     // Relative paths are project-root-relative (doc rows pass them as-is);
@@ -142,6 +155,19 @@ export function registerIpcHandlers(
   );
 
   ipcMain.handle(
+    CHANNELS.WINDOW_EDIT_ACTION,
+    (event, payload: { action: 'cut' | 'copy' | 'paste' | 'selectAll' }): void => {
+      const wc = senderWindow(event)?.webContents;
+      if (!wc) return;
+      // Whitelist dispatch — never call arbitrary method names off the wire.
+      if (payload.action === 'cut') wc.cut();
+      else if (payload.action === 'copy') wc.copy();
+      else if (payload.action === 'paste') wc.paste();
+      else if (payload.action === 'selectAll') wc.selectAll();
+    },
+  );
+
+  ipcMain.handle(
     CHANNELS.PROJECT_RAW_TREE,
     (): Promise<RawTreeNode | null> => projectManager.rawTree(),
   );
@@ -164,6 +190,28 @@ export function registerIpcHandlers(
       _event,
       payload: { workspacePath: string; type: import('@shared/types').DocType; title: string },
     ): Promise<{ path: string }> => projectManager.createDoc(payload),
+  );
+
+  ipcMain.handle(
+    CHANNELS.DOC_DELETE,
+    (_event, payload: { path: string }): Promise<{ path: string }> =>
+      projectManager.deleteDoc(payload.path),
+  );
+
+  // ── style maps (status/label badge tables) ─────────────────────────
+
+  ipcMain.handle(
+    CHANNELS.STYLES_GET,
+    (): Promise<StyleMapsState> => effectiveStyleMaps(projectManager.getRoot()),
+  );
+
+  ipcMain.handle(
+    CHANNELS.STYLES_UPDATE,
+    (_event, payload: { maps: StyleMaps }): Promise<StyleMapsState> => {
+      const root = projectManager.getRoot();
+      if (!root) throw new Error('[styles:update] no project is open');
+      return writeProjectStyleMaps(root, payload.maps);
+    },
   );
 
   // ── sessions ───────────────────────────────────────────────────────
@@ -189,6 +237,12 @@ export function registerIpcHandlers(
   ipcMain.handle(CHANNELS.SESSION_CLOSE, (_event, payload: { sessionId: string }): void => {
     sessionManager.closeSession(payload.sessionId);
   });
+
+  ipcMain.handle(
+    CHANNELS.SESSION_REANCHOR,
+    (_event, payload: { sessionId: string; docPath: string | null }): SessionInfo =>
+      sessionManager.reanchor(payload.sessionId, payload.docPath),
+  );
 
   ipcMain.handle(
     CHANNELS.SESSION_INPUT,

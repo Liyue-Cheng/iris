@@ -62,6 +62,38 @@ export interface AgentConfig {
   label: string;
   /** Command line executed in the shell; '' means a bare shell. */
   command: string;
+  /**
+   * Context-injection channel (informational — the work happens elsewhere):
+   * 'hook' = a SessionStart hook in the agent's own config calls the
+   * focus-context script; 'flag' = the command line itself carries a flag
+   * (e.g. aider --read $env:FOCUS_DOC); 'none'/absent = degrade to the
+   * AGENTS.md guidance (the protocol's documented fallback).
+   */
+  injection?: 'hook' | 'flag' | 'none';
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Context-injection adapter state (round-3 A 条) — agent:injection-state
+// ──────────────────────────────────────────────────────────────────
+
+export type HookCliState =
+  | 'cli-not-found' // config dir absent — CLI likely not installed
+  | 'not-configured' // CLI present, no Iris hook yet
+  | 'configured' // hook references the focus-context script
+  | 'manual-only'; // detected, but Iris won't write this format (Codex TOML)
+
+export interface HookCliInfo {
+  id: string;
+  label: string;
+  configPath: string;
+  state: HookCliState;
+  /** Human-readable guidance (manual-only and error cases). */
+  detail?: string;
+}
+
+export interface InjectionState {
+  script: { path: string; exists: boolean; hookCommand: string };
+  clis: HookCliInfo[];
 }
 
 /** Recursive partial, for settings updates. */
