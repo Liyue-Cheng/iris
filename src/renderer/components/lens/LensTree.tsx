@@ -1,8 +1,12 @@
 /**
  * The lens tree (software-definition.md §5 左栏): workspaces as group
  * levels, docs classified by type inside each. The issue section shows
- * ACTIVE issues only; archived workspaces (inside report/) render grayed
- * as one frozen block. Session status dots are placeholders until M3.
+ * ACTIVE issues only; reports hide `Backlog`; archived workspaces (inside
+ * report/) render grayed as one frozen block.
+ *
+ * The ROOT node is special (round-3 E-4): not a collapse toggle — clicking
+ * it shows the project README in the middle pane and the project-root
+ * terminals on the right. Nested workspaces keep the collapse gesture.
  */
 import { useState } from 'react';
 import {
@@ -11,6 +15,7 @@ import {
   ChevronRight,
   CircleDot,
   FileWarning,
+  FolderRoot,
   Gauge,
   NotebookPen,
   Plus,
@@ -22,6 +27,7 @@ import { aggregateDocState, useSessions } from '@renderer/stores/session-store';
 import type { DocType, IrisDoc, IrisWorkspace } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
 import { docDisplayTitle, isActiveIssue } from '@renderer/lib/doc-utils';
+import { StatusBadge } from '@renderer/components/ui/status-badge';
 import { setDocDragData } from '@renderer/lib/doc-drag';
 import { projectStore, useProject } from '@renderer/stores/project-store';
 
@@ -43,13 +49,13 @@ function StatusDot({ docPath }: { docPath: string }): JSX.Element {
   const { sessions } = useSessions();
   const agg = aggregateDocState(sessions, docPath);
   if (agg === 'active') {
-    return <span className="w-3 shrink-0 text-center text-[9px] text-[var(--rp-foam)]">●</span>;
+    return <span className="w-3 shrink-0 text-center text-[10px] text-[var(--rp-foam)]">●</span>;
   }
   if (agg === 'idle') {
-    return <span className="w-3 shrink-0 text-center text-[9px] text-[var(--rp-gold)]">◐</span>;
+    return <span className="w-3 shrink-0 text-center text-[10px] text-[var(--rp-gold)]">◐</span>;
   }
   if (agg === 'exited') {
-    return <span className="w-3 shrink-0 text-center text-[9px] text-muted-foreground/60">○</span>;
+    return <span className="w-3 shrink-0 text-center text-[10px] text-muted-foreground/60">○</span>;
   }
   return <span className="w-3 shrink-0" />;
 }
@@ -66,7 +72,7 @@ function DocRow({ doc, archived }: { doc: IrisDoc; archived: boolean }): JSX.Ele
         draggable
         onDragStart={(e) => setDocDragData(e.dataTransfer, doc.path)}
         className={cn(
-          'group flex w-full items-center gap-1.5 rounded-sm px-2 py-1 text-left text-[13px] leading-tight',
+          'group flex w-full items-center gap-1.5 rounded-sm px-2 py-1.5 text-left text-sm leading-tight',
           selected ? 'bg-accent text-accent-foreground' : 'hover:bg-muted',
           archived && 'opacity-60',
         )}
@@ -78,9 +84,7 @@ function DocRow({ doc, archived }: { doc: IrisDoc; archived: boolean }): JSX.Ele
           <FileWarning className="ml-auto h-3.5 w-3.5 shrink-0 text-destructive/80" />
         )}
         {doc.type === 'issue' && doc.status && !doc.frontmatterBroken && (
-          <span className="ml-auto shrink-0 rounded-sm bg-muted px-1 py-px text-[10px] text-muted-foreground">
-            {doc.status}
-          </span>
+          <StatusBadge value={doc.status} size="sm" className="ml-auto shrink-0" />
         )}
       </button>
     </DocContextMenu>
@@ -101,7 +105,15 @@ function TypeSection({
   const [open, setOpen] = useState(true);
   const { label, icon: Icon } = TYPE_META[type];
 
-  const visibleDocs = type === 'issue' && !archived ? docs.filter(isActiveIssue) : docs;
+  // Lens filters: issues show active only; reports hide `Backlog` (literal
+  // match — the two-state report machine, C 条). Archived sections freeze
+  // whole and show everything.
+  const visibleDocs =
+    type === 'issue' && !archived
+      ? docs.filter(isActiveIssue)
+      : type === 'report' && !archived
+        ? docs.filter((d) => d.status !== 'Backlog')
+        : docs;
   // Archived workspaces are frozen: hide empty sections AND the + button.
   if (docs.length === 0 && archived) return null;
 
@@ -114,7 +126,7 @@ function TypeSection({
           onClick={() => setOpen(!open)}
           className="px-2 py-0.5 text-muted-foreground hover:text-foreground"
         >
-          {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
         </button>
         <button
           type="button"
@@ -122,9 +134,9 @@ function TypeSection({
           onClick={() =>
             projectStore.openCollection(type, workspacePath === '.iris' ? null : workspacePath)
           }
-          className="flex min-w-0 flex-1 items-center gap-1 py-0.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground"
+          className="flex min-w-0 flex-1 items-center gap-1 py-1 text-xs font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground"
         >
-          <Icon className="h-3 w-3" />
+          <Icon className="h-3.5 w-3.5" />
           {label}
           <span className="ml-1 font-normal text-muted-foreground/60">{visibleDocs.length}</span>
         </button>
@@ -135,7 +147,7 @@ function TypeSection({
             onClick={() => openCreateDialog({ workspacePath, type })}
             className="rounded-sm p-0.5 text-muted-foreground/0 hover:bg-muted hover:!text-foreground group-hover/section:text-muted-foreground"
           >
-            <Plus className="h-3 w-3" />
+            <Plus className="h-3.5 w-3.5" />
           </button>
         )}
       </div>
@@ -145,7 +157,7 @@ function TypeSection({
             <DocRow key={d.path} doc={d} archived={archived} />
           ))}
           {visibleDocs.length === 0 && (
-            <div className="px-7 py-0.5 text-[11px] text-muted-foreground/50">
+            <div className="px-7 py-0.5 text-xs text-muted-foreground/50">
               {type === 'issue' && docs.length > 0 ? '无活动 issue' : '空'}
             </div>
           )}
@@ -165,29 +177,49 @@ function WorkspaceSection({
   parentArchived: boolean;
 }): JSX.Element {
   const [open, setOpen] = useState(true);
+  const { view } = useProject();
   const archived = ws.archived || parentArchived;
+  const isRoot = depth === 0;
   const byType = (t: DocType): IrisDoc[] => ws.docs.filter((d) => d.type === t);
 
   return (
     <div className={cn(depth > 0 && 'ml-2 border-l border-border/60 pl-1')}>
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className={cn(
-          'flex w-full items-center gap-1 px-1 py-1 text-xs font-semibold',
-          archived ? 'text-muted-foreground/70' : 'text-foreground',
-        )}
-      >
-        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        <span className="truncate">{ws.name}</span>
-        {archived && (
-          <span className="ml-1 flex items-center gap-0.5 rounded-sm bg-muted px-1 py-px text-[10px] font-normal text-muted-foreground">
-            <Archive className="h-2.5 w-2.5" />
-            已归档
-          </span>
-        )}
-      </button>
-      {open && (
+      {isRoot ? (
+        // Root node: a selection gesture, not a collapse toggle (E-4).
+        <button
+          type="button"
+          title="项目根 — 中栏显示 README，右栏显示项目根终端"
+          onClick={() => void projectStore.selectRoot()}
+          className={cn(
+            'flex w-full items-center gap-1.5 rounded-sm px-2 py-1.5 text-[13px] font-semibold',
+            view.kind === 'root'
+              ? 'bg-accent text-accent-foreground'
+              : 'text-foreground hover:bg-muted',
+          )}
+        >
+          <FolderRoot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="truncate">{ws.name}</span>
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className={cn(
+            'flex w-full items-center gap-1 px-1 py-1 text-[13px] font-semibold',
+            archived ? 'text-muted-foreground/70' : 'text-foreground',
+          )}
+        >
+          {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          <span className="truncate">{ws.name}</span>
+          {archived && (
+            <span className="ml-1 flex items-center gap-0.5 rounded-sm bg-muted px-1 py-px text-[11px] font-normal text-muted-foreground">
+              <Archive className="h-2.5 w-2.5" />
+              已归档
+            </span>
+          )}
+        </button>
+      )}
+      {(isRoot || open) && (
         <div className={cn(archived && 'opacity-75')}>
           {TYPE_ORDER.map((t) => (
             <TypeSection

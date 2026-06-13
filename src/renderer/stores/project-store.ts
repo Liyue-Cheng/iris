@@ -16,16 +16,19 @@ import type {
 import { CHANNELS } from '@shared/protocol';
 import { editorStore } from './editor-store';
 import { sessionStore } from './session-store';
+import { stylesStore } from './styles-store';
 
 export type ProjectPhase = 'idle' | 'opening' | 'ready' | 'error';
 
 /** What the middle pane shows: a single doc, a type-level collection
- *  (issue panel etc.), or the cross-issue todo panel — collections are
- *  optionally scoped to one workspace. */
+ *  (issue panel etc.), the cross-issue todo panel, or the project-root
+ *  README (the special root node, E-4) — collections are optionally
+ *  scoped to one workspace. */
 export type MiddleView =
   | { kind: 'doc' }
   | { kind: 'collection'; type: DocType; workspacePath: string | null }
-  | { kind: 'todos'; workspacePath: string | null };
+  | { kind: 'todos'; workspacePath: string | null }
+  | { kind: 'root' };
 
 export interface ProjectState {
   phase: ProjectPhase;
@@ -85,6 +88,7 @@ export const projectStore = {
       docError: null,
     });
     if (state.rawMode) void this.refreshRawTree();
+    void stylesStore.refresh();
   },
 
   handleOpenFailed(message: string): void {
@@ -130,6 +134,15 @@ export const projectStore = {
   /** Open the todo panel (unchecked tasks across active issues). */
   openTodos(workspacePath: string | null): void {
     setState({ view: { kind: 'todos', workspacePath } });
+  },
+
+  /** The special root node (E-4): middle shows the project README (or a
+   *  placeholder), right shows the project-root sessions. */
+  async selectRoot(): Promise<void> {
+    await editorStore.flushBeforeSwitch();
+    editorStore.closeSession();
+    setState({ selectedPath: null, view: { kind: 'root' }, docError: null });
+    sessionStore.syncToRoot();
   },
 
   /** Explicit re-projection (used by init/workspace commits). */

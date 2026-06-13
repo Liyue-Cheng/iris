@@ -27,6 +27,7 @@ import type {
 import { DOC_TYPES } from '@shared/types';
 import { slugify, yamlScalar } from '@shared/markdown-utils';
 import { parseFrontmatter, scanProject, scanRawTree } from './iris-scanner';
+import { seedProjectStyleMaps } from './style-maps-store';
 import {
   AGENTS_GUIDANCE,
   AGENTS_GUIDANCE_MARKER,
@@ -192,7 +193,9 @@ export class ProjectManager extends EventEmitter {
     }
 
     const fmLines = [`title: ${yamlScalar(title)}`];
-    if (type === 'issue') fmLines.push('status: todo');
+    // Stored value = displayed value (规约六态/两态, 批次2).
+    if (type === 'issue') fmLines.push('status: Todo');
+    if (type === 'report') fmLines.push('status: Active');
     // No body H1: the typed header owns the title (frontmatter 不进正文编辑器);
     // a scaffolded heading would render the title twice.
     const content = `---\n${fmLines.join('\n')}\n---\n`;
@@ -206,6 +209,28 @@ export class ProjectManager extends EventEmitter {
       throw new ProjectError(
         'WriteFailed',
         `cannot create ${relPath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return { path: relPath };
+  }
+
+  /**
+   * Delete a doc (doc.delete instruction body — a HUMAN UI gesture; the
+   * constitution's "do not delete issues" binds agent write-back, not the
+   * user). Scoped to markdown files under .iris/ — the only files Iris owns.
+   */
+  async deleteDoc(relPath: string): Promise<{ path: string }> {
+    const root = this.requireRoot();
+    if (!/\.md$/i.test(relPath) || !relPath.replace(/\\/g, '/').startsWith('.iris/')) {
+      throw new ProjectError('InvalidPayload', `refusing to delete non-iris file: ${relPath}`);
+    }
+    const abs = this.resolveInside(root, relPath);
+    try {
+      await fs.unlink(abs);
+    } catch (err) {
+      throw new ProjectError(
+        'WriteFailed',
+        `cannot delete ${relPath}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
     return { path: relPath };
@@ -238,6 +263,10 @@ export class ProjectManager extends EventEmitter {
       await fs.writeFile(constitutionAbs, CONSTITUTION_TEMPLATE, { encoding: 'utf8', flag: 'wx' });
       constitution = 'created';
     }
+
+    // Seed the project style tables from the machine defaults (never
+    // overwrites an existing .iris/styles.json — project-owned from then on).
+    await seedProjectStyleMaps(root);
 
     let agentsMd: ProjectInitResult['agentsMd'];
     const agentsAbs = join(root, 'AGENTS.md');

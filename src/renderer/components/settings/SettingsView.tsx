@@ -17,12 +17,50 @@
  * validateSettings (src/main/settings-manager.ts), then get a control here.
  */
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { Bot, Info, Moon, MoonStar, Palette, SquareTerminal, Sun, Wrench, X } from 'lucide-react';
-import type { DeepPartial, Settings, ThemeId } from '@shared/types';
+import {
+  Bot,
+  ChevronDown,
+  Info,
+  Moon,
+  MoonStar,
+  Palette,
+  SquareTerminal,
+  Sun,
+  SwatchBook,
+  Trash2,
+  Wrench,
+  X,
+} from 'lucide-react';
+import type {
+  AgentConfig,
+  DeepPartial,
+  HookCliInfo,
+  InjectionState,
+  Settings,
+  ThemeId,
+} from '@shared/types';
+import { CHANNELS } from '@shared/protocol';
+import {
+  BADGE_TEMPLATES,
+  DEFAULT_TEMPLATE_ID,
+  ISSUE_STATUSES,
+  REPORT_STATUSES,
+  templateById,
+} from '@shared/style-maps';
 import { pipeline } from '@renderer/cpu';
 import { useSettings } from '@renderer/stores/settings-store';
+import { useStyleMaps } from '@renderer/stores/styles-store';
+import { useProject } from '@renderer/stores/project-store';
+import { Badge } from '@renderer/components/ui/badge';
+import { collectAllLabels } from '@renderer/lib/label-utils';
 import { Button } from '@renderer/components/ui/button';
 import { Input } from '@renderer/components/ui/input';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@renderer/components/ui/dropdown-menu';
 import { cn } from '@renderer/lib/utils';
 
 // ──────────────────────────────────────────────────────────────────
@@ -58,10 +96,11 @@ export function useSettingsViewOpen(): boolean {
 // Categories
 // ──────────────────────────────────────────────────────────────────
 
-type CategoryId = 'appearance' | 'terminal' | 'agents' | 'advanced' | 'about';
+type CategoryId = 'appearance' | 'styles' | 'terminal' | 'agents' | 'advanced' | 'about';
 
 const CATEGORIES: Array<{ id: CategoryId; icon: typeof Palette; label: string }> = [
   { id: 'appearance', icon: Palette, label: '外观' },
+  { id: 'styles', icon: SwatchBook, label: '样式' },
   { id: 'terminal', icon: SquareTerminal, label: '终端' },
   { id: 'agents', icon: Bot, label: 'Agents' },
   { id: 'advanced', icon: Wrench, label: '高级' },
@@ -157,10 +196,12 @@ function CategoryPanel({
   switch (categoryId) {
     case 'appearance':
       return <AppearancePanel setError={setError} />;
+    case 'styles':
+      return <StylesPanel setError={setError} />;
     case 'terminal':
       return <TerminalPanel setError={setError} />;
     case 'agents':
-      return <AgentsPanel />;
+      return <AgentsPanel setError={setError} />;
     case 'advanced':
       return <AdvancedPanel setError={setError} />;
     case 'about':
@@ -423,6 +464,200 @@ function AppearancePanel({ setError }: { setError: (m: string | null) => void })
 }
 
 // ──────────────────────────────────────────────────────────────────
+// 样式 — 两张同构的可配置表：状态 → 徽章样式、标签 → 徽章样式。
+// 项目级配置（.iris/styles.json，初始化时由机器默认播种）；字面精确匹配，
+// 未配置的值落灰色默认（键是硬的，值是软的）。
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * Template picker — a dropdown gallery of the preset templates, each shown
+ * as a live preview rendered with the row's own string (round-3: 预设模板，
+ * 把匹配字符串填进模板). The trigger shows the current template's preview.
+ */
+function TemplatePicker({
+  sampleText,
+  value,
+  onPick,
+}: {
+  sampleText: string;
+  value: string;
+  onPick: (templateId: string) => void;
+}): JSX.Element {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          title="选择显示模板"
+          className="flex items-center gap-1 rounded-sm px-1 py-0.5 hover:bg-muted/60"
+        >
+          <Badge template={templateById(value)} text={sampleText} />
+          <ChevronDown className="h-3 w-3 text-muted-foreground/60" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="grid max-h-72 grid-cols-2 gap-0.5 overflow-y-auto">
+        {BADGE_TEMPLATES.map((t) => (
+          <DropdownMenuItem key={t.id} onClick={() => onPick(t.id)} className="justify-start">
+            <Badge template={t} text={sampleText} />
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function StyleMapTable({
+  title,
+  hint,
+  entries,
+  suggestions,
+  onChange,
+}: {
+  title: string;
+  hint: string;
+  entries: Record<string, string>;
+  /** Quick-add candidates not yet in the table (canonical states / in-use labels). */
+  suggestions: string[];
+  onChange: (next: Record<string, string>) => void;
+}): JSX.Element {
+  const [draft, setDraft] = useState('');
+  const keys = Object.keys(entries);
+  const candidates = suggestions.filter((s) => !(s in entries));
+
+  const add = (key: string): void => {
+    const k = key.trim();
+    if (k !== '' && !(k in entries)) onChange({ ...entries, [k]: DEFAULT_TEMPLATE_ID });
+    setDraft('');
+  };
+
+  return (
+    <div className="mb-6">
+      <h3 className="text-[13px] font-medium">{title}</h3>
+      <p className="mb-2 mt-0.5 text-[11px] text-muted-foreground">{hint}</p>
+      <div className="overflow-hidden rounded-md border">
+        <table className="w-full text-[13px]">
+          <tbody>
+            {keys.map((k) => (
+              <tr key={k} className="border-b border-border/40 last:border-b-0">
+                <td className="px-3 py-1.5 font-mono text-xs text-muted-foreground">{k}</td>
+                <td className="w-56 px-3 py-1.5">
+                  <TemplatePicker
+                    sampleText={k}
+                    value={entries[k] ?? DEFAULT_TEMPLATE_ID}
+                    onPick={(id) => onChange({ ...entries, [k]: id })}
+                  />
+                </td>
+                <td className="w-8 px-2 py-1.5">
+                  <button
+                    type="button"
+                    title="移除映射（该值降级为灰色默认）"
+                    onClick={() => {
+                      const next = { ...entries };
+                      delete next[k];
+                      onChange(next);
+                    }}
+                    className="rounded-sm p-1 text-muted-foreground/60 hover:bg-muted hover:text-destructive"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {keys.length === 0 && (
+              <tr>
+                <td className="px-3 py-3 text-center text-xs text-muted-foreground">
+                  空表 — 所有值都渲染灰色默认
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <Input
+          value={draft}
+          placeholder="新增字符串，回车添加"
+          className="h-7 w-48 text-xs"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') add(draft);
+            if (e.key === 'Escape') {
+              setDraft('');
+              e.stopPropagation();
+            }
+          }}
+        />
+        {candidates.map((s) => (
+          <button
+            key={s}
+            type="button"
+            title={`添加 ${s}`}
+            onClick={() => add(s)}
+            className="rounded border border-dashed border-border/60 px-1.5 py-0.5 text-[11px] text-muted-foreground hover:border-border hover:text-foreground"
+          >
+            + {s}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StylesPanel({ setError }: { setError: (m: string | null) => void }): JSX.Element {
+  const { maps, source } = useStyleMaps();
+  const { phase, scan } = useProject();
+  const projectOpen = phase === 'ready' && (scan?.hasIris ?? false);
+
+  const write = async (partial: Partial<typeof maps>): Promise<void> => {
+    setError(null);
+    try {
+      await pipeline.dispatch('styles.update', { maps: { ...maps, ...partial } });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  if (!projectOpen) {
+    return (
+      <section>
+        <PanelTitle>样式</PanelTitle>
+        <Placeholder>
+          样式表是项目级配置（.iris/styles.json）。打开一个带 .iris/ 的项目后在这里编辑；
+          初始化项目时会以机器级默认（~/.iris/styles.json）作为起点。
+        </Placeholder>
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <PanelTitle>样式</PanelTitle>
+      <p className="mb-4 text-xs text-muted-foreground">
+        写入 <code className="font-mono">.iris/styles.json</code>（当前生效层：
+        {source === 'project' ? '项目级' : source === 'machine' ? '机器级默认' : '内置默认'}
+        ）。匹配按字面精确比对，未配置的值渲染灰色默认徽章。
+      </p>
+
+      <StyleMapTable
+        title="状态 → 模板"
+        hint="把状态字符串指到一个预设模板（实心 / 柔光 / 描边 / 圆点 × 七色）；issue 六态与 report 两态共用一张表，自由状态字符串也可加入"
+        entries={maps.status}
+        suggestions={[...ISSUE_STATUSES, ...REPORT_STATUSES]}
+        onChange={(next) => void write({ status: next })}
+      />
+
+      <StyleMapTable
+        title="标签 → 模板"
+        hint="把标签字符串指到一个预设模板；未配置的标签落灰色默认"
+        entries={maps.label}
+        suggestions={scan?.root ? collectAllLabels(scan.root) : []}
+        onChange={(next) => void write({ label: next })}
+      />
+    </section>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────
 // 终端
 // ──────────────────────────────────────────────────────────────────
 
@@ -506,36 +741,159 @@ function TerminalPanel({ setError }: { setError: (m: string | null) => void }): 
 }
 
 // ──────────────────────────────────────────────────────────────────
-// Agents — 核心手势"用 X 打开"的 X 列表。编辑功能未接通，当前只读。
+// Agents — 核心手势"用 X 打开"的 X 列表 + 上下文注入适配层（round-3 A 条）。
+// 协议层不变：壳只设 FOCUS_DOC。注入是适配器——focus-context 脚本（机器级，
+// App 拥有）+ 各 agent CLI 自己配置里的 SessionStart hook（用户拥有，Iris
+// 只检测、建议、经确认代写）。
 // ──────────────────────────────────────────────────────────────────
 
-function AgentsPanel(): JSX.Element {
+const INJECTION_LABEL: Record<NonNullable<AgentConfig['injection']> | 'unset', string> = {
+  hook: 'hook',
+  flag: 'flag',
+  none: '无',
+  unset: '无',
+};
+
+const HOOK_STATE_META: Record<
+  HookCliInfo['state'],
+  { label: string; cls: string }
+> = {
+  configured: { label: '已配置', cls: 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]' },
+  'not-configured': { label: '未配置 hook', cls: 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]' },
+  'cli-not-found': { label: '未检测到', cls: 'bg-muted text-muted-foreground' },
+  'manual-only': { label: '需手动配置', cls: 'bg-[var(--rp-iris)]/20 text-[var(--rp-iris)]' },
+};
+
+/** New-agent quick presets — flag templates for the hook-less CLIs included
+ *  (the "哪个 agent 吃哪种参数" knowledge, living at the machine layer). */
+const AGENT_PRESETS: AgentConfig[] = [
+  { id: 'claude', label: 'claude', command: 'claude', injection: 'hook' },
+  { id: 'codex', label: 'codex', command: 'codex', injection: 'hook' },
+  { id: 'gemini', label: 'gemini', command: 'gemini', injection: 'hook' },
+  { id: 'qwen', label: 'qwen', command: 'qwen', injection: 'hook' },
+  { id: 'cursor', label: 'cursor', command: 'cursor-agent', injection: 'hook' },
+  { id: 'aider', label: 'aider', command: 'aider --read $env:FOCUS_DOC', injection: 'flag' },
+  {
+    id: 'goose',
+    label: 'goose',
+    command:
+      'goose run --interactive --system "$((powershell -NoProfile -ExecutionPolicy Bypass -File \\"$env:USERPROFILE/.iris/focus-context.ps1\\") -join \\"`n\\")"',
+    injection: 'flag',
+  },
+  { id: 'shell', label: '终端', command: '', injection: 'none' },
+];
+
+function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JSX.Element {
   const settings = useSettings();
   const agents = settings?.agents ?? [];
+  const [inj, setInj] = useState<InjectionState | null>(null);
+  const [confirmCli, setConfirmCli] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refreshInj = async (): Promise<void> => {
+    try {
+      setInj(await window.api.invoke<undefined, InjectionState>(CHANNELS.AGENT_INJECTION_STATE));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+  useEffect(() => {
+    void refreshInj();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const writeAgents = (next: AgentConfig[]): void => {
+    void updateSettings({ agents: next } as DeepPartial<Settings>, setError);
+  };
+  const patchAgent = (id: string, patch: Partial<AgentConfig>): void => {
+    writeAgents(agents.map((a) => (a.id === id ? { ...a, ...patch } : a)));
+  };
+
+  const installScript = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      await pipeline.dispatch('agent.install-focus-script', {});
+      await refreshInj();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const installCliHook = async (cliId: string): Promise<void> => {
+    setBusy(true);
+    setConfirmCli(null);
+    try {
+      // The hook calls the script — make sure the script exists first.
+      if (inj && !inj.script.exists) {
+        await pipeline.dispatch('agent.install-focus-script', {});
+      }
+      await pipeline.dispatch('agent.install-hook', { cliId });
+      await refreshInj();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const presets = AGENT_PRESETS.filter((p) => !agents.some((a) => a.id === p.id));
 
   return (
     <section>
       <PanelTitle>Agents</PanelTitle>
       <p className="mb-3 text-xs text-muted-foreground">
-        右键菜单"用 X 打开"的候选列表。command 为空表示纯终端。
+        右键菜单「用 X 打开」的候选列表。command 为空表示纯终端；注入通道只是标注——hook
+        在下方的注入区配置，flag 直接写在命令里。
       </p>
 
       <div className="overflow-hidden rounded-md border">
         <table className="w-full text-[13px]">
-          <thead className="bg-muted/50 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
+          <thead className="bg-muted/50 text-left text-xs uppercase tracking-wider text-muted-foreground">
             <tr>
-              <th className="px-3 py-1.5 font-medium">id</th>
-              <th className="px-3 py-1.5 font-medium">显示名</th>
+              <th className="w-20 px-3 py-1.5 font-medium">id</th>
+              <th className="w-28 px-3 py-1.5 font-medium">显示名</th>
               <th className="px-3 py-1.5 font-medium">命令</th>
+              <th className="w-36 px-3 py-1.5 font-medium">注入通道</th>
+              <th className="w-8 px-2 py-1.5" />
             </tr>
           </thead>
           <tbody>
             {agents.map((a) => (
-              <tr key={a.id} className="border-t border-border/40">
+              <tr key={a.id} className="border-t border-border/40 align-middle">
                 <td className="px-3 py-1.5 font-mono text-xs">{a.id}</td>
-                <td className="px-3 py-1.5">{a.label}</td>
-                <td className="px-3 py-1.5 font-mono text-xs">
-                  {a.command || <span className="text-muted-foreground">（纯终端）</span>}
+                <td className="px-2 py-1">
+                  <CommitInput value={a.label} onCommit={(v) => patchAgent(a.id, { label: v })} />
+                </td>
+                <td className="px-2 py-1">
+                  <CommitInput
+                    value={a.command}
+                    placeholder="（纯终端）"
+                    onCommit={(v) => patchAgent(a.id, { command: v })}
+                  />
+                </td>
+                <td className="px-2 py-1">
+                  <Segmented
+                    value={a.injection ?? 'none'}
+                    options={[
+                      { value: 'hook', label: 'hook' },
+                      { value: 'flag', label: 'flag' },
+                      { value: 'none', label: INJECTION_LABEL.none },
+                    ]}
+                    onChange={(v) => patchAgent(a.id, { injection: v })}
+                  />
+                </td>
+                <td className="px-2 py-1">
+                  <button
+                    type="button"
+                    title={agents.length <= 1 ? '至少保留一个 agent' : `移除 ${a.label}`}
+                    disabled={agents.length <= 1}
+                    onClick={() => writeAgents(agents.filter((x) => x.id !== a.id))}
+                    className="rounded-sm p-1 text-muted-foreground/60 hover:bg-muted hover:text-destructive disabled:opacity-30"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
                 </td>
               </tr>
             ))}
@@ -543,11 +901,104 @@ function AgentsPanel(): JSX.Element {
         </table>
       </div>
 
-      <div className="mt-3">
-        <Placeholder>
-          占位 — 增删改 agent（settings.agents 已支持持久化与校验），表单待实现。
-        </Placeholder>
-      </div>
+      {presets.length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">快速添加：</span>
+          {presets.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              title={p.command || '（纯终端）'}
+              onClick={() => writeAgents([...agents, p])}
+              className="rounded border border-dashed border-border/60 px-1.5 py-0.5 text-xs text-muted-foreground hover:border-border hover:text-foreground"
+            >
+              + {p.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <h3 className="mb-1 mt-8 text-base font-semibold">上下文注入</h3>
+      <p className="mb-3 text-xs text-muted-foreground">
+        零轮次注入：终端打开时 agent 的 SessionStart hook 调用 focus-context 脚本，把
+        FOCUS_DOC 指向的文档（元数据 + 全文快照，超 32 KiB 退化为指针）直接放进上下文——agent
+        依然静止等待指令，打开 ≠ 开跑。hook 配置住在你自己的 agent 配置文件里，Iris
+        只检测、建议、经你确认后代写。
+      </p>
+
+      <SettingRow
+        label="focus-context 脚本"
+        hint={inj ? inj.script.path : '~/.iris/focus-context.ps1'}
+      >
+        <div className="flex items-center gap-2">
+          <span
+            className={cn(
+              'rounded px-1.5 py-0.5 text-xs',
+              inj?.script.exists
+                ? 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]'
+                : 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]',
+            )}
+          >
+            {inj?.script.exists ? '已安装' : '未安装'}
+          </span>
+          <Button size="sm" variant="secondary" disabled={busy} onClick={() => void installScript()}>
+            {inj?.script.exists ? '更新脚本' : '安装脚本'}
+          </Button>
+        </div>
+      </SettingRow>
+
+      <SettingRow label="hook 命令" hint="五家 CLI 的 SessionStart hook 都指向这一条命令">
+        <code className="block break-all rounded bg-muted/60 px-2 py-1.5 font-mono text-[11px] text-muted-foreground">
+          {inj?.script.hookCommand ?? '…'}
+        </code>
+      </SettingRow>
+
+      {(inj?.clis ?? []).map((cli) => (
+        <SettingRow key={cli.id} label={cli.label} hint={cli.configPath}>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={cn('rounded px-1.5 py-0.5 text-xs', HOOK_STATE_META[cli.state].cls)}>
+              {HOOK_STATE_META[cli.state].label}
+            </span>
+            {cli.state === 'not-configured' &&
+              (confirmCli === cli.id ? (
+                <>
+                  <span className="text-xs text-muted-foreground">
+                    将写入你的 {cli.label} 配置（先备份 .bak）：
+                  </span>
+                  <Button
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => void installCliHook(cli.id)}
+                  >
+                    确认代写
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setConfirmCli(null)}>
+                    取消
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={busy}
+                  onClick={() => setConfirmCli(cli.id)}
+                >
+                  代写 hook…
+                </Button>
+              ))}
+            {cli.detail && cli.state === 'manual-only' && (
+              <span className="max-w-md text-xs leading-snug text-muted-foreground">
+                {cli.detail}
+              </span>
+            )}
+          </div>
+        </SettingRow>
+      ))}
+
+      <p className="mt-3 text-xs text-muted-foreground/70">
+        没有 hook 的 CLI 用启动 flag（上方 aider / goose 预设即模板）；两者皆无的 agent
+        降级回 AGENTS.md 引导——协议本来就允许。
+      </p>
     </section>
   );
 }

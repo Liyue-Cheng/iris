@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "status": {
+    "123456": "soft:gray",
+    "Todo": "soft:gray",
+    "In Progress": "soft:foam",
+    "In Review": "soft:gold",
+    "Blocked": "soft:love",
+    "Done": "solid:pine",
+    "Canceled": "outline:gray",
+    "Active": "soft:foam",
+    "Backlog": "dot:gray"
+  },
+  "label": {
+    "round-3": "soft:iris",
+    "bug": "soft:love"
+  }
+}

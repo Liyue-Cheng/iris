@@ -1,10 +1,12 @@
 /**
- * One label chip — Linear-style colored dot + name. Color is the
- * deterministic name hash from label-utils (no stored color, no registry).
+ * One label chip — renders the label string per its assigned template from
+ * the configurable label → template table (round-3: same template system as
+ * status; an unmapped label gets the gray default). Defaults lean to the
+ * `dot` variant (the classic label look), but any template the user assigns
+ * applies — labels and statuses share one designed component.
  */
-import { X } from 'lucide-react';
-import { cn } from '@renderer/lib/utils';
-import { labelColorVar } from '@renderer/lib/label-utils';
+import { Badge } from '@renderer/components/ui/badge';
+import { templateFor, useStyleMaps } from '@renderer/stores/styles-store';
 
 export function LabelChip({
   label,
@@ -17,44 +19,27 @@ export function LabelChip({
   onRemove?: (() => void) | undefined;
   className?: string | undefined;
 }): JSX.Element {
-  const colorVar = labelColorVar(label);
-  const Tag = onClick ? 'button' : 'span';
+  const { maps } = useStyleMaps();
+  const badge = (
+    <Badge
+      template={templateFor(maps, 'label', label)}
+      text={label}
+      size="sm"
+      onRemove={onRemove}
+      className={className}
+    />
+  );
+  if (!onClick) return badge;
   return (
-    <Tag
-      {...(onClick
-        ? {
-            type: 'button' as const,
-            // chips sit inside clickable rows — don't also fire the row
-            onClick: (e: React.MouseEvent) => {
-              e.stopPropagation();
-              onClick();
-            },
-          }
-        : {})}
-      className={cn(
-        'inline-flex max-w-36 items-center gap-1 rounded-full border border-border/60 bg-muted/40 px-1.5 py-px text-[10px] leading-4 text-muted-foreground',
-        onClick && 'hover:border-border hover:text-foreground',
-        className,
-      )}
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      className="rounded-full hover:opacity-80"
     >
-      <span
-        className="h-1.5 w-1.5 shrink-0 rounded-full"
-        style={{ background: `var(${colorVar})` }}
-      />
-      <span className="truncate">{label}</span>
-      {onRemove && (
-        <button
-          type="button"
-          title={`移除标签 ${label}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemove();
-          }}
-          className="-mr-0.5 rounded-full p-px hover:bg-muted hover:text-foreground"
-        >
-          <X className="h-2.5 w-2.5" />
-        </button>
-      )}
-    </Tag>
+      {badge}
+    </button>
   );
 }

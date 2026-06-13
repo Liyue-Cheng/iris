@@ -7,7 +7,14 @@
  */
 import type { IrisDoc } from '@shared/types';
 
-const RESOLVED_STATUSES = new Set(['done', 'resolved', 'closed', 'cancelled', 'wontfix']);
+const RESOLVED_STATUSES = new Set([
+  'done',
+  'resolved',
+  'closed',
+  'cancelled',
+  'canceled',
+  'wontfix',
+]);
 
 /** Active = not clearly resolved. Unknown/missing/deviant values stay visible. */
 export function isActiveIssue(doc: IrisDoc): boolean {

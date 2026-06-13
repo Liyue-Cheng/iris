@@ -1,12 +1,16 @@
 /**
  * The typed header — sole owner of the frontmatter UI (the body editor
- * never sees it). Title and status edit surgically (one key line each,
- * everything else byte-preserved) and persist immediately.
+ * never sees it). Two fixed rows (E-3 布局拍板):
+ *   row 1 — status badge · title · save indicator · code button. The doc
+ *           path is NOT resident: it shows in a tooltip when hovering the
+ *           title. No type badge (the lens already told you the type).
+ *   row 2 — priority + labels (issue only).
+ * Row 1 is h-9 to line up with the left/right pane headers (三栏第一行对齐).
  *
- * `status:` is a SOFT value: free-form input plus a menu that always
- * shows the full soft state machine (键是硬的，值是软的). A native
- * datalist is NOT usable here — it filters suggestions by the current
- * value, so a field already holding `done` offers nothing else.
+ * `status:` is a SOFT value: the menu shows the canonical state machine for
+ * the doc's type (issues six states, reports two) PLUS a free-text input —
+ * 键是硬的，值是软的. The stored value is the displayed value; the badge
+ * styles come from the configurable status → style table.
  */
 import { useEffect, useState } from 'react';
 import {
@@ -21,6 +25,7 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import type { DocType } from '@shared/types';
+import { ISSUE_STATUSES, REPORT_STATUSES } from '@shared/style-maps';
 import { parseYamlFlowSeq, yamlFlowSeq } from '@shared/markdown-utils';
 import { cn } from '@renderer/lib/utils';
 import { editorStore, type EditorSession } from '@renderer/stores/editor-store';
@@ -28,6 +33,7 @@ import { useProject } from '@renderer/stores/project-store';
 import { SOFT_PRIORITIES } from '@renderer/lib/doc-utils';
 import { collectAllLabels } from '@renderer/lib/label-utils';
 import { LabelChip } from '@renderer/components/ui/label-chip';
+import { StatusBadge } from '@renderer/components/ui/status-badge';
 import { Button } from '@renderer/components/ui/button';
 import {
   DropdownMenu,
@@ -40,15 +46,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@renderer/components/ui/tooltip';
-
-const TYPE_BADGE: Record<DocType, string> = {
-  status: 'bg-[var(--rp-pine)] text-[var(--rp-base)]',
-  issue: 'bg-[var(--rp-gold)] text-[var(--rp-base)]',
-  report: 'bg-[var(--rp-foam)] text-[var(--rp-base)]',
-  misc: 'bg-[var(--rp-highlight-high)] text-foreground',
-};
-
-const SOFT_STATUSES = ['todo', 'in_progress', 'blocked', 'done'];
 
 export function typeOfPath(path: string): DocType | null {
   const segments = path.split('/');
@@ -99,6 +96,66 @@ function FieldInput({
 }
 
 /**
+ * Status editor — the badge is the trigger; the menu shows the full
+ * canonical set for this doc type plus a free-value input (soft values
+ * stay first-class, they just render gray until mapped in the table).
+ */
+function StatusEditor({
+  type,
+  value,
+  disabled,
+}: {
+  type: DocType | null;
+  value: string;
+  disabled: boolean;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState('');
+  const options: readonly string[] = type === 'report' ? REPORT_STATUSES : ISSUE_STATUSES;
+
+  const set = (v: string): void => {
+    const trimmed = v.trim();
+    if (trimmed !== '' && trimmed !== value) {
+      void editorStore.setFrontmatterField('status', trimmed);
+    }
+    setDraft('');
+    setOpen(false);
+  };
+
+  const badge = (
+    <StatusBadge value={value === '' ? '—' : value} chevron={!disabled} />
+  );
+  if (disabled) return badge;
+
+  return (
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <button type="button" title="状态">
+          {badge}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start">
+        {options.map((s) => (
+          <DropdownMenuItem key={s} onClick={() => set(s)}>
+            <StatusBadge value={s} />
+          </DropdownMenuItem>
+        ))}
+        <input
+          value={draft}
+          placeholder="自由值，回车写入"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            e.stopPropagation(); // keep Radix typeahead out of the input
+            if (e.key === 'Enter') set(draft);
+          }}
+          className="mx-1 my-0.5 w-36 rounded-sm bg-muted/60 px-1.5 py-0.5 text-xs outline-none"
+        />
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
  * Label editor — chips plus an add menu whose suggestions are the
  * project-wide union of labels in use (no registry; see label-utils).
  * Writes `labels:` as a single-line YAML flow sequence so the frontmatter
@@ -125,7 +182,7 @@ function LabelsEditor({ disabled }: { disabled: boolean }): JSX.Element {
   };
 
   return (
-    <div className="mt-1.5 flex flex-wrap items-center gap-1 px-1">
+    <div className="flex flex-wrap items-center gap-1">
       <Tag className="h-3 w-3 text-muted-foreground/60" />
       {labels.map((l) => (
         <LabelChip
@@ -135,7 +192,7 @@ function LabelsEditor({ disabled }: { disabled: boolean }): JSX.Element {
         />
       ))}
       {labels.length === 0 && (
-        <span className="text-[10px] text-muted-foreground/50">无标签</span>
+        <span className="text-[11px] text-muted-foreground/50">无标签</span>
       )}
       {!disabled && (
         <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -158,7 +215,7 @@ function LabelsEditor({ disabled }: { disabled: boolean }): JSX.Element {
                 e.stopPropagation(); // keep Radix typeahead out of the input
                 if (e.key === 'Enter') add(draft);
               }}
-              className="mx-1 my-0.5 w-36 rounded-sm bg-muted/60 px-1.5 py-0.5 text-[12px] outline-none"
+              className="mx-1 my-0.5 w-36 rounded-sm bg-muted/60 px-1.5 py-0.5 text-xs outline-none"
             />
             {candidates.map((c) => (
               <DropdownMenuItem key={c} onClick={() => add(c)}>
@@ -181,87 +238,29 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
   const fmEditable = !looksBroken(session.fmBlock);
 
   return (
-    <div className="shrink-0 border-b bg-card/30 px-6 py-3">
-      <div className="flex items-center gap-2">
-        {type && (
-          <span
-            className={cn(
-              'rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider',
-              TYPE_BADGE[type],
-            )}
-          >
-            {type}
-          </span>
-        )}
+    <div className="shrink-0 border-b bg-card/30 px-4">
+      {/* Row 1 — h-9, aligned with the left/right pane headers. */}
+      <div className="flex h-9 items-center gap-2">
+        <StatusEditor type={type} value={status} disabled={!fmEditable} />
 
-        <span className="flex items-center rounded-sm">
-          <FieldInput
-            value={status}
-            placeholder="status…"
-            disabled={!fmEditable}
-            onCommit={(v) => void editorStore.setFrontmatterField('status', v)}
-            className="w-28 px-1.5 py-0.5 text-[11px] text-muted-foreground"
-          />
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
+        <Tooltip>
+          {/* span wrapper: FieldInput doesn't forward refs, Radix asChild needs one */}
+          <TooltipTrigger asChild>
+            <span className="flex min-w-0 flex-1">
+              <FieldInput
+                value={title}
+                placeholder={session.path.split('/').pop()?.replace(/\.md$/i, '') ?? ''}
                 disabled={!fmEditable}
-                title="软状态机候选"
-                className="rounded-sm p-0.5 text-muted-foreground hover:bg-muted/60 disabled:opacity-40"
-              >
-                <ChevronDown className="h-3 w-3" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
-              {SOFT_STATUSES.map((s) => (
-                <DropdownMenuItem
-                  key={s}
-                  onClick={() => void editorStore.setFrontmatterField('status', s)}
-                >
-                  <span className="text-[12px]">{s}</span>
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </span>
-
-        {type === 'issue' && (
-          <span className="flex items-center rounded-sm">
-            <FieldInput
-              value={priority}
-              placeholder="priority…"
-              disabled={!fmEditable}
-              onCommit={(v) => void editorStore.setFrontmatterField('priority', v)}
-              className="w-20 px-1.5 py-0.5 text-[11px] text-muted-foreground"
-            />
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  disabled={!fmEditable}
-                  title="优先级候选（软值）"
-                  className="rounded-sm p-0.5 text-muted-foreground hover:bg-muted/60 disabled:opacity-40"
-                >
-                  <ChevronDown className="h-3 w-3" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                {SOFT_PRIORITIES.map((p) => (
-                  <DropdownMenuItem
-                    key={p}
-                    onClick={() => void editorStore.setFrontmatterField('priority', p)}
-                  >
-                    <span className="text-[12px]">{p}</span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </span>
-        )}
+                onCommit={(v) => void editorStore.setFrontmatterField('title', v)}
+                className="min-w-0 flex-1 px-1.5 text-base font-semibold"
+              />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>{session.path}</TooltipContent>
+        </Tooltip>
 
         {!fmEditable && (
-          <span className="flex items-center gap-1 rounded bg-destructive/15 px-1.5 py-0.5 text-[11px] text-destructive">
+          <span className="flex shrink-0 items-center gap-1 rounded bg-destructive/15 px-1.5 py-0.5 text-xs text-destructive">
             <FileWarning className="h-3 w-3" />
             frontmatter 异常 — 字段编辑已禁用，可用源码模式修复
           </span>
@@ -270,7 +269,7 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
         {session.externalConflict && (
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="flex items-center gap-1 rounded bg-[var(--rp-gold)]/20 px-1.5 py-0.5 text-[11px] text-[var(--rp-gold)]">
+              <span className="flex shrink-0 items-center gap-1 rounded bg-[var(--rp-gold)]/20 px-1.5 py-0.5 text-xs text-[var(--rp-gold)]">
                 <TriangleAlert className="h-3 w-3" />
                 外部已修改
               </span>
@@ -282,14 +281,10 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
         )}
 
         {session.saveError && (
-          <span className="rounded bg-destructive/15 px-1.5 py-0.5 text-[11px] text-destructive">
+          <span className="shrink-0 rounded bg-destructive/15 px-1.5 py-0.5 text-xs text-destructive">
             保存失败：{session.saveError}
           </span>
         )}
-
-        <span className="ml-auto truncate text-[11px] text-muted-foreground/70">
-          {session.path}
-        </span>
 
         {session.saving ? (
           <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
@@ -325,15 +320,43 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
         </Tooltip>
       </div>
 
-      <FieldInput
-        value={title}
-        placeholder={session.path.split('/').pop()?.replace(/\.md$/i, '') ?? ''}
-        disabled={!fmEditable}
-        onCommit={(v) => void editorStore.setFrontmatterField('title', v)}
-        className="mt-1 w-full px-1 text-lg font-semibold"
-      />
-
-      {type === 'issue' && <LabelsEditor disabled={!fmEditable} />}
+      {/* Row 2 — priority + labels (issue only). */}
+      {type === 'issue' && (
+        <div className="flex items-center gap-2 pb-1.5 pl-1">
+          <span className="flex items-center rounded-sm">
+            <FieldInput
+              value={priority}
+              placeholder="priority…"
+              disabled={!fmEditable}
+              onCommit={(v) => void editorStore.setFrontmatterField('priority', v)}
+              className="w-20 px-1.5 py-0.5 text-xs text-muted-foreground"
+            />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  disabled={!fmEditable}
+                  title="优先级候选（软值）"
+                  className="rounded-sm p-0.5 text-muted-foreground hover:bg-muted/60 disabled:opacity-40"
+                >
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                {SOFT_PRIORITIES.map((p) => (
+                  <DropdownMenuItem
+                    key={p}
+                    onClick={() => void editorStore.setFrontmatterField('priority', p)}
+                  >
+                    <span className="text-xs">{p}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </span>
+          <LabelsEditor disabled={!fmEditable} />
+        </div>
+      )}
     </div>
   );
 }

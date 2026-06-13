@@ -11,6 +11,7 @@
 import { useState } from 'react';
 import { Archive, ChevronDown, FileWarning, Plus } from 'lucide-react';
 import type { IrisWorkspace } from '@shared/types';
+import { ISSUE_STATUSES } from '@shared/style-maps';
 import { cn } from '@renderer/lib/utils';
 import { collectDocs, docDate, type CollectedDoc } from '@renderer/lib/collect-docs';
 import {
@@ -23,6 +24,7 @@ import {
 import { setDocDragData } from '@renderer/lib/doc-drag';
 import { setDocField, setDocStatus } from '@renderer/lib/issue-actions';
 import { LabelChip } from '@renderer/components/ui/label-chip';
+import { StatusBadge } from '@renderer/components/ui/status-badge';
 import { projectStore } from '@renderer/stores/project-store';
 import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DocContextMenu } from '@renderer/components/doc/DocContextMenu';
@@ -40,15 +42,6 @@ const FILTER_LABEL: Record<Filter, string> = {
   active: '活动中',
   resolved: '已解决',
   all: '全部',
-};
-
-const SOFT_STATUSES = ['todo', 'in_progress', 'blocked', 'done'];
-
-const STATUS_CLS: Record<string, string> = {
-  todo: 'bg-muted text-muted-foreground',
-  in_progress: 'bg-[var(--rp-foam)]/20 text-[var(--rp-foam)]',
-  blocked: 'bg-[var(--rp-love)]/20 text-[var(--rp-love)]',
-  done: 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]',
 };
 
 const PRIORITY_CLS: Record<string, string> = {
@@ -102,19 +95,8 @@ function PriorityCell({ item }: { item: CollectedDoc }): JSX.Element {
 
 function StatusCell({ item }: { item: CollectedDoc }): JSX.Element {
   const { doc, archived } = item;
-  const value = doc.status ?? '—';
   const editable = !archived && !doc.frontmatterBroken;
-  const badge = (
-    <span
-      className={cn(
-        'inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px]',
-        STATUS_CLS[value.toLowerCase()] ?? 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]',
-      )}
-    >
-      {value}
-      {editable && <ChevronDown className="h-2.5 w-2.5 opacity-60" />}
-    </span>
-  );
+  const badge = <StatusBadge value={doc.status ?? '—'} chevron={editable} />;
   if (!editable) return badge;
   return (
     <DropdownMenu>
@@ -124,7 +106,7 @@ function StatusCell({ item }: { item: CollectedDoc }): JSX.Element {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start">
-        {SOFT_STATUSES.map((s) => (
+        {ISSUE_STATUSES.map((s) => (
           <DropdownMenuItem
             key={s}
             onClick={(e) => {
@@ -132,7 +114,7 @@ function StatusCell({ item }: { item: CollectedDoc }): JSX.Element {
               void setDocStatus(item.doc.path, s);
             }}
           >
-            <span className={cn('rounded px-1.5 py-0.5 text-[11px]', STATUS_CLS[s])}>{s}</span>
+            <StatusBadge value={s} />
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
@@ -173,7 +155,7 @@ export function IssuePanel({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center gap-2 border-b bg-card/30 px-4 py-2">
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b bg-card/30 px-4">
         <h2 className="text-sm font-semibold">
           Issue
           {workspacePath && (
@@ -226,15 +208,15 @@ export function IssuePanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <table className="w-full border-collapse text-[13px]">
-          <thead className="sticky top-0 bg-card text-left text-[11px] uppercase tracking-wider text-muted-foreground">
+        <table className="w-full border-collapse text-sm">
+          <thead className="sticky top-0 bg-card text-left text-xs uppercase tracking-wider text-muted-foreground">
             <tr>
-              <th className="px-4 py-1.5 font-medium">标题</th>
-              <th className="w-24 px-2 py-1.5 font-medium">优先级</th>
-              <th className="w-32 px-2 py-1.5 font-medium">状态</th>
-              <th className="w-44 px-2 py-1.5 font-medium">标签</th>
-              <th className="w-36 px-2 py-1.5 font-medium">工作区</th>
-              <th className="w-28 px-2 py-1.5 font-medium">日期</th>
+              <th className="px-4 py-2 font-medium">标题</th>
+              <th className="w-24 px-2 py-2 font-medium">优先级</th>
+              <th className="w-32 px-2 py-2 font-medium">状态</th>
+              <th className="w-44 px-2 py-2 font-medium">标签</th>
+              <th className="w-36 px-2 py-2 font-medium">工作区</th>
+              <th className="w-28 px-2 py-2 font-medium">日期</th>
             </tr>
           </thead>
           <tbody>
@@ -250,7 +232,7 @@ export function IssuePanel({
                   )}
                   title={item.doc.path}
                 >
-                  <td className="px-4 py-1.5">
+                  <td className="px-4 py-2">
                     <span className="flex items-center gap-1.5">
                       <span className="truncate">{docDisplayTitle(item.doc)}</span>
                       {item.doc.frontmatterBroken && (
@@ -261,13 +243,13 @@ export function IssuePanel({
                       )}
                     </span>
                   </td>
-                  <td className="px-2 py-1.5">
+                  <td className="px-2 py-2">
                     <PriorityCell item={item} />
                   </td>
-                  <td className="px-2 py-1.5">
+                  <td className="px-2 py-2">
                     <StatusCell item={item} />
                   </td>
-                  <td className="px-2 py-1.5">
+                  <td className="px-2 py-2">
                     <span className="flex flex-wrap gap-1">
                       {item.doc.labels.map((l) => (
                         <LabelChip
@@ -278,8 +260,8 @@ export function IssuePanel({
                       ))}
                     </span>
                   </td>
-                  <td className="truncate px-2 py-1.5 text-muted-foreground">{item.workspaceName}</td>
-                  <td className="px-2 py-1.5 text-muted-foreground">{docDate(item.doc)}</td>
+                  <td className="truncate px-2 py-2 text-muted-foreground">{item.workspaceName}</td>
+                  <td className="px-2 py-2 text-muted-foreground">{docDate(item.doc)}</td>
                 </tr>
               </DocContextMenu>
             ))}
