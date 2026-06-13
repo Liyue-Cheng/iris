@@ -1,6 +1,6 @@
 ---
 title: claude design
-status: in_progress
+status: Done
 ---
 # claude design
 
