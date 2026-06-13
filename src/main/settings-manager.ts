@@ -65,8 +65,8 @@ export const DEFAULT_SETTINGS: Settings = {
     lastRoot: null,
   },
   agents: [
-    { id: 'claude', label: 'claude', command: 'claude' },
-    { id: 'shell', label: '终端', command: '' },
+    { id: 'claude', label: 'claude', command: 'claude', injection: 'hook' },
+    { id: 'shell', label: '终端', command: '', injection: 'none' },
   ],
   advanced: {
     activeIdleThresholdSeconds: 2,
@@ -280,6 +280,19 @@ export function validateSettings(s: Settings): void {
     if (typeof a.command !== 'string') {
       throw new SettingsError('InvalidSettings', `agent "${a.id}" command must be a string`);
     }
+    if (a.injection !== undefined && !['hook', 'flag', 'none'].includes(a.injection)) {
+      throw new SettingsError(
+        'InvalidSettings',
+        `agent "${a.id}" injection must be hook / flag / none (or absent)`,
+      );
+    }
+  }
+  const ids = new Set<string>();
+  for (const a of s.agents) {
+    if (ids.has(a.id)) {
+      throw new SettingsError('InvalidSettings', `duplicate agent id "${a.id}"`);
+    }
+    ids.add(a.id);
   }
   const threshold = s.advanced.activeIdleThresholdSeconds;
   if (typeof threshold !== 'number' || !Number.isFinite(threshold) || threshold < 0.1 || threshold > 60) {
