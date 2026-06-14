@@ -4,9 +4,11 @@
  * ACTIVE issues only; reports hide `Backlog`; archived workspaces (inside
  * report/) render grayed as one frozen block.
  *
- * The ROOT node is special (round-3 E-4): not a collapse toggle — clicking
- * it shows the project README in the middle pane and the project-root
- * terminals on the right. Nested workspaces keep the collapse gesture.
+ * The ROOT node is special (round-3 E-4, 主页重设计): not a collapse toggle —
+ * clicking it drops the README and gives the terminal the full width. Its
+ * project-root sessions are listed right under it (above the type sections),
+ * so the root node doubles as the terminal hub. Nested workspaces keep the
+ * collapse gesture.
  */
 import { useState } from 'react';
 import {
@@ -23,13 +25,32 @@ import {
 } from 'lucide-react';
 import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DocContextMenu } from '@renderer/components/doc/DocContextMenu';
-import { aggregateDocState, useSessions } from '@renderer/stores/session-store';
+import {
+  aggregateDocState,
+  sessionStore,
+  useSessions,
+} from '@renderer/stores/session-store';
 import type { DocType, IrisDoc, IrisWorkspace } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
 import { docDisplayTitle, isActiveIssue } from '@renderer/lib/doc-utils';
 import { useLensPrefs, type LensSort } from '@renderer/stores/lens-prefs';
+import { useSettings } from '@renderer/stores/settings-store';
+import { closeSession, openSession } from '@renderer/lib/session-actions';
 import { StatusBadge } from '@renderer/components/ui/status-badge';
 import { SessionDot } from '@renderer/components/ui/session-dot';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from '@renderer/components/ui/dropdown-menu';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '@renderer/components/ui/context-menu';
 import { setDocDragData } from '@renderer/lib/doc-drag';
 import { projectStore, useProject } from '@renderer/stores/project-store';
 
@@ -191,6 +212,127 @@ function TypeSection({
   );
 }
 
+/**
+ * The new-root-session +, sitting beside the root node's title (主页重设计):
+ * spawns a project-root session (docPath null, no FOCUS_DOC) with the chosen
+ * agent. The root sessions themselves list directly below the root node.
+ */
+function NewRootSessionButton(): JSX.Element {
+  const settings = useSettings();
+  const agents = settings?.agents ?? [];
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          title="新建项目根会话"
+          className="shrink-0 rounded-sm p-0.5 text-muted-foreground/0 hover:bg-muted hover:!text-foreground group-hover/root:text-muted-foreground"
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuLabel>项目根（无聚焦兜底）</DropdownMenuLabel>
+        {agents.map((a) => (
+          <DropdownMenuItem key={a.id} onClick={() => void openSession(null, a.id)}>
+            用 {a.label} 打开
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * The root node row (主页重设计): the project-root selection gesture plus the
+ * new-session +. Only one shadow at a time — when a root session row is the
+ * active terminal, IT carries the highlight and the iris node stays plain; the
+ * node highlights only when the root view shows no session (the launch pad).
+ */
+function RootNodeRow({ name }: { name: string }): JSX.Element {
+  const { view } = useProject();
+  const { sessions, activeSessionId } = useSessions();
+  const rootSessionActive =
+    view.kind === 'root' &&
+    sessions.some((s) => s.docPath === null && s.id === activeSessionId);
+  const selected = view.kind === 'root' && !rootSessionActive;
+
+  return (
+    <div className="group/root flex items-center pr-1">
+      <button
+        type="button"
+        title="项目根 — 终端独占全屏；根会话列在下方"
+        onClick={() => void projectStore.selectRoot()}
+        className={cn(
+          'flex min-w-0 flex-1 items-center gap-1.5 rounded-sm px-2 py-1.5 text-[13px] font-semibold',
+          selected ? 'bg-accent text-accent-foreground' : 'text-foreground hover:bg-muted',
+        )}
+      >
+        <FolderRoot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span className="truncate">{name}</span>
+      </button>
+      <NewRootSessionButton />
+    </div>
+  );
+}
+
+/**
+ * Project-root session rows, listed directly under the root node (主页重设计):
+ * the left pane is the attention-scheduling panel, so the root terminals live
+ * here (above status/issue/…) with no section header — just the rows. A click
+ * stages that session in the full-width terminal. Empty → nothing.
+ */
+function RootSessionList(): JSX.Element | null {
+  const { sessions, activeSessionId } = useSessions();
+  const { view } = useProject();
+  const rootSessions = sessions.filter((s) => s.docPath === null);
+  if (rootSessions.length === 0) return null;
+  const isRootView = view.kind === 'root';
+
+  return (
+    <div>
+      {rootSessions.map((s) => {
+        const active = isRootView && activeSessionId === s.id;
+        const label = s.terminalTitle ?? s.displayName;
+        return (
+          <ContextMenu key={s.id}>
+            <ContextMenuTrigger asChild>
+              <button
+                type="button"
+                onClick={async () => {
+                  await projectStore.selectRoot();
+                  sessionStore.select(s.id);
+                }}
+                className={cn(
+                  'flex w-full items-center gap-1.5 rounded-sm px-2 py-1.5 text-left text-sm leading-tight',
+                  active ? 'bg-accent text-accent-foreground' : 'hover:bg-muted',
+                )}
+                title={label}
+              >
+                <SessionDot state={s.state} />
+                <span className="truncate">{label}</span>
+                {s.state === 'exited' && (
+                  <span className="ml-auto shrink-0 text-[11px] text-muted-foreground/60">
+                    exit {s.exitCode}
+                  </span>
+                )}
+              </button>
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <ContextMenuItem
+                className="text-destructive focus:text-destructive"
+                onClick={() => void closeSession(s.id)}
+              >
+                关闭会话
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
+        );
+      })}
+    </div>
+  );
+}
+
 function WorkspaceSection({
   ws,
   depth,
@@ -201,29 +343,14 @@ function WorkspaceSection({
   parentArchived: boolean;
 }): JSX.Element {
   const [open, setOpen] = useState(true);
-  const { view } = useProject();
   const archived = ws.archived || parentArchived;
   const isRoot = depth === 0;
   const byType = (t: DocType): IrisDoc[] => ws.docs.filter((d) => d.type === t);
 
   return (
-    <div className={cn(depth > 0 && 'ml-2 border-l border-border/60 pl-1')}>
+    <div className={cn(depth > 0 && 'ml-2 border-l border-subtle pl-1')}>
       {isRoot ? (
-        // Root node: a selection gesture, not a collapse toggle (E-4).
-        <button
-          type="button"
-          title="项目根 — 中栏显示 README，右栏显示项目根终端"
-          onClick={() => void projectStore.selectRoot()}
-          className={cn(
-            'flex w-full items-center gap-1.5 rounded-sm px-2 py-1.5 text-[13px] font-semibold',
-            view.kind === 'root'
-              ? 'bg-accent text-accent-foreground'
-              : 'text-foreground hover:bg-muted',
-          )}
-        >
-          <FolderRoot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <span className="truncate">{ws.name}</span>
-        </button>
+        <RootNodeRow name={ws.name} />
       ) : (
         <button
           type="button"
@@ -245,6 +372,7 @@ function WorkspaceSection({
       )}
       {(isRoot || open) && (
         <div className={cn('space-y-2 pt-1', archived && 'opacity-75')}>
+          {isRoot && <RootSessionList />}
           {TYPE_ORDER.map((t) => (
             <TypeSection
               key={t}
