@@ -11,6 +11,7 @@ import { Crepe } from '@milkdown/crepe';
 import { CHANNELS } from '@shared/protocol';
 import type { DocContent } from '@shared/types';
 import { useProject } from '@renderer/stores/project-store';
+import { mountCrepeSerially } from '@renderer/lib/crepe-lifecycle';
 
 function ReadonlyCrepe({ content }: { content: string }): JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -28,9 +29,13 @@ function ReadonlyCrepe({ content }: { content: string }): JSX.Element {
       },
     });
     crepe.setReadonly(true);
-    void crepe.create();
+    const lifecycle = mountCrepeSerially({
+      root: el,
+      crepe,
+      label: 'root-readme',
+    });
     return () => {
-      void crepe.destroy();
+      lifecycle.stop();
     };
   }, [content]);
 

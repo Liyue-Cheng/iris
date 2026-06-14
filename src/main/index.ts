@@ -6,7 +6,7 @@
  * arrive in M1/M3. The "bootstrap starting" log line is the smoke-test
  * milestone (scripts/smoke-launch.mjs pattern-matches it).
  */
-import { app, BrowserWindow, dialog, screen } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, screen } from 'electron';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { JsonStore } from './persistence';
@@ -16,6 +16,7 @@ import { SessionManager } from './session-manager';
 import { registerIpcHandlers, wireBroadcasts } from './ipc';
 import { getBuildType } from './build-type';
 import { logger } from './logger';
+import { CHANNELS, EVENTS } from '@shared/protocol';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const isDev = !!process.env.ELECTRON_RENDERER_URL;
@@ -51,6 +52,14 @@ app.on('second-instance', () => {
 const settingsManager = new SettingsManager(new JsonStore(settingsFilePath()));
 const projectManager = new ProjectManager();
 const sessionManager = new SessionManager(settingsManager);
+
+// B3 close-time flush handshake: the window's close handler sends
+// APP_FLUSH_BEFORE_QUIT and awaits this resolver; the renderer invokes
+// APP_FLUSH_DONE once its editor flush settles.
+let flushDoneResolve: (() => void) | null = null;
+ipcMain.handle(CHANNELS.APP_FLUSH_DONE, () => {
+  flushDoneResolve?.();
+});
 
 function createWindow(): BrowserWindow {
   // A coding tool carries a lot of information — open generously rather than
@@ -123,9 +132,32 @@ function createWindow(): BrowserWindow {
   settingsManager.on('settingsChanged', onSettingsChanged);
   win.on('closed', () => settingsManager.off('settingsChanged', onSettingsChanged));
 
-  // confirmOnQuit: closing the window with live sessions kills agent work
-  // mid-flight — ask first (Marina behavior.confirmOnQuit).
+  // Close flow (B3 + confirmOnQuit). Two concerns, in order:
+  //   1) flush unsaved editor work — main can't reach the editor state, so it
+  //      asks the renderer to run its normal doc.save and waits for an ack
+  //      (with a timeout so a wedged renderer never blocks quit);
+  //   2) confirmOnQuit: warn when live sessions would be killed.
+  // The flush defers the real close once; on re-entry `flushed` is true and we
+  // fall through to the confirm dialog.
+  let flushed = false;
   win.on('close', (e) => {
+    if (!flushed && !win.webContents.isDestroyed()) {
+      e.preventDefault();
+      flushed = true;
+      const done = new Promise<void>((resolve) => {
+        flushDoneResolve = resolve;
+      });
+      win.webContents.send(EVENTS.APP_FLUSH_BEFORE_QUIT);
+      const timeout = new Promise<void>((resolve) => setTimeout(resolve, 1500));
+      void Promise.race([done, timeout]).then(() => {
+        flushDoneResolve = null;
+        if (!win.isDestroyed()) win.close();
+      });
+      return;
+    }
+
+    // confirmOnQuit: closing the window with live sessions kills agent work
+    // mid-flight — ask first (Marina behavior.confirmOnQuit).
     if (!settingsManager.get().behavior.confirmOnQuit) return;
     const live = sessionManager.list().filter((s) => s.state !== 'exited').length;
     if (live === 0) return;
@@ -138,7 +170,11 @@ function createWindow(): BrowserWindow {
       message: `仍有 ${live} 个会话在运行`,
       detail: '退出会终止所有会话（包括正在工作的 agent）。',
     });
-    if (choice === 1) e.preventDefault();
+    // Cancel: re-arm the flush so a later close attempt flushes fresh edits.
+    if (choice === 1) {
+      e.preventDefault();
+      flushed = false;
+    }
   });
 
   if (isDev && process.env.ELECTRON_RENDERER_URL) {

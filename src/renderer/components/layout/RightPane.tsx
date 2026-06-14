@@ -12,14 +12,14 @@
  * EmptyPathState, F-1): spawn happens only on an explicit click.
  */
 import { ChevronDown, Plus, X, FileText, FolderRoot, SquareTerminal } from 'lucide-react';
-import type { SessionInfo } from '@shared/types';
-import { cn } from '@renderer/lib/utils';
 import { useSessions, sessionStore } from '@renderer/stores/session-store';
 import { useSettings } from '@renderer/stores/settings-store';
 import { useProject } from '@renderer/stores/project-store';
 import { closeSession, openSession } from '@renderer/lib/session-actions';
+import { docDisplayTitle, findDocByPath } from '@renderer/lib/doc-utils';
 import { TerminalView } from '@renderer/components/terminal/TerminalView';
 import { Button } from '@renderer/components/ui/button';
+import { SessionDot } from '@renderer/components/ui/session-dot';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -27,25 +27,29 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from '@renderer/components/ui/dropdown-menu';
-
-const STATE_DOT: Record<SessionInfo['state'], { glyph: string; cls: string; label: string }> = {
-  active: { glyph: '●', cls: 'text-[var(--rp-foam)]', label: '工作中' },
-  idle: { glyph: '◐', cls: 'text-[var(--rp-gold)]', label: '空闲/等输入' },
-  exited: { glyph: '○', cls: 'text-muted-foreground/60', label: '已退出' },
-};
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '@renderer/components/ui/context-menu';
 
 export function RightPane(): JSX.Element {
   const { sessions, activeSessionId } = useSessions();
   const settings = useSettings();
-  const { phase, selectedPath, view } = useProject();
+  const { phase, selectedPath, view, scan } = useProject();
   const agents = settings?.agents ?? [];
   const projectReady = phase === 'ready';
 
   // The pane's anchor mirrors the middle pane: a selected doc, or the
   // project root (root node selected / nothing selected yet).
   const anchor: string | null = view.kind === 'root' ? null : selectedPath;
+  // D5: show the doc's display title (frontmatter title), not the filename.
+  const anchorDoc = anchor && scan?.root ? findDocByPath(scan.root, anchor) : null;
   const anchorName = anchor
-    ? (anchor.split('/').pop()?.replace(/\.md$/i, '') ?? anchor)
+    ? anchorDoc
+      ? docDisplayTitle(anchorDoc)
+      : (anchor.split('/').pop()?.replace(/\.md$/i, '') ?? anchor)
     : '项目根';
   const AnchorIcon = anchor ? FileText : FolderRoot;
 
@@ -63,74 +67,78 @@ export function RightPane(): JSX.Element {
       {/* Terminal banner — aligned (h-9) with the other panes' first rows. */}
       <div className="flex h-9 shrink-0 items-center gap-1 border-b px-2">
         {shownSession ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                title="切换该锚点下的会话"
-                className="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm px-1.5 py-1 text-left text-[13px] hover:bg-muted/60"
-              >
-                <span
-                  className={cn('shrink-0 text-[11px]', STATE_DOT[shownSession.state].cls)}
-                  title={STATE_DOT[shownSession.state].label}
-                >
-                  {STATE_DOT[shownSession.state].glyph}
-                </span>
-                <span className="shrink-0 font-medium">{shownSession.displayName}</span>
-                <span className="flex min-w-0 items-center gap-1 text-muted-foreground">
-                  <AnchorIcon className="h-3.5 w-3.5 shrink-0" />
-                  <span className="truncate">{anchorName}</span>
-                </span>
-                {shownSession.state === 'exited' && (
-                  <span className="shrink-0 text-[11px] text-muted-foreground/60">
-                    exit {shownSession.exitCode}
-                  </span>
-                )}
-                {visibleSessions.length > 1 && (
-                  <span className="shrink-0 text-[11px] text-muted-foreground/60">
-                    {visibleSessions.indexOf(shownSession) + 1}/{visibleSessions.length}
-                  </span>
-                )}
-                <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground/60" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-64">
-              <DropdownMenuLabel className="truncate">
-                {anchorName} 的会话
-              </DropdownMenuLabel>
-              {visibleSessions.map((s) => (
-                <DropdownMenuItem
-                  key={s.id}
-                  onClick={() => sessionStore.select(s.id)}
-                  className="group flex items-center gap-1.5"
-                >
-                  <span className={cn('shrink-0 text-[11px]', STATE_DOT[s.state].cls)}>
-                    {STATE_DOT[s.state].glyph}
-                  </span>
-                  <span className="shrink-0 font-medium">{s.displayName}</span>
-                  {s.state === 'exited' && (
-                    <span className="shrink-0 text-[11px] text-muted-foreground/60">
-                      exit {s.exitCode}
-                    </span>
-                  )}
-                  {s.id === shownSession.id && (
-                    <span className="shrink-0 text-[11px] text-muted-foreground/60">当前</span>
-                  )}
-                  <button
-                    type="button"
-                    title="关闭会话"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void closeSession(s.id);
-                    }}
-                    className="ml-auto shrink-0 rounded-sm p-0.5 opacity-0 hover:bg-muted group-hover:opacity-100"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <ContextMenu>
+            <ContextMenuTrigger asChild>
+              <div className="flex min-w-0 flex-1">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      title="切换该锚点下的会话（右键可关闭）"
+                      className="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm px-1.5 py-1 text-left text-[13px] hover:bg-muted/60"
+                    >
+                      <SessionDot state={shownSession.state} />
+                      <span className="shrink-0 font-medium">{shownSession.displayName}</span>
+                      <span className="flex min-w-0 items-center gap-1 text-muted-foreground">
+                        <AnchorIcon className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate">{anchorName}</span>
+                      </span>
+                      {shownSession.state === 'exited' && (
+                        <span className="shrink-0 text-[11px] text-muted-foreground/60">
+                          exit {shownSession.exitCode}
+                        </span>
+                      )}
+                      {visibleSessions.length > 1 && (
+                        <span className="shrink-0 text-[11px] text-muted-foreground/60">
+                          {visibleSessions.indexOf(shownSession) + 1}/{visibleSessions.length}
+                        </span>
+                      )}
+                      <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground/60" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="w-64">
+                    <DropdownMenuLabel className="truncate">
+                      {anchorName} 的会话
+                    </DropdownMenuLabel>
+                    {visibleSessions.map((s) => (
+                      <DropdownMenuItem
+                        key={s.id}
+                        onClick={() => sessionStore.select(s.id)}
+                        className="flex items-center gap-1.5"
+                      >
+                        <SessionDot state={s.state} />
+                        <span className="shrink-0 font-medium">{s.displayName}</span>
+                        {s.state === 'exited' && (
+                          <span className="shrink-0 text-[11px] text-muted-foreground/60">
+                            exit {s.exitCode}
+                          </span>
+                        )}
+                        {s.id === shownSession.id && (
+                          <span className="shrink-0 text-[11px] text-muted-foreground/60">当前</span>
+                        )}
+                        <button
+                          type="button"
+                          title="关闭会话"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void closeSession(s.id);
+                          }}
+                          className="ml-auto shrink-0 rounded-sm p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <ContextMenuItem onClick={() => void closeSession(shownSession.id)}>
+                关闭会话
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
         ) : (
           <span className="flex min-w-0 flex-1 items-center gap-1.5 px-1.5 text-[13px] text-muted-foreground">
             <AnchorIcon className="h-3.5 w-3.5 shrink-0" />

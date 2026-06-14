@@ -12,6 +12,10 @@ import {
   FolderTree,
   Loader2,
   TriangleAlert,
+  ArrowDownAZ,
+  Clock,
+  Search,
+  X,
 } from 'lucide-react';
 import { collectTodos } from '@renderer/lib/collect-docs';
 import { cn } from '@renderer/lib/utils';
@@ -22,6 +26,7 @@ import {
   TooltipTrigger,
 } from '@renderer/components/ui/tooltip';
 import { projectStore, useProject } from '@renderer/stores/project-store';
+import { lensPrefs, useLensPrefs } from '@renderer/stores/lens-prefs';
 import { pickAndOpenProject } from '@renderer/lib/project-actions';
 import { LensTree } from '@renderer/components/lens/LensTree';
 import { RawTree } from '@renderer/components/lens/RawTree';
@@ -39,6 +44,7 @@ function EmptyState({ children }: { children: React.ReactNode }): JSX.Element {
 
 export function LeftPane(): JSX.Element {
   const { phase, error, scan, rawMode, rawTree, view } = useProject();
+  const { sort, filter, filterOpen } = useLensPrefs();
   const [initOpen, setInitOpen] = useState(false);
   const [wsOpen, setWsOpen] = useState(false);
 
@@ -73,6 +79,45 @@ export function LeftPane(): JSX.Element {
           </Tooltip>
           {phase === 'ready' && scan?.hasIris && (
             <>
+              {scan.root && (
+                <>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={() => lensPrefs.toggleSort()}
+                      >
+                        {sort === 'mtime' ? (
+                          <Clock className="!size-4" />
+                        ) : (
+                          <ArrowDownAZ className="!size-4" />
+                        )}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {sort === 'mtime' ? '排序：修改时间（点击切字母序）' : '排序：字母序（点击切修改时间）'}
+                    </TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className={cn(
+                          'h-7 w-7',
+                          filterOpen && 'bg-accent text-accent-foreground',
+                        )}
+                        onClick={() => lensPrefs.toggleFilter()}
+                      >
+                        <Search className="!size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>筛选文档（名称 / 标题）</TooltipContent>
+                  </Tooltip>
+                </>
+              )}
               {scan.root && (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -130,6 +175,32 @@ export function LeftPane(): JSX.Element {
           )}
         </div>
       </div>
+
+      {phase === 'ready' && scan?.hasIris && filterOpen && (
+        <div className="flex h-8 shrink-0 items-center gap-1 border-b px-2">
+          <Search className="size-3.5 shrink-0 text-muted-foreground" />
+          <input
+            autoFocus
+            value={filter}
+            placeholder="筛选文档…"
+            onChange={(e) => lensPrefs.setFilter(e.target.value.toLowerCase())}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') lensPrefs.toggleFilter();
+            }}
+            className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/50"
+          />
+          {filter !== '' && (
+            <button
+              type="button"
+              title="清除"
+              onClick={() => lensPrefs.setFilter('')}
+              className="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <X className="size-3.5" />
+            </button>
+          )}
+        </div>
+      )}
 
       {constitutionMissing && (
         <button

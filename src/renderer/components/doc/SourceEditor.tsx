@@ -8,6 +8,7 @@ import { EditorView, basicSetup } from 'codemirror';
 import { EditorState } from '@codemirror/state';
 import { markdown } from '@codemirror/lang-markdown';
 import { editorStore } from '@renderer/stores/editor-store';
+import { attachScrollMemory } from '@renderer/lib/scroll-memory';
 
 export function SourceEditor({
   path,
@@ -47,7 +48,14 @@ export function SourceEditor({
       }),
     });
 
-    return () => view.destroy();
+    // C1/C2: CodeMirror exposes its scroller directly (view.scrollDOM =
+    // .cm-scroller). Same keeper — restore-then-save, no ratchet.
+    const keeper = attachScrollMemory({ key: `source:${path}`, content: view.scrollDOM });
+
+    return () => {
+      keeper.stop();
+      view.destroy();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, generation]);
 

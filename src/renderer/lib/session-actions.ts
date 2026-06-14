@@ -6,8 +6,13 @@
  */
 import { pipeline } from '@renderer/cpu';
 import { getLastTerminalDims } from '@renderer/stores/session-store';
+import { editorStore } from '@renderer/stores/editor-store';
 
 export async function openSession(docPath: string | null, agentId: string): Promise<void> {
+  // Round-4 A1/A2: the core gesture injects FOCUS_DOC and the agent `cat`s
+  // the doc on spawn — flush pending editor edits FIRST so it reads the
+  // current bytes, not the last-saved ones.
+  await editorStore.flushBeforeSwitch();
   const { cols, rows } = getLastTerminalDims();
   await pipeline.dispatch('session.open', { docPath, agentId, cols, rows });
 }

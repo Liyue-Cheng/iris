@@ -19,8 +19,11 @@
  */
 import { useEffect, useRef } from 'react';
 import { Crepe } from '@milkdown/crepe';
+import { editorViewCtx } from '@milkdown/kit/core';
 import { CHANNELS } from '@shared/protocol';
 import { editorStore } from '@renderer/stores/editor-store';
+import { mountCrepeSerially, type CrepeLifecycle } from '@renderer/lib/crepe-lifecycle';
+import { attachScrollMemory, type ScrollKeeper } from '@renderer/lib/scroll-memory';
 import { useSettings } from '@renderer/stores/settings-store';
 import {
   ContextMenu,
@@ -51,7 +54,7 @@ export function CrepeEditor({
     const el = rootRef.current;
     if (!el) return;
 
-    let destroyed = false;
+    let stopped = false;
     const crepe = new Crepe({
       root: el,
       defaultValue: body,
@@ -64,18 +67,31 @@ export function CrepeEditor({
 
     crepe.on((listener) => {
       listener.markdownUpdated((_ctx, md) => {
-        if (!destroyed) editorStore.setBody(md);
+        if (!stopped) editorStore.setBody(md);
       });
     });
 
-    void crepe.create().then(() => {
-      if (destroyed) return;
-      editorStore.setBodyBaseline(crepe.getMarkdown());
+    // C1/C2 scroll memory. No Milkdown scroll API (docs/milkdown-crepe-api.md);
+    // attachScrollMemory finds the real DOM scroller from the ProseMirror
+    // content node (via editorViewCtx), restores off content-height stability,
+    // and only records genuine user scrolls (no restore-induced ratchet).
+    let keeper: ScrollKeeper | null = null;
+    const lifecycle: CrepeLifecycle = mountCrepeSerially({
+      root: el,
+      crepe,
+      label: `wysiwyg:${path}`,
+      onCreated: () => {
+        if (stopped) return;
+        editorStore.setBodyBaseline(crepe.getMarkdown());
+        const view = crepe.editor.action((ctx) => ctx.get(editorViewCtx));
+        keeper = attachScrollMemory({ key: `wysiwyg:${path}`, content: view.dom as HTMLElement });
+      },
     });
 
     return () => {
-      destroyed = true;
-      void crepe.destroy();
+      stopped = true;
+      keeper?.stop();
+      lifecycle.stop();
     };
     // Remount only on a different doc, an explicit generation bump, or a
     // BlockEdit toggle (Crepe features are fixed at create time) — NOT on

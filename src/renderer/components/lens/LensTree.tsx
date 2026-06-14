@@ -27,7 +27,9 @@ import { aggregateDocState, useSessions } from '@renderer/stores/session-store';
 import type { DocType, IrisDoc, IrisWorkspace } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
 import { docDisplayTitle, isActiveIssue } from '@renderer/lib/doc-utils';
+import { useLensPrefs, type LensSort } from '@renderer/stores/lens-prefs';
 import { StatusBadge } from '@renderer/components/ui/status-badge';
+import { SessionDot } from '@renderer/components/ui/session-dot';
 import { setDocDragData } from '@renderer/lib/doc-drag';
 import { projectStore, useProject } from '@renderer/stores/project-store';
 
@@ -47,17 +49,27 @@ const TYPE_META: Record<DocType, { label: string; icon: typeof Gauge }> = {
  */
 function StatusDot({ docPath }: { docPath: string }): JSX.Element {
   const { sessions } = useSessions();
-  const agg = aggregateDocState(sessions, docPath);
-  if (agg === 'active') {
-    return <span className="w-3 shrink-0 text-center text-[10px] text-[var(--rp-foam)]">●</span>;
+  return <SessionDot state={aggregateDocState(sessions, docPath)} />;
+}
+
+/** Order docs inside a type section per the left-pane sort preference. */
+function sortDocs(docs: IrisDoc[], sort: LensSort): IrisDoc[] {
+  const out = [...docs];
+  if (sort === 'mtime') {
+    out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  } else {
+    out.sort((a, b) => docDisplayTitle(a).localeCompare(docDisplayTitle(b), 'zh'));
   }
-  if (agg === 'idle') {
-    return <span className="w-3 shrink-0 text-center text-[10px] text-[var(--rp-gold)]">◐</span>;
-  }
-  if (agg === 'exited') {
-    return <span className="w-3 shrink-0 text-center text-[10px] text-muted-foreground/60">○</span>;
-  }
-  return <span className="w-3 shrink-0" />;
+  return out;
+}
+
+/** Text filter over file name + display title (case-insensitive). */
+function matchesFilter(doc: IrisDoc, filter: string): boolean {
+  if (filter === '') return true;
+  return (
+    doc.name.toLowerCase().includes(filter) ||
+    docDisplayTitle(doc).toLowerCase().includes(filter)
+  );
 }
 
 function DocRow({ doc, archived }: { doc: IrisDoc; archived: boolean }): JSX.Element {
@@ -103,19 +115,27 @@ function TypeSection({
   workspacePath: string;
 }): JSX.Element | null {
   const [open, setOpen] = useState(true);
+  const { sort, filter } = useLensPrefs();
   const { label, icon: Icon } = TYPE_META[type];
 
   // Lens filters: issues show active only; reports hide `Backlog` (literal
   // match — the two-state report machine, C 条). Archived sections freeze
-  // whole and show everything.
-  const visibleDocs =
+  // whole and show everything. Then the user's sort + text filter apply.
+  const lensDocs =
     type === 'issue' && !archived
       ? docs.filter(isActiveIssue)
       : type === 'report' && !archived
         ? docs.filter((d) => d.status !== 'Backlog')
         : docs;
+  const visibleDocs = sortDocs(
+    lensDocs.filter((d) => matchesFilter(d, filter)),
+    sort,
+  );
   // Archived workspaces are frozen: hide empty sections AND the + button.
   if (docs.length === 0 && archived) return null;
+  // While filtering, drop sections with no match and force the rest open.
+  if (filter !== '' && visibleDocs.length === 0) return null;
+  const sectionOpen = filter !== '' ? true : open;
 
   return (
     <div className="group/section">
@@ -126,7 +146,11 @@ function TypeSection({
           onClick={() => setOpen(!open)}
           className="px-2 py-0.5 text-muted-foreground hover:text-foreground"
         >
-          {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          {sectionOpen ? (
+            <ChevronDown className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5" />
+          )}
         </button>
         <button
           type="button"
@@ -151,7 +175,7 @@ function TypeSection({
           </button>
         )}
       </div>
-      {open && (
+      {sectionOpen && (
         <div className="pb-1">
           {visibleDocs.map((d) => (
             <DocRow key={d.path} doc={d} archived={archived} />
@@ -220,7 +244,7 @@ function WorkspaceSection({
         </button>
       )}
       {(isRoot || open) && (
-        <div className={cn(archived && 'opacity-75')}>
+        <div className={cn('space-y-2 pt-1', archived && 'opacity-75')}>
           {TYPE_ORDER.map((t) => (
             <TypeSection
               key={t}

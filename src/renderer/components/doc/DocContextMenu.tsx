@@ -15,6 +15,7 @@ import {
   ContextMenuTrigger,
 } from '@renderer/components/ui/context-menu';
 import { useSettings } from '@renderer/stores/settings-store';
+import { editorStore } from '@renderer/stores/editor-store';
 import { openSession } from '@renderer/lib/session-actions';
 import { openDeleteDialog } from '@renderer/components/doc/DeleteDocDialog';
 
@@ -43,7 +44,11 @@ export function DocContextMenu({
         ))}
         <ContextMenuSeparator />
         <ContextMenuItem
-          onClick={() => void window.api.invoke(CHANNELS.SHELL_REVEAL, { path: docPath })}
+          onClick={() =>
+            void editorStore
+              .flushBeforeSwitch()
+              .then(() => window.api.invoke(CHANNELS.SHELL_REVEAL, { path: docPath }))
+          }
         >
           在资源管理器中显示
         </ContextMenuItem>

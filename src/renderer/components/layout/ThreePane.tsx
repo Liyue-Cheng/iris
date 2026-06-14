@@ -14,11 +14,33 @@ import {
 import { LeftPane } from '@renderer/components/layout/LeftPane';
 import { MiddlePane } from '@renderer/components/layout/MiddlePane';
 import { RightPane } from '@renderer/components/layout/RightPane';
+import { useProject } from '@renderer/stores/project-store';
 
 export function ThreePane(): JSX.Element {
+  const { view } = useProject();
+  // Round-4 E3: collection / todo views are the "manager" — there is no
+  // terminal anchor, so drop the right pane and let the manager take the
+  // freed width. Only the single-doc and project-root views keep a terminal.
+  // Equal-width left/right (D3) when the terminal is present.
+  const showTerminal = view.kind === 'doc' || view.kind === 'root';
+
+  if (!showTerminal) {
+    return (
+      <ResizablePanelGroup direction="horizontal" autoSaveId="iris-two-pane">
+        <ResizablePanel defaultSize={25} minSize={12}>
+          <LeftPane />
+        </ResizablePanel>
+        <ResizableHandle />
+        <ResizablePanel defaultSize={75} minSize={30}>
+          <MiddlePane />
+        </ResizablePanel>
+      </ResizablePanelGroup>
+    );
+  }
+
   return (
-    <ResizablePanelGroup direction="horizontal" autoSaveId="iris-three-pane">
-      <ResizablePanel defaultSize={20} minSize={12}>
+    <ResizablePanelGroup direction="horizontal" autoSaveId="iris-three-pane-v2">
+      <ResizablePanel defaultSize={25} minSize={12}>
         <LeftPane />
       </ResizablePanel>
       <ResizableHandle />
@@ -26,7 +48,7 @@ export function ThreePane(): JSX.Element {
         <MiddlePane />
       </ResizablePanel>
       <ResizableHandle />
-      <ResizablePanel defaultSize={30} minSize={15}>
+      <ResizablePanel defaultSize={25} minSize={15}>
         <RightPane />
       </ResizablePanel>
     </ResizablePanelGroup>

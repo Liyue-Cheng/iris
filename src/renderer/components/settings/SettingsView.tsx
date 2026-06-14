@@ -51,6 +51,7 @@ import { pipeline } from '@renderer/cpu';
 import { useSettings } from '@renderer/stores/settings-store';
 import { useStyleMaps } from '@renderer/stores/styles-store';
 import { useProject } from '@renderer/stores/project-store';
+import { editorStore } from '@renderer/stores/editor-store';
 import { Badge } from '@renderer/components/ui/badge';
 import { collectAllLabels } from '@renderer/lib/label-utils';
 import { Button } from '@renderer/components/ui/button';
@@ -71,6 +72,8 @@ let open = false;
 const subs = new Set<() => void>();
 
 export function openSettingsView(): void {
+  // B4: opening settings unmounts the editor — flush pending edits first.
+  void editorStore.flushBeforeSwitch();
   open = true;
   subs.forEach((cb) => cb());
 }

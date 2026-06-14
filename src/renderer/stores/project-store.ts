@@ -127,12 +127,14 @@ export const projectStore = {
   },
 
   /** Open a type-level collection view (issue panel etc.). */
-  openCollection(type: DocType, workspacePath: string | null): void {
+  async openCollection(type: DocType, workspacePath: string | null): Promise<void> {
+    await editorStore.flushBeforeSwitch();
     setState({ view: { kind: 'collection', type, workspacePath } });
   },
 
   /** Open the todo panel (unchecked tasks across active issues). */
-  openTodos(workspacePath: string | null): void {
+  async openTodos(workspacePath: string | null): Promise<void> {
+    await editorStore.flushBeforeSwitch();
     setState({ view: { kind: 'todos', workspacePath } });
   },
 

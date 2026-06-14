@@ -9,6 +9,9 @@
 
 export const CHANNELS = {
   APP_PING: 'app:ping',
+  /** Renderer → main ack that the close-time editor flush finished (B3).
+   *  Main awaits this (with a timeout) before destroying the window. */
+  APP_FLUSH_DONE: 'app:flush-done',
   SETTINGS_GET: 'settings:get',
   SETTINGS_UPDATE: 'settings:update',
   /** Verb (instruction-backed): open a project, start watching, persist lastRoot. */
@@ -90,6 +93,9 @@ export const CHANNELS = {
 
 export const EVENTS = {
   SETTINGS_CHANGED: 'evt:settings:changed',
+  /** Main → renderer: window is closing, flush unsaved editor work now (B3).
+   *  The renderer replies via the APP_FLUSH_DONE channel. */
+  APP_FLUSH_BEFORE_QUIT: 'evt:app:flush-before-quit',
   /** Maximize/restore state for the custom title bar's caption button. */
   WINDOW_MAXIMIZED_CHANGED: 'evt:window:maximized-changed',
   /** Batched .iris/ tree changes (chokidar, debounced in main). */

@@ -4,8 +4,10 @@ import './styles/global.css';
 import { App } from './App';
 import { initSettingsStore, getSettings } from './stores/settings-store';
 import { hydrateSessions } from './stores/session-store';
+import { editorStore } from './stores/editor-store';
 import { wireInterrupts } from './cpu/interrupts';
 import { openProject } from './lib/project-actions';
+import { CHANNELS, EVENTS } from '@shared/protocol';
 
 async function bootstrap(): Promise<void> {
   // Dev-only: the front-cpu instruction console (separate debug entry, zero
@@ -20,6 +22,14 @@ async function bootstrap(): Promise<void> {
   // wrong theme; index.html's static data-theme covers the load gap.
   await initSettingsStore();
   wireInterrupts();
+
+  // B3: on window close, main asks us to flush unsaved editor work (the
+  // normal doc.save instruction), then we ack so main can finish closing.
+  window.api.on(EVENTS.APP_FLUSH_BEFORE_QUIT, () => {
+    void editorStore
+      .save()
+      .finally(() => void window.api.invoke(CHANNELS.APP_FLUSH_DONE));
+  });
   // Session projection is event-fed; a renderer reload starts it empty
   // while the PTY pool lives on in main. Hydrate before first paint so
   // surviving sessions are visible (and closeable) immediately.

@@ -20,6 +20,7 @@ import {
   Eye,
   FileWarning,
   Loader2,
+  Pencil,
   Plus,
   Tag,
   TriangleAlert,
@@ -252,7 +253,7 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
                 placeholder={session.path.split('/').pop()?.replace(/\.md$/i, '') ?? ''}
                 disabled={!fmEditable}
                 onCommit={(v) => void editorStore.setFrontmatterField('title', v)}
-                className="min-w-0 flex-1 px-1.5 text-base font-semibold"
+                className="min-w-0 flex-1 px-1.5 text-lg font-semibold"
               />
             </span>
           </TooltipTrigger>
@@ -291,7 +292,9 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
         ) : session.dirty ? (
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="shrink-0 text-sm leading-none text-[var(--rp-gold)]">●</span>
+              {/* D2: pencil, not a gold dot — the gold dot collided with the
+                  terminal's idle light. A monochrome glyph reads as "edited". */}
+              <Pencil className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             </TooltipTrigger>
             <TooltipContent>未保存（Ctrl+S 保存）</TooltipContent>
           </Tooltip>
