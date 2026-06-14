@@ -1,6 +1,6 @@
 ---
 title: portable 版 GPU cache 创建失败
-status: In Progress
+status: Done
 labels: [round-3, bug]
 ---
 从第三轮批次 4 的 F-2 拆出独立跟踪（用户：单实例锁修复后问题仍在）。

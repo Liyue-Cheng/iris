@@ -179,7 +179,7 @@ export function TitleBar(): JSX.Element {
   }
 
   return (
-    <div className="app-region-drag flex h-10 shrink-0 items-center gap-2 border-b bg-card pl-3">
+    <div className="app-region-drag flex h-10 shrink-0 items-center gap-2 bg-card pl-3">
       <span className="text-sm font-semibold tracking-wide text-primary">Iris</span>
       <ProjectCrumb />
 

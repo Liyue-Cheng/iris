@@ -260,7 +260,14 @@ export interface SessionInfo {
    */
   docPath: string | null;
   agentId: string;
+  /** Stable agent label (e.g. "Claude") — identity, fixed at creation. */
   displayName: string;
+  /**
+   * Live terminal title reported by the program via OSC 0/2 (shell prompt,
+   * Claude Code, vim …), updated in real time; null until the first title
+   * event. The session banner shows this; displayName stays the agent label.
+   */
+  terminalTitle: string | null;
   projectRoot: string;
   cols: number;
   rows: number;

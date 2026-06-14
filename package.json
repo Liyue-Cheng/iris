@@ -20,6 +20,7 @@
     "dist": "npm run build && electron-builder --win portable --x64"
   },
   "dependencies": {
+    "@xterm/addon-search": "^0.17.0-beta.256",
     "@xterm/addon-serialize": "^0.15.0-beta.256",
     "@xterm/headless": "^6.1.0-beta.256",
     "chokidar": "^5.0.0",

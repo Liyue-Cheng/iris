@@ -227,6 +227,7 @@ export class SessionManager extends EventEmitter {
       docPath: input.docPath,
       agentId: agent.id,
       displayName: agent.label,
+      terminalTitle: null,
       projectRoot: cwd,
       cols: dims.cols,
       rows: dims.rows,
@@ -265,6 +266,11 @@ export class SessionManager extends EventEmitter {
     managed.disposables.push(
       pty.onData((data) => this.handlePtyData(managed, data)),
       pty.onExit(({ exitCode, signal }) => this.handlePtyExit(managed, exitCode, signal)),
+      // Live terminal title (OSC 0/2): the headless mirror parses every byte,
+      // so its onTitleChange fires for each title sequence. The renderer's
+      // xterm only exists for the shown session — tracking it here keeps every
+      // session's title live and surviving switches (Marina TIT-1).
+      managed.headlessTerm!.onTitleChange((title) => this.handleTitle(managed, title)),
     );
 
     this.emit('sessionCreated', { ...info });
@@ -589,6 +595,26 @@ export class SessionManager extends EventEmitter {
     }
   }
 
+  /**
+   * OSC 0/2 title event → update info.terminalTitle and broadcast.
+   *
+   * Sanitize (strip control / bidi chars, collapse spaces, cap length), then
+   * drop "startup garbage" titles — ConPTY translates a shell's initial
+   * SetConsoleTitle(exe path) into an OSC 0, and Git Bash re-sends its
+   * `MINGW64:<cwd>` PS1 prefix every prompt; neither is a useful title. Real
+   * CLI titles (vim …, ✻ Claude …) are verb-leading and pass the guard
+   * (Marina TIT-1). De-dupe so an unchanged title never broadcasts.
+   */
+  private handleTitle(managed: ManagedSession, rawTitle: string): void {
+    if (managed.info.state === 'exited') return;
+    const cleaned = sanitizeTitle(rawTitle);
+    if (!cleaned) return;
+    if (looksLikeShellStartupGarbage(cleaned)) return;
+    if (cleaned === managed.info.terminalTitle) return;
+    managed.info.terminalTitle = cleaned;
+    this.emitStateChanged(managed, { terminalTitle: cleaned });
+  }
+
   private emitStateChanged(managed: ManagedSession, patch: Partial<SessionInfo>): void {
     const payload: SessionStateChangedPayload = {
       sessionId: managed.info.id,
@@ -596,4 +622,56 @@ export class SessionManager extends EventEmitter {
     };
     this.emit('sessionStateChanged', payload);
   }
+}
+
+/**
+ * OSC 0/2 title normalization: replace control + DEL + Unicode bidi-override
+ * chars with spaces (the latter blocks RTL-override spoofing of the banner),
+ * collapse runs of whitespace, trim, cap at 100 chars. Empty → '' (caller
+ * skips). Ported from Marina.
+ */
+const TITLE_MAX_LEN = 100;
+function sanitizeTitle(raw: string): string {
+  let s = '';
+  for (const ch of raw) {
+    const code = ch.codePointAt(0)!;
+    if (code < 0x20 || code === 0x7f) {
+      s += ' ';
+      continue;
+    }
+    if (
+      code === 0x200b ||
+      code === 0x200e ||
+      code === 0x200f ||
+      (code >= 0x202a && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069)
+    ) {
+      s += ' ';
+      continue;
+    }
+    s += ch;
+  }
+  s = s.replace(/\s+/g, ' ').trim();
+  if (s.length > TITLE_MAX_LEN) s = s.slice(0, TITLE_MAX_LEN);
+  return s;
+}
+
+/**
+ * Whether a title is "startup garbage" — a bare path/exe a shell sets on
+ * launch, not a real program title. Real CLI titles are verb-leading
+ * ("vim C:\foo", "✻ Claude …") and never start with a bare drive/UNC/`/`
+ * prefix, so a `^` anchor is enough to tell them apart. Ported from Marina.
+ */
+export function looksLikeShellStartupGarbage(title: string): boolean {
+  // Windows drive path — "C:\…" / "D:/…"
+  if (/^[A-Za-z]:[\\/]/.test(title)) return true;
+  // UNC path — "\\server\share\…"
+  if (/^\\\\/.test(title)) return true;
+  // Unix absolute path — "/usr/bin/bash"
+  if (title.startsWith('/')) return true;
+  // Git Bash / MSYS2 default PS1 prefix, re-sent every prompt
+  if (/^(MINGW(32|64|ARM)?|MSYS\d?):/i.test(title)) return true;
+  // Bare exe filename — "cmd.exe" / "pwsh.exe"
+  if (/^\S+\.exe$/i.test(title)) return true;
+  return false;
 }

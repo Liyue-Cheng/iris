@@ -201,7 +201,7 @@ function LabelsEditor({ disabled }: { disabled: boolean }): JSX.Element {
             <button
               type="button"
               title="添加标签"
-              className="rounded-full border border-dashed border-border/60 p-0.5 text-muted-foreground hover:border-border hover:text-foreground"
+              className="rounded-full border border-subtle p-0.5 text-muted-foreground hover:border-border hover:text-foreground"
             >
               <Plus className="h-2.5 w-2.5" />
             </button>
@@ -239,7 +239,7 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
   const fmEditable = !looksBroken(session.fmBlock);
 
   return (
-    <div className="shrink-0 border-b bg-card/30 px-4">
+    <div className="shrink-0 bg-card/30 px-4">
       {/* Row 1 — h-9, aligned with the left/right pane headers. */}
       <div className="flex h-9 items-center gap-2">
         <StatusEditor type={type} value={status} disabled={!fmEditable} />

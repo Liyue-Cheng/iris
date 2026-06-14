@@ -57,8 +57,11 @@
   --accent-foreground: var(--rp-text);
   --destructive: var(--rp-love);
   --destructive-foreground: var(--rp-base);
-  /* 边框减弱 (round-3 E-6): VS Code-grade restraint — keep the hue, drop the weight */
+  /* 边框两档 (round-5): VS Code-grade restraint — keep the hue, drop the weight.
+     --border = 结构性分隔（基本只剩分隔条 / 卡片用）；
+     --border-subtle = 列表行 / 缩进线，唯一的第二档 */
   --border: color-mix(in srgb, var(--rp-highlight-med) 38%, transparent);
+  --border-subtle: color-mix(in srgb, var(--rp-highlight-med) 20%, transparent);
   --input: var(--rp-highlight-med);
   --ring: var(--rp-iris);
   --radius: 0.5rem;
@@ -106,8 +109,11 @@
   --accent-foreground: var(--rp-text);
   --destructive: var(--rp-love);
   --destructive-foreground: var(--rp-base);
-  /* 边框减弱 (round-3 E-6): VS Code-grade restraint — keep the hue, drop the weight */
+  /* 边框两档 (round-5): VS Code-grade restraint — keep the hue, drop the weight.
+     --border = 结构性分隔（基本只剩分隔条 / 卡片用）；
+     --border-subtle = 列表行 / 缩进线，唯一的第二档 */
   --border: color-mix(in srgb, var(--rp-highlight-med) 38%, transparent);
+  --border-subtle: color-mix(in srgb, var(--rp-highlight-med) 20%, transparent);
   --input: var(--rp-highlight-med);
   --ring: var(--rp-iris);
   --radius: 0.5rem;
@@ -153,8 +159,11 @@
   --accent-foreground: var(--rp-text);
   --destructive: var(--rp-love);
   --destructive-foreground: var(--rp-base);
-  /* 边框减弱 (round-3 E-6): VS Code-grade restraint — keep the hue, drop the weight */
+  /* 边框两档 (round-5): VS Code-grade restraint — keep the hue, drop the weight.
+     --border = 结构性分隔（基本只剩分隔条 / 卡片用）；
+     --border-subtle = 列表行 / 缩进线，唯一的第二档 */
   --border: color-mix(in srgb, var(--rp-highlight-med) 38%, transparent);
+  --border-subtle: color-mix(in srgb, var(--rp-highlight-med) 20%, transparent);
   --input: var(--rp-highlight-med);
   --ring: var(--rp-iris);
   --radius: 0.5rem;

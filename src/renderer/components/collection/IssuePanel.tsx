@@ -155,7 +155,7 @@ export function IssuePanel({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b bg-card/30 px-4">
+      <div className="flex h-9 shrink-0 items-center gap-2 bg-card/30 px-4">
         <h2 className="text-sm font-semibold">
           Issue
           {workspacePath && (
@@ -227,7 +227,7 @@ export function IssuePanel({
                   draggable
                   onDragStart={(e) => setDocDragData(e.dataTransfer, item.doc.path)}
                   className={cn(
-                    'cursor-pointer border-b border-border/40 hover:bg-muted/60',
+                    'cursor-pointer border-b border-subtle hover:bg-muted/60',
                     item.archived && 'opacity-50',
                   )}
                   title={item.doc.path}

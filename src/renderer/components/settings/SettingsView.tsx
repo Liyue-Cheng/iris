@@ -141,7 +141,7 @@ export function SettingsView(): JSX.Element {
 
   return (
     <div className="flex h-full flex-col bg-background">
-      <header className="flex h-11 shrink-0 items-center gap-3 border-b px-4">
+      <header className="flex h-11 shrink-0 items-center gap-3 px-4">
         <h1 className="text-sm font-semibold">设置</h1>
         {errorMsg && (
           <span role="alert" className="truncate text-xs text-destructive">
@@ -160,7 +160,7 @@ export function SettingsView(): JSX.Element {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <nav className="w-44 shrink-0 space-y-0.5 overflow-y-auto border-r p-2" aria-label="设置分类">
+        <nav className="w-44 shrink-0 space-y-0.5 overflow-y-auto border-r border-subtle p-2" aria-label="设置分类">
           {CATEGORIES.map((c) => (
             <button
               key={c.id}
@@ -227,7 +227,7 @@ function SettingRow({
   children: ReactNode;
 }): JSX.Element {
   return (
-    <div className="flex items-start gap-6 border-b border-border/40 py-3.5 last:border-b-0">
+    <div className="flex items-start gap-6 border-b border-subtle py-3.5 last:border-b-0">
       <div className="w-52 shrink-0">
         <div className="text-[13px]">{label}</div>
         {hint && <div className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{hint}</div>}
@@ -244,7 +244,7 @@ function PanelTitle({ children }: { children: ReactNode }): JSX.Element {
 /** Dummy marker for sections other agents will fill in. */
 function Placeholder({ children }: { children: ReactNode }): JSX.Element {
   return (
-    <div className="rounded-md border border-dashed px-3 py-2.5 text-xs text-muted-foreground">
+    <div className="rounded-md border border-subtle px-3 py-2.5 text-xs text-muted-foreground">
       {children}
     </div>
   );
@@ -541,7 +541,7 @@ function StyleMapTable({
         <table className="w-full text-[13px]">
           <tbody>
             {keys.map((k) => (
-              <tr key={k} className="border-b border-border/40 last:border-b-0">
+              <tr key={k} className="border-b border-subtle last:border-b-0">
                 <td className="px-3 py-1.5 font-mono text-xs text-muted-foreground">{k}</td>
                 <td className="w-56 px-3 py-1.5">
                   <TemplatePicker
@@ -596,7 +596,7 @@ function StyleMapTable({
             type="button"
             title={`添加 ${s}`}
             onClick={() => add(s)}
-            className="rounded border border-dashed border-border/60 px-1.5 py-0.5 text-[11px] text-muted-foreground hover:border-border hover:text-foreground"
+            className="rounded border border-subtle px-1.5 py-0.5 text-[11px] text-muted-foreground hover:border-border hover:text-foreground"
           >
             + {s}
           </button>
@@ -864,7 +864,7 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
           </thead>
           <tbody>
             {agents.map((a) => (
-              <tr key={a.id} className="border-t border-border/40 align-middle">
+              <tr key={a.id} className="border-t border-subtle align-middle">
                 <td className="px-3 py-1.5 font-mono text-xs">{a.id}</td>
                 <td className="px-2 py-1">
                   <CommitInput value={a.label} onCommit={(v) => patchAgent(a.id, { label: v })} />
@@ -913,7 +913,7 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
               type="button"
               title={p.command || '（纯终端）'}
               onClick={() => writeAgents([...agents, p])}
-              className="rounded border border-dashed border-border/60 px-1.5 py-0.5 text-xs text-muted-foreground hover:border-border hover:text-foreground"
+              className="rounded border border-subtle px-1.5 py-0.5 text-xs text-muted-foreground hover:border-border hover:text-foreground"
             >
               + {p.label}
             </button>

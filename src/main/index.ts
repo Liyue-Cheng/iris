@@ -6,7 +6,7 @@
  * arrive in M1/M3. The "bootstrap starting" log line is the smoke-test
  * milestone (scripts/smoke-launch.mjs pattern-matches it).
  */
-import { app, BrowserWindow, dialog, ipcMain, screen } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, screen, shell } from 'electron';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { JsonStore } from './persistence';
@@ -96,6 +96,19 @@ function createWindow(): BrowserWindow {
   });
   win.webContents.on('render-process-gone', (_e, details) => {
     logger.error('window', `render-process-gone: ${details.reason}`);
+  });
+
+  // Terminal links (WebLinksAddon + OSC 8 hyperlinks) trigger window.open,
+  // which Electron intercepts by default and drops — so clicking a URL in the
+  // terminal did nothing. Whitelist http/https/mailto → open in the system
+  // browser; deny everything else (file://, javascript:, etc. — OSC 8 from an
+  // agent could otherwise be coaxed into opening a local file). Marina
+  // window-manager.ts:378.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^(https?|mailto):/i.test(url)) {
+      void shell.openExternal(url);
+    }
+    return { action: 'deny' };
   });
 
   // F12 / Ctrl+Shift+I toggle DevTools. Packed builds ship no application

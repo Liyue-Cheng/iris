@@ -165,3 +165,18 @@ export const XTERM_THEMES: Record<ThemeId, XtermTheme> = {
 export function getXtermTheme(themeId: ThemeId | undefined): XtermTheme {
   return XTERM_THEMES[themeId ?? 'rose-pine'] ?? XTERM_THEMES['rose-pine'];
 }
+
+/**
+ * Whether a theme is light — decided by reference-equality on the shared
+ * LIGHT_EXTENDED_ANSI table (a theme that filled it in is light). Paired with
+ * xterm's minimumContrastRatio, this turns the WCAG-AA contrast floor ON only
+ * for light themes, so dim text (Claude Code's `\x1b[38;5;245m` hints, git diff
+ * context lines) stays readable on a pale background without flattening the
+ * deliberately-muted colors dark themes rely on. (Marina BETA-035.)
+ */
+export function isLightTheme(themeId: ThemeId | undefined): boolean {
+  return getXtermTheme(themeId).extendedAnsi === LIGHT_EXTENDED_ANSI;
+}
+
+/** WCAG AA floor applied in light themes only. */
+export const LIGHT_THEME_MIN_CONTRAST = 4.5;

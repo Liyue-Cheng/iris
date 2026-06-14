@@ -44,6 +44,8 @@ module.exports = {
           foreground: 'var(--destructive-foreground)',
         },
         border: 'var(--border)',
+        // Second (and only second) border tier — list rows / indent guides.
+        subtle: 'var(--border-subtle)',
         input: 'var(--input)',
         ring: 'var(--ring)',
       },

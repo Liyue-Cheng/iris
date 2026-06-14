@@ -1,7 +1,6 @@
 /**
  * @file src/shared/terminal-keybindings.ts
- * @purpose Terminal keybinding authority table — ported from Marina
- *   (search bindings dropped until Iris grows a search bar).
+ * @purpose Terminal keybinding authority table — ported from Marina.
  *
  * The TerminalView keyboard handler is "scan table → dispatch action";
  * every key, guard and action lives here so it stays unit-testable
@@ -16,9 +15,16 @@
  *    paste source (keys, context menu, voice input) shares one path.
  * 3. Callers must guard IME composition (isComposing || keyCode===229)
  *    before matching — this module never reads those fields.
+ * 4. Context-sensitive bindings (Esc closes the search bar only when it is
+ *    open; otherwise Esc passes through to the PTY) carry a `guard` that
+ *    reads KeybindingContext.
  */
 
 export type KeybindingAction =
+  /** Open the terminal search bar */
+  | 'open-search'
+  /** Close the search bar (guard: only when it is visible) */
+  | 'close-search'
   /** Selection → copy + clear selection (consume); none → pass ^C as SIGINT */
   | 'copy-or-sigint'
   /** Selection → copy + clear selection; always consume */
@@ -31,8 +37,14 @@ export interface KeybindingMatcher {
   mod: boolean;
   shift: boolean;
   alt: boolean;
-  /** ev.key.toLowerCase() — letters / 'insert' / ... */
+  /** ev.key.toLowerCase() — letters / 'insert' / 'escape' / 'f' / ... */
   key: string;
+}
+
+/** Runtime context guards read to decide whether a binding applies. */
+export interface KeybindingContext {
+  /** Whether the search bar is currently open (gates Esc → close-search). */
+  searchVisible: boolean;
 }
 
 export interface Keybinding {
@@ -42,9 +54,26 @@ export interface Keybinding {
   description: string;
   match: KeybindingMatcher;
   action: KeybindingAction;
+  /** Context predicate; binding does not match when it returns false. */
+  guard?: (ctx: KeybindingContext) => boolean;
 }
 
 export const TERMINAL_KEYBINDINGS: readonly Keybinding[] = [
+  {
+    id: 'open-search',
+    spec: 'Ctrl+F',
+    description: '打开终端搜索栏',
+    match: { mod: true, shift: false, alt: false, key: 'f' },
+    action: 'open-search',
+  },
+  {
+    id: 'close-search',
+    spec: 'Esc',
+    description: '关闭搜索栏（仅搜索栏可见时；其他时刻 Esc 透传给 PTY）',
+    match: { mod: false, shift: false, alt: false, key: 'escape' },
+    action: 'close-search',
+    guard: (c) => c.searchVisible,
+  },
   {
     id: 'copy-ctrl-c',
     spec: 'Ctrl+C',
@@ -98,8 +127,13 @@ export interface KeyEventLike {
   key: string;
 }
 
-/** Linear scan, first match wins. Returns null when nothing matches. */
-export function matchKeybinding(ev: KeyEventLike): Keybinding | null {
+/**
+ * Linear scan, first match wins. Returns null when nothing matches.
+ *
+ * Callers must guard IME composition (isComposing || keyCode===229) before
+ * calling — this function never reads those fields.
+ */
+export function matchKeybinding(ev: KeyEventLike, ctx: KeybindingContext): Keybinding | null {
   const mod = ev.ctrlKey || ev.metaKey;
   const key = ev.key.toLowerCase();
   for (const b of TERMINAL_KEYBINDINGS) {
@@ -107,6 +141,7 @@ export function matchKeybinding(ev: KeyEventLike): Keybinding | null {
     if (b.match.shift !== ev.shiftKey) continue;
     if (b.match.alt !== ev.altKey) continue;
     if (b.match.key !== key) continue;
+    if (b.guard && !b.guard(ctx)) continue;
     return b;
   }
   return null;

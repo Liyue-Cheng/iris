@@ -65,7 +65,7 @@ export function RightPane(): JSX.Element {
   return (
     <div className="flex h-full flex-col bg-card/50">
       {/* Terminal banner — aligned (h-9) with the other panes' first rows. */}
-      <div className="flex h-9 shrink-0 items-center gap-1 border-b px-2">
+      <div className="flex h-9 shrink-0 items-center gap-1 px-2">
         {shownSession ? (
           <ContextMenu>
             <ContextMenuTrigger asChild>
@@ -78,10 +78,12 @@ export function RightPane(): JSX.Element {
                       className="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm px-1.5 py-1 text-left text-[13px] hover:bg-muted/60"
                     >
                       <SessionDot state={shownSession.state} />
-                      <span className="shrink-0 font-medium">{shownSession.displayName}</span>
-                      <span className="flex min-w-0 items-center gap-1 text-muted-foreground">
-                        <AnchorIcon className="h-3.5 w-3.5 shrink-0" />
-                        <span className="truncate">{anchorName}</span>
+                      {/* Title bar shows the live terminal title (OSC 0/2),
+                          falling back to the agent label until one arrives.
+                          The agent identity stays available in the dropdown,
+                          so the title bar shows only the live title. */}
+                      <span className="min-w-0 truncate font-medium">
+                        {shownSession.terminalTitle ?? shownSession.displayName}
                       </span>
                       {shownSession.state === 'exited' && (
                         <span className="shrink-0 text-[11px] text-muted-foreground/60">
@@ -96,7 +98,10 @@ export function RightPane(): JSX.Element {
                       <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground/60" />
                     </button>
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start" className="w-64">
+                  <DropdownMenuContent
+                    align="start"
+                    className="w-max min-w-64 max-w-[32rem]"
+                  >
                     <DropdownMenuLabel className="truncate">
                       {anchorName} 的会话
                     </DropdownMenuLabel>
@@ -108,6 +113,11 @@ export function RightPane(): JSX.Element {
                       >
                         <SessionDot state={s.state} />
                         <span className="shrink-0 font-medium">{s.displayName}</span>
+                        {s.terminalTitle && (
+                          <span className="min-w-0 truncate text-[11px] text-muted-foreground/70">
+                            {s.terminalTitle}
+                          </span>
+                        )}
                         {s.state === 'exited' && (
                           <span className="shrink-0 text-[11px] text-muted-foreground/60">
                             exit {s.exitCode}

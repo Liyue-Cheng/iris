@@ -36,12 +36,14 @@
  * size instead of 120×30-then-resize (ConPTY shreds early progress-bar
  * lines on that reflow).
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type WheelEvent as ReactWheelEvent } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
+import { pipeline } from '@renderer/cpu';
 import { CHANNELS, EVENTS } from '@shared/protocol';
 import type { DocContent, SessionOutputPayload } from '@shared/types';
 import { composeDocPasteBlock, getDocDragPath, isDocDrag } from '@renderer/lib/doc-drag';
@@ -49,7 +51,7 @@ import { matchKeybinding } from '@shared/terminal-keybindings';
 import { attachImeCompositionEndCleaner } from '@shared/ime-textarea-workaround';
 import { attachImeCompositionPositionLock } from '@shared/ime-composition-position-lock';
 import { readClipboardText, writeClipboardText } from '@renderer/lib/clipboard';
-import { getXtermTheme } from '@renderer/theme/xterm-themes';
+import { getXtermTheme, isLightTheme, LIGHT_THEME_MIN_CONTRAST } from '@renderer/theme/xterm-themes';
 import { getSettings, useSettings } from '@renderer/stores/settings-store';
 import { setLastTerminalDims } from '@renderer/stores/session-store';
 import {
@@ -96,6 +98,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const searchRef = useRef<SearchAddon | null>(null);
   const settings = useSettings();
 
   // SCROLL-1: hidden + inert until the replay has anchored bottom and the
@@ -105,6 +108,24 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
   // Snapshot taken when the context menu opens (the menu itself would
   // steal focus and could race selection state at click time).
   const [ctxHasSelection, setCtxHasSelection] = useState(false);
+
+  // ── search bar (Ctrl+F) ──
+  const [searchVisible, setSearchVisible] = useState(false);
+  const [searchText, setSearchText] = useState('');
+  const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
+  const [searchResults, setSearchResults] = useState<{ matches: number; current: number }>({
+    matches: 0,
+    current: 0,
+  });
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  // Mirror search state into refs so the long-lived key handler / focus
+  // helpers (registered once per mount) always read the latest values.
+  const searchVisibleRef = useRef(searchVisible);
+  searchVisibleRef.current = searchVisible;
+  const searchTextRef = useRef(searchText);
+  searchTextRef.current = searchText;
+  const searchCaseSensitiveRef = useRef(searchCaseSensitive);
+  searchCaseSensitiveRef.current = searchCaseSensitive;
 
   // ── copy / paste / clear ──
   const handleCopy = useCallback(() => {
@@ -167,6 +188,47 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     await pasteText(text);
   }, [pasteText]);
 
+  /**
+   * Drop of OS files (dragged from Explorer/Finder): send the (quoted)
+   * paths to the PTY, space-separated — Windows Terminal behavior. Goes
+   * straight to SESSION_INPUT, not through term.paste: a dropped path is a
+   * command argument the user is composing, not clipboard content. NTFS
+   * allows shell metacharacters in filenames (`foo;rm -rf x`), so a path
+   * with any is confirmed first (Marina SEC-5).
+   */
+  const handleFileDrop = useCallback(
+    async (paths: string[]) => {
+      const term = termRef.current;
+      if (!term || paths.length === 0) return;
+      const SHELL_METAS = /[;&`$|<>(){}\\!*?\n\r]/;
+      const dangerous = paths.filter((p) => SHELL_METAS.test(p));
+      if (dangerous.length > 0) {
+        if (
+          !window.confirm(
+            `拖入的文件路径含 shell 元字符（; & \` $ | < > 等）。\n某些 shell 会把它们当成命令分隔符或子命令，可能意外执行。\n\n${dangerous.join('\n')}\n\n仍要粘贴？`,
+          )
+        ) {
+          term.focus();
+          return;
+        }
+      }
+      // Windows paths can't contain ", so quoting only paths with whitespace
+      // is sufficient.
+      const quoted = paths.map((p) => (/\s/.test(p) ? `"${p}"` : p)).join(' ');
+      try {
+        await window.api.invoke(CHANNELS.SESSION_INPUT, {
+          sessionId,
+          data: encodeStringToBase64(quoted),
+        });
+      } catch (err) {
+        console.warn('[TerminalView] file drop send-input failed', err);
+      } finally {
+        termRef.current?.focus();
+      }
+    },
+    [sessionId],
+  );
+
   /** Drop of a doc row: read the file fresh and paste header + snapshot. */
   const handleDocDrop = useCallback(
     async (docPath: string) => {
@@ -189,10 +251,97 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     termRef.current?.focus();
   }, []);
 
+  // ── search ──
+  const handleOpenSearch = useCallback(() => {
+    setSearchVisible(true);
+    // The input mounts this render; focus on the next frame once it exists.
+    requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+  }, []);
+
+  const handleCloseSearch = useCallback(() => {
+    try {
+      searchRef.current?.clearDecorations();
+    } catch {
+      /* ignore */
+    }
+    setSearchVisible(false);
+    setSearchText('');
+    setSearchResults({ matches: 0, current: 0 });
+    termRef.current?.focus();
+  }, []);
+
+  // Read the latest query/case from refs — a useCallback closure would pin the
+  // value at mount and "Enter searches the previous keyword" (Marina #8).
+  const performSearch = useCallback((direction: 'next' | 'previous') => {
+    const search = searchRef.current;
+    const text = searchTextRef.current;
+    if (!search || !text) return;
+    const opts = {
+      caseSensitive: searchCaseSensitiveRef.current,
+      decorations: {
+        matchBackground: '#7d6c00',
+        matchOverviewRuler: '#f6c177',
+        activeMatchBackground: '#bd6500',
+        activeMatchColorOverviewRuler: '#eb6f92',
+      },
+    };
+    if (direction === 'next') search.findNext(text, opts);
+    else search.findPrevious(text, opts);
+  }, []);
+
+  // Ctrl+wheel font resize (8–24px). Applies locally on the live term for
+  // instant feedback, then persists via a trailing 120ms debounce so a fast
+  // scroll doesn't fire one settings.update per tick (each would rebuild every
+  // terminal's metrics). pendingFontSizeRef carries the in-flight value so
+  // successive ticks accumulate before the term reads it back from settings.
+  const wheelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingFontSizeRef = useRef<number | null>(null);
+  const handleWheel = useCallback((e: ReactWheelEvent<HTMLDivElement>) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    const term = termRef.current;
+    if (!term) return;
+    const current = pendingFontSizeRef.current ?? getSettings()?.appearance.terminalFontSize ?? 13;
+    const next = Math.max(8, Math.min(24, current + (e.deltaY < 0 ? 1 : -1)));
+    if (next === current) return;
+    pendingFontSizeRef.current = next;
+    term.options.fontSize = next; // instant visual feedback
+    try {
+      fitRef.current?.fit();
+    } catch {
+      /* ignore */
+    }
+    if (wheelTimerRef.current) clearTimeout(wheelTimerRef.current);
+    wheelTimerRef.current = setTimeout(() => {
+      wheelTimerRef.current = null;
+      const settled = pendingFontSizeRef.current;
+      pendingFontSizeRef.current = null;
+      if (settled == null) return;
+      void pipeline.dispatch('settings.update', {
+        appearance: { terminalFontSize: settled },
+      });
+    }, 120);
+  }, []);
+
   // The custom key handler and paste interceptor are registered once per
   // mount; route them through a ref so they always see the latest handlers.
-  const handlersRef = useRef({ handleCopy, handlePaste, handleClear });
-  handlersRef.current = { handleCopy, handlePaste, handleClear };
+  const handlersRef = useRef({
+    handleCopy,
+    handlePaste,
+    handleClear,
+    handleOpenSearch,
+    handleCloseSearch,
+  });
+  handlersRef.current = {
+    handleCopy,
+    handlePaste,
+    handleClear,
+    handleOpenSearch,
+    handleCloseSearch,
+  };
 
   useEffect(() => {
     const host = hostRef.current;
@@ -208,6 +357,10 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       fontSize: s?.appearance.terminalFontSize ?? 13,
       lineHeight: s?.appearance.terminalLineHeight ?? 1.2,
       theme: getXtermTheme(themeId),
+      // Light themes turn on a WCAG-AA contrast floor so dim/256-color text
+      // (Claude Code hints, git diff context) stays readable on a pale base;
+      // dark themes keep 1 (no clamp) to preserve intentional muting (BETA-035).
+      minimumContrastRatio: isLightTheme(themeId) ? LIGHT_THEME_MIN_CONTRAST : 1,
       // Match the app-wide 10px themed scrollbars (global.css). Side effect:
       // setting width enables the overview ruler — its always-painted 1px
       // outline is neutralized via theme.overviewRulerBorder = background.
@@ -228,10 +381,16 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== 'keydown') return true;
       if (ev.isComposing || ev.keyCode === 229) return true;
-      const binding = matchKeybinding(ev);
+      const binding = matchKeybinding(ev, { searchVisible: searchVisibleRef.current });
       if (!binding) return true;
       const h = handlersRef.current;
       switch (binding.action) {
+        case 'open-search':
+          h.handleOpenSearch();
+          return false;
+        case 'close-search':
+          h.handleCloseSearch();
+          return false;
         case 'copy-or-sigint': {
           // Selection → copy + clear (CPB-C3: a lingering selection would
           // make every later Ctrl+C copy instead of interrupting); none →
@@ -264,6 +423,23 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     term.loadAddon(fit);
     fitRef.current = fit;
     term.loadAddon(new WebLinksAddon());
+
+    // SearchAddon (Ctrl+F). onDidChangeResults feeds the "x / N" hit counter;
+    // registerDecoration (match highlight + overview-ruler markers) needs
+    // allowProposedApi, already true above.
+    const searchAddon = new SearchAddon();
+    term.loadAddon(searchAddon);
+    searchRef.current = searchAddon;
+    const searchResultsDisposable = searchAddon.onDidChangeResults?.((results) => {
+      if (!results) {
+        setSearchResults({ matches: 0, current: 0 });
+        return;
+      }
+      const count = results.resultCount ?? 0;
+      const idx = results.resultIndex ?? -1;
+      setSearchResults({ matches: count, current: count > 0 && idx >= 0 ? idx + 1 : 0 });
+    });
+
     term.open(host);
 
     // PER-1: WebGL after open() (needs the canvas); on GPU context loss
@@ -516,6 +692,8 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       detachImeLock?.();
       helperTa?.removeEventListener('paste', pasteInterceptor, true);
       host.removeEventListener('paste', pasteInterceptor, true);
+      searchResultsDisposable?.dispose();
+      searchAddon.dispose();
       // PER-1: release the GL context before term.dispose or the handle leaks.
       try {
         webglAddon?.dispose();
@@ -525,6 +703,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
+      searchRef.current = null;
     };
     // Recreate only per session — theme/font changes apply via the effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -540,19 +719,48 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     else host.setAttribute('inert', '');
   }, [hostRevealed]);
 
-  // Focus once revealed (inert blocked focus until now).
+  // Flush any pending Ctrl+wheel font-size write on unmount.
+  useEffect(() => {
+    return () => {
+      if (wheelTimerRef.current) clearTimeout(wheelTimerRef.current);
+    };
+  }, []);
+
+  // Focus once revealed (inert blocked focus until now). Skip when the search
+  // bar is open — the query input owns focus then.
   useEffect(() => {
     if (!hostRevealed) return;
+    if (searchVisibleRef.current) return;
     requestAnimationFrame(() => {
       termRef.current?.focus();
     });
   }, [hostRevealed]);
+
+  // Live search: each query/case change re-runs findNext so the hit counter
+  // updates per keystroke; clearing the query drops the highlights.
+  useEffect(() => {
+    const search = searchRef.current;
+    if (!search || !searchVisible) return;
+    if (!searchText) {
+      try {
+        search.clearDecorations();
+      } catch {
+        /* ignore */
+      }
+      setSearchResults({ matches: 0, current: 0 });
+      return;
+    }
+    performSearch('next');
+  }, [searchText, searchCaseSensitive, searchVisible, performSearch]);
 
   // Live theme/font switching without remount (xterm supports runtime opts).
   useEffect(() => {
     const term = termRef.current;
     if (!term || !settings) return;
     term.options.theme = getXtermTheme(settings.appearance.theme);
+    term.options.minimumContrastRatio = isLightTheme(settings.appearance.theme)
+      ? LIGHT_THEME_MIN_CONTRAST
+      : 1;
     term.options.fontFamily = settings.appearance.terminalFontFamily;
     term.options.fontSize = settings.appearance.terminalFontSize;
     term.options.lineHeight = settings.appearance.terminalLineHeight;
@@ -564,21 +772,23 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
   }, [settings]);
 
   return (
-    <ContextMenu
-      onOpenChange={(open) => {
-        if (open) {
-          setCtxHasSelection(!!termRef.current?.getSelection());
-        } else {
-          // Menu close drops focus on body; hand it back to the terminal.
-          requestAnimationFrame(() => termRef.current?.focus());
-        }
-      }}
-    >
-      <ContextMenuTrigger asChild>
-        <div
-          ref={hostRef}
-          className="h-full w-full px-1 pt-1"
-          style={hostRevealed ? undefined : { visibility: 'hidden' }}
+    <div className="relative h-full w-full">
+      <ContextMenu
+        onOpenChange={(open) => {
+          if (open) {
+            setCtxHasSelection(!!termRef.current?.getSelection());
+          } else if (!searchVisibleRef.current) {
+            // Menu close drops focus on body; hand it back to the terminal
+            // (unless the search bar owns focus).
+            requestAnimationFrame(() => termRef.current?.focus());
+          }
+        }}
+      >
+        <ContextMenuTrigger asChild>
+          <div
+            ref={hostRef}
+            className="h-full w-full px-1 pt-1"
+            style={hostRevealed ? undefined : { visibility: 'hidden' }}
           // behavior.terminalRightClick='paste': preventDefault makes Radix's
           // composed trigger handler bail (defaultPrevented check), so the
           // menu never opens — right click goes straight to the single paste
@@ -589,8 +799,10 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
               void handlersRef.current.handlePaste();
             }
           }}
+          onWheel={handleWheel}
           onDragOver={(e) => {
-            if (isDocDrag(e.dataTransfer)) {
+            // Internal doc drag OR an OS file drag both drop here.
+            if (isDocDrag(e.dataTransfer) || e.dataTransfer.types.includes('Files')) {
               e.preventDefault();
               e.dataTransfer.dropEffect = 'copy';
             }
@@ -600,18 +812,107 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
             if (docPath) {
               e.preventDefault();
               void handleDocDrop(docPath);
+              return;
+            }
+            // OS file drop: paste the (quoted) paths as a command argument.
+            // Electron 31 still exposes File.path; 32+ needs webUtils.getPathForFile.
+            const files = Array.from(e.dataTransfer.files);
+            if (files.length > 0) {
+              e.preventDefault();
+              const paths = files
+                .map((f) => (f as File & { path?: string }).path)
+                .filter((p): p is string => !!p && p.length > 0);
+              if (paths.length > 0) void handleFileDrop(paths);
             }
           }}
-        />
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem disabled={!ctxHasSelection} onClick={handleCopy}>
-          复制
-        </ContextMenuItem>
-        <ContextMenuItem onClick={() => void handlePaste()}>粘贴</ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem onClick={handleClear}>清屏</ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
+          />
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem disabled={!ctxHasSelection} onClick={handleCopy}>
+            复制
+          </ContextMenuItem>
+          <ContextMenuItem onClick={() => void handlePaste()}>粘贴</ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onClick={handleClear}>清屏</ContextMenuItem>
+          <ContextMenuItem onClick={handleOpenSearch}>搜索…</ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+
+      {searchVisible && (
+        <div
+          role="search"
+          aria-label="终端搜索"
+          className="absolute right-4 top-2 z-50 flex items-center gap-1 rounded-md border bg-popover px-1.5 py-1 text-popover-foreground shadow-md"
+        >
+          <input
+            ref={searchInputRef}
+            type="text"
+            className="h-6 w-56 rounded-sm border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+            placeholder="搜索 (Enter 下一个 / Shift+Enter 上一个 / Esc 关闭)"
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                handleCloseSearch();
+              } else if (e.key === 'Enter') {
+                e.preventDefault();
+                e.stopPropagation();
+                performSearch(e.shiftKey ? 'previous' : 'next');
+              }
+            }}
+          />
+          <span className="min-w-[3rem] px-1 text-center font-mono text-[11px] text-muted-foreground">
+            {searchText
+              ? searchResults.matches > 0
+                ? `${searchResults.current}/${searchResults.matches}`
+                : '无匹配'
+              : '—'}
+          </span>
+          <button
+            type="button"
+            className="flex h-6 w-6 items-center justify-center rounded-sm border text-xs hover:bg-accent disabled:opacity-40"
+            onClick={() => performSearch('previous')}
+            title="上一个 (Shift+Enter)"
+            aria-label="上一个匹配"
+            disabled={!searchText || searchResults.matches === 0}
+          >
+            ↑
+          </button>
+          <button
+            type="button"
+            className="flex h-6 w-6 items-center justify-center rounded-sm border text-xs hover:bg-accent disabled:opacity-40"
+            onClick={() => performSearch('next')}
+            title="下一个 (Enter)"
+            aria-label="下一个匹配"
+            disabled={!searchText || searchResults.matches === 0}
+          >
+            ↓
+          </button>
+          <button
+            type="button"
+            className={`flex h-6 w-6 items-center justify-center rounded-sm border text-xs hover:bg-accent ${
+              searchCaseSensitive ? 'bg-accent text-accent-foreground' : ''
+            }`}
+            onClick={() => setSearchCaseSensitive((v) => !v)}
+            title="区分大小写"
+            aria-label="区分大小写"
+            aria-pressed={searchCaseSensitive}
+          >
+            Aa
+          </button>
+          <button
+            type="button"
+            className="flex h-6 w-6 items-center justify-center rounded-sm border text-xs hover:bg-destructive hover:text-destructive-foreground"
+            onClick={handleCloseSearch}
+            title="关闭 (Esc)"
+            aria-label="关闭搜索"
+          >
+            ×
+          </button>
+        </div>
+      )}
+    </div>
   );
 }

@@ -36,7 +36,7 @@ export function SimpleList({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b bg-card/30 px-4">
+      <div className="flex h-9 shrink-0 items-center gap-2 bg-card/30 px-4">
         <h2 className="text-sm font-semibold">
           {TYPE_TITLE[type]}
           {workspacePath && (

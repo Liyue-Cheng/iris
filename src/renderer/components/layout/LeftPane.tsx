@@ -59,7 +59,7 @@ export function LeftPane(): JSX.Element {
 
   return (
     <div className="flex h-full flex-col bg-card/50">
-      <div className="flex h-9 shrink-0 items-center gap-1 border-b px-2">
+      <div className="flex h-9 shrink-0 items-center gap-1 px-2">
         <span className="truncate text-[13px] font-medium text-muted-foreground">
           {scan?.projectName ?? '未打开项目'}
         </span>
@@ -177,7 +177,7 @@ export function LeftPane(): JSX.Element {
       </div>
 
       {phase === 'ready' && scan?.hasIris && filterOpen && (
-        <div className="flex h-8 shrink-0 items-center gap-1 border-b px-2">
+        <div className="flex h-8 shrink-0 items-center gap-1 px-2">
           <Search className="size-3.5 shrink-0 text-muted-foreground" />
           <input
             autoFocus
