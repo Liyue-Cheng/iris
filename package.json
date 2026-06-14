@@ -1,6 +1,6 @@
 {
   "name": "iris-app",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "description": "Iris — AI-native, document-centric, terminal-driven project management. The app is a reference implementation of the .iris/ protocol.",
   "license": "AGPL-3.0",
