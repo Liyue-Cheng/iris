@@ -10,6 +10,8 @@
  */
 import { BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
 import { isAbsolute, join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { CHANNELS, EVENTS } from '@shared/protocol';
 import type {
   DeepPartial,
@@ -33,6 +35,15 @@ import { injectionState, installFocusScript, installHook } from './agent-injecti
 import { effectiveStyleMaps, writeProjectStyleMaps } from './style-maps-store';
 import type { StyleMaps, StyleMapsState } from '@shared/style-maps';
 import { logger } from './logger';
+import { perf } from './perf-runtime';
+import type { PerfSnapshot } from '@shared/perf';
+
+const execFileP = promisify(execFile);
+
+/** Run a git subcommand in `cwd` with a short timeout; throws on failure. */
+function execFileGit(args: string[], cwd: string): Promise<{ stdout: string }> {
+  return execFileP('git', args, { cwd, timeout: 3000, windowsHide: true });
+}
 
 export function registerIpcHandlers(
   settingsManager: SettingsManager,
@@ -172,6 +183,21 @@ export function registerIpcHandlers(
     (): Promise<RawTreeNode | null> => projectManager.rawTree(),
   );
 
+  // Status-doc freshness (CONVENTIONS §status: reflects: <sha>). Best-effort
+  // read of the project's current HEAD; any failure (not a repo, no git on
+  // PATH, no project open) degrades to null and the UI just omits the badge.
+  ipcMain.handle(CHANNELS.PROJECT_GIT_HEAD, async (): Promise<{ head: string | null }> => {
+    const root = projectManager.getRoot();
+    if (!root) return { head: null };
+    try {
+      const { stdout } = await execFileGit(['rev-parse', 'HEAD'], root);
+      const head = stdout.trim();
+      return { head: head.length > 0 ? head : null };
+    } catch {
+      return { head: null };
+    }
+  });
+
   ipcMain.handle(
     CHANNELS.DOC_READ,
     (_event, payload: { path: string }): Promise<DocContent> =>
@@ -213,6 +239,14 @@ export function registerIpcHandlers(
       return writeProjectStyleMaps(root, payload.maps);
     },
   );
+
+  // ── performance monitor (in-memory ring buffer) ───────────────────
+
+  ipcMain.handle(CHANNELS.PERF_SNAPSHOT, (): PerfSnapshot => perf.snapshot());
+
+  ipcMain.handle(CHANNELS.PERF_CLEAR, (): void => {
+    perf.clear();
+  });
 
   // ── sessions ───────────────────────────────────────────────────────
 
@@ -260,8 +294,8 @@ export function registerIpcHandlers(
 
   ipcMain.handle(
     CHANNELS.SESSION_SCROLLBACK,
-    (_event, payload: { sessionId: string }) =>
-      sessionManager.getScrollbackForReplay(payload.sessionId),
+    (_event, payload: { sessionId: string; replayId?: string }) =>
+      sessionManager.getScrollbackForReplay(payload.sessionId, payload.replayId),
   );
 
   ipcMain.handle(CHANNELS.DIALOG_PICK_FOLDER, async (event): Promise<string | null> => {

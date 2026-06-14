@@ -1,5 +1,5 @@
 /**
- * Inline frontmatter edits from the issue panel (status, priority).
+ * Inline frontmatter edits from the issue panel (currently just status).
  * Reuses the doc.save instruction with the same surgical-frontmatter
  * discipline as the typed header — and routes through the live editing
  * session when the target doc happens to be open (otherwise the panel

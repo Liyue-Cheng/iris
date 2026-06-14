@@ -7,6 +7,7 @@ import { hydrateSessions } from './stores/session-store';
 import { editorStore } from './stores/editor-store';
 import { wireInterrupts } from './cpu/interrupts';
 import { openProject } from './lib/project-actions';
+import { installRendererPerfObservers } from './lib/perf-runtime';
 import { CHANNELS, EVENTS } from '@shared/protocol';
 
 async function bootstrap(): Promise<void> {
@@ -22,6 +23,7 @@ async function bootstrap(): Promise<void> {
   // wrong theme; index.html's static data-theme covers the load gap.
   await initSettingsStore();
   wireInterrupts();
+  installRendererPerfObservers();
 
   // B3: on window close, main asks us to flush unsaved editor work (the
   // normal doc.save instruction), then we ack so main can finish closing.

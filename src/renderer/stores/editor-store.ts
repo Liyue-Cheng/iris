@@ -69,6 +69,20 @@ const subscribers = new Set<() => void>();
 /** Exact bytes of our last write per path — the echo-dedup compare table. */
 const lastWritten = new Map<string, string>();
 
+/** One-shot: the next editor mount should grab input focus (new-doc create). */
+let focusOnMount = false;
+
+/** GFM task-list checkbox marker at a list-item start (`- [ ]` / `1. [x]`…). */
+const TASK_CHECKBOX = /^(\s*(?:[-*+]|\d+\.)\s+)\[[ xX]\]/gm;
+
+/** True when prev → next differs ONLY in checkbox state (a discrete toggle),
+ *  not in any surrounding text — the signal to persist at once. */
+function isPureCheckboxToggle(prev: string, next: string): boolean {
+  if (prev === next) return false;
+  const strip = (s: string): string => s.replace(TASK_CHECKBOX, '$1[ ]');
+  return strip(prev) === strip(next);
+}
+
 function emit(): void {
   subscribers.forEach((cb) => cb());
 }
@@ -109,7 +123,7 @@ export const editorStore = {
   },
 
   /** Open a fresh session from loaded content (doc switch / external reload). */
-  openSession(content: DocContent): void {
+  openSession(content: DocContent, opts?: { focus?: boolean }): void {
     const { fmBlock, body } = splitFrontmatter(content.raw);
     session = {
       path: content.path,
@@ -128,7 +142,23 @@ export const editorStore = {
       externalConflict: false,
       generation: (session?.path === content.path ? session.generation : 0) + 1,
     };
+    // Seed the echo-dedup table with the just-loaded bytes. An immediate
+    // watcher echo of identical content carries no information and must NOT
+    // bounce the editor through a remount — notably the create-write of a
+    // fresh doc, which never went through doc.save (so it had no lastWritten
+    // entry) and otherwise re-opens the session ~one watcher tick after the
+    // doc is selected. A genuine external change has different bytes and
+    // still reloads via handleDiskChange.
+    lastWritten.set(content.path, content.raw);
+    if (opts?.focus) focusOnMount = true;
     emit();
+  },
+
+  /** Consumed once by the editor mount to decide whether to grab focus. */
+  consumeFocusOnMount(): boolean {
+    if (!focusOnMount) return false;
+    focusOnMount = false;
+    return true;
   },
 
   closeSession(): void {
@@ -145,8 +175,16 @@ export const editorStore = {
   /** Crepe reports an updated serialization. */
   setBody(md: string): void {
     if (!session) return;
+    const prev = session.bodyCurrent;
     const next = { ...session, bodyCurrent: md };
     patch({ bodyCurrent: md, dirty: computeDirty(next) });
+    // A task-checkbox toggle is a discrete click that should persist at once
+    // (parity with the todo panel's checkTodo) — unlike free typing, which
+    // batches to blur/switch/Ctrl+S. Detect it deterministically: the only
+    // delta from the previous serialization is GFM checkbox state.
+    if (prev !== null && isPureCheckboxToggle(prev, md)) {
+      void editorStore.save();
+    }
   },
 
   setSourceText(text: string): void {

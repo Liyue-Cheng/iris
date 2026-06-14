@@ -858,7 +858,8 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
               <th className="w-20 px-3 py-1.5 font-medium">id</th>
               <th className="w-28 px-3 py-1.5 font-medium">显示名</th>
               <th className="px-3 py-1.5 font-medium">命令</th>
-              <th className="w-36 px-3 py-1.5 font-medium">注入通道</th>
+              <th className="w-28 px-3 py-1.5 font-medium">注入通道</th>
+              <th className="w-24 px-3 py-1.5 font-medium">退出后</th>
               <th className="w-8 px-2 py-1.5" />
             </tr>
           </thead>
@@ -886,6 +887,22 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
                     ]}
                     onChange={(v) => patchAgent(a.id, { injection: v })}
                   />
+                </td>
+                <td className="px-2 py-1">
+                  {a.command ? (
+                    <Segmented
+                      value={a.onExit ?? 'keep-shell'}
+                      options={[
+                        { value: 'keep-shell', label: '回落', hint: '命令退出后落回交互 shell' },
+                        { value: 'close', label: '关闭', hint: '命令退出即结束会话' },
+                      ]}
+                      onChange={(v) => patchAgent(a.id, { onExit: v })}
+                    />
+                  ) : (
+                    <span className="text-xs text-muted-foreground/40" title="纯终端本就是 shell">
+                      —
+                    </span>
+                  )}
                 </td>
                 <td className="px-2 py-1">
                   <button

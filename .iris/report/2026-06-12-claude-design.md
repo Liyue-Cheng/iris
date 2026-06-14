@@ -1,6 +1,7 @@
 ---
 title: claude design — 设计系统同步与提示词
 date: 2026-06-12
+status: Backlog
 ---
 
 # claude design — 设计系统同步与提示词

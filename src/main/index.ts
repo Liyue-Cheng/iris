@@ -34,6 +34,16 @@ if (getBuildType() === 'portable') {
   app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
 }
 
+// Dev runs out of the same default userData ("iris-app") as the packaged
+// portable build, so the single-instance lock below treats `npm run dev` and a
+// running portable as two instances of one profile — the second to launch
+// quits. Give dev its own userData so the two have independent profiles (and
+// independent locks + Chromium caches) and can run side by side. Must precede
+// requestSingleInstanceLock, which keys the lock on the userData path.
+if (isDev) {
+  app.setPath('userData', `${app.getPath('userData')}-dev`);
+}
+
 // Two instances sharing one Chromium profile (userData) also contend on the
 // disk cache locks — keep the single-instance lock regardless: v1 manages
 // one project at a time, so a second launch should focus the first window.

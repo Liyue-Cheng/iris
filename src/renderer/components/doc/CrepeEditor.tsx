@@ -85,6 +85,8 @@ export function CrepeEditor({
         editorStore.setBodyBaseline(crepe.getMarkdown());
         const view = crepe.editor.action((ctx) => ctx.get(editorViewCtx));
         keeper = attachScrollMemory({ key: `wysiwyg:${path}`, content: view.dom as HTMLElement });
+        // New-doc create asked for focus: land the cursor in the body now.
+        if (editorStore.consumeFocusOnMount()) view.focus();
       },
     });
 

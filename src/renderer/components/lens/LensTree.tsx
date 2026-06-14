@@ -226,7 +226,7 @@ function NewRootSessionButton(): JSX.Element {
         <button
           type="button"
           title="新建项目根会话"
-          className="shrink-0 rounded-sm p-0.5 text-muted-foreground/0 hover:bg-muted hover:!text-foreground group-hover/root:text-muted-foreground"
+          className="shrink-0 rounded-sm p-0.5 text-muted-foreground/0 hover:!text-foreground group-hover/root:text-muted-foreground"
         >
           <Plus className="h-3.5 w-3.5" />
         </button>
@@ -258,15 +258,17 @@ function RootNodeRow({ name }: { name: string }): JSX.Element {
   const selected = view.kind === 'root' && !rootSessionActive;
 
   return (
-    <div className="group/root flex items-center pr-1">
+    <div
+      className={cn(
+        'group/root flex items-center gap-1 rounded-sm pr-1',
+        selected ? 'bg-accent text-accent-foreground' : 'text-foreground hover:bg-muted',
+      )}
+    >
       <button
         type="button"
         title="项目根 — 终端独占全屏；根会话列在下方"
         onClick={() => void projectStore.selectRoot()}
-        className={cn(
-          'flex min-w-0 flex-1 items-center gap-1.5 rounded-sm px-2 py-1.5 text-[13px] font-semibold',
-          selected ? 'bg-accent text-accent-foreground' : 'text-foreground hover:bg-muted',
-        )}
+        className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-[13px] font-semibold"
       >
         <FolderRoot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <span className="truncate">{name}</span>

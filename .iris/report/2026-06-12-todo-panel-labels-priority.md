@@ -1,5 +1,6 @@
 ---
 title: 实现待办面板与 Linear 式元数据（labels / priority）
+status: Backlog
 ---
 
 # 实现待办面板与 Linear 式元数据

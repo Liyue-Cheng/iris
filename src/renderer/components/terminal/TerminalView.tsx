@@ -54,6 +54,7 @@ import { readClipboardText, writeClipboardText } from '@renderer/lib/clipboard';
 import { getXtermTheme, isLightTheme, LIGHT_THEME_MIN_CONTRAST } from '@renderer/theme/xterm-themes';
 import { getSettings, useSettings } from '@renderer/stores/settings-store';
 import { setLastTerminalDims } from '@renderer/stores/session-store';
+import { perf } from '@renderer/lib/perf-runtime';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -586,6 +587,11 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     let replayDone = false;
     let lastSeq = -1;
     const holdQueue: SessionOutputPayload[] = [];
+    const replayId =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `${sessionId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    const mountStarted = performance.now();
 
     // 1) subscribe FIRST (hold until replay lands)
     const unsubscribe = window.api.on<SessionOutputPayload>(EVENTS.SESSION_OUTPUT, (payload) => {
@@ -622,6 +628,10 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       const reveal = (): void => {
         if (disposed || revealed) return;
         revealed = true;
+        perf.span('terminal.replay.totalToReveal', performance.now() - mountStarted, {
+          sessionId,
+          replayId,
+        });
         term.scrollToBottom();
         requestAnimationFrame(() => {
           if (!disposed) setHostRevealed(true);
@@ -632,6 +642,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
         console.warn('[TerminalView] replay fence timed out; revealing terminal fallback', {
           sessionId,
         });
+        perf.counter('terminal.replay.fenceTimeout', 1, { sessionId, replayId });
         reveal();
       }, REPLAY_FAILSAFE_MS);
       term.write('', () => {
@@ -650,10 +661,11 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
         rows: term.rows,
       });
       try {
+        const ipcStarted = performance.now();
         const scrollbackPromise = window.api.invoke<
-          { sessionId: string },
+          { sessionId: string; replayId: string },
           { data: string; lastSeq: number }
-        >(CHANNELS.SESSION_SCROLLBACK, { sessionId });
+        >(CHANNELS.SESSION_SCROLLBACK, { sessionId, replayId });
         let scrollbackTimer: ReturnType<typeof setTimeout> | null = null;
         const replay = await Promise.race([
           scrollbackPromise,
@@ -666,31 +678,72 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
         ]).finally(() => {
           if (scrollbackTimer !== null) clearTimeout(scrollbackTimer);
         });
+        perf.span('terminal.replay.ipc', performance.now() - ipcStarted, {
+          sessionId,
+          replayId,
+          base64Bytes: replay.data.length,
+          lastSeq: replay.lastSeq,
+        });
         if (disposed) return;
         if (replay.data) {
           // FLK-1: chunked write + yields — a multi-MB scrollback written in
           // one call blocks the main thread for 100-300ms.
+          const decodeStarted = performance.now();
           const all = b64ToBytes(replay.data);
+          perf.span('terminal.replay.decode', performance.now() - decodeStarted, {
+            sessionId,
+            replayId,
+            base64Bytes: replay.data.length,
+            bytes: all.length,
+          });
+          const writeStarted = performance.now();
+          let chunks = 0;
           for (let i = 0; i < all.length; i += REPLAY_CHUNK_BYTES) {
             if (disposed) return;
+            chunks += 1;
             term.write(all.subarray(i, i + REPLAY_CHUNK_BYTES));
             if (all.length > REPLAY_CHUNK_BYTES && i + REPLAY_CHUNK_BYTES < all.length) {
               await new Promise((r) => setTimeout(r, 0));
             }
           }
+          perf.span('terminal.replay.write', performance.now() - writeStarted, {
+            sessionId,
+            replayId,
+            bytes: all.length,
+            chunks,
+            holdQueue: holdQueue.length,
+          });
         }
         if (disposed) return;
         lastSeq = replay.lastSeq;
         replayDone = true;
+        let filteredHold = 0;
+        let flushedHold = 0;
         for (const payload of holdQueue) {
-          if (payload.seq <= lastSeq) continue;
+          if (payload.seq <= lastSeq) {
+            filteredHold += 1;
+            continue;
+          }
           lastSeq = payload.seq;
+          flushedHold += 1;
           term.write(b64ToBytes(payload.data));
         }
+        perf.counter('terminal.replay.holdQueueFiltered', filteredHold, {
+          sessionId,
+          replayId,
+        });
+        perf.counter('terminal.replay.holdQueueFlushed', flushedHold, {
+          sessionId,
+          replayId,
+        });
         holdQueue.length = 0;
         finishReplay();
       } catch (err) {
         console.warn('[TerminalView] scrollback replay failed, going live', err);
+        perf.counter('terminal.replay.failed', 1, {
+          sessionId,
+          replayId,
+        });
         if (disposed) return;
         for (const payload of holdQueue) {
           if (payload.seq > lastSeq) {

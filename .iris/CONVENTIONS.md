@@ -53,5 +53,10 @@ any depth: any folder containing typed folders is a **workspace**.
 9. **Markdown style.** Write plain CommonMark; the app's editor
    serializes with fixed remark defaults — match them to keep diffs
    quiet.
-10. **Off-limits.** Never modify this file. Never write outside typed
+10. **Manual-test items are checkboxes.** Anything that asks the user to
+    verify by hand — acceptance points, "✋ 手工验收" lists, "待你测试"
+    notes — must be written as GFM task checkboxes (`- [ ] …`), one per
+    discrete check, never as prose or plain bullets. This keeps every
+    open verification trackable and impossible to overlook.
+11. **Off-limits.** Never modify this file. Never write outside typed
     folders. Never touch code directories unless explicitly asked.

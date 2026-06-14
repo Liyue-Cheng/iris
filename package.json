@@ -3,7 +3,7 @@
   "version": "0.0.2",
   "private": true,
   "description": "Iris — AI-native, document-centric, terminal-driven project management. The app is a reference implementation of the .iris/ protocol.",
-  "license": "AGPL-3.0",
+  "license": "MIT",
   "main": "out/main/index.js",
   "type": "module",
   "engines": {

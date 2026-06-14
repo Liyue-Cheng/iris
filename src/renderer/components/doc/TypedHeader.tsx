@@ -15,7 +15,6 @@
 import { useEffect, useState } from 'react';
 import {
   Check,
-  ChevronDown,
   Code2,
   Eye,
   FileWarning,
@@ -31,7 +30,6 @@ import { parseYamlFlowSeq, yamlFlowSeq } from '@shared/markdown-utils';
 import { cn } from '@renderer/lib/utils';
 import { editorStore, type EditorSession } from '@renderer/stores/editor-store';
 import { useProject } from '@renderer/stores/project-store';
-import { SOFT_PRIORITIES } from '@renderer/lib/doc-utils';
 import { collectAllLabels } from '@renderer/lib/label-utils';
 import { LabelChip } from '@renderer/components/ui/label-chip';
 import { StatusBadge } from '@renderer/components/ui/status-badge';
@@ -234,7 +232,6 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
   const type = typeOfPath(session.path);
   const title = editorStore.getFrontmatterField('title') ?? '';
   const status = editorStore.getFrontmatterField('status') ?? '';
-  const priority = editorStore.getFrontmatterField('priority') ?? '';
   // A structurally broken frontmatter block is shown, never auto-edited.
   const fmEditable = !looksBroken(session.fmBlock);
 
@@ -323,40 +320,9 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
         </Tooltip>
       </div>
 
-      {/* Row 2 — priority + labels (issue only). */}
+      {/* Row 2 — labels (issue only). */}
       {type === 'issue' && (
         <div className="flex items-center gap-2 pb-1.5 pl-1">
-          <span className="flex items-center rounded-sm">
-            <FieldInput
-              value={priority}
-              placeholder="priority…"
-              disabled={!fmEditable}
-              onCommit={(v) => void editorStore.setFrontmatterField('priority', v)}
-              className="w-20 px-1.5 py-0.5 text-xs text-muted-foreground"
-            />
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  disabled={!fmEditable}
-                  title="优先级候选（软值）"
-                  className="rounded-sm p-0.5 text-muted-foreground hover:bg-muted/60 disabled:opacity-40"
-                >
-                  <ChevronDown className="h-3 w-3" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                {SOFT_PRIORITIES.map((p) => (
-                  <DropdownMenuItem
-                    key={p}
-                    onClick={() => void editorStore.setFrontmatterField('priority', p)}
-                  >
-                    <span className="text-xs">{p}</span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </span>
           <LabelsEditor disabled={!fmEditable} />
         </div>
       )}

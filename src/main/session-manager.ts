@@ -33,6 +33,7 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { existsSync, statSync } from 'node:fs';
+import { performance } from 'node:perf_hooks';
 import { spawn as defaultSpawnPty, type IPty, type IDisposable } from 'node-pty';
 import type {
   AgentConfig,
@@ -44,6 +45,7 @@ import type {
 import type { SettingsManager } from './settings-manager';
 import { buildSpawnEnv, injectTerminalHintEnv, validateDimensions } from './pty-utils';
 import { logger } from './logger';
+import { perf } from './perf-runtime';
 // @xterm/headless is plain CommonJS (no ESM exports map) — default-import
 // the module and destructure (Marina's lesson; named imports throw under
 // the Electron main ESM loader).
@@ -128,7 +130,10 @@ export interface CreateSessionInput {
  */
 function resolveHostShell(env: Record<string, string>): {
   file: string;
-  buildArgs: (command: string) => string[];
+  /** keepShell: when the command exits, drop back to an interactive shell
+   *  instead of letting the host exit (AgentConfig.onExit). Ignored for the
+   *  bare shell (empty command), which already is the interactive shell. */
+  buildArgs: (command: string, keepShell: boolean) => string[];
 } {
   if (process.platform === 'win32') {
     // PATH probing via where.exe is slow; node-pty resolves bare names
@@ -140,21 +145,33 @@ function resolveHostShell(env: Record<string, string>): {
         if (d && existsSync(`${d.replace(/[\\/]+$/, '')}\\${c}`)) {
           return {
             file: c,
-            buildArgs: (command) =>
-              command ? ['-NoLogo', '-Command', command] : ['-NoLogo'],
+            buildArgs: (command, keepShell) =>
+              command
+                ? keepShell
+                  ? ['-NoLogo', '-NoExit', '-Command', command]
+                  : ['-NoLogo', '-Command', command]
+                : ['-NoLogo'],
           };
         }
       }
     }
     return {
       file: 'cmd.exe',
-      buildArgs: (command) => (command ? ['/c', command] : []),
+      buildArgs: (command, keepShell) =>
+        command ? [keepShell ? '/k' : '/c', command] : [],
     };
   }
   const shell = process.env.SHELL || '/bin/bash';
   return {
     file: shell,
-    buildArgs: (command) => (command ? ['-lc', command] : ['-l']),
+    // After the command, re-exec an interactive login shell so the prompt
+    // returns instead of the PTY dying.
+    buildArgs: (command, keepShell) =>
+      command
+        ? keepShell
+          ? ['-lc', `${command}; exec "${shell}" -il`]
+          : ['-lc', command]
+        : ['-l'],
   };
 }
 
@@ -198,7 +215,9 @@ export class SessionManager extends EventEmitter {
     }
 
     const host = resolveHostShell(env);
-    const args = host.buildArgs(agent.command);
+    // keep-shell is the default (drop back to a prompt rather than a dead
+    // terminal); only 'close' lets the host exit with the command.
+    const args = host.buildArgs(agent.command, agent.onExit !== 'close');
 
     let pty: IPty;
     try {
@@ -387,7 +406,10 @@ export class SessionManager extends EventEmitter {
    * arriving after the boundary go through the normal 8ms batch and the
    * renderer filters seq > replayLastSeq — no loss, no double-write.
    */
-  async getScrollbackForReplay(sessionId: string): Promise<{ data: string; lastSeq: number }> {
+  async getScrollbackForReplay(
+    sessionId: string,
+    replayId?: string,
+  ): Promise<{ data: string; lastSeq: number }> {
     const managed = this.sessions.get(sessionId);
     if (!managed || !managed.headlessTerm || !managed.serializeAddon) {
       return { data: '', lastSeq: -1 };
@@ -409,6 +431,7 @@ export class SessionManager extends EventEmitter {
       term.write('', () => resolve());
     });
 
+    const serializeStarted = performance.now();
     let ansi = addon.serialize({ scrollback: SCROLLBACK_LINES });
 
     // xterm-serialize mode polyfill (Marina): older serializers miss cursor
@@ -430,9 +453,20 @@ export class SessionManager extends EventEmitter {
     if (typeof top === 'number' && typeof bot === 'number' && (top !== 0 || bot !== term.rows - 1)) {
       ansi += `\x1b[${top + 1};${bot + 1}r`;
     }
+    const serializeMs = performance.now() - serializeStarted;
+    const ansiBytes = Buffer.byteLength(ansi, 'utf8');
+    const data = Buffer.from(ansi, 'utf8').toString('base64');
+    perf.span('terminal.replay.serialize', serializeMs, {
+      sessionId,
+      replayId,
+      ansiBytes,
+      base64Bytes: Buffer.byteLength(data, 'utf8'),
+      scrollbackLines: SCROLLBACK_LINES,
+      lastSeq: replayLastSeq,
+    });
 
     return {
-      data: Buffer.from(ansi, 'utf8').toString('base64'),
+      data,
       lastSeq: replayLastSeq,
     };
   }
@@ -488,6 +522,10 @@ export class SessionManager extends EventEmitter {
     const { bytes, lastSeq } = managed.pendingEmit;
     managed.pendingEmit = null;
     managed.scrollbackLastSeq = lastSeq;
+    perf.counter('session.output.batchBytes', bytes.length, {
+      sessionId: managed.info.id,
+      lastSeq,
+    });
     const payload: SessionOutputPayload = {
       sessionId: managed.info.id,
       data: bytes.toString('base64'),

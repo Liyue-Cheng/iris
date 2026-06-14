@@ -91,6 +91,12 @@ export function InitDialog({
                   ? '已追加引导段'
                   : '已有引导段，未动'}
             </p>
+            {done.foreignEntries.length > 0 && (
+              <p className="mt-1 text-[var(--rp-gold)]">
+                检测到其它 agent 入口：{done.foreignEntries.join('、')}（未改动）。Iris 只维护标准入口{' '}
+                <code>AGENTS.md</code>，建议把项目级引导集中到它。
+              </p>
+            )}
           </div>
         )}
         {error && <p className="text-xs text-destructive">{error}</p>}

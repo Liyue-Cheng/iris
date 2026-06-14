@@ -4,6 +4,7 @@ import { ThreePane } from '@renderer/components/layout/ThreePane';
 import { CreateDocDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DeleteDocDialog } from '@renderer/components/doc/DeleteDocDialog';
 import { SettingsView, useSettingsViewOpen } from '@renderer/components/settings/SettingsView';
+import { PerfPanel } from '@renderer/components/perf/PerfPanel';
 
 export function App(): JSX.Element {
   // Settings is a view, not a modal (Marina CP-4 decision): it replaces the
@@ -18,6 +19,7 @@ export function App(): JSX.Element {
       </div>
       <CreateDocDialog />
       <DeleteDocDialog />
+      <PerfPanel />
     </TooltipProvider>
   );
 }

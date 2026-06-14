@@ -161,8 +161,16 @@ export const projectStore = {
 
   /** Select a doc: flush the previous editing session, open a new one.
    *  Also re-stages the right pane onto this doc's best session (or the
-   *  launcher panel when it has none) — pure projection-level linkage. */
-  async selectDoc(path: string): Promise<void> {
+   *  launcher panel when it has none) — pure projection-level linkage.
+   *  `focusEditor` grabs input focus on the fresh mount (new-doc create). */
+  async selectDoc(path: string, opts?: { focusEditor?: boolean }): Promise<void> {
+    // Re-selecting the doc already shown in the doc view is a no-op: re-reading
+    // would flash the loading spinner and remount Crepe (generation bump) for
+    // zero information — that's the "repeated click flicker". A prior read
+    // error still allows a retry.
+    if (state.view.kind === 'doc' && state.selectedPath === path && state.docError === null) {
+      return;
+    }
     await editorStore.flushBeforeSwitch();
     setState({ selectedPath: path, docLoading: true, docError: null, view: { kind: 'doc' } });
     sessionStore.syncToDoc(path);
@@ -172,7 +180,7 @@ export const projectStore = {
       });
       // Ignore stale responses after a quick re-selection.
       if (state.selectedPath === path) {
-        editorStore.openSession(content);
+        editorStore.openSession(content, opts?.focusEditor ? { focus: true } : undefined);
         setState({ docLoading: false });
       }
     } catch (err) {

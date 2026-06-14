@@ -70,6 +70,14 @@ export interface AgentConfig {
    * AGENTS.md guidance (the protocol's documented fallback).
    */
   injection?: 'hook' | 'flag' | 'none';
+  /**
+   * What the session does once the agent command exits:
+   * 'keep-shell'/absent = drop back to an interactive shell (so you can keep
+   * typing instead of facing a dead terminal); 'close' = let the host shell
+   * exit with the command, ending the session. No effect on bare-shell
+   * agents (command === ''), which already are the shell.
+   */
+  onExit?: 'keep-shell' | 'close';
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -218,6 +226,13 @@ export interface ProjectInitResult {
   createdFolders: string[];
   constitution: 'created' | 'already-exists';
   agentsMd: 'created' | 'appended' | 'already-has-section';
+  /**
+   * Well-known vendor-specific entry files found at the project root
+   * (e.g. CLAUDE.md), project-root relative. Iris does not touch these —
+   * it standardizes on AGENTS.md and only reports them so the UI can
+   * explain "a Claude/Codex/… entry exists, AGENTS.md was the missing one".
+   */
+  foreignEntries: string[];
 }
 
 /** Raw file-tree escape hatch (left pane toggle). */

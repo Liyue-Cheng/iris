@@ -21,6 +21,7 @@
  * project-manager's job. Unit-tested against fixtures/sample-project.
  */
 import { promises as fs } from 'node:fs';
+import { performance } from 'node:perf_hooks';
 import { basename, join, sep } from 'node:path';
 import matter from 'gray-matter';
 import { extractTodos } from '@shared/markdown-utils';
@@ -33,6 +34,7 @@ import {
   type RawTreeNode,
 } from '@shared/types';
 import { logger } from './logger';
+import { perf } from './perf-runtime';
 
 const IRIS_DIR = '.iris';
 
@@ -70,6 +72,13 @@ async function listDir(abs: string): Promise<DirListing> {
 interface ParsedFrontmatter {
   frontmatter: Record<string, unknown> | null;
   broken: boolean;
+}
+
+interface ScanStats {
+  markdownFiles: number;
+  markdownBytes: number;
+  frontmatterMs: number;
+  todoMs: number;
 }
 
 /**
@@ -132,6 +141,7 @@ async function readDocMeta(
   absPath: string,
   type: DocType,
   workspacePath: string,
+  stats: ScanStats,
 ): Promise<IrisDoc> {
   let text = '';
   let mtimeMs = 0;
@@ -142,7 +152,14 @@ async function readDocMeta(
   } catch (err) {
     logger.warn('scanner', `read failed for ${absPath}`, err);
   }
+  stats.markdownFiles += 1;
+  stats.markdownBytes += Buffer.byteLength(text, 'utf8');
+  const frontmatterStarted = performance.now();
   const { frontmatter, broken } = parseFrontmatter(text);
+  stats.frontmatterMs += performance.now() - frontmatterStarted;
+  const todoStarted = performance.now();
+  const todos = extractTodos(text);
+  stats.todoMs += performance.now() - todoStarted;
   const relPath = toRel(projectRoot, absPath);
   if (broken) warnBrokenFrontmatter(relPath, mtimeMs);
   return {
@@ -155,7 +172,7 @@ async function readDocMeta(
     frontmatter,
     frontmatterBroken: broken,
     labels: fmLabels(frontmatter),
-    todos: extractTodos(text),
+    todos,
     mtimeMs,
   };
 }
@@ -173,13 +190,14 @@ async function collectTypedDocs(
   workspacePath: string,
   nestedWorkspaces: IrisWorkspace[],
   insideReport: boolean,
+  stats: ScanStats,
 ): Promise<IrisDoc[]> {
   const docs: IrisDoc[] = [];
   const { dirs, files } = await listDir(typedDirAbs);
 
   for (const f of files) {
     if (!f.name.toLowerCase().endsWith('.md')) continue;
-    docs.push(await readDocMeta(projectRoot, f.abs, type, workspacePath));
+    docs.push(await readDocMeta(projectRoot, f.abs, type, workspacePath, stats));
   }
 
   for (const d of dirs) {
@@ -187,7 +205,7 @@ async function collectTypedDocs(
       // A workspace living inside a typed folder — the archive gesture when
       // that folder is report/. Recurse as a full workspace.
       nestedWorkspaces.push(
-        await scanWorkspaceDir(projectRoot, d.abs, insideReport || type === 'report'),
+        await scanWorkspaceDir(projectRoot, d.abs, insideReport || type === 'report', stats),
       );
     } else if (isDocType(d.name)) {
       // A typed folder nested directly inside another typed folder re-types
@@ -200,6 +218,7 @@ async function collectTypedDocs(
           workspacePath,
           nestedWorkspaces,
           insideReport || type === 'report',
+          stats,
         )),
       );
     } else {
@@ -212,6 +231,7 @@ async function collectTypedDocs(
           workspacePath,
           nestedWorkspaces,
           insideReport,
+          stats,
         )),
       );
     }
@@ -235,6 +255,7 @@ async function scanWorkspaceDir(
   projectRoot: string,
   wsAbs: string,
   archived: boolean,
+  stats: ScanStats,
 ): Promise<IrisWorkspace> {
   const wsRel = toRel(projectRoot, wsAbs);
   const ws: IrisWorkspace = {
@@ -249,12 +270,20 @@ async function scanWorkspaceDir(
   for (const d of dirs) {
     if (isDocType(d.name)) {
       ws.docs.push(
-        ...(await collectTypedDocs(projectRoot, d.abs, d.name, wsRel, ws.children, archived)),
+        ...(await collectTypedDocs(
+          projectRoot,
+          d.abs,
+          d.name,
+          wsRel,
+          ws.children,
+          archived,
+          stats,
+        )),
       );
     } else if (await containsWorkspaceSomewhere(d.abs)) {
       // Non-typed folder that (transitively) holds workspaces: descend so
       // arbitrarily organized sub-workspaces are still found.
-      ws.children.push(...(await findWorkspaces(projectRoot, d.abs, archived)));
+      ws.children.push(...(await findWorkspaces(projectRoot, d.abs, archived, stats)));
     }
   }
 
@@ -278,14 +307,15 @@ async function findWorkspaces(
   projectRoot: string,
   abs: string,
   archived: boolean,
+  stats: ScanStats,
 ): Promise<IrisWorkspace[]> {
   if (await isWorkspaceDir(abs)) {
-    return [await scanWorkspaceDir(projectRoot, abs, archived)];
+    return [await scanWorkspaceDir(projectRoot, abs, archived, stats)];
   }
   const out: IrisWorkspace[] = [];
   const { dirs } = await listDir(abs);
   for (const d of dirs) {
-    out.push(...(await findWorkspaces(projectRoot, d.abs, archived)));
+    out.push(...(await findWorkspaces(projectRoot, d.abs, archived, stats)));
   }
   return out;
 }
@@ -306,6 +336,13 @@ async function readConstitutionState(
 
 /** Scan a project. Cheap full rescan (M1 granularity — .iris trees are small). */
 export async function scanProject(projectRoot: string): Promise<IrisScanResult> {
+  const started = performance.now();
+  const stats: ScanStats = {
+    markdownFiles: 0,
+    markdownBytes: 0,
+    frontmatterMs: 0,
+    todoMs: 0,
+  };
   const projectName = basename(projectRoot);
   const irisAbs = join(projectRoot, IRIS_DIR);
 
@@ -317,7 +354,7 @@ export async function scanProject(projectRoot: string): Promise<IrisScanResult> 
   }
 
   if (!hasIris) {
-    return {
+    const result = {
       projectRoot,
       projectName,
       hasIris: false,
@@ -325,14 +362,30 @@ export async function scanProject(projectRoot: string): Promise<IrisScanResult> 
       constitution: { exists: false, protocol: null },
       scannedAt: Date.now(),
     };
+    perf.span('project.scan', performance.now() - started, {
+      projectRoot,
+      hasIris: false,
+      markdownFiles: 0,
+      markdownBytes: 0,
+    });
+    return result;
   }
 
   const [root, constitution] = await Promise.all([
-    scanWorkspaceDir(projectRoot, irisAbs, false),
+    scanWorkspaceDir(projectRoot, irisAbs, false, stats),
     readConstitutionState(irisAbs),
   ]);
   root.name = projectName; // root workspace displays the project's name
-  return { projectRoot, projectName, hasIris: true, root, constitution, scannedAt: Date.now() };
+  const result = { projectRoot, projectName, hasIris: true, root, constitution, scannedAt: Date.now() };
+  perf.span('project.scan', performance.now() - started, {
+    projectRoot,
+    hasIris: true,
+    markdownFiles: stats.markdownFiles,
+    markdownBytes: stats.markdownBytes,
+    frontmatterMs: Math.round(stats.frontmatterMs * 10) / 10,
+    todoMs: Math.round(stats.todoMs * 10) / 10,
+  });
+  return result;
 }
 
 /** Raw file tree of .iris/ (escape-hatch view). Dirs first, then files. */

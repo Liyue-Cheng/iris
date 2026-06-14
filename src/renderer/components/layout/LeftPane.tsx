@@ -59,11 +59,13 @@ export function LeftPane(): JSX.Element {
 
   return (
     <div className="flex h-full flex-col bg-card/50">
+      {/*
+        Header is a pure utility bar: project identity lives once in the lens
+        tree's interactive root node (and always-visible in the title-bar crumb),
+        so the name is NOT repeated here — that collapsed the stacked "iris ×3".
+      */}
       <div className="flex h-9 shrink-0 items-center gap-1 px-2">
-        <span className="truncate text-[13px] font-medium text-muted-foreground">
-          {scan?.projectName ?? '未打开项目'}
-        </span>
-        <div className="ml-auto flex items-center">
+        <div className="flex items-center">
           <Tooltip>
             <TooltipTrigger asChild>
               <Button

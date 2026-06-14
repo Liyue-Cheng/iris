@@ -72,6 +72,24 @@ any depth: any folder containing typed folders is a **workspace**.
 /** Marker line used for idempotent AGENTS.md appends. */
 export const AGENTS_GUIDANCE_MARKER = '## Project management (Iris)';
 
+/**
+ * Well-known agent-specific entry files other tools read from the project
+ * root. Iris standardizes on `AGENTS.md` (附录 A) and refuses to maintain a
+ * zoo of vendor files (§7 不持续维护多家 agent 私有文件); it only DETECTS
+ * these so the UI can tell the user "a vendor entry exists, but the standard
+ * AGENTS.md was missing — here's what we did". Paths are project-root
+ * relative, forward-slashed. `AGENTS.md` is deliberately absent: it is the
+ * standard entry Iris owns, not a foreign one.
+ */
+export const FOREIGN_AGENT_ENTRIES: readonly string[] = [
+  'CLAUDE.md',
+  'GEMINI.md',
+  '.cursorrules',
+  '.windsurfrules',
+  '.clinerules',
+  '.github/copilot-instructions.md',
+];
+
 /** Appendix A — the guidance section appended to the project's AGENTS.md. */
 export const AGENTS_GUIDANCE = `${AGENTS_GUIDANCE_MARKER}
 

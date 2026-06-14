@@ -32,6 +32,7 @@ import {
   AGENTS_GUIDANCE,
   AGENTS_GUIDANCE_MARKER,
   CONSTITUTION_TEMPLATE,
+  FOREIGN_AGENT_ENTRIES,
 } from './iris-templates';
 import { logger } from './logger';
 
@@ -284,8 +285,19 @@ export class ProjectManager extends EventEmitter {
       }
     }
 
-    logger.info('project', `init: folders=[${createdFolders.join(', ')}] constitution=${constitution} agents=${agentsMd}`);
-    return { createdFolders, constitution, agentsMd };
+    // Detect (never touch) vendor-specific entry files. This is the whole of
+    // 建议方向#2: surface that e.g. CLAUDE.md exists while AGENTS.md was the
+    // missing standard entry — Iris reports, the user decides.
+    const foreignEntries: string[] = [];
+    for (const rel of FOREIGN_AGENT_ENTRIES) {
+      if (await exists(join(root, rel))) foreignEntries.push(rel);
+    }
+
+    logger.info(
+      'project',
+      `init: folders=[${createdFolders.join(', ')}] constitution=${constitution} agents=${agentsMd} foreign=[${foreignEntries.join(', ')}]`,
+    );
+    return { createdFolders, constitution, agentsMd, foreignEntries };
   }
 
   /**

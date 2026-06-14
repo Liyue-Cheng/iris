@@ -61,6 +61,28 @@ describe('initIris', () => {
     expect(text).toContain(AGENTS_GUIDANCE_MARKER);
   });
 
+  it('creates the standard AGENTS.md alongside an existing CLAUDE.md, untouched', async () => {
+    // dogfood scenario: a repo with only a Claude-specific entry and no
+    // standard AGENTS.md — Codex etc. have no project-root entry to Iris.
+    const claudeBody = '# CLAUDE.md\n\nhand-written claude guidance\n';
+    await fs.writeFile(join(dir, 'CLAUDE.md'), claudeBody, 'utf8');
+
+    const r = await pm.initIris();
+
+    // AGENTS.md is created with the guidance marker…
+    expect(r.agentsMd).toBe('created');
+    const agents = await fs.readFile(join(dir, 'AGENTS.md'), 'utf8');
+    expect(agents).toContain(AGENTS_GUIDANCE_MARKER);
+    // …CLAUDE.md is reported as a foreign entry but left byte-for-byte intact.
+    expect(r.foreignEntries).toContain('CLAUDE.md');
+    expect(await fs.readFile(join(dir, 'CLAUDE.md'), 'utf8')).toBe(claudeBody);
+  });
+
+  it('reports no foreign entries on a bare project', async () => {
+    const r = await pm.initIris();
+    expect(r.foreignEntries).toEqual([]);
+  });
+
   it('never overwrites an existing constitution', async () => {
     await fs.mkdir(join(dir, '.iris'), { recursive: true });
     await fs.writeFile(join(dir, '.iris', 'CONVENTIONS.md'), 'HUMAN OWNED\n', 'utf8');

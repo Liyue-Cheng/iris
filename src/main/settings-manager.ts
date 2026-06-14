@@ -65,7 +65,9 @@ export const DEFAULT_SETTINGS: Settings = {
     lastRoot: null,
   },
   agents: [
-    { id: 'claude', label: 'claude', command: 'claude', injection: 'hook' },
+    { id: 'claude', label: 'claude', command: 'claude', injection: 'hook', onExit: 'keep-shell' },
+    { id: 'codex', label: 'codex', command: 'codex', injection: 'hook', onExit: 'keep-shell' },
+    { id: 'gemini', label: 'gemini', command: 'gemini', injection: 'hook', onExit: 'keep-shell' },
     { id: 'shell', label: '终端', command: '', injection: 'none' },
   ],
   advanced: {
@@ -284,6 +286,12 @@ export function validateSettings(s: Settings): void {
       throw new SettingsError(
         'InvalidSettings',
         `agent "${a.id}" injection must be hook / flag / none (or absent)`,
+      );
+    }
+    if (a.onExit !== undefined && !['keep-shell', 'close'].includes(a.onExit)) {
+      throw new SettingsError(
+        'InvalidSettings',
+        `agent "${a.id}" onExit must be keep-shell / close (or absent)`,
       );
     }
   }

@@ -56,6 +56,10 @@ export const CHANNELS = {
   /** Queries (projection reads — not instructions). */
   PROJECT_SCAN: 'project:scan',
   PROJECT_RAW_TREE: 'project:raw-tree',
+  /** Query: current git HEAD sha of the project root (null when not a repo /
+   *  no project / git unavailable). Powers status-doc freshness (reflects:
+   *  stamp vs HEAD). Read-only — never mutates anything. */
+  PROJECT_GIT_HEAD: 'project:git-head',
   DOC_READ: 'doc:read',
   /** Verbs (instruction-backed): write a doc verbatim / create a typed doc /
    *  delete a doc (human UI gesture — CONVENTIONS' "do not delete" binds the
@@ -69,6 +73,9 @@ export const CHANNELS = {
   STYLES_GET: 'styles:get',
   /** Verb (instruction-backed): write the project-level style maps. */
   STYLES_UPDATE: 'styles:update',
+  /** Local performance monitor (in-memory only; no terminal/doc content). */
+  PERF_SNAPSHOT: 'perf:snapshot',
+  PERF_CLEAR: 'perf:clear',
 
   /** Session verbs (instruction-backed). */
   SESSION_OPEN: 'session:open',
