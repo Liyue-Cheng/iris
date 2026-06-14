@@ -93,6 +93,7 @@ const MIN_ROWS = 5;
 const RESIZE_DEBOUNCE_MS = 150;
 const REPLAY_CHUNK_BYTES = 16 * 1024;
 const LARGE_PASTE_BYTES = 1024 * 1024;
+const REPLAY_FAILSAFE_MS = 5000;
 
 export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -617,12 +618,25 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       // SCROLL-1: write('', cb) is xterm's parser-drain fence — only inside
       // it is "bottom" the real final bottom. Reveal one RAF later so the
       // first visible frame is the final canvas.
-      term.write('', () => {
-        if (disposed) return;
+      let revealed = false;
+      const reveal = (): void => {
+        if (disposed || revealed) return;
+        revealed = true;
         term.scrollToBottom();
         requestAnimationFrame(() => {
           if (!disposed) setHostRevealed(true);
         });
+      };
+      const fallbackTimer = setTimeout(() => {
+        if (disposed || revealed) return;
+        console.warn('[TerminalView] replay fence timed out; revealing terminal fallback', {
+          sessionId,
+        });
+        reveal();
+      }, REPLAY_FAILSAFE_MS);
+      term.write('', () => {
+        clearTimeout(fallbackTimer);
+        reveal();
       });
     };
 
@@ -636,10 +650,22 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
         rows: term.rows,
       });
       try {
-        const replay = await window.api.invoke<{ sessionId: string }, { data: string; lastSeq: number }>(
-          CHANNELS.SESSION_SCROLLBACK,
-          { sessionId },
-        );
+        const scrollbackPromise = window.api.invoke<
+          { sessionId: string },
+          { data: string; lastSeq: number }
+        >(CHANNELS.SESSION_SCROLLBACK, { sessionId });
+        let scrollbackTimer: ReturnType<typeof setTimeout> | null = null;
+        const replay = await Promise.race([
+          scrollbackPromise,
+          new Promise<{ data: string; lastSeq: number }>((_, reject) => {
+            scrollbackTimer = setTimeout(
+              () => reject(new Error(`SESSION_SCROLLBACK timed out after ${REPLAY_FAILSAFE_MS}ms`)),
+              REPLAY_FAILSAFE_MS,
+            );
+          }),
+        ]).finally(() => {
+          if (scrollbackTimer !== null) clearTimeout(scrollbackTimer);
+        });
         if (disposed) return;
         if (replay.data) {
           // FLK-1: chunked write + yields — a multi-MB scrollback written in

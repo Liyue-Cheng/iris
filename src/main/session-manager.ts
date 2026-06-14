@@ -382,10 +382,10 @@ export class SessionManager extends EventEmitter {
    * headless mirror — a state rebuild, not a byte-ring replay, so DEC modes
    * and alt-buffer survive no matter how much output has scrolled by.
    *
-   * Ordering: flush pending emit → drain the headless parser (write('',cb)
-   * is xterm's official fence) → serialize + read lastSeq synchronously.
-   * Bytes arriving after the fence go through the normal 8ms batch and the
-   * renderer filters seq > lastSeq — no loss, no double-write.
+   * Ordering: flush pending emit → freeze replayLastSeq → drain the headless
+   * parser (write('',cb) is xterm's official fence) → serialize. Bytes
+   * arriving after the boundary go through the normal 8ms batch and the
+   * renderer filters seq > replayLastSeq — no loss, no double-write.
    */
   async getScrollbackForReplay(sessionId: string): Promise<{ data: string; lastSeq: number }> {
     const managed = this.sessions.get(sessionId);
@@ -395,7 +395,16 @@ export class SessionManager extends EventEmitter {
     const term = managed.headlessTerm;
     const addon = managed.serializeAddon;
 
+    if (managed.pendingEmitTimer) {
+      clearTimeout(managed.pendingEmitTimer);
+      managed.pendingEmitTimer = null;
+    }
     this.flushPendingEmit(managed);
+    // Freeze the replay boundary before inserting the parser fence. Any PTY
+    // bytes that arrive after this point are written behind the fence, so the
+    // snapshot below cannot contain them even if their IPC batch is emitted
+    // while we are waiting for the fence/serialize work.
+    const replayLastSeq = managed.scrollbackLastSeq;
     await new Promise<void>((resolve) => {
       term.write('', () => resolve());
     });
@@ -424,7 +433,7 @@ export class SessionManager extends EventEmitter {
 
     return {
       data: Buffer.from(ansi, 'utf8').toString('base64'),
-      lastSeq: managed.scrollbackLastSeq,
+      lastSeq: replayLastSeq,
     };
   }
 
