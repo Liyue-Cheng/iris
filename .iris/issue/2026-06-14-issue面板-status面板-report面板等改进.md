@@ -1,6 +1,6 @@
 ---
 title: issue面板 status面板 report面板等改进
-status: In Review
+status: Done
 priority: medium
 labels: []
 ---
