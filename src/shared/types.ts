@@ -35,6 +35,10 @@ export interface Settings {
      *  plus the bundled slash menu. Off by default — the handle repositions
      *  on every hovered block and reads as flicker. */
     editorBlockEdit: boolean;
+    /** Body text column alignment in the doc editor: 'center' keeps the
+     *  48rem reading column centered (default); 'left' hugs it to the left.
+     *  The typed header's title/controls track the column either way. */
+    editorBodyAlign: 'center' | 'left';
   };
   project: {
     /** Absolute path of the last opened project; reopened on startup. */

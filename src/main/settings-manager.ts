@@ -60,6 +60,7 @@ export const DEFAULT_SETTINGS: Settings = {
     terminalRightClick: 'menu',
     confirmOnQuit: true,
     editorBlockEdit: false,
+    editorBodyAlign: 'center',
   },
   project: {
     lastRoot: null,
@@ -256,6 +257,12 @@ export function validateSettings(s: Settings): void {
   }
   if (typeof s.behavior.editorBlockEdit !== 'boolean') {
     throw new SettingsError('InvalidSettings', 'behavior.editorBlockEdit must be a boolean');
+  }
+  if (!['center', 'left'].includes(s.behavior.editorBodyAlign)) {
+    throw new SettingsError(
+      'InvalidSettings',
+      `behavior.editorBodyAlign="${s.behavior.editorBodyAlign}" must be center or left`,
+    );
   }
   if (typeof s.appearance.uiFontFamily !== 'string' || !s.appearance.uiFontFamily.trim()) {
     throw new SettingsError('InvalidSettings', 'appearance.uiFontFamily must be a non-empty string');

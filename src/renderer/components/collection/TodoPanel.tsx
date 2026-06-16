@@ -79,7 +79,7 @@ export function TodoPanel({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-9 shrink-0 items-center gap-2 bg-card/30 px-4">
+      <div className="flex h-11 shrink-0 items-center gap-2 bg-card/30 px-4">
         <h2 className="text-sm font-semibold">
           待办
           {workspacePath && (

@@ -64,8 +64,8 @@ export function RightPane(): JSX.Element {
 
   return (
     <div className="flex h-full flex-col bg-card/50">
-      {/* Terminal banner — aligned (h-9) with the other panes' first rows. */}
-      <div className="flex h-9 shrink-0 items-center gap-1 px-2">
+      {/* Terminal banner — aligned (h-11) with the other panes' first rows. */}
+      <div className="flex h-11 shrink-0 items-center gap-1 px-2">
         {shownSession ? (
           <ContextMenu>
             <ContextMenuTrigger asChild>

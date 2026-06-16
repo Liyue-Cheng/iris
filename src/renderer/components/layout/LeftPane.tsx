@@ -64,7 +64,7 @@ export function LeftPane(): JSX.Element {
         tree's interactive root node (and always-visible in the title-bar crumb),
         so the name is NOT repeated here — that collapsed the stacked "iris ×3".
       */}
-      <div className="flex h-9 shrink-0 items-center gap-1 px-2">
+      <div className="flex h-11 shrink-0 items-center gap-1 px-2">
         <div className="flex items-center">
           <Tooltip>
             <TooltipTrigger asChild>

@@ -1,11 +1,17 @@
 /**
  * The typed header — sole owner of the frontmatter UI (the body editor
  * never sees it). Two fixed rows (E-3 布局拍板):
- *   row 1 — status badge · title · save indicator · code button. The doc
- *           path is NOT resident: it shows in a tooltip when hovering the
- *           title. No type badge (the lens already told you the type).
- *   row 2 — priority + labels (issue only).
- * Row 1 is h-9 to line up with the left/right pane headers (三栏第一行对齐).
+ *   row 1 — title · status badge · save indicator · code button. The whole
+ *           header lives in the SAME column as the Crepe body — a 48rem box
+ *           inside the px-2.5 scrollbar gutter — so the title's left edge AND
+ *           the right-hand controls' right edge line up with the body text at
+ *           every pane width. The column centers or left-hugs per
+ *           behavior.editorBodyAlign (mirroring the body). The status badge
+ *           sits AFTER the title. The doc path is NOT resident: it shows in a
+ *           tooltip when hovering the title. No type badge (the lens already
+ *           told you the type).
+ *   row 2 — priority + labels (issue only), in the same column.
+ * Row 1 is h-11 to line up with the left/right pane headers (三栏第一行对齐).
  *
  * `status:` is a SOFT value: the menu shows the canonical state machine for
  * the doc's type (issues six states, reports two) PLUS a free-text input —
@@ -30,6 +36,7 @@ import { parseYamlFlowSeq, yamlFlowSeq } from '@shared/markdown-utils';
 import { cn } from '@renderer/lib/utils';
 import { editorStore, type EditorSession } from '@renderer/stores/editor-store';
 import { useProject } from '@renderer/stores/project-store';
+import { useSettings } from '@renderer/stores/settings-store';
 import { collectAllLabels } from '@renderer/lib/label-utils';
 import { LabelChip } from '@renderer/components/ui/label-chip';
 import { StatusBadge } from '@renderer/components/ui/status-badge';
@@ -235,97 +242,107 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
   // A structurally broken frontmatter block is shown, never auto-edited.
   const fmEditable = !looksBroken(session.fmBlock);
 
+  // px-2.5 = the body's reserved 10px scrollbar gutter; the inner column is
+  // the body's 48rem reading column (mx-auto centered / mr-auto left-hugged
+  // per the setting). Title left + controls right then track the body text.
+  const bodyAlign = useSettings()?.behavior.editorBodyAlign ?? 'center';
+  const column = cn('max-w-3xl px-6', bodyAlign === 'left' ? 'mr-auto' : 'mx-auto');
+
   return (
-    <div className="shrink-0 bg-card/30 px-4">
-      {/* Row 1 — h-9, aligned with the left/right pane headers. */}
-      <div className="flex h-9 items-center gap-2">
-        <StatusEditor type={type} value={status} disabled={!fmEditable} />
-
-        <Tooltip>
-          {/* span wrapper: FieldInput doesn't forward refs, Radix asChild needs one */}
-          <TooltipTrigger asChild>
-            <span className="flex min-w-0 flex-1">
-              <FieldInput
-                value={title}
-                placeholder={session.path.split('/').pop()?.replace(/\.md$/i, '') ?? ''}
-                disabled={!fmEditable}
-                onCommit={(v) => void editorStore.setFrontmatterField('title', v)}
-                className="min-w-0 flex-1 px-1.5 text-lg font-semibold"
-              />
-            </span>
-          </TooltipTrigger>
-          <TooltipContent>{session.path}</TooltipContent>
-        </Tooltip>
-
-        {!fmEditable && (
-          <span className="flex shrink-0 items-center gap-1 rounded bg-destructive/15 px-1.5 py-0.5 text-xs text-destructive">
-            <FileWarning className="h-3 w-3" />
-            frontmatter 异常 — 字段编辑已禁用，可用源码模式修复
-          </span>
-        )}
-
-        {session.externalConflict && (
+    <div className="shrink-0 bg-card/30 px-2.5">
+      <div className={column}>
+        {/* Row 1 — h-11, aligned with the left/right pane headers. */}
+        <div className="flex h-11 items-center gap-2">
           <Tooltip>
+            {/* span wrapper: FieldInput doesn't forward refs, Radix asChild needs one.
+                -ml-1.5 cancels the input's px-1.5 so the title glyph is flush at the
+                column's left edge (= body text), while the hover bg keeps its inset. */}
             <TooltipTrigger asChild>
-              <span className="flex shrink-0 items-center gap-1 rounded bg-[var(--rp-gold)]/20 px-1.5 py-0.5 text-xs text-[var(--rp-gold)]">
-                <TriangleAlert className="h-3 w-3" />
-                外部已修改
+              <span className="-ml-1.5 flex min-w-0 flex-1">
+                <FieldInput
+                  value={title}
+                  placeholder={session.path.split('/').pop()?.replace(/\.md$/i, '') ?? ''}
+                  disabled={!fmEditable}
+                  onCommit={(v) => void editorStore.setFrontmatterField('title', v)}
+                  className="min-w-0 flex-1 px-1.5 text-lg font-semibold"
+                />
               </span>
             </TooltipTrigger>
-            <TooltipContent>
-              该文件在你编辑期间被外部修改。继续保存将覆盖外部版本。
-            </TooltipContent>
+            <TooltipContent>{session.path}</TooltipContent>
           </Tooltip>
-        )}
 
-        {session.saveError && (
-          <span className="shrink-0 rounded bg-destructive/15 px-1.5 py-0.5 text-xs text-destructive">
-            保存失败：{session.saveError}
-          </span>
-        )}
+          <StatusEditor type={type} value={status} disabled={!fmEditable} />
 
-        {session.saving ? (
-          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
-        ) : session.dirty ? (
+          {!fmEditable && (
+            <span className="flex shrink-0 items-center gap-1 rounded bg-destructive/15 px-1.5 py-0.5 text-xs text-destructive">
+              <FileWarning className="h-3 w-3" />
+              frontmatter 异常 — 字段编辑已禁用，可用源码模式修复
+            </span>
+          )}
+
+          {session.externalConflict && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="flex shrink-0 items-center gap-1 rounded bg-[var(--rp-gold)]/20 px-1.5 py-0.5 text-xs text-[var(--rp-gold)]">
+                  <TriangleAlert className="h-3 w-3" />
+                  外部已修改
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                该文件在你编辑期间被外部修改。继续保存将覆盖外部版本。
+              </TooltipContent>
+            </Tooltip>
+          )}
+
+          {session.saveError && (
+            <span className="shrink-0 rounded bg-destructive/15 px-1.5 py-0.5 text-xs text-destructive">
+              保存失败：{session.saveError}
+            </span>
+          )}
+
+          {session.saving ? (
+            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+          ) : session.dirty ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                {/* D2: pencil, not a gold dot — the gold dot collided with the
+                    terminal's idle light. A monochrome glyph reads as "edited". */}
+                <Pencil className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              </TooltipTrigger>
+              <TooltipContent>未保存（Ctrl+S 保存）</TooltipContent>
+            </Tooltip>
+          ) : (
+            <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
+          )}
+
           <Tooltip>
             <TooltipTrigger asChild>
-              {/* D2: pencil, not a gold dot — the gold dot collided with the
-                  terminal's idle light. A monochrome glyph reads as "edited". */}
-              <Pencil className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 shrink-0"
+                onClick={() => editorStore.toggleMode()}
+              >
+                {session.mode === 'wysiwyg' ? (
+                  <Code2 className="!size-3.5" />
+                ) : (
+                  <Eye className="!size-3.5" />
+                )}
+              </Button>
             </TooltipTrigger>
-            <TooltipContent>未保存（Ctrl+S 保存）</TooltipContent>
+            <TooltipContent>
+              {session.mode === 'wysiwyg' ? '源码模式（逃生舱）' : '返回所见即所得'}
+            </TooltipContent>
           </Tooltip>
-        ) : (
-          <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
-        )}
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-6 w-6 shrink-0"
-              onClick={() => editorStore.toggleMode()}
-            >
-              {session.mode === 'wysiwyg' ? (
-                <Code2 className="!size-3.5" />
-              ) : (
-                <Eye className="!size-3.5" />
-              )}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            {session.mode === 'wysiwyg' ? '源码模式（逃生舱）' : '返回所见即所得'}
-          </TooltipContent>
-        </Tooltip>
-      </div>
-
-      {/* Row 2 — labels (issue only). */}
-      {type === 'issue' && (
-        <div className="flex items-center gap-2 pb-1.5 pl-1">
-          <LabelsEditor disabled={!fmEditable} />
         </div>
-      )}
+
+        {/* Row 2 — labels (issue only), in the same column. */}
+        {type === 'issue' && (
+          <div className="flex items-center gap-2 pb-1.5">
+            <LabelsEditor disabled={!fmEditable} />
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -308,6 +308,12 @@
   margin: 0 auto;
   padding: 1rem 1.5rem 4rem;
 }
+/* 'left' alignment (behavior.editorBodyAlign): hug the reading column to the
+   left. The both-edges gutter stays, so the left edge sits at the reserved
+   10px gutter — the typed header mirrors that with its px-2.5 + mr-auto. */
+.crepe-host[data-body-align='left'] .milkdown .ProseMirror {
+  margin: 0;
+}
 
 /* ──────────────────────────────────────────────────────────────────
  * Scrollbars.

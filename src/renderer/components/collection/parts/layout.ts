@@ -11,7 +11,7 @@
  */
 
 /** The top bar shared by every panel header. */
-export const PANEL_BAR = 'flex h-9 shrink-0 items-center gap-2 border-b border-subtle bg-card/30 px-3';
+export const PANEL_BAR = 'flex h-11 shrink-0 items-center gap-2 border-b border-subtle bg-card/30 px-3';
 
 /** A single list row: fixed height, single line, consistent hover. */
 export const ROW_BASE =

@@ -48,7 +48,9 @@ export function CrepeEditor({
   body: string;
 }): JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const blockEdit = useSettings()?.behavior.editorBlockEdit ?? false;
+  const settings = useSettings();
+  const blockEdit = settings?.behavior.editorBlockEdit ?? false;
+  const bodyAlign = settings?.behavior.editorBodyAlign ?? 'center';
 
   useEffect(() => {
     const el = rootRef.current;
@@ -118,7 +120,11 @@ export function CrepeEditor({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <div ref={rootRef} className="crepe-host h-full overflow-y-auto" />
+        <div
+          ref={rootRef}
+          data-body-align={bodyAlign}
+          className="crepe-host h-full overflow-y-auto"
+        />
       </ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onClick={() => editAction('cut')}>剪切</ContextMenuItem>

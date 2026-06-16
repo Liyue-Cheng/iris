@@ -459,6 +459,17 @@ function AppearancePanel({ setError }: { setError: (m: string | null) => void })
         />
       </SettingRow>
 
+      <SettingRow label="正文对齐" hint="正文阅读列居中或靠左；标题与右侧控件随列对齐">
+        <Segmented
+          value={settings?.behavior.editorBodyAlign ?? 'center'}
+          options={[
+            { value: 'center', label: '居中' },
+            { value: 'left', label: '靠左' },
+          ]}
+          onChange={(v) => void updateSettings({ behavior: { editorBodyAlign: v } }, setError)}
+        />
+      </SettingRow>
+
       <SettingRow label="文档排版" hint="标题字阶、行宽等正文渲染参数">
         <Placeholder>占位 — 待 Crepe 排版 token（--crepe-font-* 系列）接入设置层。</Placeholder>
       </SettingRow>
