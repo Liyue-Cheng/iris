@@ -69,9 +69,6 @@ const subscribers = new Set<() => void>();
 /** Exact bytes of our last write per path — the echo-dedup compare table. */
 const lastWritten = new Map<string, string>();
 
-/** One-shot: the next editor mount should grab input focus (new-doc create). */
-let focusOnMount = false;
-
 /** GFM task-list checkbox marker at a list-item start (`- [ ]` / `1. [x]`…). */
 const TASK_CHECKBOX = /^(\s*(?:[-*+]|\d+\.)\s+)\[[ xX]\]/gm;
 
@@ -122,8 +119,10 @@ export const editorStore = {
     return session;
   },
 
-  /** Open a fresh session from loaded content (doc switch / external reload). */
-  openSession(content: DocContent, opts?: { focus?: boolean }): void {
+  /** Open a fresh session from loaded content (doc switch / external reload).
+   *  Input focus is no longer decided here — the focus-store coordinator drives
+   *  it (the editor claims via useClaimFocus once Crepe is ready). */
+  openSession(content: DocContent): void {
     const { fmBlock, body } = splitFrontmatter(content.raw);
     session = {
       path: content.path,
@@ -150,15 +149,7 @@ export const editorStore = {
     // doc is selected. A genuine external change has different bytes and
     // still reloads via handleDiskChange.
     lastWritten.set(content.path, content.raw);
-    if (opts?.focus) focusOnMount = true;
     emit();
-  },
-
-  /** Consumed once by the editor mount to decide whether to grab focus. */
-  consumeFocusOnMount(): boolean {
-    if (!focusOnMount) return false;
-    focusOnMount = false;
-    return true;
   },
 
   closeSession(): void {

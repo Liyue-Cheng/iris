@@ -23,6 +23,7 @@ function emit(): void {
 function applyAppearance(s: Settings): void {
   document.documentElement.dataset.theme = s.appearance.theme;
   document.body.style.setProperty('--ui-font-family', s.appearance.uiFontFamily);
+  document.body.style.setProperty('--editor-max-width', `${s.behavior.editorMaxWidth}rem`);
 }
 
 function setSettings(next: Settings): void {

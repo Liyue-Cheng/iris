@@ -17,18 +17,22 @@ import { CHANNELS } from '@shared/protocol';
 import { editorStore } from './editor-store';
 import { sessionStore } from './session-store';
 import { stylesStore } from './styles-store';
+import { focusStore, type FocusTarget } from './focus-store';
+import { getSettings } from './settings-store';
 
 export type ProjectPhase = 'idle' | 'opening' | 'ready' | 'error';
 
 /** What the middle pane shows: a single doc, a type-level collection
- *  (issue panel etc.), the cross-issue todo panel, or the project-root
- *  README (the special root node, E-4) — collections are optionally
- *  scoped to one workspace. */
+ *  (issue panel etc.), the cross-issue todo panel, the project-root hub
+ *  (the special root node, E-4), or a sub-workspace hub — both hubs give
+ *  the terminal the full width. Collections are optionally scoped to one
+ *  workspace. */
 export type MiddleView =
   | { kind: 'doc' }
   | { kind: 'collection'; type: DocType; workspacePath: string | null }
   | { kind: 'todos'; workspacePath: string | null }
-  | { kind: 'root' };
+  | { kind: 'root' }
+  | { kind: 'workspace'; path: string };
 
 export interface ProjectState {
   phase: ProjectPhase;
@@ -66,6 +70,30 @@ function setState(patch: Partial<ProjectState>): void {
 // trigger exactly one follow-up scan (no unbounded pile-up).
 let scanInFlight = false;
 let scanDirty = false;
+
+/** Where keyboard focus should land when this doc is selected (P1/P5),
+ *  honoring behavior.focusOnSelectDoc. Read AFTER sessionStore.syncToDoc so
+ *  the staged session reflects this anchor. `forceEditor` (new-doc create)
+ *  overrides the setting. */
+/** Persist the current editor's pending edits without blocking a view switch
+ *  (P3). save() composes the current session's bytes synchronously before its
+ *  first await, so calling this immediately before replacing the session
+ *  captures the OLD doc; its post-write re-baseline is path-guarded and won't
+ *  touch the new session. A clean session makes save() a no-op. */
+function flushInBackground(): void {
+  void editorStore.flushBeforeSwitch();
+}
+
+function focusTargetForDoc(path: string, forceEditor: boolean): FocusTarget {
+  if (forceEditor) return 'editor';
+  const pref = getSettings()?.behavior.focusOnSelectDoc ?? 'editor';
+  if (pref === 'editor') return 'editor';
+  const { activeSessionId, sessions } = sessionStore.get();
+  const staged = sessions.find((s) => s.id === activeSessionId && s.docPath === path);
+  if (!staged) return 'editor'; // no terminal to focus → fall back to the body
+  if (pref === 'terminal') return 'terminal';
+  return staged.state === 'active' ? 'terminal' : 'editor'; // 'auto'
+}
 
 export const projectStore = {
   get(): ProjectState {
@@ -127,24 +155,39 @@ export const projectStore = {
   },
 
   /** Open a type-level collection view (issue panel etc.). */
-  async openCollection(type: DocType, workspacePath: string | null): Promise<void> {
-    await editorStore.flushBeforeSwitch();
+  openCollection(type: DocType, workspacePath: string | null): void {
+    flushInBackground();
     setState({ view: { kind: 'collection', type, workspacePath } });
+    focusStore.request('panel');
   },
 
   /** Open the todo panel (unchecked tasks across active issues). */
-  async openTodos(workspacePath: string | null): Promise<void> {
-    await editorStore.flushBeforeSwitch();
+  openTodos(workspacePath: string | null): void {
+    flushInBackground();
     setState({ view: { kind: 'todos', workspacePath } });
+    focusStore.request('panel');
   },
 
   /** The special root node (E-4): middle shows the project README (or a
-   *  placeholder), right shows the project-root sessions. */
-  async selectRoot(): Promise<void> {
-    await editorStore.flushBeforeSwitch();
+   *  placeholder), right shows the project-root sessions (terminal-only view,
+   *  so focus goes to the terminal). */
+  selectRoot(): void {
+    flushInBackground();
     editorStore.closeSession();
     setState({ selectedPath: null, view: { kind: 'root' }, docError: null });
     sessionStore.syncToRoot();
+    focusStore.request('terminal');
+  },
+
+  /** A sub-workspace hub (terminal parity with the root node): like
+   *  selectRoot, the middle pane yields to a full-width terminal and the
+   *  right pane stages this workspace's hub sessions. */
+  selectWorkspace(path: string): void {
+    flushInBackground();
+    editorStore.closeSession();
+    setState({ selectedPath: null, view: { kind: 'workspace', path }, docError: null });
+    sessionStore.syncToWorkspace(path);
+    focusStore.request('terminal');
   },
 
   /** Explicit re-projection (used by init/workspace commits). */
@@ -162,7 +205,8 @@ export const projectStore = {
   /** Select a doc: flush the previous editing session, open a new one.
    *  Also re-stages the right pane onto this doc's best session (or the
    *  launcher panel when it has none) — pure projection-level linkage.
-   *  `focusEditor` grabs input focus on the fresh mount (new-doc create). */
+   *  `focusEditor` forces input focus into the editor regardless of the
+   *  focusOnSelectDoc setting (new-doc create always wants the body). */
   async selectDoc(path: string, opts?: { focusEditor?: boolean }): Promise<void> {
     // Re-selecting the doc already shown in the doc view is a no-op: re-reading
     // would flash the loading spinner and remount Crepe (generation bump) for
@@ -171,16 +215,23 @@ export const projectStore = {
     if (state.view.kind === 'doc' && state.selectedPath === path && state.docError === null) {
       return;
     }
-    await editorStore.flushBeforeSwitch();
+    // P3: don't block the switch on a disk round-trip. The previous doc's
+    // pending edits flush in the background — doc.save is serial per doc:path
+    // and the editor's echo-dedup (disk === lastWritten) absorbs our own write,
+    // so the UI/focus swap happens at once instead of after the save IPC.
+    flushInBackground();
     setState({ selectedPath: path, docLoading: true, docError: null, view: { kind: 'doc' } });
     sessionStore.syncToDoc(path);
+    // Declare the focus target now (P1/P5): the editor/terminal claims it once
+    // ready, so timing relative to the async read below doesn't matter.
+    focusStore.request(focusTargetForDoc(path, opts?.focusEditor ?? false));
     try {
       const content = await window.api.invoke<{ path: string }, DocContent>(CHANNELS.DOC_READ, {
         path,
       });
       // Ignore stale responses after a quick re-selection.
       if (state.selectedPath === path) {
-        editorStore.openSession(content, opts?.focusEditor ? { focus: true } : undefined);
+        editorStore.openSession(content);
         setState({ docLoading: false });
       }
     } catch (err) {

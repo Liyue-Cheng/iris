@@ -8,6 +8,7 @@ import { pipeline } from '@renderer/cpu';
 import { getLastTerminalDims } from '@renderer/stores/session-store';
 import { editorStore } from '@renderer/stores/editor-store';
 import { projectStore } from '@renderer/stores/project-store';
+import { focusStore } from '@renderer/stores/focus-store';
 
 export async function openSession(docPath: string | null, agentId: string): Promise<void> {
   // Round-4 A1/A2: the core gesture injects FOCUS_DOC and the agent `cat`s
@@ -23,8 +24,27 @@ export async function openSession(docPath: string | null, agentId: string): Prom
   // See issue 2026-06-16-项目根开终端右栏不切换.
   if (docPath === null) await projectStore.selectRoot();
   else await projectStore.selectDoc(docPath);
+  // An explicit spawn always wants the new terminal focused, overriding the
+  // doc's focusOnSelectDoc target (P5). The terminal claims once it mounts.
+  focusStore.request('terminal');
   const { cols, rows } = getLastTerminalDims();
   await pipeline.dispatch('session.open', { docPath, agentId, cols, rows });
+}
+
+/**
+ * Spawn a workspace-hub session (terminal parity for sub-workspaces): no
+ * FOCUS_DOC, cwd = project root, grouped under the given workspace path
+ * (`.iris` = project root). Stage the matching hub view so the new terminal
+ * surfaces in the right pane. A hub terminal is ephemeral and intentionally
+ * unaware of its sub-workspace — the binding is left-pane grouping only.
+ */
+export async function openWorkspaceSession(workspacePath: string, agentId: string): Promise<void> {
+  await editorStore.flushBeforeSwitch();
+  if (workspacePath === '.iris') await projectStore.selectRoot();
+  else await projectStore.selectWorkspace(workspacePath);
+  focusStore.request('terminal');
+  const { cols, rows } = getLastTerminalDims();
+  await pipeline.dispatch('session.open', { docPath: null, workspacePath, agentId, cols, rows });
 }
 
 export async function closeSession(sessionId: string): Promise<void> {

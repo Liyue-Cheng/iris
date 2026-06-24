@@ -52,11 +52,12 @@ export const sessionStore = {
   handleDestroyed(sessionId: string): void {
     const destroyed = state.sessions.find((s) => s.id === sessionId);
     const sessions = state.sessions.filter((s) => s.id !== sessionId);
-    // Fallback prefers a sibling under the same doc anchor — the right
-    // pane's list is filtered by anchor, so jumping to another doc's
-    // session would land on an invisible row.
-    const sibling = destroyed
-      ? [...sessions].reverse().find((s) => s.docPath === destroyed.docPath)
+    // Fallback prefers a sibling under the same anchor — the right pane's
+    // list is filtered by anchor, so jumping to another anchor's session
+    // would land on an invisible row.
+    const destroyedKey = destroyed ? sessionAnchorKey(destroyed) : undefined;
+    const sibling = destroyedKey
+      ? [...sessions].reverse().find((s) => sessionAnchorKey(s) === destroyedKey)
       : undefined;
     setState({
       sessions,
@@ -79,15 +80,20 @@ export const sessionStore = {
    * most recently created (sessions[] is insertion-ordered). No session
    * under this anchor → null, which the right pane renders as the
    * doc-anchored launcher panel. Manual select() stands until the next
-   * doc selection.
+   * doc selection. (Doc sessions key by docPath — their anchor key.)
    */
   syncToDoc(docPath: string): void {
     setState({ activeSessionId: bestUnderAnchor(docPath)?.id ?? null });
   },
 
-  /** Root-node linkage: stage the best project-root session (anchor null). */
+  /** Root-node linkage: stage the best project-root hub session. */
   syncToRoot(): void {
-    setState({ activeSessionId: bestUnderAnchor(null)?.id ?? null });
+    setState({ activeSessionId: bestUnderAnchor(workspaceAnchorKey('.iris'))?.id ?? null });
+  },
+
+  /** Sub-workspace hub linkage: stage the best session under that hub. */
+  syncToWorkspace(workspacePath: string): void {
+    setState({ activeSessionId: bestUnderAnchor(workspaceAnchorKey(workspacePath))?.id ?? null });
   },
 
   /** Replace the whole projection with a fresh main-process snapshot
@@ -101,12 +107,28 @@ export const sessionStore = {
   },
 };
 
-/** Best session under one anchor: active > idle > exited, ties to newest. */
-function bestUnderAnchor(docPath: string | null): SessionInfo | null {
+/**
+ * Stable grouping key for a session's anchor. Doc sessions key by their doc
+ * path; hub sessions (docPath null) key by `ws:<workspacePath>` (root =
+ * `.iris`). The `ws:` prefix can never collide with a `.md` doc path, so the
+ * two namespaces stay disjoint. This is the load-bearing decoupling: a hub
+ * session groups by workspace WITHOUT carrying a FOCUS_DOC.
+ */
+export function sessionAnchorKey(s: Pick<SessionInfo, 'docPath' | 'workspacePath'>): string {
+  return s.docPath != null ? s.docPath : `ws:${s.workspacePath ?? '.iris'}`;
+}
+
+/** Anchor key for a workspace hub (project root = '.iris'). */
+export function workspaceAnchorKey(workspacePath: string): string {
+  return `ws:${workspacePath}`;
+}
+
+/** Best session under one anchor key: active > idle > exited, ties to newest. */
+function bestUnderAnchor(anchorKey: string): SessionInfo | null {
   const rank: Record<SessionState, number> = { active: 2, idle: 1, exited: 0 };
   let best: SessionInfo | null = null;
   for (const s of state.sessions) {
-    if (s.docPath !== docPath) continue;
+    if (sessionAnchorKey(s) !== anchorKey) continue;
     if (!best || rank[s.state] >= rank[best.state]) best = s;
   }
   return best;
@@ -158,17 +180,25 @@ export function useSessions(): SessionStoreState {
 }
 
 /**
- * Aggregate session state per doc anchor for the left-pane dots:
+ * Aggregate session state under one anchor key for the left-pane dots:
  * any active → 'active'; else any idle → 'idle'; else (exited only) →
  * 'exited'; no sessions → null.
  */
-export function aggregateDocState(sessions: SessionInfo[], docPath: string): SessionState | null {
+export function aggregateAnchorState(
+  sessions: SessionInfo[],
+  anchorKey: string,
+): SessionState | null {
   let best: SessionState | null = null;
   for (const s of sessions) {
-    if (s.docPath !== docPath) continue;
+    if (sessionAnchorKey(s) !== anchorKey) continue;
     if (s.state === 'active') return 'active';
     if (s.state === 'idle') best = 'idle';
     else if (best === null) best = 'exited';
   }
   return best;
+}
+
+/** Doc-row dot aggregation — a doc session's anchor key IS its doc path. */
+export function aggregateDocState(sessions: SessionInfo[], docPath: string): SessionState | null {
+  return aggregateAnchorState(sessions, docPath);
 }

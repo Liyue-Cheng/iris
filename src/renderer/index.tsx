@@ -2,7 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles/global.css';
 import { App } from './App';
-import { initSettingsStore, getSettings } from './stores/settings-store';
+import { initSettingsStore } from './stores/settings-store';
 import { hydrateSessions } from './stores/session-store';
 import { editorStore } from './stores/editor-store';
 import { wireInterrupts } from './cpu/interrupts';
@@ -45,9 +45,13 @@ async function bootstrap(): Promise<void> {
     </React.StrictMode>,
   );
 
-  // Reopen the last project after first paint; failures surface in-app.
-  const lastRoot = getSettings()?.project.lastRoot;
-  if (lastRoot) void openProject(lastRoot);
+  // Open the project THIS window is bound to (main is the authority on the
+  // window→project binding; multi-window, each window gets its own root).
+  // Failures surface in-app.
+  const { projectRoot } = await window.api.invoke<undefined, { projectRoot: string | null }>(
+    CHANNELS.WINDOW_BOOTSTRAP,
+  );
+  if (projectRoot) void openProject(projectRoot);
 }
 
 void bootstrap();
