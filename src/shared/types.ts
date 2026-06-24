@@ -36,13 +36,26 @@ export interface Settings {
      *  on every hovered block and reads as flicker. */
     editorBlockEdit: boolean;
     /** Body text column alignment in the doc editor: 'center' keeps the
-     *  48rem reading column centered (default); 'left' hugs it to the left.
+     *  reading column centered (default); 'left' hugs it to the left.
      *  The typed header's title/controls track the column either way. */
     editorBodyAlign: 'center' | 'left';
+    /** Doc reading-column max-width, in rem. Drives both the Crepe body and
+     *  the typed header (single source via the --editor-max-width CSS var).
+     *  UI presets: 窄 48 / 中 58 (default) / 宽 72. Clamped to [30, 120]. */
+    editorMaxWidth: number;
+    /** Where keyboard focus lands when a doc is selected (issue 关于焦点的的管理
+     *  P1/P5): 'editor' always the body; 'terminal' the doc's staged session
+     *  when it has one (else the editor); 'auto' the terminal only when that
+     *  session is actively running, otherwise the editor. */
+    focusOnSelectDoc: 'editor' | 'terminal' | 'auto';
   };
   project: {
-    /** Absolute path of the last opened project; reopened on startup. */
+    /** @deprecated v1.0 single-window field. v1.1 restores from openRoots;
+     *  still written (= the most recently bound root) for back-compat. */
     lastRoot: string | null;
+    /** Absolute paths of the projects open at last quit — one window restored
+     *  per entry on startup (multi-window). Empty → a single empty window. */
+    openRoots: string[];
   };
   /**
    * Agent CLIs offered by the "open with X" gesture. The shell is dumb:
@@ -106,6 +119,72 @@ export interface HookCliInfo {
 export interface InjectionState {
   script: { path: string; exists: boolean; hookCommand: string };
   clis: HookCliInfo[];
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Prompt governance (issue: iris软件提示词治理) — software-prompt:* channels
+// ──────────────────────────────────────────────────────────────────
+
+/** State of the `<iris-software>` block in one entry file.
+ *  - no-entry: the file does not exist (AGENTS.md can be created).
+ *  - missing : file exists but carries no block.
+ *  - drifted : block was hand-edited (body no longer matches its sha) or is
+ *              an unknown version.
+ *  - stale   : block is an older but untouched shipped version → re-syncable.
+ *  - ok       : block is the current shipped version. */
+export type SoftwareBlockStateUi = 'no-entry' | 'missing' | 'drifted' | 'stale' | 'ok';
+
+export interface SoftwareEntryStatus {
+  /** Project-root-relative path. */
+  path: string;
+  /** The standard entry Iris owns (AGENTS.md); vendor entries are false. */
+  isStandard: boolean;
+  state: SoftwareBlockStateUi;
+  /** version attr found in the block (informational). */
+  version?: string;
+}
+
+/** Whether `.iris/CONVENTIONS.md` is still a factory default (§5). */
+export type ConstitutionStateUi =
+  | 'missing'
+  | 'current-default'
+  | 'stale-default'
+  | 'customized';
+
+export interface SoftwarePromptState {
+  /** App version that would be stamped on a (re)sync. */
+  appVersion: string;
+  /** Fingerprint of the current shipped software-prompt body. */
+  currentSha: string;
+  /** AGENTS.md first, then any existing vendor entries. */
+  entries: SoftwareEntryStatus[];
+  constitution: { state: ConstitutionStateUi };
+}
+
+/** One governed prompt layer's on-disk text (null = file absent). */
+export interface PromptLayerContent {
+  text: string | null;
+  /** Display path shown in the `<iris-*>` tag. */
+  path: string;
+}
+
+/**
+ * Read-only view of the prompt layers an agent actually receives — the content
+ * behind the freshness badges, for the settings 软件提示词 viewer. `assembled`
+ * is the four `<iris-*>` segments joined exactly as the SessionStart hook emits
+ * them (focus is a per-session placeholder here).
+ */
+export interface ContextPreview {
+  /** The `<iris-software>` block as the hook re-emits it; onDisk=false → the
+   *  factory block shown as a preview (not yet injected into AGENTS.md). */
+  software: { block: string; onDisk: boolean };
+  project: PromptLayerContent;
+  /** The App's built-in factory CONSTITUTION_TEMPLATE — what `init` seeds a
+   *  fresh project with. Lets the viewer show the clean default even when the
+   *  on-disk `project` has been customized (or predates the layering split). */
+  projectDefault: string;
+  user: PromptLayerContent;
+  assembled: string;
 }
 
 /** Recursive partial, for settings updates. */
@@ -226,16 +305,30 @@ export interface IrisScanResult {
 }
 
 /** project.init result — what the idempotent scaffold actually did. */
+/** Per-file outcome of writing the `<iris-software>` managed block. */
+export interface EntrySync {
+  /** Project-root-relative path. */
+  path: string;
+  action: 'created' | 'updated' | 'unchanged';
+}
+
 export interface ProjectInitResult {
   createdFolders: string[];
   constitution: 'created' | 'already-exists';
-  agentsMd: 'created' | 'appended' | 'already-has-section';
+  /** Which default seeded a freshly created constitution (§5 三个版本). */
+  constitutionSeed?: 'software-default' | 'user-default';
+  /** 'appended'/'updated' when AGENTS.md pre-existed; 'created' when written
+   *  fresh; 'already-has-section' when its block was already current. */
+  agentsMd: 'created' | 'appended' | 'updated' | 'already-has-section';
   /**
-   * Well-known vendor-specific entry files found at the project root
-   * (e.g. CLAUDE.md), project-root relative. Iris does not touch these —
-   * it standardizes on AGENTS.md and only reports them so the UI can
-   * explain "a Claude/Codex/… entry exists, AGENTS.md was the missing one".
+   * Vendor-specific entry files present at the project root (e.g. CLAUDE.md),
+   * each synced with the `<iris-software>` block. Per the governance decision
+   * Iris MAINTAINS the block in vendor entries that already exist; it never
+   * creates an absent one (that would grow a zoo).
    */
+  vendorEntries: EntrySync[];
+  /** All vendor entry files detected at the root (superset of vendorEntries
+   *  paths), kept for the UI's "a Claude/Codex/… entry exists" explanation. */
   foreignEntries: string[];
 }
 
@@ -274,10 +367,19 @@ export interface SessionInfo {
   id: string;
   /**
    * The anchor (借鉴 Marina 的 path↔会话 → 文档↔会话): doc rel path, fixed
-   * at creation for the session's whole life. null = project-root session
-   * (no FOCUS_DOC injected — the unfocused fallback).
+   * at creation for the session's whole life. null = workspace-hub session
+   * (no FOCUS_DOC injected — the unfocused fallback). When null, workspacePath
+   * names which workspace hub it belongs to.
    */
   docPath: string | null;
+  /**
+   * UI grouping for hub sessions (docPath null): which workspace's terminal
+   * hub this belongs to — `.iris` for the project root, a workspace rel path
+   * for a sub-workspace. null for doc-anchored sessions. Pure left-pane
+   * grouping; NEVER injected as FOCUS_DOC and never persisted to disk (a
+   * hub terminal is ephemeral and need not know its sub-workspace).
+   */
+  workspacePath: string | null;
   agentId: string;
   /** Stable agent label (e.g. "Claude") — identity, fixed at creation. */
   displayName: string;

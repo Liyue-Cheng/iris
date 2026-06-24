@@ -116,8 +116,11 @@ interface ManagedSession {
 }
 
 export interface CreateSessionInput {
-  /** Doc rel path (forward slashes) or null for a project-root session. */
+  /** Doc rel path (forward slashes) or null for a workspace-hub session. */
   docPath: string | null;
+  /** Hub grouping when docPath is null (`.iris` = root). UI-only, never
+   *  injected as FOCUS_DOC. Ignored when docPath is set. */
+  workspacePath?: string | null;
   agentId: string;
   projectRoot: string;
   cols: number;
@@ -244,6 +247,9 @@ export class SessionManager extends EventEmitter {
     const info: SessionInfo = {
       id: sessionId,
       docPath: input.docPath,
+      // Doc sessions carry no hub grouping; hub sessions default to the root
+      // workspace when none is given (back-compat with plain root spawns).
+      workspacePath: input.docPath ? null : (input.workspacePath ?? '.iris'),
       agentId: agent.id,
       displayName: agent.label,
       terminalTitle: null,

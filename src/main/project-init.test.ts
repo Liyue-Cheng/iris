@@ -10,6 +10,10 @@ import { ProjectManager } from './project-manager';
 import { createTempDataDir, removeTempDataDir } from './persistence';
 import { AGENTS_GUIDANCE_MARKER } from './iris-templates';
 
+/** Fixed version so the managed block is deterministic across runs. */
+const V = '0.0.0-test';
+const init = (pm: ProjectManager) => pm.initIris({ appVersion: V });
+
 let dir: string;
 let pm: ProjectManager;
 
@@ -26,67 +30,103 @@ afterEach(async () => {
 
 describe('initIris', () => {
   it('creates the full scaffold on a bare project', async () => {
-    const r = await pm.initIris();
+    const r = await init(pm);
     expect(r.createdFolders.sort()).toEqual(
       ['.iris/issue', '.iris/misc', '.iris/report', '.iris/status'].sort(),
     );
     expect(r.constitution).toBe('created');
+    expect(r.constitutionSeed).toBe('software-default');
     expect(r.agentsMd).toBe('created');
 
     const constitution = await fs.readFile(join(dir, '.iris', 'CONVENTIONS.md'), 'utf8');
     expect(constitution).toContain('protocol: 1');
+    // AGENTS.md carries the version-stamped managed block.
+    const agents = await fs.readFile(join(dir, 'AGENTS.md'), 'utf8');
+    expect(agents).toContain(`<iris-software version="${V}"`);
+    expect(agents).toContain('</iris-software>');
+
     const scan = await pm.scan();
     expect(scan.hasIris).toBe(true);
     expect(scan.constitution).toEqual({ exists: true, protocol: 1 });
   });
 
   it('is idempotent — second run touches nothing', async () => {
-    await pm.initIris();
+    await init(pm);
     const agentsBefore = await fs.readFile(join(dir, 'AGENTS.md'), 'utf8');
-    const r2 = await pm.initIris();
+    const r2 = await init(pm);
     expect(r2.createdFolders).toEqual([]);
     expect(r2.constitution).toBe('already-exists');
     expect(r2.agentsMd).toBe('already-has-section');
     const agentsAfter = await fs.readFile(join(dir, 'AGENTS.md'), 'utf8');
     expect(agentsAfter).toBe(agentsBefore);
-    expect(agentsAfter.split(AGENTS_GUIDANCE_MARKER).length).toBe(2); // exactly one section
+    // Exactly one block (the body mentions the opening tag in prose, so count
+    // the closing tag, which only the real block carries).
+    expect(agentsAfter.split('</iris-software>').length).toBe(2);
   });
 
-  it('appends to an existing AGENTS.md without rewriting it', async () => {
+  it('appends the block to an existing AGENTS.md without rewriting it', async () => {
     await fs.writeFile(join(dir, 'AGENTS.md'), '# My project\n\nhand-written intro\n', 'utf8');
-    const r = await pm.initIris();
+    const r = await init(pm);
     expect(r.agentsMd).toBe('appended');
     const text = await fs.readFile(join(dir, 'AGENTS.md'), 'utf8');
-    expect(text.startsWith('# My project')).toBe(true);
+    expect(text.startsWith('# My project\n\nhand-written intro')).toBe(true);
     expect(text).toContain(AGENTS_GUIDANCE_MARKER);
   });
 
-  it('creates the standard AGENTS.md alongside an existing CLAUDE.md, untouched', async () => {
-    // dogfood scenario: a repo with only a Claude-specific entry and no
-    // standard AGENTS.md — Codex etc. have no project-root entry to Iris.
+  it('refreshes a stale (old-version) block in place', async () => {
+    // A pre-existing AGENTS.md whose block was stamped by an older app version.
+    await pm.initIris({ appVersion: '0.0.1-old' });
+    const before = await fs.readFile(join(dir, 'AGENTS.md'), 'utf8');
+    expect(before).toContain('version="0.0.1-old"');
+    const r = await init(pm);
+    expect(r.agentsMd).toBe('updated');
+    const after = await fs.readFile(join(dir, 'AGENTS.md'), 'utf8');
+    expect(after).toContain(`version="${V}"`);
+    expect(after.split('</iris-software>').length).toBe(2); // still exactly one
+  });
+
+  it('maintains the block in an existing vendor entry (CLAUDE.md), with a .bak', async () => {
+    // Governance decision: Iris maintains the <iris-software> block in vendor
+    // entries that already exist (it never creates an absent one).
     const claudeBody = '# CLAUDE.md\n\nhand-written claude guidance\n';
     await fs.writeFile(join(dir, 'CLAUDE.md'), claudeBody, 'utf8');
 
-    const r = await pm.initIris();
+    const r = await init(pm);
 
-    // AGENTS.md is created with the guidance marker…
     expect(r.agentsMd).toBe('created');
-    const agents = await fs.readFile(join(dir, 'AGENTS.md'), 'utf8');
-    expect(agents).toContain(AGENTS_GUIDANCE_MARKER);
-    // …CLAUDE.md is reported as a foreign entry but left byte-for-byte intact.
     expect(r.foreignEntries).toContain('CLAUDE.md');
-    expect(await fs.readFile(join(dir, 'CLAUDE.md'), 'utf8')).toBe(claudeBody);
+    expect(r.vendorEntries).toContainEqual({ path: 'CLAUDE.md', action: 'created' });
+
+    const claude = await fs.readFile(join(dir, 'CLAUDE.md'), 'utf8');
+    expect(claude.startsWith('# CLAUDE.md\n\nhand-written claude guidance')).toBe(true);
+    expect(claude).toContain('</iris-software>');
+    // Original content preserved as a .bak before the first write.
+    expect(await fs.readFile(join(dir, 'CLAUDE.md.bak'), 'utf8')).toBe(claudeBody);
   });
 
-  it('reports no foreign entries on a bare project', async () => {
-    const r = await pm.initIris();
+  it('does not create an absent vendor entry', async () => {
+    await init(pm);
+    await expect(fs.access(join(dir, 'CLAUDE.md'))).rejects.toThrow();
+  });
+
+  it('reports no vendor entries on a bare project', async () => {
+    const r = await init(pm);
     expect(r.foreignEntries).toEqual([]);
+    expect(r.vendorEntries).toEqual([]);
+  });
+
+  it('prefers the user-default constitution when one is supplied', async () => {
+    const userDefault = '---\nprotocol: 1\n---\n\n# My house constitution\n';
+    const r = await pm.initIris({ appVersion: V, userConstitution: userDefault });
+    expect(r.constitution).toBe('created');
+    expect(r.constitutionSeed).toBe('user-default');
+    expect(await fs.readFile(join(dir, '.iris', 'CONVENTIONS.md'), 'utf8')).toBe(userDefault);
   });
 
   it('never overwrites an existing constitution', async () => {
     await fs.mkdir(join(dir, '.iris'), { recursive: true });
     await fs.writeFile(join(dir, '.iris', 'CONVENTIONS.md'), 'HUMAN OWNED\n', 'utf8');
-    const r = await pm.initIris();
+    const r = await init(pm);
     expect(r.constitution).toBe('already-exists');
     expect(await fs.readFile(join(dir, '.iris', 'CONVENTIONS.md'), 'utf8')).toBe('HUMAN OWNED\n');
   });
@@ -94,7 +134,7 @@ describe('initIris', () => {
 
 describe('createWorkspace', () => {
   beforeEach(async () => {
-    await pm.initIris();
+    await init(pm);
   });
 
   it('standard template creates the four typed folders', async () => {

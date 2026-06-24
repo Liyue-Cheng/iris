@@ -7,13 +7,21 @@
  * milestone (scripts/smoke-launch.mjs pattern-matches it).
  */
 import { app, BrowserWindow, dialog, ipcMain, screen, shell } from 'electron';
-import { dirname, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
+import { statSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { JsonStore } from './persistence';
 import { SettingsManager, settingsFilePath } from './settings-manager';
 import { ProjectManager } from './project-manager';
 import { SessionManager } from './session-manager';
 import { registerIpcHandlers, wireBroadcasts } from './ipc';
+import {
+  allContexts,
+  persistOpenRoots,
+  registerContext,
+  removeContext,
+  type WindowContext,
+} from './window-context';
 import { getBuildType } from './build-type';
 import { logger } from './logger';
 import { CHANNELS, EVENTS } from '@shared/protocol';
@@ -44,34 +52,96 @@ if (isDev) {
   app.setPath('userData', `${app.getPath('userData')}-dev`);
 }
 
-// Two instances sharing one Chromium profile (userData) also contend on the
-// disk cache locks — keep the single-instance lock regardless: v1 manages
-// one project at a time, so a second launch should focus the first window.
+// Two instances sharing one Chromium profile (userData) contend on the disk
+// cache locks — keep a single main process. A second launch must NOT continue
+// the bootstrap below: app.quit() is async, so the module would keep running
+// and build a second window that races the first on that shared cache lock
+// (the overlap + instability + crashes the user hit, leaving orphaned PTYs).
+// app.exit(0) terminates the loser synchronously, here and now, before any
+// manager or window is constructed. The first instance gets a 'second-instance'
+// event instead and surfaces a window itself (multi-window opening lands in a
+// later phase; for now it just focuses the existing one).
 if (!app.requestSingleInstanceLock()) {
-  console.log('[main] another instance holds the lock — quitting');
-  app.quit();
+  console.log('[main] another instance holds the lock — exiting');
+  app.exit(0);
 }
-app.on('second-instance', () => {
-  const win = BrowserWindow.getAllWindows()[0];
-  if (win) {
-    if (win.isMinimized()) win.restore();
-    win.focus();
+/** Find a project folder among a second launch's argv (e.g. `iris C:\proj`).
+ *  Scans args after the exe for one that resolves to an existing directory. */
+function parseProjectRootFromArgv(argv: string[], cwd: string): string | null {
+  for (let i = argv.length - 1; i >= 1; i--) {
+    const a = argv[i];
+    if (!a || a.startsWith('-')) continue;
+    const abs = isAbsolute(a) ? a : resolve(cwd, a);
+    try {
+      if (statSync(abs).isDirectory()) return abs;
+    } catch {
+      /* not a path — keep scanning */
+    }
   }
+  return null;
+}
+
+// A second launch opens a NEW window (VS Code-style multi-window) instead of
+// just focusing the first. If the launch named a folder, bind the new window
+// to it; otherwise fall back to the last project. (Runs only in the instance
+// that holds the lock; the loser exited synchronously above.)
+app.on('second-instance', (_event, argv, workingDirectory) => {
+  const root =
+    parseProjectRootFromArgv(argv, workingDirectory) ??
+    settingsManager.get().project.lastRoot ??
+    null;
+  createWindow(root);
+  persistOpenRoots(settingsManager);
 });
 
+// SettingsManager is machine-level — one instance shared across all windows.
+// ProjectManager + SessionManager are per-window (see window-context.ts):
+// each window binds one project and owns its own watcher + PTY pool.
 const settingsManager = new SettingsManager(new JsonStore(settingsFilePath()));
-const projectManager = new ProjectManager();
-const sessionManager = new SessionManager(settingsManager);
 
-// B3 close-time flush handshake: the window's close handler sends
-// APP_FLUSH_BEFORE_QUIT and awaits this resolver; the renderer invokes
-// APP_FLUSH_DONE once its editor flush settles.
-let flushDoneResolve: (() => void) | null = null;
-ipcMain.handle(CHANNELS.APP_FLUSH_DONE, () => {
-  flushDoneResolve?.();
+/** Build a window's per-window managers, wire its broadcasts, register it. */
+function createWindowContext(win: BrowserWindow, initialRoot: string | null): WindowContext {
+  const projectManager = new ProjectManager();
+  const sessionManager = new SessionManager(settingsManager);
+  const unwire = wireBroadcasts(settingsManager, projectManager, sessionManager, win);
+  const ctx: WindowContext = { win, projectManager, sessionManager, projectRoot: initialRoot, unwire };
+  registerContext(ctx);
+  return ctx;
+}
+
+// True once the app is quitting (window-all-closed → before-quit). While
+// quitting, the per-window 'closed' teardown must NOT rewrite openRoots, or the
+// last window to close would clear the restore list. Single-window closes while
+// the app keeps running DO update it.
+let isQuitting = false;
+
+/** Tear down a window's context: detach broadcasts, kill its PTYs, close its
+ *  watcher. Each window is independent, so this never touches other windows. */
+function disposeWindowContext(id: number): void {
+  const ctx = removeContext(id);
+  if (!ctx) return;
+  try {
+    ctx.unwire();
+  } catch {
+    /* ignore */
+  }
+  ctx.sessionManager.shutdown();
+  void ctx.projectManager.close();
+  if (!isQuitting) persistOpenRoots(settingsManager);
+}
+
+// B3 close-time flush handshake: each window's close handler sends
+// APP_FLUSH_BEFORE_QUIT and awaits its resolver; that window's renderer invokes
+// APP_FLUSH_DONE once its editor flush settles. Keyed by window id so two
+// windows closing at once don't resolve each other's handshake.
+const flushResolvers = new Map<number, () => void>();
+ipcMain.handle(CHANNELS.APP_FLUSH_DONE, (event) => {
+  const id = BrowserWindow.fromWebContents(event.sender)?.id;
+  if (id === undefined) return;
+  flushResolvers.get(id)?.();
 });
 
-function createWindow(): BrowserWindow {
+function createWindow(initialRoot: string | null): BrowserWindow {
   // A coding tool carries a lot of information — open generously rather than
   // cramming three panes into a small window (round-3 验收反馈). Target a
   // large default but cap to the work area so small screens aren't overflowed.
@@ -106,6 +176,16 @@ function createWindow(): BrowserWindow {
   });
   win.webContents.on('render-process-gone', (_e, details) => {
     logger.error('window', `render-process-gone: ${details.reason}`);
+    // A crashed renderer can neither show nor close its sessions — reclaim this
+    // window's PTYs now so they don't orphan (Windows ConPTY children don't die
+    // with us). destroy() skips the flush/confirm handshake with the dead
+    // renderer (which would only hang); 'closed' then runs disposeWindowContext.
+    const crashed =
+      details.reason === 'crashed' ||
+      details.reason === 'oom' ||
+      details.reason === 'launch-failed' ||
+      details.reason === 'integrity-failure';
+    if (crashed && !win.isDestroyed()) win.destroy();
   });
 
   // Terminal links (WebLinksAddon + OSC 8 hyperlinks) trigger window.open,
@@ -138,8 +218,10 @@ function createWindow(): BrowserWindow {
     }
   });
 
-  const unwire = wireBroadcasts(settingsManager, projectManager, sessionManager, win);
-  win.on('closed', unwire);
+  // Per-window managers + broadcasts. The window owns these for its lifetime;
+  // 'closed' tears them down (kills this window's PTYs, closes its watcher).
+  const ctx = createWindowContext(win, initialRoot);
+  win.on('closed', () => disposeWindowContext(win.id));
 
   // uiZoom: native Chromium zoom (webContents), never CSS zoom — CSS zoom
   // breaks popup positioning math. Re-apply on every load (dev HMR reload
@@ -168,12 +250,12 @@ function createWindow(): BrowserWindow {
       e.preventDefault();
       flushed = true;
       const done = new Promise<void>((resolve) => {
-        flushDoneResolve = resolve;
+        flushResolvers.set(win.id, resolve);
       });
       win.webContents.send(EVENTS.APP_FLUSH_BEFORE_QUIT);
       const timeout = new Promise<void>((resolve) => setTimeout(resolve, 1500));
       void Promise.race([done, timeout]).then(() => {
-        flushDoneResolve = null;
+        flushResolvers.delete(win.id);
         if (!win.isDestroyed()) win.close();
       });
       return;
@@ -182,7 +264,9 @@ function createWindow(): BrowserWindow {
     // confirmOnQuit: closing the window with live sessions kills agent work
     // mid-flight — ask first (Marina behavior.confirmOnQuit).
     if (!settingsManager.get().behavior.confirmOnQuit) return;
-    const live = sessionManager.list().filter((s) => s.state !== 'exited').length;
+    // This window's own sessions only — closing one window must not count
+    // another window's live agents.
+    const live = ctx.sessionManager.list().filter((s) => s.state !== 'exited').length;
     if (live === 0) return;
     const choice = dialog.showMessageBoxSync(win, {
       type: 'warning',
@@ -223,11 +307,51 @@ app.whenReady().then(async () => {
   const source = await settingsManager.initialize();
   logger.info('main', `settings loaded from ${source} (${settingsFilePath()})`);
 
-  registerIpcHandlers(settingsManager, projectManager, sessionManager);
-  createWindow();
+  registerIpcHandlers(settingsManager);
+
+  // "Open project in a new window" (VS Code-style). Lives here, not in ipc.ts,
+  // because it creates a window. Optional root; with none, show the picker.
+  ipcMain.handle(
+    CHANNELS.WINDOW_OPEN_PROJECT,
+    async (event, payload?: { root?: string }): Promise<{ opened: boolean }> => {
+      let root = payload?.root ?? null;
+      if (!root) {
+        const parent = BrowserWindow.fromWebContents(event.sender);
+        const r = await (parent
+          ? dialog.showOpenDialog(parent, {
+              title: '在新窗口打开项目',
+              properties: ['openDirectory'],
+            })
+          : dialog.showOpenDialog({ title: '在新窗口打开项目', properties: ['openDirectory'] }));
+        if (r.canceled || r.filePaths.length === 0) return { opened: false };
+        root = r.filePaths[0] ?? null;
+      }
+      if (!root) return { opened: false };
+      createWindow(root);
+      persistOpenRoots(settingsManager);
+      return { opened: true };
+    },
+  );
+
+  // Restore the windows open at last quit: one per project root (multi-window).
+  // Fall back to the deprecated lastRoot for settings written by v1.0, and to a
+  // single empty window when there's no history. Each window's renderer learns
+  // its bound root via WINDOW_BOOTSTRAP. A root that no longer opens surfaces
+  // the in-app error state in its own window and never blocks the others.
+  const restore = settingsManager.get().project;
+  const roots =
+    restore.openRoots.length > 0
+      ? restore.openRoots
+      : restore.lastRoot
+        ? [restore.lastRoot]
+        : [];
+  if (roots.length === 0) createWindow(null);
+  else for (const root of roots) createWindow(root);
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow(settingsManager.get().project.lastRoot ?? null);
+    }
   });
 });
 
@@ -238,7 +362,39 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
-  sessionManager.shutdown();
-  void projectManager.close();
+  // Snapshot the open windows for restore BEFORE tearing them down, then stop
+  // the per-window teardown from rewriting openRoots as windows close.
+  persistOpenRoots(settingsManager);
+  isQuitting = true;
+  for (const ctx of allContexts()) {
+    ctx.sessionManager.shutdown();
+    void ctx.projectManager.close();
+  }
   void settingsManager.flush();
+});
+
+// Crash safety. node-pty children (on Windows: the ConPTY conhost + the agent
+// CLI) do NOT die with the main process — an abnormal exit orphans them (the
+// "后端进程没结束，任务管理器全杀才恢复" symptom). before-quit covers the
+// graceful path; these cover the crashes: kill every PTY before the process
+// goes down.
+process.on('uncaughtException', (err) => {
+  logger.error('main', 'uncaughtException — killing all sessions before exit', err);
+  for (const ctx of allContexts()) {
+    try {
+      ctx.sessionManager.shutdown();
+    } catch {
+      /* best effort — we are already going down */
+    }
+  }
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  logger.error(
+    'main',
+    `unhandledRejection: ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`,
+  );
+});
+app.on('child-process-gone', (_e, details) => {
+  logger.error('main', `child-process-gone: type=${details.type} reason=${details.reason}`);
 });

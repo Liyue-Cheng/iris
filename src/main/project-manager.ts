@@ -17,24 +17,32 @@ import { promises as fs } from 'node:fs';
 import { dirname, join, normalize, resolve, sep } from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
 import type {
+  ConstitutionStateUi,
+  ContextPreview,
   DocContent,
   DocType,
   FsIrisChangedEvent,
   IrisScanResult,
   ProjectInitResult,
   RawTreeNode,
+  SoftwareEntryStatus,
+  SoftwarePromptState,
 } from '@shared/types';
 import { DOC_TYPES } from '@shared/types';
 import { slugify, yamlScalar } from '@shared/markdown-utils';
 import { parseFrontmatter, scanProject, scanRawTree } from './iris-scanner';
 import { seedProjectStyleMaps } from './style-maps-store';
+import { CONSTITUTION_TEMPLATE, FOREIGN_AGENT_ENTRIES } from './iris-templates';
+import { assembleContextPreview, syncEntryFile } from './agent-injection';
 import {
-  AGENTS_GUIDANCE,
-  AGENTS_GUIDANCE_MARKER,
-  CONSTITUTION_TEMPLATE,
-  FOREIGN_AGENT_ENTRIES,
-} from './iris-templates';
+  classifyConstitution,
+  classifySoftwareBlock,
+  SOFTWARE_PROMPT_SHA,
+} from './software-prompt';
 import { logger } from './logger';
+
+/** Entry files Iris may write the `<iris-software>` block into. */
+const WRITABLE_ENTRIES: readonly string[] = ['AGENTS.md', ...FOREIGN_AGENT_ENTRIES];
 
 const DEBOUNCE_MS = 150;
 
@@ -240,13 +248,24 @@ export class ProjectManager extends EventEmitter {
   /**
    * Idempotent protocol scaffold (project.init / cold start §4 冷启动):
    * ensure the four typed folders, write the constitution if absent (never
-   * overwrite — it's the human-authored contract), and append the guidance
-   * section to AGENTS.md exactly once (marker-checked). Touching the
-   * project root requires explicit user confirmation in the UI — this is
-   * the single sanctioned exception to 尊重边界.
+   * overwrite — it's the human-authored contract), and write/refresh the
+   * `<iris-software>` block in AGENTS.md plus any existing vendor entry files
+   * (§3A maintains vendor entries; never creates absent ones). Touching the
+   * project root requires explicit user confirmation in the UI — the single
+   * sanctioned exception to 尊重边界.
+   *
+   * `appVersion` and `userConstitution` are injected by the electron seam
+   * (ipc.ts): version stamps the managed block; userConstitution is the
+   * machine-level project-prompt default (~/.iris/templates/CONVENTIONS.md),
+   * preferred over the software default when seeding (§5 三个版本). Keeping
+   * them as params leaves this class electron-free and unit-testable.
    */
-  async initIris(): Promise<ProjectInitResult> {
+  async initIris(opts: {
+    appVersion: string;
+    userConstitution?: string | undefined;
+  }): Promise<ProjectInitResult> {
     const root = this.requireRoot();
+    const { appVersion, userConstitution } = opts;
     const irisAbs = join(root, '.iris');
 
     const createdFolders: string[] = [];
@@ -259,45 +278,151 @@ export class ProjectManager extends EventEmitter {
     }
 
     let constitution: ProjectInitResult['constitution'] = 'already-exists';
+    let constitutionSeed: ProjectInitResult['constitutionSeed'];
     const constitutionAbs = join(irisAbs, 'CONVENTIONS.md');
     if (!(await exists(constitutionAbs))) {
-      await fs.writeFile(constitutionAbs, CONSTITUTION_TEMPLATE, { encoding: 'utf8', flag: 'wx' });
+      const seedText = userConstitution ?? CONSTITUTION_TEMPLATE;
+      await fs.writeFile(constitutionAbs, seedText, { encoding: 'utf8', flag: 'wx' });
       constitution = 'created';
+      constitutionSeed = userConstitution !== undefined ? 'user-default' : 'software-default';
     }
 
     // Seed the project style tables from the machine defaults (never
     // overwrites an existing .iris/styles.json — project-owned from then on).
     await seedProjectStyleMaps(root);
 
-    let agentsMd: ProjectInitResult['agentsMd'];
+    // AGENTS.md — the standard entry Iris owns and always writes.
     const agentsAbs = join(root, 'AGENTS.md');
-    if (!(await exists(agentsAbs))) {
-      await fs.writeFile(agentsAbs, `${AGENTS_GUIDANCE}`, 'utf8');
-      agentsMd = 'created';
-    } else {
-      const current = await fs.readFile(agentsAbs, 'utf8');
-      if (current.includes(AGENTS_GUIDANCE_MARKER)) {
-        agentsMd = 'already-has-section';
-      } else {
-        const sep = current.endsWith('\n') ? '\n' : '\n\n';
-        await fs.appendFile(agentsAbs, `${sep}${AGENTS_GUIDANCE}`, 'utf8');
-        agentsMd = 'appended';
-      }
-    }
+    const a = await syncEntryFile(agentsAbs, appVersion);
+    const agentsMd: ProjectInitResult['agentsMd'] = !a.existed
+      ? 'created'
+      : a.action === 'unchanged'
+        ? 'already-has-section'
+        : a.action === 'updated'
+          ? 'updated'
+          : 'appended';
 
-    // Detect (never touch) vendor-specific entry files. This is the whole of
-    // 建议方向#2: surface that e.g. CLAUDE.md exists while AGENTS.md was the
-    // missing standard entry — Iris reports, the user decides.
+    // Vendor entries: maintain the block in any that already exist; never
+    // create an absent one. foreignEntries keeps the detected superset.
+    const vendorEntries: ProjectInitResult['vendorEntries'] = [];
     const foreignEntries: string[] = [];
     for (const rel of FOREIGN_AGENT_ENTRIES) {
-      if (await exists(join(root, rel))) foreignEntries.push(rel);
+      if (!(await exists(join(root, rel)))) continue;
+      foreignEntries.push(rel);
+      const { action } = await syncEntryFile(join(root, rel), appVersion);
+      vendorEntries.push({ path: rel, action });
     }
 
     logger.info(
       'project',
-      `init: folders=[${createdFolders.join(', ')}] constitution=${constitution} agents=${agentsMd} foreign=[${foreignEntries.join(', ')}]`,
+      `init: folders=[${createdFolders.join(', ')}] constitution=${constitution}/${constitutionSeed ?? '-'} agents=${agentsMd} vendor=[${vendorEntries.map((v) => `${v.path}:${v.action}`).join(', ')}]`,
     );
-    return { createdFolders, constitution, agentsMd, foreignEntries };
+    const result: ProjectInitResult = {
+      createdFolders,
+      constitution,
+      agentsMd,
+      vendorEntries,
+      foreignEntries,
+    };
+    if (constitutionSeed) result.constitutionSeed = constitutionSeed;
+    return result;
+  }
+
+  // ── prompt governance (issue: iris软件提示词治理) ────────────────────
+
+  /**
+   * Read-only governance snapshot for the open project: the `<iris-software>`
+   * block state in AGENTS.md (always listed) + any existing vendor entries,
+   * and whether `.iris/CONVENTIONS.md` is still a factory default. Deterministic
+   * (tag parse + hash compare); never writes.
+   */
+  async softwarePromptState(appVersion: string): Promise<SoftwarePromptState> {
+    const root = this.requireRoot();
+    const entries: SoftwareEntryStatus[] = [await this.entryStatus(root, 'AGENTS.md', true)];
+    for (const rel of FOREIGN_AGENT_ENTRIES) {
+      if (await exists(join(root, rel))) entries.push(await this.entryStatus(root, rel, false));
+    }
+
+    let constitution: ConstitutionStateUi;
+    try {
+      const text = await fs.readFile(join(root, '.iris', 'CONVENTIONS.md'), 'utf8');
+      constitution = classifyConstitution(text);
+    } catch {
+      constitution = 'missing';
+    }
+
+    return { appVersion, currentSha: SOFTWARE_PROMPT_SHA, entries, constitution: { state: constitution } };
+  }
+
+  /**
+   * Read-only content view of the governed prompt layers + the assembled
+   * injection an agent receives — the text behind the freshness badges, for the
+   * settings 软件提示词 viewer. Pure read (never writes).
+   */
+  async contextPreview(appVersion: string): Promise<ContextPreview> {
+    return assembleContextPreview(this.requireRoot(), appVersion);
+  }
+
+  private async entryStatus(
+    root: string,
+    rel: string,
+    isStandard: boolean,
+  ): Promise<SoftwareEntryStatus> {
+    try {
+      const text = await fs.readFile(this.resolveInside(root, rel), 'utf8');
+      const { state, version } = classifySoftwareBlock(text);
+      return version !== undefined
+        ? { path: rel, isStandard, state, version }
+        : { path: rel, isStandard, state };
+    } catch {
+      return { path: rel, isStandard, state: 'no-entry' };
+    }
+  }
+
+  /**
+   * Write/refresh the `<iris-software>` block in one entry file (user-confirmed
+   * in the settings UI; .bak written first by syncEntryFile). AGENTS.md may be
+   * created; a vendor entry is refused if it does not already exist (Iris never
+   * grows a vendor zoo). Returns the fresh state for the UI to re-render.
+   */
+  async syncSoftwareEntry(relPath: string, appVersion: string): Promise<SoftwarePromptState> {
+    const root = this.requireRoot();
+    if (!WRITABLE_ENTRIES.includes(relPath)) {
+      throw new ProjectError('InvalidPayload', `refusing to write the block into ${relPath}`);
+    }
+    const abs = this.resolveInside(root, relPath);
+    if (relPath !== 'AGENTS.md' && !(await exists(abs))) {
+      throw new ProjectError('InvalidPayload', `vendor entry ${relPath} does not exist (Iris does not create it)`);
+    }
+    await syncEntryFile(abs, appVersion);
+    return this.softwarePromptState(appVersion);
+  }
+
+  /**
+   * Upgrade `.iris/CONVENTIONS.md` to the current shipped default — ONLY when
+   * it is still an untouched prior factory default (§5). A current-default,
+   * customized, or missing constitution is refused: Iris never overwrites
+   * human edits. .bak written first.
+   */
+  async upgradeConstitution(appVersion: string): Promise<SoftwarePromptState> {
+    const root = this.requireRoot();
+    const abs = join(root, '.iris', 'CONVENTIONS.md');
+    let text: string;
+    try {
+      text = await fs.readFile(abs, 'utf8');
+    } catch {
+      throw new ProjectError('ReadFailed', '.iris/CONVENTIONS.md not found');
+    }
+    if (classifyConstitution(text) !== 'stale-default') {
+      throw new ProjectError(
+        'InvalidPayload',
+        '宪法不是可升级的出厂旧默认（当前已是最新、或已被自定义）——拒绝覆盖',
+      );
+    }
+    await fs.copyFile(abs, `${abs}.bak`).catch(() => {});
+    await fs.writeFile(abs, CONSTITUTION_TEMPLATE, 'utf8');
+    logger.info('project', `constitution upgraded to current default (.bak kept): ${abs}`);
+    return this.softwarePromptState(appVersion);
   }
 
   /**

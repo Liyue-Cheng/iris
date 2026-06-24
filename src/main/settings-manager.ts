@@ -61,9 +61,12 @@ export const DEFAULT_SETTINGS: Settings = {
     confirmOnQuit: true,
     editorBlockEdit: false,
     editorBodyAlign: 'center',
+    editorMaxWidth: 58,
+    focusOnSelectDoc: 'editor',
   },
   project: {
     lastRoot: null,
+    openRoots: [],
   },
   agents: [
     { id: 'claude', label: 'claude', command: 'claude', injection: 'hook', onExit: 'keep-shell' },
@@ -264,6 +267,23 @@ export function validateSettings(s: Settings): void {
       `behavior.editorBodyAlign="${s.behavior.editorBodyAlign}" must be center or left`,
     );
   }
+  if (
+    typeof s.behavior.editorMaxWidth !== 'number' ||
+    !Number.isFinite(s.behavior.editorMaxWidth) ||
+    s.behavior.editorMaxWidth < 30 ||
+    s.behavior.editorMaxWidth > 120
+  ) {
+    throw new SettingsError(
+      'InvalidSettings',
+      `behavior.editorMaxWidth=${s.behavior.editorMaxWidth} must be a number in [30, 120]`,
+    );
+  }
+  if (!['editor', 'terminal', 'auto'].includes(s.behavior.focusOnSelectDoc)) {
+    throw new SettingsError(
+      'InvalidSettings',
+      `behavior.focusOnSelectDoc="${s.behavior.focusOnSelectDoc}" must be editor, terminal or auto`,
+    );
+  }
   if (typeof s.appearance.uiFontFamily !== 'string' || !s.appearance.uiFontFamily.trim()) {
     throw new SettingsError('InvalidSettings', 'appearance.uiFontFamily must be a non-empty string');
   }
@@ -278,6 +298,9 @@ export function validateSettings(s: Settings): void {
   }
   if (s.project.lastRoot !== null && typeof s.project.lastRoot !== 'string') {
     throw new SettingsError('InvalidSettings', 'project.lastRoot must be a string or null');
+  }
+  if (!Array.isArray(s.project.openRoots) || s.project.openRoots.some((r) => typeof r !== 'string')) {
+    throw new SettingsError('InvalidSettings', 'project.openRoots must be a string[]');
   }
   if (!Array.isArray(s.agents) || s.agents.length === 0) {
     throw new SettingsError('InvalidSettings', 'agents must be a non-empty array');

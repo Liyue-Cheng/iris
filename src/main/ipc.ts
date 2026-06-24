@@ -8,7 +8,7 @@
  * `ipc` executor (instructions declare `config: { channel }`); the query
  * channels are projection reads called directly by stores/ISRs.
  */
-import { BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
 import { isAbsolute, join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -30,8 +30,13 @@ import type {
 import type { SettingsManager } from './settings-manager';
 import type { ProjectManager } from './project-manager';
 import type { SessionManager } from './session-manager';
-import { installMachineConventions, machineConventionsState } from './machine-layer';
+import {
+  installMachineConventions,
+  machineConventionsState,
+  readUserConstitutionTemplate,
+} from './machine-layer';
 import { injectionState, installFocusScript, installHook } from './agent-injection';
+import { contextForWebContents, persistOpenRoots, requireContext } from './window-context';
 import { effectiveStyleMaps, writeProjectStyleMaps } from './style-maps-store';
 import type { StyleMaps, StyleMapsState } from '@shared/style-maps';
 import { logger } from './logger';
@@ -45,11 +50,11 @@ function execFileGit(args: string[], cwd: string): Promise<{ stdout: string }> {
   return execFileP('git', args, { cwd, timeout: 3000, windowsHide: true });
 }
 
-export function registerIpcHandlers(
-  settingsManager: SettingsManager,
-  projectManager: ProjectManager,
-  sessionManager: SessionManager,
-): void {
+export function registerIpcHandlers(settingsManager: SettingsManager): void {
+  // Per-window handlers (project / session / doc / styles / software-prompt /
+  // shell) resolve the calling window's managers from event.sender via
+  // requireContext(event). Machine-level handlers (settings / machine / agent
+  // install / perf / clipboard / window chrome) stay global below.
   ipcMain.handle(CHANNELS.APP_PING, (_event, payload: unknown): PingResult => {
     return {
       pong: true,
@@ -73,24 +78,41 @@ export function registerIpcHandlers(
 
   ipcMain.handle(
     CHANNELS.PROJECT_OPEN,
-    async (_event, payload: { root: string }): Promise<IrisScanResult> => {
-      const result = await projectManager.open(payload.root);
-      // Remember across restarts. Verb side effect, so it lives here in the
-      // instruction body, not in some renderer afterthought.
-      settingsManager.update({ project: { lastRoot: result.projectRoot } });
+    async (event, payload: { root: string }): Promise<IrisScanResult> => {
+      const ctx = requireContext(event);
+      const result = await ctx.projectManager.open(payload.root);
+      // Bind this window to the opened project so WINDOW_BOOTSTRAP and restore
+      // persistence see the current root.
+      ctx.projectRoot = result.projectRoot;
+      // Snapshot all open windows' projects for restore on next launch. Verb
+      // side effect, so it lives here in the instruction body, not in some
+      // renderer afterthought.
+      persistOpenRoots(settingsManager);
       return result;
     },
   );
 
-  ipcMain.handle(CHANNELS.PROJECT_SCAN, (): Promise<IrisScanResult> => projectManager.scan());
+  ipcMain.handle(CHANNELS.PROJECT_SCAN, (event): Promise<IrisScanResult> =>
+    requireContext(event).projectManager.scan(),
+  );
 
-  ipcMain.handle(CHANNELS.PROJECT_INIT, () => projectManager.initIris());
+  ipcMain.handle(CHANNELS.PROJECT_INIT, async (event) =>
+    requireContext(event).projectManager.initIris({
+      appVersion: app.getVersion(),
+      userConstitution: await readUserConstitutionTemplate(),
+    }),
+  );
 
   ipcMain.handle(
     CHANNELS.WORKSPACE_CREATE,
-    (_event, payload: { parentPath: string; name: string; template: 'standard' | 'empty' }) =>
-      projectManager.createWorkspace(payload),
+    (event, payload: { parentPath: string; name: string; template: 'standard' | 'empty' }) =>
+      requireContext(event).projectManager.createWorkspace(payload),
   );
+
+  // Multi-window: which project THIS window is bound to (renderer asks at boot).
+  ipcMain.handle(CHANNELS.WINDOW_BOOTSTRAP, (event): { projectRoot: string | null } => ({
+    projectRoot: contextForWebContents(event.sender)?.projectRoot ?? null,
+  }));
 
   ipcMain.handle(CHANNELS.MACHINE_CONVENTIONS_STATE, () => machineConventionsState());
 
@@ -106,12 +128,30 @@ export function registerIpcHandlers(
     installHook(payload.cliId),
   );
 
-  ipcMain.handle(CHANNELS.SHELL_REVEAL, (_event, payload: { path: string }): void => {
+  // ── prompt governance (issue: iris软件提示词治理) ─────────────────────
+
+  ipcMain.handle(CHANNELS.SOFTWARE_PROMPT_STATE, (event) =>
+    requireContext(event).projectManager.softwarePromptState(app.getVersion()),
+  );
+
+  ipcMain.handle(CHANNELS.SOFTWARE_PROMPT_PREVIEW, (event) =>
+    requireContext(event).projectManager.contextPreview(app.getVersion()),
+  );
+
+  ipcMain.handle(CHANNELS.SOFTWARE_PROMPT_SYNC_ENTRY, (event, payload: { path: string }) =>
+    requireContext(event).projectManager.syncSoftwareEntry(payload.path, app.getVersion()),
+  );
+
+  ipcMain.handle(CHANNELS.SOFTWARE_PROMPT_UPGRADE_CONSTITUTION, (event) =>
+    requireContext(event).projectManager.upgradeConstitution(app.getVersion()),
+  );
+
+  ipcMain.handle(CHANNELS.SHELL_REVEAL, (event, payload: { path: string }): void => {
     // Relative paths are project-root-relative (doc rows pass them as-is);
     // absolute paths (machine layer) pass through untouched.
     let target = payload.path;
     if (!isAbsolute(target)) {
-      const root = projectManager.getRoot();
+      const root = requireContext(event).projectManager.getRoot();
       if (!root) return;
       target = join(root, target);
     }
@@ -180,14 +220,14 @@ export function registerIpcHandlers(
 
   ipcMain.handle(
     CHANNELS.PROJECT_RAW_TREE,
-    (): Promise<RawTreeNode | null> => projectManager.rawTree(),
+    (event): Promise<RawTreeNode | null> => requireContext(event).projectManager.rawTree(),
   );
 
   // Status-doc freshness (CONVENTIONS §status: reflects: <sha>). Best-effort
   // read of the project's current HEAD; any failure (not a repo, no git on
   // PATH, no project open) degrades to null and the UI just omits the badge.
-  ipcMain.handle(CHANNELS.PROJECT_GIT_HEAD, async (): Promise<{ head: string | null }> => {
-    const root = projectManager.getRoot();
+  ipcMain.handle(CHANNELS.PROJECT_GIT_HEAD, async (event): Promise<{ head: string | null }> => {
+    const root = requireContext(event).projectManager.getRoot();
     if (!root) return { head: null };
     try {
       const { stdout } = await execFileGit(['rev-parse', 'HEAD'], root);
@@ -200,41 +240,42 @@ export function registerIpcHandlers(
 
   ipcMain.handle(
     CHANNELS.DOC_READ,
-    (_event, payload: { path: string }): Promise<DocContent> =>
-      projectManager.readDoc(payload.path),
+    (event, payload: { path: string }): Promise<DocContent> =>
+      requireContext(event).projectManager.readDoc(payload.path),
   );
 
   ipcMain.handle(
     CHANNELS.DOC_WRITE,
-    (_event, payload: { path: string; content: string }): Promise<{ path: string }> =>
-      projectManager.writeDoc(payload.path, payload.content),
+    (event, payload: { path: string; content: string }): Promise<{ path: string }> =>
+      requireContext(event).projectManager.writeDoc(payload.path, payload.content),
   );
 
   ipcMain.handle(
     CHANNELS.DOC_CREATE,
     (
-      _event,
+      event,
       payload: { workspacePath: string; type: import('@shared/types').DocType; title: string },
-    ): Promise<{ path: string }> => projectManager.createDoc(payload),
+    ): Promise<{ path: string }> => requireContext(event).projectManager.createDoc(payload),
   );
 
   ipcMain.handle(
     CHANNELS.DOC_DELETE,
-    (_event, payload: { path: string }): Promise<{ path: string }> =>
-      projectManager.deleteDoc(payload.path),
+    (event, payload: { path: string }): Promise<{ path: string }> =>
+      requireContext(event).projectManager.deleteDoc(payload.path),
   );
 
   // ── style maps (status/label badge tables) ─────────────────────────
 
   ipcMain.handle(
     CHANNELS.STYLES_GET,
-    (): Promise<StyleMapsState> => effectiveStyleMaps(projectManager.getRoot()),
+    (event): Promise<StyleMapsState> =>
+      effectiveStyleMaps(requireContext(event).projectManager.getRoot()),
   );
 
   ipcMain.handle(
     CHANNELS.STYLES_UPDATE,
-    (_event, payload: { maps: StyleMaps }): Promise<StyleMapsState> => {
-      const root = projectManager.getRoot();
+    (event, payload: { maps: StyleMaps }): Promise<StyleMapsState> => {
+      const root = requireContext(event).projectManager.getRoot();
       if (!root) throw new Error('[styles:update] no project is open');
       return writeProjectStyleMaps(root, payload.maps);
     },
@@ -253,13 +294,21 @@ export function registerIpcHandlers(
   ipcMain.handle(
     CHANNELS.SESSION_OPEN,
     (
-      _event,
-      payload: { docPath: string | null; agentId: string; cols: number; rows: number },
+      event,
+      payload: {
+        docPath: string | null;
+        workspacePath?: string | null;
+        agentId: string;
+        cols: number;
+        rows: number;
+      },
     ): SessionInfo => {
-      const root = projectManager.getRoot();
+      const ctx = requireContext(event);
+      const root = ctx.projectManager.getRoot();
       if (!root) throw new Error('[session:open] no project is open');
-      return sessionManager.createSession({
+      return ctx.sessionManager.createSession({
         docPath: payload.docPath,
+        workspacePath: payload.workspacePath ?? null,
         agentId: payload.agentId,
         projectRoot: root,
         cols: payload.cols,
@@ -268,42 +317,46 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(CHANNELS.SESSION_CLOSE, (_event, payload: { sessionId: string }): void => {
-    sessionManager.closeSession(payload.sessionId);
+  ipcMain.handle(CHANNELS.SESSION_CLOSE, (event, payload: { sessionId: string }): void => {
+    requireContext(event).sessionManager.closeSession(payload.sessionId);
   });
 
   ipcMain.handle(
     CHANNELS.SESSION_REANCHOR,
-    (_event, payload: { sessionId: string; docPath: string | null }): SessionInfo =>
-      sessionManager.reanchor(payload.sessionId, payload.docPath),
+    (event, payload: { sessionId: string; docPath: string | null }): SessionInfo =>
+      requireContext(event).sessionManager.reanchor(payload.sessionId, payload.docPath),
   );
 
   ipcMain.handle(
     CHANNELS.SESSION_INPUT,
-    (_event, payload: { sessionId: string; data: string }) =>
-      sessionManager.sendInput(payload.sessionId, payload.data),
+    (event, payload: { sessionId: string; data: string }) =>
+      requireContext(event).sessionManager.sendInput(payload.sessionId, payload.data),
   );
 
   ipcMain.handle(
     CHANNELS.SESSION_RESIZE,
-    (_event, payload: { sessionId: string; cols: number; rows: number }) =>
-      sessionManager.resize(payload.sessionId, payload.cols, payload.rows),
+    (event, payload: { sessionId: string; cols: number; rows: number }) =>
+      requireContext(event).sessionManager.resize(payload.sessionId, payload.cols, payload.rows),
   );
 
-  ipcMain.handle(CHANNELS.SESSION_LIST, (): SessionInfo[] => sessionManager.list());
+  ipcMain.handle(CHANNELS.SESSION_LIST, (event): SessionInfo[] =>
+    requireContext(event).sessionManager.list(),
+  );
 
   ipcMain.handle(
     CHANNELS.SESSION_SCROLLBACK,
-    (_event, payload: { sessionId: string; replayId?: string }) =>
-      sessionManager.getScrollbackForReplay(payload.sessionId, payload.replayId),
+    (event, payload: { sessionId: string; replayId?: string }) =>
+      requireContext(event).sessionManager.getScrollbackForReplay(
+        payload.sessionId,
+        payload.replayId,
+      ),
   );
 
   ipcMain.handle(CHANNELS.DIALOG_PICK_FOLDER, async (event): Promise<string | null> => {
-    const result = await dialog.showOpenDialog({
-      title: '打开项目文件夹',
-      properties: ['openDirectory'],
-    });
-    void event; // window-modal not needed for v1's single window
+    const parent = senderWindow(event);
+    const result = await (parent
+      ? dialog.showOpenDialog(parent, { title: '打开项目文件夹', properties: ['openDirectory'] })
+      : dialog.showOpenDialog({ title: '打开项目文件夹', properties: ['openDirectory'] }));
     if (result.canceled || result.filePaths.length === 0) return null;
     return result.filePaths[0] ?? null;
   });

@@ -30,6 +30,16 @@ export const CHANNELS = {
   AGENT_INJECTION_STATE: 'agent:injection-state',
   AGENT_INSTALL_FOCUS_SCRIPT: 'agent:install-focus-script',
   AGENT_INSTALL_HOOK: 'agent:install-hook',
+  /** Prompt governance (issue: iris软件提示词治理): the `<iris-software>` block
+   *  in project-root entry files + factory-default detection for the project
+   *  constitution. State is a query; sync/upgrade are verbs gated behind an
+   *  explicit confirmation in the settings UI (.bak written before any write). */
+  SOFTWARE_PROMPT_STATE: 'software-prompt:state',
+  /** Read-only: the prompt layers' on-disk text + assembled injection, for the
+   *  settings viewer (content behind the freshness badges). */
+  SOFTWARE_PROMPT_PREVIEW: 'software-prompt:preview',
+  SOFTWARE_PROMPT_SYNC_ENTRY: 'software-prompt:sync-entry',
+  SOFTWARE_PROMPT_UPGRADE_CONSTITUTION: 'software-prompt:upgrade-constitution',
   /** UI helper: reveal a path in the system file manager. */
   SHELL_REVEAL: 'shell:reveal',
   /**
@@ -53,6 +63,13 @@ export const CHANNELS = {
    *  editable (the editor context menu) — clipboard fidelity the renderer
    *  can't reach (execCommand('paste') is privileged). */
   WINDOW_EDIT_ACTION: 'window:edit-action',
+  /** Query: which project root THIS window is bound to (multi-window). The
+   *  renderer asks at boot and opens that project — main is the authority on
+   *  the window→project binding, the renderer doesn't guess from settings. */
+  WINDOW_BOOTSTRAP: 'window:bootstrap',
+  /** Verb-ish: open a project in a NEW window (VS Code "Open Folder in New
+   *  Window"). Optional root; with none, main shows the folder picker. */
+  WINDOW_OPEN_PROJECT: 'window:open-project',
   /** Queries (projection reads — not instructions). */
   PROJECT_SCAN: 'project:scan',
   PROJECT_RAW_TREE: 'project:raw-tree',
