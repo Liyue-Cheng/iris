@@ -242,11 +242,15 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
   // A structurally broken frontmatter block is shown, never auto-edited.
   const fmEditable = !looksBroken(session.fmBlock);
 
-  // px-2.5 = the body's reserved 10px scrollbar gutter; the inner column is
-  // the body's 48rem reading column (mx-auto centered / mr-auto left-hugged
-  // per the setting). Title left + controls right then track the body text.
+  // px-2.5 = the body's reserved 10px scrollbar gutter; the inner column
+  // mirrors the body's reading column via the shared --editor-max-width var
+  // (mx-auto centered / mr-auto left-hugged per the setting). Title left +
+  // controls right then track the body text.
   const bodyAlign = useSettings()?.behavior.editorBodyAlign ?? 'center';
-  const column = cn('max-w-3xl px-6', bodyAlign === 'left' ? 'mr-auto' : 'mx-auto');
+  const column = cn(
+    'max-w-[var(--editor-max-width,48rem)] px-6',
+    bodyAlign === 'left' ? 'mr-auto' : 'mx-auto',
+  );
 
   return (
     <div className="shrink-0 bg-card/30 px-2.5">

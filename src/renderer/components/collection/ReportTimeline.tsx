@@ -14,6 +14,7 @@ import { setDocDragData } from '@renderer/lib/doc-drag';
 import { LabelChip } from '@renderer/components/ui/label-chip';
 import { StatusBadge } from '@renderer/components/ui/status-badge';
 import { projectStore } from '@renderer/stores/project-store';
+import { usePanelFocusRef } from '@renderer/lib/use-claim-focus';
 import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DocContextMenu } from '@renderer/components/doc/DocContextMenu';
 import { Button } from '@renderer/components/ui/button';
@@ -51,6 +52,7 @@ export function ReportTimeline({
   root: IrisWorkspace;
   workspacePath: string | null;
 }): JSX.Element {
+  const panelRef = usePanelFocusRef();
   const [showAll, setShowAll] = useState(false);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
 
@@ -83,7 +85,7 @@ export function ReportTimeline({
     });
 
   return (
-    <div className="flex h-full flex-col">
+    <div ref={panelRef} tabIndex={-1} className="flex h-full flex-col outline-none">
       <div className={PANEL_BAR}>
         <h2 className="text-sm font-semibold">Report</h2>
         <span className="text-[11px] text-muted-foreground">冻结的过去</span>

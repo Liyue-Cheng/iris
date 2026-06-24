@@ -24,6 +24,7 @@ import {
   Moon,
   MoonStar,
   Palette,
+  ScrollText,
   SquareTerminal,
   Sun,
   SwatchBook,
@@ -33,10 +34,14 @@ import {
 } from 'lucide-react';
 import type {
   AgentConfig,
+  ConstitutionStateUi,
+  ContextPreview,
   DeepPartial,
   HookCliInfo,
   InjectionState,
   Settings,
+  SoftwareBlockStateUi,
+  SoftwarePromptState,
   ThemeId,
 } from '@shared/types';
 import { CHANNELS } from '@shared/protocol';
@@ -99,13 +104,21 @@ export function useSettingsViewOpen(): boolean {
 // Categories
 // ──────────────────────────────────────────────────────────────────
 
-type CategoryId = 'appearance' | 'styles' | 'terminal' | 'agents' | 'advanced' | 'about';
+type CategoryId =
+  | 'appearance'
+  | 'styles'
+  | 'terminal'
+  | 'agents'
+  | 'prompts'
+  | 'advanced'
+  | 'about';
 
 const CATEGORIES: Array<{ id: CategoryId; icon: typeof Palette; label: string }> = [
   { id: 'appearance', icon: Palette, label: '外观' },
   { id: 'styles', icon: SwatchBook, label: '样式' },
   { id: 'terminal', icon: SquareTerminal, label: '终端' },
   { id: 'agents', icon: Bot, label: 'Agents' },
+  { id: 'prompts', icon: ScrollText, label: '软件提示词' },
   { id: 'advanced', icon: Wrench, label: '高级' },
   { id: 'about', icon: Info, label: '关于' },
 ];
@@ -205,6 +218,8 @@ function CategoryPanel({
       return <TerminalPanel setError={setError} />;
     case 'agents':
       return <AgentsPanel setError={setError} />;
+    case 'prompts':
+      return <PromptsPanel setError={setError} />;
     case 'advanced':
       return <AdvancedPanel setError={setError} />;
     case 'about':
@@ -470,8 +485,33 @@ function AppearancePanel({ setError }: { setError: (m: string | null) => void })
         />
       </SettingRow>
 
-      <SettingRow label="文档排版" hint="标题字阶、行宽等正文渲染参数">
-        <Placeholder>占位 — 待 Crepe 排版 token（--crepe-font-* 系列）接入设置层。</Placeholder>
+      <SettingRow
+        label="选中文档时聚焦"
+        hint="点开文档后键盘焦点的落点：编辑器（总是进正文）/ 终端（有会话则进终端）/ 自动（会话在运行才进终端）"
+      >
+        <Segmented
+          value={settings?.behavior.focusOnSelectDoc ?? 'editor'}
+          options={[
+            { value: 'editor', label: '编辑器' },
+            { value: 'terminal', label: '终端' },
+            { value: 'auto', label: '自动' },
+          ]}
+          onChange={(v) => void updateSettings({ behavior: { focusOnSelectDoc: v } }, setError)}
+        />
+      </SettingRow>
+
+      <SettingRow label="正文列宽" hint="正文阅读列的最大宽度；标题表头随列同宽">
+        <Segmented
+          value={String(settings?.behavior.editorMaxWidth ?? 58)}
+          options={[
+            { value: '48', label: '窄' },
+            { value: '58', label: '中' },
+            { value: '72', label: '宽' },
+          ]}
+          onChange={(v) =>
+            void updateSettings({ behavior: { editorMaxWidth: Number(v) } }, setError)
+          }
+        />
       </SettingRow>
     </section>
   );
@@ -1029,6 +1069,287 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
       <p className="mt-3 text-xs text-muted-foreground/70">
         没有 hook 的 CLI 用启动 flag（上方 aider / goose 预设即模板）；两者皆无的 agent
         降级回 AGENTS.md 引导——协议本来就允许。
+      </p>
+    </section>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────
+// 软件提示词 — 分层注入治理（issue: iris软件提示词治理）。
+// 软件层 = AGENTS.md / vendor 入口里的 <iris-software> 托管块（App 拥有、随版本
+// 走、可追踪）；项目层 = .iris/CONVENTIONS.md（出厂默认可升级，自定义则不动）。
+// 一切写入经此处确认、写前留 .bak。
+// ──────────────────────────────────────────────────────────────────
+
+const SW_STATE_META: Record<SoftwareBlockStateUi, { label: string; cls: string }> = {
+  ok: { label: '最新', cls: 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]' },
+  stale: { label: '旧版 · 可同步', cls: 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]' },
+  drifted: { label: '被改动', cls: 'bg-[var(--rp-love)]/20 text-[var(--rp-love)]' },
+  missing: { label: '无标签块', cls: 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]' },
+  'no-entry': { label: '文件不存在', cls: 'bg-muted text-muted-foreground' },
+};
+
+const CONS_STATE_META: Record<ConstitutionStateUi, { label: string; cls: string }> = {
+  'current-default': { label: '出厂默认 · 最新', cls: 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]' },
+  'stale-default': { label: '出厂默认 · 可升级', cls: 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]' },
+  customized: { label: '已自定义', cls: 'bg-[var(--rp-iris)]/20 text-[var(--rp-iris)]' },
+  missing: { label: '缺失', cls: 'bg-muted text-muted-foreground' },
+};
+
+/**
+ * Collapsible read-only viewer for one prompt layer's text — the content behind
+ * the freshness badges, so the user can actually READ what gets injected.
+ * `body === null` renders the `empty` note instead of a code box.
+ */
+function PromptViewer({
+  title,
+  body,
+  empty,
+  note,
+  defaultOpen = false,
+}: {
+  title: string;
+  body: string | null;
+  empty?: string;
+  note?: string | undefined;
+  defaultOpen?: boolean;
+}): JSX.Element {
+  const [open, setOpen] = useState(defaultOpen);
+  const has = body !== null && body.trim() !== '';
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+      >
+        <ChevronDown className={cn('h-3 w-3 transition-transform', open ? '' : '-rotate-90')} />
+        {title}
+      </button>
+      {open && (
+        <>
+          {note && <div className="mt-1.5 text-[11px] text-[var(--rp-gold)]">{note}</div>}
+          {has ? (
+            <pre className="mt-1.5 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md border border-subtle bg-muted/30 px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground/90">
+              {body}
+            </pre>
+          ) : (
+            <div className="mt-1.5 rounded-md border border-subtle px-3 py-2 text-[11px] text-muted-foreground">
+              {empty ?? '（空）'}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function PromptsPanel({ setError }: { setError: (m: string | null) => void }): JSX.Element {
+  const { phase, scan } = useProject();
+  const projectOpen = phase === 'ready' && (scan?.hasIris ?? false);
+  const [state, setState] = useState<SoftwarePromptState | null>(null);
+  const [preview, setPreview] = useState<ContextPreview | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState<string | null>(null);
+
+  const refresh = async (): Promise<void> => {
+    try {
+      const [s, p] = await Promise.all([
+        window.api.invoke<undefined, SoftwarePromptState>(CHANNELS.SOFTWARE_PROMPT_STATE),
+        window.api.invoke<undefined, ContextPreview>(CHANNELS.SOFTWARE_PROMPT_PREVIEW),
+      ]);
+      setState(s);
+      setPreview(p);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+  useEffect(() => {
+    if (projectOpen) void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectOpen]);
+
+  const run = async (verb: string, payload: Record<string, unknown>): Promise<void> => {
+    setBusy(true);
+    setConfirm(null);
+    setError(null);
+    try {
+      await pipeline.dispatch(verb, payload);
+      await refresh(); // pull both status badges and the now-changed content
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!projectOpen) {
+    return (
+      <section>
+        <PanelTitle>软件提示词</PanelTitle>
+        <Placeholder>
+          打开一个带 <code className="font-mono">.iris/</code> 的项目后，在这里查看三层提示词的
+          实际正文、agent 启动时收到的完整注入，以及注入到 AGENTS.md / vendor 入口的{' '}
+          <code className="font-mono">&lt;iris-software&gt;</code> 托管块状态。
+        </Placeholder>
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <PanelTitle>软件提示词</PanelTitle>
+      <p className="mb-4 text-xs text-muted-foreground">
+        这里能<b>看见</b>三层提示词的实际正文，并治理软件层注入。<b>软件层</b>是 App 拥有、
+        随版本走的 <code className="font-mono">&lt;iris-software&gt;</code>{' '}
+        托管块（标签内 = Iris 管辖、可追踪；标签外是你的，永不触碰）；<b>项目层</b>是{' '}
+        <code className="font-mono">.iris/CONVENTIONS.md</code>；<b>用户层</b>是{' '}
+        <code className="font-mono">~/.iris/CONVENTIONS.md</code>。一切写入都先备份{' '}
+        <code className="font-mono">.bak</code>。当前版本{' '}
+        <code className="font-mono">{state?.appVersion ?? '…'}</code>。
+      </p>
+
+      <h3 className="mb-1 text-[13px] font-medium">软件层 · 入口文件</h3>
+      {(state?.entries ?? []).map((e) => {
+        const needsWrite = e.state !== 'ok';
+        const cid = `entry:${e.path}`;
+        return (
+          <SettingRow
+            key={e.path}
+            label={e.path}
+            hint={
+              (e.isStandard ? '标准入口（Iris 拥有）' : 'vendor 入口（存在才维护）') +
+              (e.version ? ` · 块版本 ${e.version}` : '')
+            }
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={cn('rounded px-1.5 py-0.5 text-xs', SW_STATE_META[e.state].cls)}>
+                {SW_STATE_META[e.state].label}
+              </span>
+              {needsWrite &&
+                (confirm === cid ? (
+                  <>
+                    <span className="text-xs text-muted-foreground">
+                      将写入 {e.path}（先备份 .bak）：
+                    </span>
+                    <Button
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => void run('software-prompt.sync-entry', { path: e.path })}
+                    >
+                      确认
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setConfirm(null)}>
+                      取消
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={busy}
+                    onClick={() => setConfirm(cid)}
+                  >
+                    {e.state === 'no-entry' ? '注入…' : e.state === 'drifted' ? '重新同步…' : '同步…'}
+                  </Button>
+                ))}
+            </div>
+          </SettingRow>
+        );
+      })}
+      <PromptViewer
+        title="查看软件层正文（<iris-software> 托管块）"
+        body={preview?.software.block ?? null}
+        note={
+          preview && !preview.software.onDisk
+            ? '尚未注入任何入口文件——以下是将写入的出厂正文。'
+            : undefined
+        }
+      />
+
+      <h3 className="mb-1 mt-8 text-[13px] font-medium">项目层 · 宪法</h3>
+      <SettingRow
+        label=".iris/CONVENTIONS.md"
+        hint="仅当仍是出厂默认时可一键升级；自定义过的不会被碰"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className={cn(
+              'rounded px-1.5 py-0.5 text-xs',
+              CONS_STATE_META[state?.constitution.state ?? 'missing'].cls,
+            )}
+          >
+            {CONS_STATE_META[state?.constitution.state ?? 'missing'].label}
+          </span>
+          {state?.constitution.state === 'stale-default' &&
+            (confirm === 'constitution' ? (
+              <>
+                <span className="text-xs text-muted-foreground">升级到新默认（先备份 .bak）：</span>
+                <Button
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => void run('software-prompt.upgrade-constitution', {})}
+                >
+                  确认升级
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setConfirm(null)}>
+                  取消
+                </Button>
+              </>
+            ) : (
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={busy}
+                onClick={() => setConfirm('constitution')}
+              >
+                升级到新默认…
+              </Button>
+            ))}
+          {state?.constitution.state === 'customized' && (
+            <span className="text-xs text-muted-foreground">已自定义——不提示自动升级。</span>
+          )}
+        </div>
+      </SettingRow>
+      <PromptViewer
+        title="查看本项目正文（.iris/CONVENTIONS.md）"
+        body={preview?.project.text ?? null}
+        empty="尚无 .iris/CONVENTIONS.md（init 项目后由出厂默认种入）。"
+      />
+      <PromptViewer
+        title="查看出厂默认项目模板（App 内置，init 时种入）"
+        body={preview?.projectDefault ?? null}
+        note="这是干净的默认项目策略——仅状态机取值与 md 风格，不含已归软件层的文件夹语义。盘上宪法已自定义时，可对照它判断要不要瘦身。"
+      />
+
+      <h3 className="mb-1 mt-8 text-[13px] font-medium">用户层 · 机器事实</h3>
+      <SettingRow
+        label="~/.iris/CONVENTIONS.md"
+        hint="本机私有，不进 git；加密软件 / 代理 / 个人偏好等"
+      >
+        <span className="text-xs text-muted-foreground">
+          {preview ? (preview.user.text !== null ? '已存在' : '本机暂无此文件') : '…'}
+        </span>
+      </SettingRow>
+      <PromptViewer
+        title="查看用户层正文（~/.iris/CONVENTIONS.md）"
+        body={preview?.user.text ?? null}
+        empty="本机无 ~/.iris/CONVENTIONS.md——可在「Agents」页安装机器层模板。"
+      />
+
+      <h3 className="mb-1 mt-8 text-[13px] font-medium">合成预览 · agent 实际收到的注入</h3>
+      <p className="mb-1 text-xs text-muted-foreground">
+        有 SessionStart hook 的 agent 会话启动时收到的内容，四段各包在 <code className="font-mono">&lt;iris-*&gt;</code>{' '}
+        标签里。<code className="font-mono">&lt;iris-focus&gt;</code> 段按会话的聚焦文档实时填充，此处仅示形。
+      </p>
+      <PromptViewer
+        title="查看完整合成注入"
+        body={preview?.assembled ?? null}
+        defaultOpen
+      />
+
+      <p className="mt-4 text-xs text-muted-foreground/70">
+        各 agent CLI 的 SessionStart hook 接入与 agent 清单在「Agents」页配置。
       </p>
     </section>
   );

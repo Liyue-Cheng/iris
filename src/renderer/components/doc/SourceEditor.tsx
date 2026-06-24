@@ -3,12 +3,14 @@
  * FULL file (frontmatter included) verbatim; saving from this mode writes
  * the buffer bytes unmodified.
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { EditorView, basicSetup } from 'codemirror';
 import { EditorState } from '@codemirror/state';
 import { markdown } from '@codemirror/lang-markdown';
+import { rosePineCodeMirror } from '@renderer/styles/codemirror-theme';
 import { editorStore } from '@renderer/stores/editor-store';
 import { attachScrollMemory } from '@renderer/lib/scroll-memory';
+import { useClaimFocus } from '@renderer/lib/use-claim-focus';
 
 export function SourceEditor({
   path,
@@ -21,6 +23,21 @@ export function SourceEditor({
 }): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null);
 
+  // Focus coordination (P1): claim 'editor' focus once CodeMirror is up, with
+  // the caret at the END of the buffer (parity with the WYSIWYG editor).
+  const viewRef = useRef<EditorView | null>(null);
+  const [ready, setReady] = useState(false);
+  useClaimFocus(
+    'editor',
+    () => {
+      const view = viewRef.current;
+      if (!view) return;
+      view.dispatch({ selection: { anchor: view.state.doc.length }, scrollIntoView: true });
+      view.focus();
+    },
+    ready,
+  );
+
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -32,12 +49,13 @@ export function SourceEditor({
         extensions: [
           basicSetup,
           markdown(),
+          // After basicSetup → overrides the light defaultHighlightStyle with
+          // Rose Pine (shared with the WYSIWYG code blocks). Also sets the mono
+          // font, so only height/fontSize remain editor-specific below.
+          rosePineCodeMirror,
           EditorView.lineWrapping,
           EditorView.theme({
             '&': { height: '100%', fontSize: '13px' },
-            '.cm-content': {
-              fontFamily: "'Cascadia Mono', 'JetBrains Mono', Consolas, monospace",
-            },
           }),
           EditorView.updateListener.of((update) => {
             if (update.docChanged) {
@@ -52,7 +70,12 @@ export function SourceEditor({
     // .cm-scroller). Same keeper — restore-then-save, no ratchet.
     const keeper = attachScrollMemory({ key: `source:${path}`, content: view.scrollDOM });
 
+    viewRef.current = view;
+    setReady(true);
+
     return () => {
+      viewRef.current = null;
+      setReady(false);
       keeper.stop();
       view.destroy();
     };

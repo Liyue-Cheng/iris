@@ -4,11 +4,13 @@
  * ACTIVE issues only; reports hide `Backlog`; archived workspaces (inside
  * report/) render grayed as one frozen block.
  *
- * The ROOT node is special (round-3 E-4, 主页重设计): not a collapse toggle —
- * clicking it drops the README and gives the terminal the full width. Its
- * project-root sessions are listed right under it (above the type sections),
- * so the root node doubles as the terminal hub. Nested workspaces keep the
- * collapse gesture.
+ * Root and sub-workspaces are symmetric (子工作区平权): both render flat with
+ * NO indentation — depth reads from the chevron + bold header, not a rail —
+ * and both carry the collapse gesture. The header's chevron folds only the
+ * document type sections; the hub's sessions and nested child workspaces stay
+ * visible. Clicking the header NAME (not the chevron) stages that hub's
+ * terminal full-width (root drops the README), so every workspace header
+ * doubles as a terminal hub.
  */
 import { useState } from 'react';
 import {
@@ -27,15 +29,17 @@ import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DocContextMenu } from '@renderer/components/doc/DocContextMenu';
 import {
   aggregateDocState,
+  sessionAnchorKey,
   sessionStore,
   useSessions,
+  workspaceAnchorKey,
 } from '@renderer/stores/session-store';
 import type { DocType, IrisDoc, IrisWorkspace } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
 import { docDisplayTitle, isActiveIssue } from '@renderer/lib/doc-utils';
 import { useLensPrefs, type LensSort } from '@renderer/stores/lens-prefs';
 import { useSettings } from '@renderer/stores/settings-store';
-import { closeSession, openSession } from '@renderer/lib/session-actions';
+import { closeSession, openWorkspaceSession } from '@renderer/lib/session-actions';
 import { StatusBadge } from '@renderer/components/ui/status-badge';
 import { SessionDot } from '@renderer/components/ui/session-dot';
 import {
@@ -165,7 +169,7 @@ function TypeSection({
           type="button"
           title={open ? '折叠' : '展开'}
           onClick={() => setOpen(!open)}
-          className="px-2 py-0.5 text-muted-foreground hover:text-foreground"
+          className="shrink-0 px-1 py-0.5 text-muted-foreground hover:text-foreground"
         >
           {sectionOpen ? (
             <ChevronDown className="h-3.5 w-3.5" />
@@ -212,12 +216,27 @@ function TypeSection({
   );
 }
 
+/** The project-root workspace's anchor path (the root hub). */
+const ROOT_WS_PATH = '.iris';
+
+/** Stage a workspace hub's terminal full-width (root → selectRoot). */
+function selectHub(workspacePath: string): void {
+  if (workspacePath === ROOT_WS_PATH) projectStore.selectRoot();
+  else projectStore.selectWorkspace(workspacePath);
+}
+
 /**
- * The new-root-session +, sitting beside the root node's title (主页重设计):
- * spawns a project-root session (docPath null, no FOCUS_DOC) with the chosen
- * agent. The root sessions themselves list directly below the root node.
+ * The new-session +, beside a workspace header (主页重设计 + 子工作区平权):
+ * spawns a hub session (docPath null, NO FOCUS_DOC) grouped under this
+ * workspace. Both the root and every sub-workspace get one — terminal parity.
  */
-function NewRootSessionButton(): JSX.Element {
+function NewWorkspaceSessionButton({
+  workspacePath,
+  label,
+}: {
+  workspacePath: string;
+  label: string;
+}): JSX.Element {
   const settings = useSettings();
   const agents = settings?.agents ?? [];
   return (
@@ -225,16 +244,16 @@ function NewRootSessionButton(): JSX.Element {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          title="新建项目根会话"
-          className="shrink-0 rounded-sm p-0.5 text-muted-foreground/0 hover:!text-foreground group-hover/root:text-muted-foreground"
+          title="新建会话"
+          className="shrink-0 rounded-sm p-0.5 text-muted-foreground/0 hover:!text-foreground group-hover/hub:text-muted-foreground"
         >
           <Plus className="h-3.5 w-3.5" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuLabel>项目根（无聚焦兜底）</DropdownMenuLabel>
+        <DropdownMenuLabel className="max-w-52 truncate">{label}（无聚焦兜底）</DropdownMenuLabel>
         {agents.map((a) => (
-          <DropdownMenuItem key={a.id} onClick={() => void openSession(null, a.id)}>
+          <DropdownMenuItem key={a.id} onClick={() => void openWorkspaceSession(workspacePath, a.id)}>
             用 {a.label} 打开
           </DropdownMenuItem>
         ))}
@@ -244,65 +263,34 @@ function NewRootSessionButton(): JSX.Element {
 }
 
 /**
- * The root node row (主页重设计): the project-root selection gesture plus the
- * new-session +. Only one shadow at a time — when a root session row is the
- * active terminal, IT carries the highlight and the iris node stays plain; the
- * node highlights only when the root view shows no session (the launch pad).
- */
-function RootNodeRow({ name }: { name: string }): JSX.Element {
-  const { view } = useProject();
-  const { sessions, activeSessionId } = useSessions();
-  const rootSessionActive =
-    view.kind === 'root' &&
-    sessions.some((s) => s.docPath === null && s.id === activeSessionId);
-  const selected = view.kind === 'root' && !rootSessionActive;
-
-  return (
-    <div
-      className={cn(
-        'group/root flex items-center gap-1 rounded-sm pr-1',
-        selected ? 'bg-accent text-accent-foreground' : 'text-foreground hover:bg-muted',
-      )}
-    >
-      <button
-        type="button"
-        title="项目根 — 终端独占全屏；根会话列在下方"
-        onClick={() => void projectStore.selectRoot()}
-        className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-[13px] font-semibold"
-      >
-        <FolderRoot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <span className="truncate">{name}</span>
-      </button>
-      <NewRootSessionButton />
-    </div>
-  );
-}
-
-/**
- * Project-root session rows, listed directly under the root node (主页重设计):
- * the left pane is the attention-scheduling panel, so the root terminals live
- * here (above status/issue/…) with no section header — just the rows. A click
+ * Hub session rows, listed directly under a workspace header (主页重设计 +
+ * 平权): the left pane is the attention-scheduling panel, so a workspace's
+ * terminals live here (above status/issue/…) with no section header. A click
  * stages that session in the full-width terminal. Empty → nothing.
  */
-function RootSessionList(): JSX.Element | null {
+function WorkspaceSessionList({ workspacePath }: { workspacePath: string }): JSX.Element | null {
   const { sessions, activeSessionId } = useSessions();
   const { view } = useProject();
-  const rootSessions = sessions.filter((s) => s.docPath === null);
-  if (rootSessions.length === 0) return null;
-  const isRootView = view.kind === 'root';
+  const hubKey = workspaceAnchorKey(workspacePath);
+  const hubSessions = sessions.filter((s) => sessionAnchorKey(s) === hubKey);
+  if (hubSessions.length === 0) return null;
+  const isThisHubView =
+    workspacePath === ROOT_WS_PATH
+      ? view.kind === 'root'
+      : view.kind === 'workspace' && view.path === workspacePath;
 
   return (
     <div>
-      {rootSessions.map((s) => {
-        const active = isRootView && activeSessionId === s.id;
+      {hubSessions.map((s) => {
+        const active = isThisHubView && activeSessionId === s.id;
         const label = s.terminalTitle ?? s.displayName;
         return (
           <ContextMenu key={s.id}>
             <ContextMenuTrigger asChild>
               <button
                 type="button"
-                onClick={async () => {
-                  await projectStore.selectRoot();
+                onClick={() => {
+                  selectHub(workspacePath);
                   sessionStore.select(s.id);
                 }}
                 className={cn(
@@ -335,6 +323,20 @@ function RootSessionList(): JSX.Element | null {
   );
 }
 
+/**
+ * A workspace section — root and sub are now symmetric (子工作区平权). The
+ * header is `[chevron | name | +]`:
+ *   - chevron folds ONLY the document type sections; the hub's sessions and
+ *     any nested child workspaces stay visible. This is what lets you collapse
+ *     the root's docs while keeping the sub-workspaces (its children) in view.
+ *   - the name stages this hub's terminal full-width (selectRoot/selectWorkspace).
+ *   - + spawns a hub session (no FOCUS_DOC).
+ * No indentation (平铺) — depth is read from the chevron + bold header, not a
+ * rail. Only one selection shadow at a time: a staged hub session carries the
+ * highlight and the header stays plain; the header highlights only when this
+ * hub view shows no session (the launch pad). Archived workspaces freeze: no
+ * +, no hub selection, sessions hidden — just grayed, collapsible docs.
+ */
 function WorkspaceSection({
   ws,
   depth,
@@ -344,38 +346,71 @@ function WorkspaceSection({
   depth: number;
   parentArchived: boolean;
 }): JSX.Element {
-  const [open, setOpen] = useState(true);
+  const [sectionsOpen, setSectionsOpen] = useState(true);
+  const { view } = useProject();
+  const { sessions, activeSessionId } = useSessions();
   const archived = ws.archived || parentArchived;
   const isRoot = depth === 0;
+  const workspacePath = isRoot ? ROOT_WS_PATH : ws.path;
   const byType = (t: DocType): IrisDoc[] => ws.docs.filter((d) => d.type === t);
 
+  const isThisHubView = isRoot
+    ? view.kind === 'root'
+    : view.kind === 'workspace' && view.path === ws.path;
+  const hubKey = workspaceAnchorKey(workspacePath);
+  const hubSessionStaged =
+    isThisHubView && sessions.some((s) => sessionAnchorKey(s) === hubKey && s.id === activeSessionId);
+  const headerSelected = isThisHubView && !hubSessionStaged;
+
   return (
-    <div className={cn(depth > 0 && 'ml-2 border-l border-subtle pl-1')}>
-      {isRoot ? (
-        <RootNodeRow name={ws.name} />
-      ) : (
+    <div>
+      <div
+        className={cn(
+          'group/hub flex items-center gap-1 rounded-sm pr-1',
+          !archived && headerSelected
+            ? 'bg-accent text-accent-foreground'
+            : cn('hover:bg-muted', archived ? 'text-muted-foreground/70' : 'text-foreground'),
+        )}
+      >
         <button
           type="button"
-          onClick={() => setOpen(!open)}
-          className={cn(
-            'flex w-full items-center gap-1 px-1 py-1 text-[13px] font-semibold',
-            archived ? 'text-muted-foreground/70' : 'text-foreground',
-          )}
+          title={sectionsOpen ? '折叠文档区' : '展开文档区'}
+          onClick={() => setSectionsOpen(!sectionsOpen)}
+          className="shrink-0 px-1 py-1.5 text-muted-foreground hover:text-foreground"
         >
-          {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-          <span className="truncate">{ws.name}</span>
-          {archived && (
+          {sectionsOpen ? (
+            <ChevronDown className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5" />
+          )}
+        </button>
+        {archived ? (
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 text-[13px] font-semibold">
+            <span className="truncate">{ws.name}</span>
             <span className="ml-1 flex items-center gap-0.5 rounded-sm bg-muted px-1 py-px text-[11px] font-normal text-muted-foreground">
               <Archive className="h-2.5 w-2.5" />
               已归档
             </span>
-          )}
-        </button>
-      )}
-      {(isRoot || open) && (
-        <div className={cn('space-y-2 pt-1', archived && 'opacity-75')}>
-          {isRoot && <RootSessionList />}
-          {TYPE_ORDER.map((t) => (
+          </span>
+        ) : (
+          <>
+            <button
+              type="button"
+              title={isRoot ? '项目根 — 终端独占全屏' : '子工作区 — 终端独占全屏'}
+              onClick={() => selectHub(workspacePath)}
+              className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 text-[13px] font-semibold"
+            >
+              {isRoot && <FolderRoot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+              <span className="truncate">{ws.name}</span>
+            </button>
+            <NewWorkspaceSessionButton workspacePath={workspacePath} label={isRoot ? '项目根' : ws.name} />
+          </>
+        )}
+      </div>
+      <div className={cn('space-y-2 pt-1', archived && 'opacity-75')}>
+        {!archived && <WorkspaceSessionList workspacePath={workspacePath} />}
+        {sectionsOpen &&
+          TYPE_ORDER.map((t) => (
             <TypeSection
               key={t}
               type={t}
@@ -384,11 +419,10 @@ function WorkspaceSection({
               workspacePath={ws.path}
             />
           ))}
-          {ws.children.map((c) => (
-            <WorkspaceSection key={c.path} ws={c} depth={depth + 1} parentArchived={archived} />
-          ))}
-        </div>
-      )}
+        {ws.children.map((c) => (
+          <WorkspaceSection key={c.path} ws={c} depth={depth + 1} parentArchived={archived} />
+        ))}
+      </div>
     </div>
   );
 }

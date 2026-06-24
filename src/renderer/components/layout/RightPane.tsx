@@ -12,10 +12,16 @@
  * EmptyPathState, F-1): spawn happens only on an explicit click.
  */
 import { ChevronDown, Plus, X, FileText, FolderRoot, SquareTerminal } from 'lucide-react';
-import { useSessions, sessionStore } from '@renderer/stores/session-store';
+import {
+  useSessions,
+  sessionStore,
+  sessionAnchorKey,
+  workspaceAnchorKey,
+} from '@renderer/stores/session-store';
+import { focusStore } from '@renderer/stores/focus-store';
 import { useSettings } from '@renderer/stores/settings-store';
 import { useProject } from '@renderer/stores/project-store';
-import { closeSession, openSession } from '@renderer/lib/session-actions';
+import { closeSession, openSession, openWorkspaceSession } from '@renderer/lib/session-actions';
 import { docDisplayTitle, findDocByPath } from '@renderer/lib/doc-utils';
 import { TerminalView } from '@renderer/components/terminal/TerminalView';
 import { Button } from '@renderer/components/ui/button';
@@ -41,19 +47,37 @@ export function RightPane(): JSX.Element {
   const agents = settings?.agents ?? [];
   const projectReady = phase === 'ready';
 
-  // The pane's anchor mirrors the middle pane: a selected doc, or the
-  // project root (root node selected / nothing selected yet).
-  const anchor: string | null = view.kind === 'root' ? null : selectedPath;
+  // The pane's anchor mirrors the middle pane: a selected doc, or a workspace
+  // hub (root node / sub-workspace selected). Hub sessions carry no FOCUS_DOC;
+  // they group by `ws:<workspacePath>` key. Doc sessions key by their path.
+  const isHub = view.kind === 'root' || view.kind === 'workspace';
+  const hubWorkspacePath = view.kind === 'workspace' ? view.path : '.iris';
+  const anchorKey: string | null =
+    view.kind === 'root'
+      ? workspaceAnchorKey('.iris')
+      : view.kind === 'workspace'
+        ? workspaceAnchorKey(view.path)
+        : selectedPath;
   // D5: show the doc's display title (frontmatter title), not the filename.
-  const anchorDoc = anchor && scan?.root ? findDocByPath(scan.root, anchor) : null;
-  const anchorName = anchor
-    ? anchorDoc
-      ? docDisplayTitle(anchorDoc)
-      : (anchor.split('/').pop()?.replace(/\.md$/i, '') ?? anchor)
-    : '项目根';
-  const AnchorIcon = anchor ? FileText : FolderRoot;
+  const anchorDoc = !isHub && selectedPath && scan?.root ? findDocByPath(scan.root, selectedPath) : null;
+  const anchorName = isHub
+    ? view.kind === 'workspace'
+      ? (view.path.split('/').pop() ?? view.path)
+      : '项目根'
+    : selectedPath
+      ? anchorDoc
+        ? docDisplayTitle(anchorDoc)
+        : (selectedPath.split('/').pop()?.replace(/\.md$/i, '') ?? selectedPath)
+      : '项目根';
+  const AnchorIcon = isHub ? FolderRoot : FileText;
 
-  const visibleSessions = sessions.filter((s) => s.docPath === anchor);
+  const spawn = (agentId: string): void => {
+    if (isHub) void openWorkspaceSession(hubWorkspacePath, agentId);
+    else void openSession(selectedPath, agentId);
+  };
+
+  const visibleSessions =
+    anchorKey === null ? [] : sessions.filter((s) => sessionAnchorKey(s) === anchorKey);
   // Never show a terminal whose session is outside the current anchor; if
   // the staged id points elsewhere but this anchor HAS sessions, fall back
   // to the newest one (display-level only — no state mutation in render).
@@ -108,7 +132,10 @@ export function RightPane(): JSX.Element {
                     {visibleSessions.map((s) => (
                       <DropdownMenuItem
                         key={s.id}
-                        onClick={() => sessionStore.select(s.id)}
+                        onClick={() => {
+                          sessionStore.select(s.id);
+                          focusStore.request('terminal');
+                        }}
                         className="flex items-center gap-1.5"
                       >
                         <SessionDot state={s.state} />
@@ -171,10 +198,10 @@ export function RightPane(): JSX.Element {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuLabel className="max-w-52 truncate">
-              {anchor ? `挂在 ${anchorName}` : '项目根（无聚焦兜底）'}
+              {isHub ? `${anchorName}（无聚焦兜底）` : `挂在 ${anchorName}`}
             </DropdownMenuLabel>
             {agents.map((a) => (
-              <DropdownMenuItem key={a.id} onClick={() => void openSession(anchor, a.id)}>
+              <DropdownMenuItem key={a.id} onClick={() => spawn(a.id)}>
                 用 {a.label} 打开
               </DropdownMenuItem>
             ))}
@@ -191,18 +218,20 @@ export function RightPane(): JSX.Element {
             <SquareTerminal className="h-10 w-10 text-muted-foreground/40" />
             <div>
               <p className="max-w-64 truncate text-sm">
-                {anchor ? (
+                {isHub ? (
+                  <>
+                    <span className="font-semibold">{anchorName}</span> 会话
+                  </>
+                ) : (
                   <>
                     挂在 <span className="font-semibold">{anchorName}</span> 的新会话
                   </>
-                ) : (
-                  <span className="font-semibold">项目根会话</span>
                 )}
               </p>
               <p className="mt-1 max-w-64 text-xs text-muted-foreground">
-                {anchor
-                  ? '终端将注入 FOCUS_DOC 指向这篇文档'
-                  : '不注入 FOCUS_DOC —— 无聚焦的兜底会话'}
+                {isHub
+                  ? '不注入 FOCUS_DOC —— 无聚焦的兜底会话'
+                  : '终端将注入 FOCUS_DOC 指向这篇文档'}
               </p>
             </div>
             <div className="flex w-64 flex-col gap-2">
@@ -211,7 +240,7 @@ export function RightPane(): JSX.Element {
                   key={a.id}
                   variant="secondary"
                   className="h-9 justify-start gap-2 px-4"
-                  onClick={() => void openSession(anchor, a.id)}
+                  onClick={() => spawn(a.id)}
                 >
                   <SquareTerminal className="!size-4 text-muted-foreground" />
                   用 {a.label} 打开

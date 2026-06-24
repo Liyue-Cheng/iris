@@ -304,7 +304,7 @@
   height: 100%;
 }
 .crepe-host .milkdown .ProseMirror {
-  max-width: 48rem;
+  max-width: var(--editor-max-width, 48rem);
   margin: 0 auto;
   padding: 1rem 1.5rem 4rem;
 }
@@ -313,6 +313,32 @@
    10px gutter — the typed header mirrors that with its px-2.5 + mr-auto. */
 .crepe-host[data-body-align='left'] .milkdown .ProseMirror {
   margin: 0;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+ * Code blocks. Crepe's frame theme leaves .milkdown-code-block flat
+ * (background + padding only); these rules add the card framing (radius +
+ * border) and surface the language / copy controls so the block reads like
+ * a deliberate code surface (Typora-ish) instead of a grey slab. Syntax
+ * colors come from the Rose Pine HighlightStyle (codemirror-theme.ts).
+ * ────────────────────────────────────────────────────────────────── */
+.crepe-host .milkdown .milkdown-code-block {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 0.85em 0;
+  overflow: hidden;
+}
+.crepe-host .milkdown .milkdown-code-block .cm-gutters {
+  color: var(--rp-muted);
+}
+/* Language picker + copy/hide buttons: frame theme hides them at opacity:0
+   until hover. Keep the language label gently visible (it is the block's
+   only affordance label), still lifting to full on hover. */
+.crepe-host .milkdown .milkdown-code-block .language-button {
+  opacity: 0.65;
+}
+.crepe-host .milkdown .milkdown-code-block:hover .language-button {
+  opacity: 1;
 }
 
 /* ──────────────────────────────────────────────────────────────────

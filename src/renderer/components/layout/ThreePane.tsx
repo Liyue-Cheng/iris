@@ -38,8 +38,9 @@ function RightArea({ view }: { view: MiddleView }): JSX.Element {
       </ResizablePanelGroup>
     );
   }
-  // Project-root view (主页重设计): terminal独占，no README.
-  if (view.kind === 'root') {
+  // Hub views (project root 主页重设计 + sub-workspace 平权): terminal独占，
+  // no middle pane — the hub's sessions take the full width.
+  if (view.kind === 'root' || view.kind === 'workspace') {
     return <RightPane />;
   }
   // Collection / todo views (Round-4 E3): the manager takes the full width.

@@ -17,11 +17,16 @@
  * privileged); focus returns to ProseMirror first so the action lands on
  * the editor's preserved selection.
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Crepe } from '@milkdown/crepe';
 import { editorViewCtx } from '@milkdown/kit/core';
+import { Selection } from '@milkdown/kit/prose/state';
+import type { EditorView } from '@milkdown/kit/prose/view';
+import { languages } from '@codemirror/language-data';
+import { rosePineCodeMirror } from '@renderer/styles/codemirror-theme';
 import { CHANNELS } from '@shared/protocol';
 import { editorStore } from '@renderer/stores/editor-store';
+import { useClaimFocus } from '@renderer/lib/use-claim-focus';
 import { mountCrepeSerially, type CrepeLifecycle } from '@renderer/lib/crepe-lifecycle';
 import { attachScrollMemory, type ScrollKeeper } from '@renderer/lib/scroll-memory';
 import { useSettings } from '@renderer/stores/settings-store';
@@ -52,6 +57,23 @@ export function CrepeEditor({
   const blockEdit = settings?.behavior.editorBlockEdit ?? false;
   const bodyAlign = settings?.behavior.editorBodyAlign ?? 'center';
 
+  // Focus coordination (P1): claim 'editor' focus once Crepe is ready, instead
+  // of the old one-shot focusOnMount limited to new-doc create. The caret lands
+  // at the END of the doc (not the start) — entering a doc to keep writing is
+  // the common case.
+  const viewRef = useRef<EditorView | null>(null);
+  const [ready, setReady] = useState(false);
+  useClaimFocus(
+    'editor',
+    () => {
+      const view = viewRef.current;
+      if (!view) return;
+      view.dispatch(view.state.tr.setSelection(Selection.atEnd(view.state.doc)).scrollIntoView());
+      view.focus();
+    },
+    ready,
+  );
+
   useEffect(() => {
     const el = rootRef.current;
     if (!el) return;
@@ -64,6 +86,16 @@ export function CrepeEditor({
         [Crepe.Feature.AI]: false,
         [Crepe.Feature.Latex]: false,
         [Crepe.Feature.BlockEdit]: blockEdit,
+      },
+      featureConfigs: {
+        // Wire CodeMirror's language parsers (without this the feature loads
+        // no grammar → code blocks render as monochrome text) and overlay the
+        // Rose Pine highlight. `extensions` is appended after basicSetup, so it
+        // wins over CodeMirror's light defaultHighlightStyle.
+        [Crepe.Feature.CodeMirror]: {
+          languages,
+          extensions: [rosePineCodeMirror],
+        },
       },
     });
 
@@ -87,13 +119,16 @@ export function CrepeEditor({
         editorStore.setBodyBaseline(crepe.getMarkdown());
         const view = crepe.editor.action((ctx) => ctx.get(editorViewCtx));
         keeper = attachScrollMemory({ key: `wysiwyg:${path}`, content: view.dom as HTMLElement });
-        // New-doc create asked for focus: land the cursor in the body now.
-        if (editorStore.consumeFocusOnMount()) view.focus();
+        // Ready to claim keyboard focus (the coordinator decides whether to).
+        viewRef.current = view;
+        setReady(true);
       },
     });
 
     return () => {
       stopped = true;
+      viewRef.current = null;
+      setReady(false);
       keeper?.stop();
       lifecycle.stop();
     };

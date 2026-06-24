@@ -7,6 +7,7 @@ import { useState } from 'react';
 import {
   FolderOpen,
   FolderPlus,
+  AppWindow,
   ListChecks,
   ListTree,
   FolderTree,
@@ -27,7 +28,7 @@ import {
 } from '@renderer/components/ui/tooltip';
 import { projectStore, useProject } from '@renderer/stores/project-store';
 import { lensPrefs, useLensPrefs } from '@renderer/stores/lens-prefs';
-import { pickAndOpenProject } from '@renderer/lib/project-actions';
+import { pickAndOpenProject, openProjectInNewWindow } from '@renderer/lib/project-actions';
 import { LensTree } from '@renderer/components/lens/LensTree';
 import { RawTree } from '@renderer/components/lens/RawTree';
 import { InitDialog } from '@renderer/components/project/InitDialog';
@@ -78,6 +79,19 @@ export function LeftPane(): JSX.Element {
               </Button>
             </TooltipTrigger>
             <TooltipContent>打开项目文件夹</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => void openProjectInNewWindow()}
+              >
+                <AppWindow className="!size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>在新窗口打开项目</TooltipContent>
           </Tooltip>
           {phase === 'ready' && scan?.hasIris && (
             <>

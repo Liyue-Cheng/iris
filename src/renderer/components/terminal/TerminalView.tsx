@@ -51,6 +51,7 @@ import { matchKeybinding } from '@shared/terminal-keybindings';
 import { attachImeCompositionEndCleaner } from '@shared/ime-textarea-workaround';
 import { attachImeCompositionPositionLock } from '@shared/ime-composition-position-lock';
 import { readClipboardText, writeClipboardText } from '@renderer/lib/clipboard';
+import { useClaimFocus } from '@renderer/lib/use-claim-focus';
 import { getXtermTheme, isLightTheme, LIGHT_THEME_MIN_CONTRAST } from '@renderer/theme/xterm-themes';
 import { getSettings, useSettings } from '@renderer/stores/settings-store';
 import { setLastTerminalDims } from '@renderer/stores/session-store';
@@ -103,10 +104,19 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
   const searchRef = useRef<SearchAddon | null>(null);
   const settings = useSettings();
 
-  // SCROLL-1: hidden + inert until the replay has anchored bottom and the
-  // renderer has painted the final state. RightPane keys this component by
-  // sessionId, so every session switch starts hidden again.
+  // SCROLL-1: hidden (opacity:0, NOT visibility:hidden — see P2 below) until
+  // the replay has anchored bottom and the renderer has painted the final
+  // state. RightPane keys this component by sessionId, so every session switch
+  // starts hidden again.
   const [hostRevealed, setHostRevealed] = useState(false);
+  // P2: the terminal can hold keyboard focus the instant xterm opens (textarea
+  // exists), BEFORE the scrollback replay finishes — keystrokes go straight to
+  // the PTY instead of being dropped during the 100–500ms replay window. This
+  // is why the pre-reveal hide is opacity:0 (focusable) not visibility:hidden
+  // (its descendants can't be focused), and why the old `inert` is gone:
+  // focus is now intent-driven, so keys only reach the terminal when it's the
+  // focus target anyway (no leak to leave inert to guard against).
+  const [termReady, setTermReady] = useState(false);
   // Snapshot taken when the context menu opens (the menu itself would
   // steal focus and could race selection state at click time).
   const [ctxHasSelection, setCtxHasSelection] = useState(false);
@@ -443,6 +453,9 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     });
 
     term.open(host);
+    // P2: textarea now exists — eligible to claim keyboard focus immediately,
+    // even while the replay is still painting under opacity:0.
+    setTermReady(true);
 
     // PER-1: WebGL after open() (needs the canvas); on GPU context loss
     // dispose the addon and let xterm fall back to the DOM renderer.
@@ -759,6 +772,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
 
     return () => {
       disposed = true;
+      setTermReady(false);
       if (resizeTimer !== null) clearTimeout(resizeTimer);
       if (selectionTimer !== null) clearTimeout(selectionTimer);
       unsubscribe();
@@ -788,15 +802,12 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  // SCROLL-1 round 2: inert while hidden — replay takes 100-500ms and keys
-  // pressed in that window must not leak into other focusables. (React 18
-  // has no `inert` prop; set the attribute directly.)
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!host) return;
-    if (hostRevealed) host.removeAttribute('inert');
-    else host.setAttribute('inert', '');
-  }, [hostRevealed]);
+  // P2: the SCROLL-1 `inert`-while-hidden guard is gone. It existed because the
+  // terminal used to grab focus on every reveal, so keys typed during replay
+  // had to be blocked from leaking. Focus is now intent-driven (useClaimFocus):
+  // keys reach the terminal only when it's the focus target, and then they
+  // SHOULD go to the PTY. The host stays focusable throughout (opacity:0, not
+  // visibility:hidden) so that early input isn't dropped.
 
   // Flush any pending Ctrl+wheel font-size write on unmount.
   useEffect(() => {
@@ -805,15 +816,20 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     };
   }, []);
 
-  // Focus once revealed (inert blocked focus until now). Skip when the search
-  // bar is open — the query input owns focus then.
-  useEffect(() => {
-    if (!hostRevealed) return;
-    if (searchVisibleRef.current) return;
-    requestAnimationFrame(() => {
+  // Focus coordination (P5): claim 'terminal' focus only when the focus-store
+  // intent is the terminal (explicit session select / spawn / root view) —
+  // NOT on every reveal. Selecting a doc whose intent is the editor leaves the
+  // terminal unfocused even though it just remounted. Gated on termReady (P2),
+  // so focus lands as soon as xterm opens — keystrokes reach the PTY during
+  // the replay instead of being dropped. Skip when the search bar owns focus.
+  useClaimFocus(
+    'terminal',
+    () => {
+      if (searchVisibleRef.current) return;
       termRef.current?.focus();
-    });
-  }, [hostRevealed]);
+    },
+    termReady,
+  );
 
   // Live search: each query/case change re-runs findNext so the hit counter
   // updates per keystroke; clearing the query drops the highlights.
@@ -867,7 +883,12 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
           <div
             ref={hostRef}
             className="h-full w-full px-1 pt-1"
-            style={hostRevealed ? undefined : { visibility: 'hidden' }}
+            // P2: opacity (not visibility) keeps the host focusable while the
+            // replay paints under cover, so the terminal can take keyboard
+            // focus and feed the PTY before reveal. Reveal still happens only
+            // after the fence + RAF, so the first VISIBLE frame is the final
+            // state (SCROLL-1 anti-flicker intact).
+            style={hostRevealed ? undefined : { opacity: 0 }}
           // behavior.terminalRightClick='paste': preventDefault makes Radix's
           // composed trigger handler bail (defaultPrevented check), so the
           // menu never opens — right click goes straight to the single paste
