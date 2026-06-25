@@ -76,7 +76,16 @@ export default defineConfig({
     build: {
       outDir: 'out/main',
       rollupOptions: {
-        input: { index: resolve('src/main/index.ts') },
+        // Two entries: `index` is the featherweight single-instance gate; the
+        // single-instance loser loads nothing else. `app-main` is the real
+        // backend, lazily imported by the winner. Naming it as an entry (rather
+        // than letting it fall out as a hashed chunk under chunks/) keeps it at
+        // out/main/app-main.js, so app-main's __dirname stays out/main and its
+        // '../preload' / '../renderer' relative paths resolve correctly.
+        input: {
+          index: resolve('src/main/index.ts'),
+          'app-main': resolve('src/main/app-main.ts'),
+        },
       },
     },
   },
