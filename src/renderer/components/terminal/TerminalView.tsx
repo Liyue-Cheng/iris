@@ -16,8 +16,8 @@
  * host stays visibility:hidden + inert until the replay fence callback has
  * anchored the viewport bottom and one RAF has let the renderer paint —
  * the first visible frame is the final state. scrollToBottom must run in
- * the write('', cb) fence, never right after the writes: term.write is an
- * async queue and the "bottom" keeps growing while the parser drains.
+ * the zero-length-write fence, never right after the writes: term.write is
+ * an async queue and the "bottom" keeps growing while the parser drains.
  *
  * Clipboard (Marina CPB/PASTE-1/KBD-1): all copy/paste goes through the
  * IPC clipboard bridge (navigator.clipboard silently rejects in the
@@ -51,11 +51,17 @@ import { matchKeybinding } from '@shared/terminal-keybindings';
 import { attachImeCompositionEndCleaner } from '@shared/ime-textarea-workaround';
 import { attachImeCompositionPositionLock } from '@shared/ime-composition-position-lock';
 import { readClipboardText, writeClipboardText } from '@renderer/lib/clipboard';
+import { confirmDialog } from '@renderer/components/ui/confirm-dialog';
 import { useClaimFocus } from '@renderer/lib/use-claim-focus';
 import { getXtermTheme, isLightTheme, LIGHT_THEME_MIN_CONTRAST } from '@renderer/theme/xterm-themes';
 import { getSettings, useSettings } from '@renderer/stores/settings-store';
 import { setLastTerminalDims } from '@renderer/stores/session-store';
 import { perf } from '@renderer/lib/perf-runtime';
+import {
+  traceForSession,
+  traceMark,
+  endTerminalTrace,
+} from '@renderer/lib/terminal-trace';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -159,7 +165,13 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       // CPB-P4: >1MB pre-flight — a mis-copied log file can wedge ConPTY.
       if (new Blob([text]).size > LARGE_PASTE_BYTES) {
         const mb = (new Blob([text]).size / 1024 / 1024).toFixed(2);
-        if (!window.confirm(`即将粘贴 ${mb} MB 内容到终端。\n过大的粘贴可能让 shell 长时间无响应。继续？`)) {
+        if (
+          !(await confirmDialog({
+            title: '粘贴大量内容',
+            message: `即将粘贴 ${mb} MB 内容到终端。\n过大的粘贴可能让 shell 长时间无响应。继续？`,
+            confirmText: '继续粘贴',
+          }))
+        ) {
           return;
         }
       }
@@ -168,7 +180,15 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       // malicious page). Bracketed paste makes it literal where supported,
       // but the user decides (CPB-P7/P8).
       if (text.includes('\x1b')) {
-        if (!window.confirm('剪贴板内容包含 ESC 控制字符（可能改终端状态/清屏/改标题）。\n常见于恶意网页内容。仍要粘贴？')) {
+        if (
+          !(await confirmDialog({
+            title: '剪贴板含 ESC 控制字符',
+            message:
+              '剪贴板内容包含 ESC 控制字符（可能改终端状态/清屏/改标题）。\n常见于恶意网页内容。仍要粘贴？',
+            confirmText: '仍要粘贴',
+            tone: 'destructive',
+          }))
+        ) {
           return;
         }
       }
@@ -182,15 +202,25 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
         const lines = text.split(/\r\n|\r|\n/);
         while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
         if (lines.length > 1) {
-          if (!window.confirm(`即将粘贴 ${lines.length} 行内容。\n当前程序未启用 bracketed paste，多行会被逐行立即执行。继续？`)) {
+          if (
+            !(await confirmDialog({
+              title: '多行粘贴',
+              message: `即将粘贴 ${lines.length} 行内容。\n当前程序未启用 bracketed paste，多行会被逐行立即执行。继续？`,
+              confirmText: '继续粘贴',
+              tone: 'destructive',
+            }))
+          ) {
             return;
           }
         }
       }
 
+      // A session switch (view remount) could have disposed this term while a
+      // confirm dialog was open — don't paste into a stale terminal.
+      if (termRef.current !== term) return;
       term.paste(text);
     } finally {
-      // CPB-P1: focus back no matter what (confirm dialogs steal it).
+      // CPB-P1: focus back no matter what (the confirm dialog took focus).
       termRef.current?.focus();
     }
   }, []);
@@ -216,11 +246,14 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       const dangerous = paths.filter((p) => SHELL_METAS.test(p));
       if (dangerous.length > 0) {
         if (
-          !window.confirm(
-            `拖入的文件路径含 shell 元字符（; & \` $ | < > 等）。\n某些 shell 会把它们当成命令分隔符或子命令，可能意外执行。\n\n${dangerous.join('\n')}\n\n仍要粘贴？`,
-          )
+          !(await confirmDialog({
+            title: '文件路径含 shell 元字符',
+            message: `拖入的文件路径含 shell 元字符（; & \` $ | < > 等）。\n某些 shell 会把它们当成命令分隔符或子命令，可能意外执行。\n\n${dangerous.join('\n')}\n\n仍要粘贴？`,
+            confirmText: '仍要粘贴',
+            tone: 'destructive',
+          }))
         ) {
-          term.focus();
+          termRef.current?.focus();
           return;
         }
       }
@@ -359,6 +392,17 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     const host = hostRef.current;
     if (!host) return;
 
+    // End-to-end terminal-event trace: an 'open' gesture started in
+    // session-actions and bound this sessionId; pick it up so the mount /
+    // replay / reveal marks land on the same timeline as the pre-spawn awaits.
+    // Pick up whichever in-flight trace is bound to this session — an 'open'
+    // (new spawn, bound after the spawn IPC) or a 'switch' (dropdown select,
+    // which now remounts this view and replays, same as an open). Either way
+    // the mount / replay / reveal marks land on that trace's timeline.
+    const pendingTrace = traceForSession(sessionId);
+    const traceId = pendingTrace?.id ?? null;
+    traceMark(traceId, 'mount:effectStart');
+
     const s = getSettings();
     const themeId = s?.appearance.theme;
     const term = new Terminal({
@@ -453,6 +497,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     });
 
     term.open(host);
+    traceMark(traceId, 'xterm.open');
     // P2: textarea now exists — eligible to claim keyboard focus immediately,
     // even while the replay is still painting under opacity:0.
     setTermReady(true);
@@ -634,31 +679,51 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
 
     // 3) replay
     const finishReplay = (): void => {
-      // SCROLL-1: write('', cb) is xterm's parser-drain fence — only inside
-      // it is "bottom" the real final bottom. Reveal one RAF later so the
-      // first visible frame is the final canvas.
+      // SCROLL-1: a zero-length write is xterm's parser-drain fence — only
+      // inside it is "bottom" the real final bottom. Reveal one RAF later so
+      // the first visible frame is the final canvas.
       let revealed = false;
+      const fenceStarted = performance.now();
+      // The fence is a Uint8Array(0), NOT write('', cb): an empty string is
+      // falsy, so a fit()/resize() landing during the fence makes
+      // WriteBuffer.flushSync() drop the chunk AND its callback (its
+      // `while (chunk = shift())` loop reads '' as end-of-queue). That would
+      // strand the reveal on the failsafe timer (持久-2026-06-25). A
+      // zero-length buffer is a truthy object flushSync calls back normally.
       const reveal = (): void => {
         if (disposed || revealed) return;
         revealed = true;
+        // The fence (zero-length-write drain) is the one reveal-path stretch
+        // with no span of its own — a stall here used to surface only as a 5s
+        // gap in totalToReveal with no obvious culprit (持久-2026-06-25).
+        perf.span('terminal.replay.fence', performance.now() - fenceStarted, {
+          sessionId,
+          replayId,
+        });
         perf.span('terminal.replay.totalToReveal', performance.now() - mountStarted, {
           sessionId,
           replayId,
         });
+        traceMark(traceId, 'fence:done');
         term.scrollToBottom();
         requestAnimationFrame(() => {
           if (!disposed) setHostRevealed(true);
+          // The RAF after the fence is the first painted frame — the true end
+          // of the open gesture.
+          endTerminalTrace(traceId, 'painted');
         });
       };
+      traceMark(traceId, 'fence:start');
       const fallbackTimer = setTimeout(() => {
         if (disposed || revealed) return;
         console.warn('[TerminalView] replay fence timed out; revealing terminal fallback', {
           sessionId,
         });
         perf.counter('terminal.replay.fenceTimeout', 1, { sessionId, replayId });
+        traceMark(traceId, 'fence:TIMEOUT');
         reveal();
       }, REPLAY_FAILSAFE_MS);
-      term.write('', () => {
+      term.write(new Uint8Array(0), () => {
         clearTimeout(fallbackTimer);
         reveal();
       });
@@ -674,6 +739,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
         rows: term.rows,
       });
       try {
+        traceMark(traceId, 'replay.ipc:start');
         const ipcStarted = performance.now();
         const scrollbackPromise = window.api.invoke<
           { sessionId: string; replayId: string },
@@ -697,6 +763,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
           base64Bytes: replay.data.length,
           lastSeq: replay.lastSeq,
         });
+        traceMark(traceId, 'replay.ipc:done');
         if (disposed) return;
         if (replay.data) {
           // FLK-1: chunked write + yields — a multi-MB scrollback written in
@@ -726,6 +793,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
             chunks,
             holdQueue: holdQueue.length,
           });
+          traceMark(traceId, 'replay.write');
         }
         if (disposed) return;
         lastSeq = replay.lastSeq;

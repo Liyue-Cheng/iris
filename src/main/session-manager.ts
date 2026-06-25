@@ -68,6 +68,11 @@ const EMIT_BATCH_MS = 8;
 /** Renderer xterm scrollback is 5000 — headless mirror must match so the
  *  serialized replay covers everything the user can scroll to. */
 const SCROLLBACK_LINES = 5000;
+/** Hard cap on the replay parser-drain fence (see getScrollbackForReplay).
+ *  The fence almost always resolves in <1ms; this only fires if xterm drops
+ *  the fence callback, so we serialize a tick-stale mirror instead of hanging
+ *  the IPC reply until the renderer's 5s failsafe (持久-2026-06-25). */
+const REPLAY_FENCE_CAP_MS = 250;
 
 export type PtySpawnFn = (
   file: string,
@@ -408,9 +413,19 @@ export class SessionManager extends EventEmitter {
    * and alt-buffer survive no matter how much output has scrolled by.
    *
    * Ordering: flush pending emit → freeze replayLastSeq → drain the headless
-   * parser (write('',cb) is xterm's official fence) → serialize. Bytes
+   * parser (a zero-length write is xterm's official fence) → serialize. Bytes
    * arriving after the boundary go through the normal 8ms batch and the
    * renderer filters seq > replayLastSeq — no loss, no double-write.
+   *
+   * The fence MUST be a Uint8Array(0), not write('', cb): an empty string is
+   * falsy, so if a headless resize() lands while the fence sits in the write
+   * queue, WriteBuffer.flushSync()'s `while (chunk = shift())` loop treats ''
+   * as the end-of-queue sentinel — it drops the chunk AND its callback without
+   * calling it. The fence promise then never resolves and this IPC reply hangs
+   * until the renderer's 5s failsafe: the "切终端卡几秒" heisenbug
+   * (持久-2026-06-25). A Uint8Array(0) is a truthy object that flushSync
+   * processes (and calls back) normally; REPLAY_FENCE_CAP_MS is the belt to
+   * its suspenders.
    */
   async getScrollbackForReplay(
     sessionId: string,
@@ -434,7 +449,20 @@ export class SessionManager extends EventEmitter {
     // while we are waiting for the fence/serialize work.
     const replayLastSeq = managed.scrollbackLastSeq;
     await new Promise<void>((resolve) => {
-      term.write('', () => resolve());
+      let settled = false;
+      let fenceTimer: ReturnType<typeof setTimeout> | null = null;
+      const done = (capped: boolean): void => {
+        if (settled) return;
+        settled = true;
+        if (fenceTimer) clearTimeout(fenceTimer);
+        if (capped) {
+          perf.counter('terminal.replay.fenceCapped', 1, { sessionId, replayId });
+          logger.warn('session', `replay fence capped sid=${sessionId} (callback dropped?)`);
+        }
+        resolve();
+      };
+      fenceTimer = setTimeout(() => done(true), REPLAY_FENCE_CAP_MS);
+      term.write(new Uint8Array(0), () => done(false));
     });
 
     const serializeStarted = performance.now();
