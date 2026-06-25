@@ -4,6 +4,7 @@ import { TitleBar } from '@renderer/components/layout/TitleBar';
 import { ThreePane } from '@renderer/components/layout/ThreePane';
 import { CreateDocDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DeleteDocDialog } from '@renderer/components/doc/DeleteDocDialog';
+import { ConfirmDialog } from '@renderer/components/ui/confirm-dialog';
 import { SettingsView, useSettingsViewOpen } from '@renderer/components/settings/SettingsView';
 import { PerfPanel } from '@renderer/components/perf/PerfPanel';
 import { focusStore } from '@renderer/stores/focus-store';
@@ -35,6 +36,7 @@ export function App(): JSX.Element {
       </div>
       <CreateDocDialog />
       <DeleteDocDialog />
+      <ConfirmDialog />
       <PerfPanel />
     </TooltipProvider>
   );
