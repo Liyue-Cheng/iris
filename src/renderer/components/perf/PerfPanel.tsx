@@ -6,6 +6,7 @@ import { perf } from '@renderer/lib/perf-runtime';
 import { writeClipboardText } from '@renderer/lib/clipboard';
 import { Button } from '@renderer/components/ui/button';
 import { cn } from '@renderer/lib/utils';
+import { useTerminalTraces, type TerminalTrace } from '@renderer/lib/terminal-trace';
 
 let open = false;
 const subs = new Set<() => void>();
@@ -79,7 +80,7 @@ function latestGauge(events: PerfEvent[], name: string): number | null {
   return null;
 }
 
-type Tab = 'slow' | 'terminal' | 'scan' | 'raw';
+type Tab = 'event' | 'slow' | 'terminal' | 'scan' | 'raw';
 
 interface ReplayGroup {
   replayId: string;
@@ -185,6 +186,7 @@ function ReplayWaterfall({ groups }: { groups: ReplayGroup[] }): JSX.Element {
         const ipc = getSpan(group, 'terminal.replay.ipc');
         const decode = getSpan(group, 'terminal.replay.decode');
         const write = getSpan(group, 'terminal.replay.write');
+        const fence = getSpan(group, 'terminal.replay.fence');
         const base64Bytes = tagNumber(ipc?.tags, 'base64Bytes');
         const bytes = tagNumber(write?.tags, 'bytes') ?? tagNumber(decode?.tags, 'bytes');
         const chunks = tagNumber(write?.tags, 'chunks');
@@ -193,6 +195,7 @@ function ReplayWaterfall({ groups }: { groups: ReplayGroup[] }): JSX.Element {
           ['IPC', ipc],
           ['decode', decode],
           ['write', write],
+          ['fence', fence],
         ] as const;
         return (
           <div key={group.replayId} className="border border-subtle bg-card/30 px-3 py-2">
@@ -207,7 +210,7 @@ function ReplayWaterfall({ groups }: { groups: ReplayGroup[] }): JSX.Element {
                 {group.totalMs == null ? '未 reveal' : formatMs(group.totalMs)}
               </div>
             </div>
-            <div className="mt-2 grid grid-cols-4 gap-1.5">
+            <div className="mt-2 grid grid-cols-5 gap-1.5">
               {parts.map(([label, event]) => (
                 <div key={label} className="bg-muted/40 px-2 py-1">
                   <div className="text-[10px] uppercase text-muted-foreground">{label}</div>
@@ -234,11 +237,96 @@ function ReplayWaterfall({ groups }: { groups: ReplayGroup[] }): JSX.Element {
   );
 }
 
+/**
+ * One terminal gesture (open / switch) as a click→painted waterfall. Each row
+ * is a checkpoint; Δ is the gap from the previous one. The biggest Δ is the
+ * bottleneck — it's highlighted so a multi-second stall is obvious at a glance.
+ */
+function TerminalEventWaterfall({ traces }: { traces: TerminalTrace[] }): JSX.Element {
+  const ordered = [...traces].sort((a, b) => b.startedAtWall - a.startedAtWall).slice(0, 20);
+  return (
+    <div className="space-y-2">
+      {ordered.map((trace) => {
+        const lastMark = trace.marks[trace.marks.length - 1];
+        const total = trace.endedAt ?? lastMark?.at ?? 0;
+        // Per-step deltas (first step measured from t0 = click).
+        const rows = trace.marks.map((m, i) => {
+          const prev = trace.marks[i - 1];
+          return {
+            phase: m.phase,
+            at: m.at,
+            delta: i === 0 || !prev ? m.at : m.at - prev.at,
+          };
+        });
+        const maxDelta = rows.reduce((mx, r) => Math.max(mx, r.delta), 0);
+        return (
+          <div key={trace.id} className="border border-subtle bg-card/30 px-3 py-2">
+            <div className="flex items-center gap-2">
+              <span
+                className={cn(
+                  'rounded px-1.5 py-0.5 text-[10px] font-medium uppercase',
+                  trace.kind === 'open'
+                    ? 'bg-primary/15 text-primary'
+                    : 'bg-amber-500/15 text-amber-500',
+                )}
+              >
+                {trace.kind === 'open' ? '新建' : '切换'}
+              </span>
+              <span className="truncate text-[12px] text-muted-foreground">{trace.label || '—'}</span>
+              <span className="font-mono text-[11px] text-muted-foreground/70">
+                {trace.sessionId?.slice(0, 8) ?? 'unbound'}
+              </span>
+              <span className="ml-auto text-sm font-medium">
+                {trace.endedAt == null ? `${formatMs(total)} (进行中)` : formatMs(total)}
+              </span>
+            </div>
+            <table className="mt-2 w-full text-[12px]">
+              <thead className="text-left text-[10px] uppercase text-muted-foreground/70">
+                <tr>
+                  <th className="py-0.5 font-medium">阶段</th>
+                  <th className="w-20 py-0.5 text-right font-medium">@click</th>
+                  <th className="w-20 py-0.5 text-right font-medium">Δ 上一步</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={`${r.phase}-${i}`} className="border-t border-subtle/50">
+                    <td className="py-0.5 font-mono text-[11px]">{r.phase}</td>
+                    <td className="py-0.5 text-right tabular-nums text-muted-foreground">
+                      {formatMs(r.at)}
+                    </td>
+                    <td
+                      className={cn(
+                        'py-0.5 text-right tabular-nums',
+                        r.delta === maxDelta && maxDelta > 0
+                          ? 'font-semibold text-destructive'
+                          : 'text-muted-foreground',
+                      )}
+                    >
+                      {formatMs(r.delta)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      })}
+      {ordered.length === 0 && (
+        <div className="border border-subtle px-3 py-8 text-center text-xs text-muted-foreground">
+          新建或切换终端后，这里出现「点击 → 渲染完毕」的逐阶段瀑布
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function PerfPanel(): JSX.Element | null {
   const isOpen = usePerfPanelOpen();
   const rendererSnapshot = useRendererPerfSnapshot();
+  const terminalTraces = useTerminalTraces();
   const [mainSnapshot, setMainSnapshot] = useState<PerfSnapshot | null>(null);
-  const [tab, setTab] = useState<Tab>('slow');
+  const [tab, setTab] = useState<Tab>('event');
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -324,6 +412,7 @@ export function PerfPanel(): JSX.Element | null {
   if (!isOpen) return null;
 
   const tabs: Array<{ id: Tab; label: string }> = [
+    { id: 'event', label: '终端事件' },
     { id: 'slow', label: '慢操作' },
     { id: 'terminal', label: '终端 replay' },
     { id: 'scan', label: '.iris 扫描' },
@@ -384,6 +473,7 @@ export function PerfPanel(): JSX.Element | null {
       </nav>
 
       <main className="min-h-0 flex-1 overflow-y-auto p-3">
+        {tab === 'event' && <TerminalEventWaterfall traces={terminalTraces} />}
         {tab === 'slow' && <EventTable events={slowSpans} />}
         {tab === 'terminal' && <ReplayWaterfall groups={replayGroups} />}
         {tab === 'scan' && <EventTable events={scans} />}
