@@ -13,8 +13,9 @@ productName: Iris
 copyright: Copyright (c) 2026
 
 directories:
-  # dist/ 在 .gitignore 内；不用 release/ 是因为 Windows（Defender 扫描）
-  # 会短暂锁住上次解压的 tmp 目录,锁住的旧目录留在原地即可
+  # dist/ 在 .gitignore 内。输出按版本号分目录；重打同一版本前由
+  # scripts/clean-release.mjs 先带重试地清掉该目录，避免复用目录里被占用的
+  # win-unpacked\Iris.exe 让 electron-builder 无限重试而「卡住」。
   output: dist/release/${version}
   buildResources: build
 
@@ -42,8 +43,21 @@ electronDist: node_modules/electron/dist
 
 win:
   target:
+    # portable：免安装单 exe；nsis：标准安装程序（带卸载、开始菜单/桌面快捷方式）
     - target: portable
+      arch: [x64]
+    - target: nsis
       arch: [x64]
 
 portable:
   artifactName: ${productName}-${version}-portable.exe
+
+nsis:
+  oneClick: false                       # 走向导式安装，而非一键静默
+  perMachine: false                     # 装到当前用户，免 UAC 提权
+  allowToChangeInstallationDirectory: true
+  allowElevation: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  deleteAppDataOnUninstall: false       # 卸载保留用户数据
+  artifactName: ${productName}-${version}-setup.exe
