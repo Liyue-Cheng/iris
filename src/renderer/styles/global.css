@@ -328,9 +328,9 @@
   margin: 0.85em 0;
   overflow: hidden;
 }
-.crepe-host .milkdown .milkdown-code-block .cm-gutters {
-  color: var(--rp-muted);
-}
+/* Gutter color now lives in the shared rosePineCodeMirror extension
+   (codemirror-theme.ts), which both this block and source mode load — so
+   the old per-block .cm-gutters rule here was redundant and is gone. */
 /* Language picker + copy/hide buttons: frame theme hides them at opacity:0
    until hover. Keep the language label gently visible (it is the block's
    only affordance label), still lifting to full on hover. */

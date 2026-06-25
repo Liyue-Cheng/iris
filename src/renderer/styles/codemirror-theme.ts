@@ -75,5 +75,19 @@ export const rosePineCodeMirror: Extension = [
     '.cm-content': {
       fontFamily: "'Cascadia Mono', 'JetBrains Mono', Consolas, monospace",
     },
+    // Gutter (line numbers): basicSetup ships CodeMirror's default light
+    // gutter (near-white digits on a pale strip), which ignores the theme.
+    // Pin it to Rose Pine via var() so it follows base/dawn/moon and recolors
+    // on theme switch — same indirection as the highlight style above.
+    '.cm-gutters': {
+      backgroundColor: 'transparent',
+      color: 'var(--rp-muted)',
+      border: 'none',
+    },
+    '.cm-lineNumbers .cm-gutterElement': { color: 'var(--rp-muted)' },
+    '.cm-activeLineGutter': {
+      backgroundColor: 'transparent',
+      color: 'var(--rp-subtle)',
+    },
   }),
 ];

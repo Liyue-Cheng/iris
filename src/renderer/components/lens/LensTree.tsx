@@ -109,7 +109,7 @@ function DocRow({ doc, archived }: { doc: IrisDoc; archived: boolean }): JSX.Ele
         draggable
         onDragStart={(e) => setDocDragData(e.dataTransfer, doc.path)}
         className={cn(
-          'group flex w-full items-center gap-1.5 rounded-sm px-2 py-1.5 text-left text-sm leading-tight',
+          'group flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm leading-tight',
           selected ? 'bg-accent text-accent-foreground' : 'hover:bg-muted',
           archived && 'opacity-60',
         )}
@@ -164,7 +164,7 @@ function TypeSection({
 
   return (
     <div className="group/section">
-      <div className="flex items-center pr-1">
+      <div className="flex items-center gap-1 pr-1">
         <button
           type="button"
           title={open ? '折叠' : '展开'}
@@ -183,7 +183,7 @@ function TypeSection({
           onClick={() =>
             projectStore.openCollection(type, workspacePath === '.iris' ? null : workspacePath)
           }
-          className="flex min-w-0 flex-1 items-center gap-1 py-1 text-xs font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground"
+          className="flex min-w-0 flex-1 items-center gap-2 py-1 text-xs font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground"
         >
           <Icon className="h-3.5 w-3.5" />
           {label}
@@ -294,7 +294,7 @@ function WorkspaceSessionList({ workspacePath }: { workspacePath: string }): JSX
                   sessionStore.select(s.id);
                 }}
                 className={cn(
-                  'flex w-full items-center gap-1.5 rounded-sm px-2 py-1.5 text-left text-sm leading-tight',
+                  'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm leading-tight',
                   active ? 'bg-accent text-accent-foreground' : 'hover:bg-muted',
                 )}
                 title={label}
@@ -398,7 +398,7 @@ function WorkspaceSection({
               type="button"
               title={isRoot ? '项目根 — 终端独占全屏' : '子工作区 — 终端独占全屏'}
               onClick={() => selectHub(workspacePath)}
-              className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 text-[13px] font-semibold"
+              className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-[13px] font-semibold"
             >
               {isRoot && <FolderRoot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
               <span className="truncate">{ws.name}</span>

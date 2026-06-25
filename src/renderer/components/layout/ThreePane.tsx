@@ -24,27 +24,37 @@ import { useProject, type MiddleView } from '@renderer/stores/project-store';
 /** The right area — its content depends on the view, but the left pane's
  *  width never does (the left lives in the stable outer group above). */
 function RightArea({ view }: { view: MiddleView }): JSX.Element {
-  // Single-doc view (D3): editor + terminal, their own split state.
-  if (view.kind === 'doc') {
-    return (
-      <ResizablePanelGroup direction="horizontal" autoSaveId="iris-doc-split">
-        <ResizablePanel defaultSize={64} minSize={30}>
-          <MiddlePane />
-        </ResizablePanel>
-        <ResizableHandle />
-        <ResizablePanel defaultSize={36} minSize={20}>
-          <RightPane />
-        </ResizablePanel>
-      </ResizablePanelGroup>
-    );
+  // Collection / todo views (Round-4 E3): the manager takes the full width,
+  // no terminal area at all.
+  if (view.kind === 'collection' || view.kind === 'todos') {
+    return <MiddlePane />;
   }
-  // Hub views (project root 主页重设计 + sub-workspace 平权): terminal独占，
-  // no middle pane — the hub's sessions take the full width.
-  if (view.kind === 'root' || view.kind === 'workspace') {
-    return <RightPane />;
-  }
-  // Collection / todo views (Round-4 E3): the manager takes the full width.
-  return <MiddlePane />;
+
+  // Doc (editor + terminal split) and hub (terminal-only) views share ONE
+  // panel group with a STABLE RightPane panel. If RightPane changed tree
+  // position/type between views (as it used to — wrapped in a group for doc,
+  // bare for hub), React would unmount+remount it on every cross-view switch,
+  // needlessly tearing down the live xterm and re-replaying even when the same
+  // session stays anchored. The editor panel only renders for doc view;
+  // RightPane keeps the same id/position either way, so its terminal survives a
+  // doc↔hub switch. (Same philosophy as the LeftPane staying in the stable
+  // outer group.)
+  const isDoc = view.kind === 'doc';
+  return (
+    <ResizablePanelGroup direction="horizontal" autoSaveId="iris-doc-split">
+      {isDoc && (
+        <>
+          <ResizablePanel id="doc-editor" order={1} defaultSize={64} minSize={30}>
+            <MiddlePane />
+          </ResizablePanel>
+          <ResizableHandle />
+        </>
+      )}
+      <ResizablePanel id="doc-terminal" order={2} defaultSize={isDoc ? 36 : 100} minSize={20}>
+        <RightPane />
+      </ResizablePanel>
+    </ResizablePanelGroup>
+  );
 }
 
 export function ThreePane(): JSX.Element {

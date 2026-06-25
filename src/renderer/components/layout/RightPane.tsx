@@ -22,6 +22,7 @@ import { focusStore } from '@renderer/stores/focus-store';
 import { useSettings } from '@renderer/stores/settings-store';
 import { useProject } from '@renderer/stores/project-store';
 import { closeSession, openSession, openWorkspaceSession } from '@renderer/lib/session-actions';
+import { beginTerminalTrace } from '@renderer/lib/terminal-trace';
 import { docDisplayTitle, findDocByPath } from '@renderer/lib/doc-utils';
 import { TerminalView } from '@renderer/components/terminal/TerminalView';
 import { Button } from '@renderer/components/ui/button';
@@ -133,6 +134,7 @@ export function RightPane(): JSX.Element {
                       <DropdownMenuItem
                         key={s.id}
                         onClick={() => {
+                          beginTerminalTrace('switch', { sessionId: s.id, label: s.displayName });
                           sessionStore.select(s.id);
                           focusStore.request('terminal');
                         }}
@@ -209,12 +211,26 @@ export function RightPane(): JSX.Element {
         </DropdownMenu>
       </div>
 
-      <div className="min-h-0 flex-1">
-        {shownSession ? (
-          <TerminalView key={shownSession.id} sessionId={shownSession.id} />
-        ) : projectReady ? (
-          /* Full-page launch pad (F-1) — spawn only on explicit click. */
-          <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
+      <div className="relative min-h-0 flex-1">
+        {/* One mounted terminal, keyed by sessionId: switching sessions
+            unmounts the old xterm and mounts + replays the next (Marina's
+            state-replay protocol; the main process's headless mirror is the
+            source of truth, so buffers survive any number of remounts). The
+            earlier keep-alive scaffolding (hidden display:none instances kept
+            streaming) was removed — letting xterm render under display:none
+            corrupted its WebGL atlas/geometry caches and produced the切回
+            排版混乱 regression; the replay-on-switch it tried to avoid was only
+            ever slow because dev ran a stale asar bundle (see issue
+            2026-06-25-开发版与安装版实例隔离). */}
+        {shownSession && (
+          <div className="absolute inset-0">
+            <TerminalView key={shownSession.id} sessionId={shownSession.id} />
+          </div>
+        )}
+        {!shownSession &&
+          (projectReady ? (
+            /* Full-page launch pad (F-1) — spawn only on explicit click. */
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-6 text-center">
             <SquareTerminal className="h-10 w-10 text-muted-foreground/40" />
             <div>
               <p className="max-w-64 truncate text-sm">
@@ -251,12 +267,12 @@ export function RightPane(): JSX.Element {
               会话锚定一经创建终生不变；同一文档可同时挂多个会话。
             </p>
           </div>
-        ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-sm text-muted-foreground">
-            <p>没有会话。</p>
-            <p className="max-w-56 text-xs text-muted-foreground/70">先打开一个项目。</p>
-          </div>
-        )}
+          ) : (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center text-sm text-muted-foreground">
+              <p>没有会话。</p>
+              <p className="max-w-56 text-xs text-muted-foreground/70">先打开一个项目。</p>
+            </div>
+          ))}
       </div>
     </div>
   );
