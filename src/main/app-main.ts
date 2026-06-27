@@ -154,6 +154,21 @@ ipcMain.handle(CHANNELS.APP_FLUSH_DONE, (event) => {
   flushResolvers.get(id)?.();
 });
 
+/**
+ * Window icon for dev / Linux. In a packaged build the taskbar & exe icon come
+ * from electron-builder (build/icon.ico), and build/ is not bundled into the
+ * asar — so this resolves only in dev, where app.getAppPath() is the repo root.
+ */
+function windowIcon(): string | undefined {
+  try {
+    const p = resolve(app.getAppPath(), 'build/icon.png');
+    statSync(p);
+    return p;
+  } catch {
+    return undefined;
+  }
+}
+
 function createWindow(initialRoot: string | null): BrowserWindow {
   // A coding tool carries a lot of information — open generously rather than
   // cramming three panes into a small window (round-3 验收反馈). Target a
@@ -161,6 +176,7 @@ function createWindow(initialRoot: string | null): BrowserWindow {
   const { workAreaSize } = screen.getPrimaryDisplay();
   const width = Math.min(1680, Math.round(workAreaSize.width * 0.92));
   const height = Math.min(1040, Math.round(workAreaSize.height * 0.92));
+  const iconPath = windowIcon();
 
   const win = new BrowserWindow({
     width,
@@ -169,6 +185,7 @@ function createWindow(initialRoot: string | null): BrowserWindow {
     minHeight: Math.min(720, workAreaSize.height),
     show: false,
     title: 'Iris',
+    ...(iconPath ? { icon: iconPath } : {}),
     // Custom-drawn title bar (Marina M1-A): frame:false removes the OS bar;
     // TitleBar.tsx provides the drag region and caption buttons via window:* IPC.
     frame: false,

@@ -1,7 +1,8 @@
 # electron-builder 配置（M5.5 临时打包 / M6 正式收口的基础）
 #
-# 参考 Marina 的同栈配置。当前只出 Windows portable 单 exe；nsis 安装器、
-# 图标、三方声明在 M6 补齐。
+# 参考 Marina 的同栈配置。图标见 build/icon.ico（由 build/icon.svg 经
+# scripts/gen-icons.mjs 光栅化；buildResources=build 时 electron-builder 也会
+# 自动采用同名文件）。三方声明在 M6 补齐。
 #
 # 依赖纪律：dependencies 只留主进程运行时真正 require 的包（node-pty /
 # chokidar / gray-matter / @xterm/headless / @xterm/addon-serialize）——
@@ -42,6 +43,7 @@ npmRebuild: false
 electronDist: node_modules/electron/dist
 
 win:
+  icon: build/icon.ico
   target:
     # portable：免安装单 exe；nsis：标准安装程序（带卸载、开始菜单/桌面快捷方式）
     - target: portable
