@@ -10,6 +10,7 @@ import { CHANNELS, EVENTS } from '@shared/protocol';
 import { cn } from '@renderer/lib/utils';
 import { openSettingsView } from '@renderer/components/settings/SettingsView';
 import { openPerfPanel } from '@renderer/components/perf/PerfPanel';
+import { IrisMark } from '@renderer/components/layout/IrisMark';
 import { pipeline } from '@renderer/cpu';
 import { useSettings } from '@renderer/stores/settings-store';
 import { useProject } from '@renderer/stores/project-store';
@@ -181,6 +182,7 @@ export function TitleBar(): JSX.Element {
 
   return (
     <div className="app-region-drag flex h-10 shrink-0 items-center gap-2 bg-card pl-3">
+      <IrisMark className="h-4 w-4 shrink-0" />
       <span className="text-sm font-semibold tracking-wide text-primary">Iris</span>
       <ProjectCrumb />
 
