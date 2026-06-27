@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Iris">
+  <title>Iris</title>
+  <!--
+    Iris logomark — an aperture-bloom.
+
+    Concept: the name "Iris" is both the flower and the eye's iris. The app's
+    core protocol is FOCUS (one document at a time), so the petals converge,
+    aperture-like, on a single point — the focused doc (gold center). Three
+    bold "standards" (iris-violet, the brand --rp-iris) read as the trefoil
+    that survives at 16px; three softer "falls" (rose) fill the bloom and
+    recede at small sizes. Palette is Rosé Pine, true to the app's theme.
+  -->
+  <defs>
+    <linearGradient id="std" x1="256" y1="60" x2="256" y2="276" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#dac6f4"/>
+      <stop offset="1" stop-color="#9a7bd4"/>
+    </linearGradient>
+    <linearGradient id="fall" x1="256" y1="124" x2="256" y2="268" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f1cbc9"/>
+      <stop offset="1" stop-color="#d597a0"/>
+    </linearGradient>
+    <radialGradient id="pupil" cx="0.42" cy="0.4" r="0.7">
+      <stop offset="0" stop-color="#fbd9a0"/>
+      <stop offset="1" stop-color="#f0b65a"/>
+    </radialGradient>
+    <path id="petal-std" d="M256 272 C 178 250 156 150 256 60 C 356 150 334 250 256 272 Z"/>
+    <path id="petal-fall" d="M256 266 C 200 254 186 184 256 124 C 326 184 312 254 256 266 Z"/>
+  </defs>
+
+  <!-- falls: the recessive bloom, drawn behind -->
+  <g fill="url(#fall)" opacity="0.92">
+    <use href="#petal-fall" transform="rotate(60 256 256)"/>
+    <use href="#petal-fall" transform="rotate(180 256 256)"/>
+    <use href="#petal-fall" transform="rotate(300 256 256)"/>
+  </g>
+
+  <!-- standards: the brand-violet trefoil, the silhouette that holds at 16px -->
+  <g fill="url(#std)">
+    <use href="#petal-std" transform="rotate(0 256 256)"/>
+    <use href="#petal-std" transform="rotate(120 256 256)"/>
+    <use href="#petal-std" transform="rotate(240 256 256)"/>
+  </g>
+
+  <!-- the focused point: one document, in focus -->
+  <circle cx="256" cy="256" r="30" fill="url(#pupil)"/>
+  <circle cx="248" cy="248" r="9" fill="#fff" opacity="0.45"/>
+</svg>

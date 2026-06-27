@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Iris">
+  <title>Iris</title>
+  <!-- Single-colour mark (inherits currentColor). For tray, watermarks, or any
+       context that needs a flat one-ink Iris. Falls are tinted by opacity. -->
+  <defs>
+    <path id="m-std" d="M256 272 C 178 250 156 150 256 60 C 356 150 334 250 256 272 Z"/>
+    <path id="m-fall" d="M256 266 C 200 254 186 184 256 124 C 326 184 312 254 256 266 Z"/>
+  </defs>
+  <g fill="currentColor">
+    <g opacity="0.55">
+      <use href="#m-fall" transform="rotate(60 256 256)"/>
+      <use href="#m-fall" transform="rotate(180 256 256)"/>
+      <use href="#m-fall" transform="rotate(300 256 256)"/>
+    </g>
+    <use href="#m-std" transform="rotate(0 256 256)"/>
+    <use href="#m-std" transform="rotate(120 256 256)"/>
+    <use href="#m-std" transform="rotate(240 256 256)"/>
+    <circle cx="256" cy="256" r="26" fill="currentColor"/>
+    <circle cx="256" cy="256" r="26" fill="#000" opacity="0.35"/>
+  </g>
+</svg>

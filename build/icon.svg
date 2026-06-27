@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Iris app icon">
+  <title>Iris</title>
+  <!-- App-icon master: rounded tile (Rosé Pine base) + the aperture-bloom mark.
+       Source of truth for icon.ico / icon.png at every size. -->
+  <defs>
+    <radialGradient id="tile" cx="0.5" cy="0.34" r="0.9">
+      <stop offset="0" stop-color="#2c2545"/>
+      <stop offset="0.62" stop-color="#211d33"/>
+      <stop offset="1" stop-color="#191724"/>
+    </radialGradient>
+    <linearGradient id="std2" x1="512" y1="180" x2="512" y2="612" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#dac6f4"/>
+      <stop offset="1" stop-color="#9a7bd4"/>
+    </linearGradient>
+    <linearGradient id="fall2" x1="512" y1="308" x2="512" y2="588" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f1cbc9"/>
+      <stop offset="1" stop-color="#d597a0"/>
+    </linearGradient>
+    <radialGradient id="pupil2" cx="0.42" cy="0.4" r="0.7">
+      <stop offset="0" stop-color="#fbd9a0"/>
+      <stop offset="1" stop-color="#f0b65a"/>
+    </radialGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="22" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+    <path id="std-tile" d="M512 544 C 356 500 312 300 512 120 C 712 300 668 500 512 544 Z"/>
+    <path id="fall-tile" d="M512 532 C 400 508 372 368 512 248 C 652 368 624 508 512 532 Z"/>
+  </defs>
+
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="url(#tile)"/>
+  <rect x="2" y="2" width="1020" height="1020" rx="222" fill="none" stroke="#fff" stroke-opacity="0.06" stroke-width="2"/>
+
+  <g filter="url(#soft)">
+    <g fill="url(#fall2)" opacity="0.92">
+      <use href="#fall-tile" transform="rotate(60 512 512)"/>
+      <use href="#fall-tile" transform="rotate(180 512 512)"/>
+      <use href="#fall-tile" transform="rotate(300 512 512)"/>
+    </g>
+    <g fill="url(#std2)">
+      <use href="#std-tile" transform="rotate(0 512 512)"/>
+      <use href="#std-tile" transform="rotate(120 512 512)"/>
+      <use href="#std-tile" transform="rotate(240 512 512)"/>
+    </g>
+    <circle cx="512" cy="512" r="60" fill="url(#pupil2)"/>
+    <circle cx="496" cy="496" r="18" fill="#fff" opacity="0.45"/>
+  </g>
+</svg>
