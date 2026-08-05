@@ -62,7 +62,15 @@ export function DocView(): JSX.Element {
   return (
     <div className="flex h-full flex-col">
       <TypedHeader session={session} />
-      <div className="min-h-0 flex-1">
+      <div
+        className="min-h-0 flex-1"
+        onBlur={(event) => {
+          const next = event.relatedTarget;
+          if (!(next instanceof Node) || !event.currentTarget.contains(next)) {
+            void editorStore.save();
+          }
+        }}
+      >
         {session.mode === 'wysiwyg' ? (
           <CrepeEditor
             path={session.path}

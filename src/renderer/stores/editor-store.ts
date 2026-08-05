@@ -54,6 +54,8 @@ export interface EditorSession {
   /** Source text at source-mode entry — the "unchanged" baseline. */
   sourceBaseline: string;
   sourceChanged: boolean;
+  /** Monotonic content revision. A save may only clean the revision it wrote. */
+  revision: number;
   dirty: boolean;
   saving: boolean;
   saveError: string | null;
@@ -68,6 +70,17 @@ const subscribers = new Set<() => void>();
 
 /** Exact bytes of our last write per path — the echo-dedup compare table. */
 const lastWritten = new Map<string, string>();
+
+interface SaveSnapshot {
+  path: string;
+  content: string;
+  revision: number;
+  bodyCurrent: string | null;
+}
+
+/** One writer per path, with a single latest-wins trailing snapshot. */
+const pendingSaves = new Map<string, SaveSnapshot>();
+const saveJobs = new Map<string, Promise<void>>();
 
 /** GFM task-list checkbox marker at a list-item start (`- [ ]` / `1. [x]`…). */
 const TASK_CHECKBOX = /^(\s*(?:[-*+]|\d+\.)\s+)\[[ xX]\]/gm;
@@ -101,8 +114,8 @@ function computeDirty(s: EditorSession): boolean {
 /** Commit an edited frontmatter block and persist (no-op when unchanged). */
 async function applyFmBlock(fmBlock: string): Promise<void> {
   if (!session || fmBlock === session.fmBlock) return;
-  const next = { ...session, fmBlock, fmChanged: true };
-  patch({ fmBlock, fmChanged: true, dirty: computeDirty(next) });
+  const next = { ...session, fmBlock, fmChanged: true, revision: session.revision + 1 };
+  patch({ fmBlock, fmChanged: true, revision: next.revision, dirty: computeDirty(next) });
   await editorStore.save();
 }
 
@@ -114,14 +127,70 @@ function compose(s: EditorSession): string {
   return s.fmBlock + body;
 }
 
+async function drainSaveQueue(path: string): Promise<void> {
+  while (true) {
+    const snapshot = pendingSaves.get(path);
+    if (!snapshot) return;
+    pendingSaves.delete(path);
+
+    const previousWritten = lastWritten.get(path);
+    // Register before dispatch so a fast watcher echo cannot race the IPC reply.
+    lastWritten.set(path, snapshot.content);
+    if (session?.path === path) patch({ saving: true, saveError: null });
+
+    try {
+      await pipeline.dispatch('doc.save', { path, content: snapshot.content });
+      if (session?.path === path && session.revision === snapshot.revision) {
+        const { fmBlock, body } = splitFrontmatter(snapshot.content);
+        patch({
+          fmBlock,
+          originalBody: body,
+          bodyBaseline: snapshot.bodyCurrent,
+          sourceText: snapshot.content,
+          sourceBaseline: snapshot.content,
+          sourceChanged: false,
+          fmChanged: false,
+          dirty: false,
+          externalConflict: false,
+        });
+      }
+    } catch (err) {
+      // A failed write must not masquerade as a future self-write echo.
+      if (lastWritten.get(path) === snapshot.content) {
+        if (previousWritten === undefined) lastWritten.delete(path);
+        else lastWritten.set(path, previousWritten);
+      }
+      if (session?.path === path) {
+        patch({ saveError: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    } finally {
+      if (session?.path === path && !pendingSaves.has(path)) patch({ saving: false });
+    }
+  }
+}
+
+function startSaveJob(path: string): Promise<void> {
+  const existing = saveJobs.get(path);
+  if (existing) return existing;
+  if (!pendingSaves.has(path)) return Promise.resolve();
+
+  const job = drainSaveQueue(path).finally(() => {
+    saveJobs.delete(path);
+    // A request can land after drain observed an empty queue but before this
+    // cleanup. Start another writer rather than leaving that snapshot parked.
+    if (pendingSaves.has(path)) void startSaveJob(path);
+  });
+  saveJobs.set(path, job);
+  return job;
+}
+
 export const editorStore = {
   get(): EditorSession | null {
     return session;
   },
 
-  /** Open a fresh session from loaded content (doc switch / external reload).
-   *  Input focus is no longer decided here — the focus-store coordinator drives
-   *  it (the editor claims via useClaimFocus once Crepe is ready). */
+  /** Open a fresh session from loaded content (doc switch / external reload). */
   openSession(content: DocContent): void {
     const { fmBlock, body } = splitFrontmatter(content.raw);
     session = {
@@ -135,6 +204,7 @@ export const editorStore = {
       sourceText: content.raw,
       sourceBaseline: content.raw,
       sourceChanged: false,
+      revision: 0,
       dirty: false,
       saving: false,
       saveError: null,
@@ -167,8 +237,9 @@ export const editorStore = {
   setBody(md: string): void {
     if (!session) return;
     const prev = session.bodyCurrent;
-    const next = { ...session, bodyCurrent: md };
-    patch({ bodyCurrent: md, dirty: computeDirty(next) });
+    if (prev === md) return;
+    const next = { ...session, bodyCurrent: md, revision: session.revision + 1 };
+    patch({ bodyCurrent: md, revision: next.revision, dirty: computeDirty(next) });
     // A task-checkbox toggle is a discrete click that should persist at once
     // (parity with the todo panel's checkTodo) — unlike free typing, which
     // batches to blur/switch/Ctrl+S. Detect it deterministically: the only
@@ -180,9 +251,10 @@ export const editorStore = {
 
   setSourceText(text: string): void {
     if (!session) return;
+    if (text === session.sourceText) return;
     const sourceChanged = text !== session.sourceBaseline;
-    const next = { ...session, sourceText: text, sourceChanged };
-    patch({ sourceText: text, sourceChanged, dirty: computeDirty(next) });
+    const next = { ...session, sourceText: text, sourceChanged, revision: session.revision + 1 };
+    patch({ sourceText: text, sourceChanged, revision: next.revision, dirty: computeDirty(next) });
   },
 
   /** Header field edit — surgical, then persists immediately. */
@@ -230,37 +302,15 @@ export const editorStore = {
 
   /** Persist if dirty. No edits → no write (zero-diff trivially holds). */
   async save(): Promise<void> {
-    if (!session || !session.dirty || session.saving) return;
-    const path = session.path;
-    const content = compose(session);
-    lastWritten.set(path, content);
-    patch({ saving: true, saveError: null });
-    try {
-      await pipeline.dispatch('doc.save', { path, content });
-      if (session && session.path === path) {
-        // Re-baseline: what's on disk is now the session's clean state.
-        const { fmBlock, body } = splitFrontmatter(content);
-        patch({
-          fmBlock,
-          originalBody: body,
-          bodyBaseline: session.bodyCurrent,
-          sourceText: content,
-          sourceBaseline: content,
-          sourceChanged: false,
-          fmChanged: false,
-          dirty: false,
-          saving: false,
-          externalConflict: false,
-        });
-      }
-    } catch (err) {
-      if (session && session.path === path) {
-        patch({
-          saving: false,
-          saveError: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
+    if (!session || !session.dirty) return;
+    const snapshot: SaveSnapshot = {
+      path: session.path,
+      content: compose(session),
+      revision: session.revision,
+      bodyCurrent: session.bodyCurrent,
+    };
+    pendingSaves.set(snapshot.path, snapshot);
+    return startSaveJob(snapshot.path);
   },
 
   /** ISR entry: the watched file changed on disk. */
