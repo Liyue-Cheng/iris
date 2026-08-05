@@ -144,7 +144,7 @@ The agent reads the constitution via the injection chain → reads `$FOCUS_DOC` 
 
 The shell only ever sets `FOCUS_DOC`. Turning that pointer into actual context is optional and layered:
 
-- Agents with a **SessionStart hook** use the hook to expand the pointer into content (zero extra turns — the content enters context without the model being invoked). Iris ships a generated machine-level focus-context script (`~/.iris/focus-context.ps1`); it **detects, suggests, and — only after your explicit confirmation — writes** the hook into the agent's *own* config file (with a `.bak` backup). Out of the box it knows about Claude Code, Gemini CLI, Qwen Code, and Cursor CLI; Codex is detected but pointed at manual setup (its TOML config has its own trust review).
+- Agents with a **SessionStart hook** use the hook to expand the pointer into content (zero extra turns — the content enters context without the model being invoked). Iris ships a generated machine-level focus-context script (`~/.iris/focus-context.ps1`); it **detects, suggests, and — only after your explicit confirmation — writes** the hook into the agent's own config file (with a `.bak` backup). Out of the box it knows about Claude Code, Gemini CLI, Qwen Code, Cursor CLI, and Codex. For Codex, Iris writes the user-level `~/.codex/hooks.json`; Codex then requires the user to review and trust the hook through `/hooks`.
 - Agents with a launch **flag** carry the pointer on the command line (e.g. `aider --read $env:FOCUS_DOC`).
 - Agents with **neither** degrade gracefully to "read the AGENTS.md guidance and fetch the doc yourself" — which the protocol allows anyway.
 

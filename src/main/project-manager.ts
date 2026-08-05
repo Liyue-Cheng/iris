@@ -20,6 +20,7 @@ import type {
   ConstitutionStateUi,
   ContextPreview,
   DocContent,
+  DocImageResult,
   DocType,
   FsIrisChangedEvent,
   IrisScanResult,
@@ -45,6 +46,15 @@ import { logger } from './logger';
 const WRITABLE_ENTRIES: readonly string[] = ['AGENTS.md', ...FOREIGN_AGENT_ENTRIES];
 
 const DEBOUNCE_MS = 150;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const IMAGE_MIME = new Map([
+  ['.png', 'image/png'],
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.gif', 'image/gif'],
+  ['.webp', 'image/webp'],
+  ['.avif', 'image/avif'],
+]);
 
 export class ProjectError extends Error {
   constructor(
@@ -140,6 +150,44 @@ export class ProjectManager extends EventEmitter {
     const { frontmatter, broken } = parseFrontmatter(raw);
     const body = broken || frontmatter !== null ? stripFrontmatter(raw) : raw;
     return { path: relPath, raw, body, frontmatter, frontmatterBroken: broken };
+  }
+
+  /** Resolve a Markdown image relative to its document without exposing a
+   *  file:// URL. SVG is intentionally excluded because active SVG content is
+   *  a much broader security surface than the raster formats Iris needs. */
+  async readDocImage(docPath: string, source: string): Promise<DocImageResult> {
+    const root = this.requireRoot();
+    if (!source || /^(?:[a-z][a-z\d+.-]*:|[/\\])/i.test(source)) {
+      return { dataUrl: null, error: 'invalid-path' };
+    }
+
+    let cleanSource: string;
+    try {
+      cleanSource = decodeURIComponent(source.split(/[?#]/, 1)[0] ?? '');
+    } catch {
+      return { dataUrl: null, error: 'invalid-path' };
+    }
+
+    const relPath = join(dirname(docPath), cleanSource);
+    let abs: string;
+    try {
+      abs = this.resolveInside(root, relPath);
+    } catch {
+      return { dataUrl: null, error: 'invalid-path' };
+    }
+    const extension = abs.slice(abs.lastIndexOf('.')).toLowerCase();
+    const mime = IMAGE_MIME.get(extension);
+    if (!mime) return { dataUrl: null, error: 'unsupported-type' };
+
+    try {
+      const stat = await fs.stat(abs);
+      if (!stat.isFile()) return { dataUrl: null, error: 'read-failed' };
+      if (stat.size > MAX_IMAGE_BYTES) return { dataUrl: null, error: 'too-large' };
+      const bytes = await fs.readFile(abs);
+      return { dataUrl: `data:${mime};base64,${bytes.toString('base64')}`, error: null };
+    } catch {
+      return { dataUrl: null, error: 'read-failed' };
+    }
   }
 
   /**

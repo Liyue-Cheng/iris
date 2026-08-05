@@ -17,6 +17,8 @@ import type {
   DeepPartial,
   DocContent,
   FsIrisChangedEvent,
+  GitChangedEvent,
+  GitSnapshot,
   IrisScanResult,
   PingResult,
   RawTreeNode,
@@ -29,6 +31,7 @@ import type {
 } from '@shared/types';
 import type { SettingsManager } from './settings-manager';
 import type { ProjectManager } from './project-manager';
+import type { GitManager } from './git-manager';
 import type { SessionManager } from './session-manager';
 import {
   installMachineConventions,
@@ -40,8 +43,6 @@ import { contextForWebContents, persistOpenRoots, requireContext } from './windo
 import { effectiveStyleMaps, writeProjectStyleMaps } from './style-maps-store';
 import type { StyleMaps, StyleMapsState } from '@shared/style-maps';
 import { logger } from './logger';
-import { perf } from './perf-runtime';
-import type { PerfSnapshot } from '@shared/perf';
 
 const execFileP = promisify(execFile);
 
@@ -81,6 +82,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     async (event, payload: { root: string }): Promise<IrisScanResult> => {
       const ctx = requireContext(event);
       const result = await ctx.projectManager.open(payload.root);
+      await ctx.gitManager.open(payload.root);
       // Bind this window to the opened project so WINDOW_BOOTSTRAP and restore
       // persistence see the current root.
       ctx.projectRoot = result.projectRoot;
@@ -238,6 +240,33 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     }
   });
 
+  ipcMain.handle(CHANNELS.GIT_STATUS, (event): Promise<GitSnapshot> =>
+    requireContext(event).gitManager.status(),
+  );
+  ipcMain.handle(CHANNELS.GIT_REFRESH, (event): Promise<GitSnapshot> =>
+    requireContext(event).gitManager.status(),
+  );
+  ipcMain.handle(CHANNELS.GIT_STAGE, async (event, payload: { paths: string[] }): Promise<GitSnapshot> => {
+    const git = requireContext(event).gitManager;
+    await git.stage(payload.paths);
+    return git.status();
+  });
+  ipcMain.handle(CHANNELS.GIT_UNSTAGE, async (event, payload: { paths: string[] }): Promise<GitSnapshot> => {
+    const git = requireContext(event).gitManager;
+    await git.unstage(payload.paths);
+    return git.status();
+  });
+  ipcMain.handle(CHANNELS.GIT_COMMIT, async (event, payload: { message: string }): Promise<GitSnapshot> => {
+    const git = requireContext(event).gitManager;
+    await git.commit(payload.message);
+    return git.status();
+  });
+  ipcMain.handle(CHANNELS.GIT_SWITCH_BRANCH, async (event, payload: { branch: string }): Promise<GitSnapshot> => {
+    const git = requireContext(event).gitManager;
+    await git.switchBranch(payload.branch);
+    return git.status();
+  });
+
   ipcMain.handle(
     CHANNELS.DOC_READ,
     (event, payload: { path: string }): Promise<DocContent> =>
@@ -280,14 +309,6 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       return writeProjectStyleMaps(root, payload.maps);
     },
   );
-
-  // ── performance monitor (in-memory ring buffer) ───────────────────
-
-  ipcMain.handle(CHANNELS.PERF_SNAPSHOT, (): PerfSnapshot => perf.snapshot());
-
-  ipcMain.handle(CHANNELS.PERF_CLEAR, (): void => {
-    perf.clear();
-  });
 
   // ── sessions ───────────────────────────────────────────────────────
 
@@ -339,6 +360,12 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       requireContext(event).sessionManager.resize(payload.sessionId, payload.cols, payload.rows),
   );
 
+  ipcMain.handle(
+    CHANNELS.DOC_IMAGE_READ,
+    (event, payload: { docPath: string; source: string }) =>
+      requireContext(event).projectManager.readDocImage(payload.docPath, payload.source),
+  );
+
   ipcMain.handle(CHANNELS.SESSION_LIST, (event): SessionInfo[] =>
     requireContext(event).sessionManager.list(),
   );
@@ -369,6 +396,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
 export function wireBroadcasts(
   settingsManager: SettingsManager,
   projectManager: ProjectManager,
+  gitManager: GitManager,
   sessionManager: SessionManager,
   window: BrowserWindow,
 ): () => void {
@@ -379,6 +407,7 @@ export function wireBroadcasts(
   };
   const onSettings = (e: SettingsChangedEvent): void => send(EVENTS.SETTINGS_CHANGED, e);
   const onIrisChanged = (e: FsIrisChangedEvent): void => send(EVENTS.FS_IRIS_CHANGED, e);
+  const onGitChanged = (): void => send(EVENTS.GIT_CHANGED, { projectRoot: projectManager.getRoot() } satisfies GitChangedEvent);
   const onOutput = (e: SessionOutputPayload): void => send(EVENTS.SESSION_OUTPUT, e);
   const onState = (e: SessionStateChangedPayload): void => send(EVENTS.SESSION_STATE_CHANGED, e);
   const onExited = (e: SessionExitedPayload): void => send(EVENTS.SESSION_EXITED, e);
@@ -390,6 +419,7 @@ export function wireBroadcasts(
   window.on('unmaximize', onUnmaximize);
   settingsManager.on('settingsChanged', onSettings);
   projectManager.on('irisChanged', onIrisChanged);
+  gitManager.on('changed', onGitChanged);
   sessionManager.on('sessionOutput', onOutput);
   sessionManager.on('sessionStateChanged', onState);
   sessionManager.on('sessionExited', onExited);
@@ -399,6 +429,7 @@ export function wireBroadcasts(
     window.off('unmaximize', onUnmaximize);
     settingsManager.off('settingsChanged', onSettings);
     projectManager.off('irisChanged', onIrisChanged);
+    gitManager.off('changed', onGitChanged);
     sessionManager.off('sessionOutput', onOutput);
     sessionManager.off('sessionStateChanged', onState);
     sessionManager.off('sessionExited', onExited);

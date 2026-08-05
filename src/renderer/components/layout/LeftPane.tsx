@@ -3,7 +3,7 @@
  * empty states. The pane header carries the open-project and raw-toggle
  * affordances.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   FolderOpen,
   FolderPlus,
@@ -17,6 +17,7 @@ import {
   Clock,
   Search,
   X,
+  GitBranch,
 } from 'lucide-react';
 import { collectTodos } from '@renderer/lib/collect-docs';
 import { cn } from '@renderer/lib/utils';
@@ -33,6 +34,8 @@ import { LensTree } from '@renderer/components/lens/LensTree';
 import { RawTree } from '@renderer/components/lens/RawTree';
 import { InitDialog } from '@renderer/components/project/InitDialog';
 import { CreateWorkspaceDialog } from '@renderer/components/project/CreateWorkspaceDialog';
+import { SourceControlPanel } from '@renderer/components/git/SourceControlPanel';
+import { gitStore, useGit } from '@renderer/stores/git-store';
 import { PROTOCOL_VERSION } from '@shared/protocol-version';
 
 function EmptyState({ children }: { children: React.ReactNode }): JSX.Element {
@@ -48,6 +51,16 @@ export function LeftPane(): JSX.Element {
   const { sort, filter, filterOpen } = useLensPrefs();
   const [initOpen, setInitOpen] = useState(false);
   const [wsOpen, setWsOpen] = useState(false);
+  const [gitOpen, setGitOpen] = useState(false);
+  const { snapshot: gitSnapshot, loading: gitLoading, pending: gitPending } = useGit();
+
+  useEffect(() => {
+    if (phase === 'ready') {
+      void gitStore.refresh();
+    } else {
+      setGitOpen(false);
+    }
+  }, [phase]);
 
   const todoCount =
     phase === 'ready' && scan?.root ? collectTodos(scan.root, null).length : 0;
@@ -57,6 +70,10 @@ export function LeftPane(): JSX.Element {
     phase === 'ready' &&
     !!scan?.constitution.exists &&
     scan.constitution.protocol !== PROTOCOL_VERSION;
+  const gitCount = gitSnapshot
+    ? Object.values(gitSnapshot.groups).reduce((total, resources) => total + resources.length, 0)
+    : 0;
+  const gitBranch = gitSnapshot?.branch ?? (gitSnapshot?.detached ? 'HEAD' : 'Git');
 
   return (
     <div className="flex h-full flex-col bg-card/50">
@@ -92,6 +109,33 @@ export function LeftPane(): JSX.Element {
               </Button>
             </TooltipTrigger>
             <TooltipContent>在新窗口打开项目</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={phase !== 'ready'}
+                className={cn(
+                  'relative h-7 w-7',
+                  gitOpen && 'bg-accent text-accent-foreground',
+                  (gitLoading || gitPending) && 'text-primary',
+                )}
+                aria-label={`Git 源代码管理：${gitBranch}`}
+                aria-busy={gitLoading || !!gitPending}
+                onClick={() => setGitOpen((open) => !open)}
+              >
+                <GitBranch className={cn('!size-4', (gitLoading || gitPending) && 'animate-pulse')} />
+                {gitCount > 0 && (
+                  <span className="absolute -right-px -top-px min-w-3 rounded-sm bg-primary px-0.5 text-[9px] leading-3 text-primary-foreground">
+                    {gitCount}
+                  </span>
+                )}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {gitSnapshot?.branch ? `Git：${gitSnapshot.branch}（${gitCount} 个变更）` : 'Git 源代码管理'}
+            </TooltipContent>
           </Tooltip>
           {phase === 'ready' && scan?.hasIris && (
             <>
@@ -192,7 +236,7 @@ export function LeftPane(): JSX.Element {
         </div>
       </div>
 
-      {phase === 'ready' && scan?.hasIris && filterOpen && (
+      {!gitOpen && phase === 'ready' && scan?.hasIris && filterOpen && (
         <div className="flex h-8 shrink-0 items-center gap-1 px-2">
           <Search className="size-3.5 shrink-0 text-muted-foreground" />
           <input
@@ -236,61 +280,67 @@ export function LeftPane(): JSX.Element {
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {phase === 'idle' && (
-          <EmptyState>
-            <p>打开一个项目开始。</p>
-            <Button size="sm" variant="secondary" onClick={() => void pickAndOpenProject()}>
-              <FolderOpen /> 打开项目
-            </Button>
-          </EmptyState>
-        )}
+      {gitOpen ? (
+        <div className="min-h-0 flex-1">
+          <SourceControlPanel mode="view" refreshOnReady={false} />
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {phase === 'idle' && (
+            <EmptyState>
+              <p>打开一个项目开始。</p>
+              <Button size="sm" variant="secondary" onClick={() => void pickAndOpenProject()}>
+                <FolderOpen /> 打开项目
+              </Button>
+            </EmptyState>
+          )}
 
-        {phase === 'opening' && (
-          <EmptyState>
-            <Loader2 className="h-4 w-4 animate-spin" />
-            <p>正在打开…</p>
-          </EmptyState>
-        )}
+          {phase === 'opening' && (
+            <EmptyState>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <p>正在打开…</p>
+            </EmptyState>
+          )}
 
-        {phase === 'error' && (
-          <EmptyState>
-            <p className="text-destructive">打开项目失败</p>
-            <p className="max-w-44 break-all text-muted-foreground/70">{error}</p>
-            <Button size="sm" variant="secondary" onClick={() => void pickAndOpenProject()}>
-              <FolderOpen /> 重新选择
-            </Button>
-          </EmptyState>
-        )}
+          {phase === 'error' && (
+            <EmptyState>
+              <p className="text-destructive">打开项目失败</p>
+              <p className="max-w-44 break-all text-muted-foreground/70">{error}</p>
+              <Button size="sm" variant="secondary" onClick={() => void pickAndOpenProject()}>
+                <FolderOpen /> 重新选择
+              </Button>
+            </EmptyState>
+          )}
 
-        {phase === 'ready' && scan && !scan.hasIris && (
-          <EmptyState>
-            <p>
-              该项目还没有 <code className="rounded bg-muted px-1">.iris/</code>
-            </p>
-            <Button size="sm" variant="secondary" onClick={() => setInitOpen(true)}>
-              初始化 Iris 协议
-            </Button>
-            <p className="max-w-48 text-muted-foreground/70">
-              也可以手建 .iris/ 与类型文件夹——协议不需要应用在场。
-            </p>
-          </EmptyState>
-        )}
+          {phase === 'ready' && scan && !scan.hasIris && (
+            <EmptyState>
+              <p>
+                该项目还没有 <code className="rounded bg-muted px-1">.iris/</code>
+              </p>
+              <Button size="sm" variant="secondary" onClick={() => setInitOpen(true)}>
+                初始化 Iris 协议
+              </Button>
+              <p className="max-w-48 text-muted-foreground/70">
+                也可以手建 .iris/ 与类型文件夹——协议不需要应用在场。
+              </p>
+            </EmptyState>
+          )}
 
-        {phase === 'ready' && scan?.hasIris && scan.root && (
-          rawMode ? (
-            rawTree ? (
-              <RawTree root={rawTree} />
+          {phase === 'ready' && scan?.hasIris && scan.root && (
+            rawMode ? (
+              rawTree ? (
+                <RawTree root={rawTree} />
+              ) : (
+                <EmptyState>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                </EmptyState>
+              )
             ) : (
-              <EmptyState>
-                <Loader2 className="h-4 w-4 animate-spin" />
-              </EmptyState>
+              <LensTree root={scan.root} />
             )
-          ) : (
-            <LensTree root={scan.root} />
-          )
-        )}
-      </div>
+          )}
+        </div>
+      )}
 
       <InitDialog
         open={initOpen}

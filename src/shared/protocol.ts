@@ -77,7 +77,16 @@ export const CHANNELS = {
    *  no project / git unavailable). Powers status-doc freshness (reflects:
    *  stamp vs HEAD). Read-only — never mutates anything. */
   PROJECT_GIT_HEAD: 'project:git-head',
+  GIT_STATUS: 'git:status',
+  GIT_REFRESH: 'git:refresh',
+  GIT_STAGE: 'git:stage',
+  GIT_UNSTAGE: 'git:unstage',
+  GIT_COMMIT: 'git:commit',
+  GIT_SWITCH_BRANCH: 'git:switch-branch',
   DOC_READ: 'doc:read',
+  /** Query: read an image referenced relative to a Markdown document. The
+   *  main process confines the path to the project and returns a data URL. */
+  DOC_IMAGE_READ: 'doc:image-read',
   /** Verbs (instruction-backed): write a doc verbatim / create a typed doc /
    *  delete a doc (human UI gesture — CONVENTIONS' "do not delete" binds the
    *  agent's write-back, not the user). */
@@ -90,10 +99,6 @@ export const CHANNELS = {
   STYLES_GET: 'styles:get',
   /** Verb (instruction-backed): write the project-level style maps. */
   STYLES_UPDATE: 'styles:update',
-  /** Local performance monitor (in-memory only; no terminal/doc content). */
-  PERF_SNAPSHOT: 'perf:snapshot',
-  PERF_CLEAR: 'perf:clear',
-
   /** Session verbs (instruction-backed). */
   SESSION_OPEN: 'session:open',
   SESSION_CLOSE: 'session:close',
@@ -124,6 +129,7 @@ export const EVENTS = {
   WINDOW_MAXIMIZED_CHANGED: 'evt:window:maximized-changed',
   /** Batched .iris/ tree changes (chokidar, debounced in main). */
   FS_IRIS_CHANGED: 'evt:fs:iris-changed',
+  GIT_CHANGED: 'evt:git:changed',
   SESSION_OUTPUT: 'evt:session:output',
   SESSION_STATE_CHANGED: 'evt:session:state-changed',
   SESSION_EXITED: 'evt:session:exited',

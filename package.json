@@ -55,6 +55,7 @@
     "electron-vite": "^2.2.0",
     "front-cpu": "file:../dashboard/cpu-pipeline",
     "lucide-react": "^1.14.0",
+    "mermaid": "^11.16.1",
     "png-to-ico": "^2.1.8",
     "postcss": "^8.4.38",
     "react": "^18.3.1",

@@ -43,11 +43,6 @@ export interface Settings {
      *  the typed header (single source via the --editor-max-width CSS var).
      *  UI presets: 窄 48 / 中 58 (default) / 宽 72. Clamped to [30, 120]. */
     editorMaxWidth: number;
-    /** Where keyboard focus lands when a doc is selected (issue 关于焦点的的管理
-     *  P1/P5): 'editor' always the body; 'terminal' the doc's staged session
-     *  when it has one (else the editor); 'auto' the terminal only when that
-     *  session is actively running, otherwise the editor. */
-    focusOnSelectDoc: 'editor' | 'terminal' | 'auto';
   };
   project: {
     /** @deprecated v1.0 single-window field. v1.1 restores from openRoots;
@@ -104,20 +99,25 @@ export interface AgentConfig {
 export type HookCliState =
   | 'cli-not-found' // config dir absent — CLI likely not installed
   | 'not-configured' // CLI present, no Iris hook yet
-  | 'configured' // hook references the focus-context script
-  | 'manual-only'; // detected, but Iris won't write this format (Codex TOML)
+  | 'stale' // an Iris hook exists, but its handler no longer matches the shipped definition
+  | 'configured'; // hook matches the current shipped definition
+
+export type FocusScriptState =
+  | 'missing'
+  | 'stale'
+  | 'current';
 
 export interface HookCliInfo {
   id: string;
   label: string;
   configPath: string;
   state: HookCliState;
-  /** Human-readable guidance (manual-only and error cases). */
+  /** Human-readable guidance for setup or verification. */
   detail?: string;
 }
 
 export interface InjectionState {
-  script: { path: string; exists: boolean; hookCommand: string };
+  script: { path: string; state: FocusScriptState; hookCommand: string };
   clis: HookCliInfo[];
 }
 
@@ -431,4 +431,46 @@ export interface FsIrisChangedEvent {
   projectRoot: string;
   /** Coarse change kinds; M1 projections just rescan. */
   changes: Array<{ kind: 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir'; path: string }>;
+}
+
+/** Safe projection of a local image for the sandboxed renderer. */
+export interface DocImageResult {
+  dataUrl: string | null;
+  error: 'invalid-path' | 'unsupported-type' | 'too-large' | 'read-failed' | null;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Git Source Control
+// ──────────────────────────────────────────────────────────────────
+
+export type GitResourceGroup = 'merge' | 'index' | 'workingTree' | 'untracked';
+
+export interface GitResource {
+  path: string;
+  originalPath?: string;
+  /** Git porcelain XY status (or `??` for an untracked file). */
+  status: string;
+  group: GitResourceGroup;
+}
+
+export interface GitBranchInfo {
+  name: string;
+  current: boolean;
+}
+
+export interface GitSnapshot {
+  available: boolean;
+  root: string | null;
+  branch: string | null;
+  head: string | null;
+  detached: boolean;
+  ahead: number;
+  behind: number;
+  branches: GitBranchInfo[];
+  groups: Record<GitResourceGroup, GitResource[]>;
+  error: string | null;
+}
+
+export interface GitChangedEvent {
+  projectRoot: string | null;
 }

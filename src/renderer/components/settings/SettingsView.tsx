@@ -865,7 +865,7 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
     setConfirmCli(null);
     try {
       // The hook calls the script — make sure the script exists first.
-      if (inj && !inj.script.exists) {
+      if (inj && inj.script.state !== 'current') {
         await pipeline.dispatch('agent.install-focus-script', {});
       }
       await pipeline.dispatch('agent.install-hook', { cliId });
@@ -990,15 +990,23 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
           <span
             className={cn(
               'rounded px-1.5 py-0.5 text-xs',
-              inj?.script.exists
+              inj?.script.state === 'current'
                 ? 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]'
                 : 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]',
             )}
           >
-            {inj?.script.exists ? '已安装' : '未安装'}
+            {inj?.script.state === 'current'
+              ? '最新'
+              : inj?.script.state === 'stale'
+                ? '旧版 · 可更新'
+                : '未安装'}
           </span>
           <Button size="sm" variant="secondary" disabled={busy} onClick={() => void installScript()}>
-            {inj?.script.exists ? '更新脚本' : '安装脚本'}
+            {inj?.script.state === 'current'
+              ? '重新安装'
+              : inj?.script.state === 'stale'
+                ? '更新脚本'
+                : '安装脚本'}
           </Button>
         </div>
       </SettingRow>
@@ -1015,11 +1023,11 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
             <span className={cn('rounded px-1.5 py-0.5 text-xs', HOOK_STATE_META[cli.state].cls)}>
               {HOOK_STATE_META[cli.state].label}
             </span>
-            {cli.state === 'not-configured' &&
+            {(cli.state === 'not-configured' || cli.state === 'stale') &&
               (confirmCli === cli.id ? (
                 <>
                   <span className="text-xs text-muted-foreground">
-                    将写入你的 {cli.label} 配置（先备份 .bak）：
+                    将{cli.state === 'stale' ? '更新' : '写入'}你的 {cli.label} 配置（先备份 .bak）：
                   </span>
                   <Button
                     size="sm"
@@ -1039,10 +1047,10 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
                   disabled={busy}
                   onClick={() => setConfirmCli(cli.id)}
                 >
-                  代写 hook…
+                  {cli.state === 'stale' ? '更新 hook…' : '代写 hook…'}
                 </Button>
               ))}
-            {cli.detail && cli.state === 'manual-only' && (
+            {cli.detail && cli.id === 'codex' && (
               <span className="max-w-md text-xs leading-snug text-muted-foreground">
                 {cli.detail}
               </span>

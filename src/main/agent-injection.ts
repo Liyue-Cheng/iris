@@ -63,7 +63,9 @@ $root = (Get-Location).Path
 $rel = $env:FOCUS_DOC
 $doc = Join-Path $root $rel
 
-Write-Output ('[Iris] 本终端由 Iris 启动；项目根: ' + $root + '；聚焦文档: ' + $rel)
+# Keep the first character non-JSON: Codex otherwise treats a leading '[' as
+# a JSON array and reports "invalid session start JSON" instead of using text.
+Write-Output ('Iris: 本终端由 Iris 启动；项目根: ' + $root + '；聚焦文档: ' + $rel)
 Write-Output '注入分层如下。FOCUS_DOC 与回盘读文件仅为兜底：已注入的内容不必再读盘，除非有理由认为它已变更（以下为会话启动时快照）。'
 
 # software layer — re-emit the managed block from AGENTS.md (single source).
@@ -130,6 +132,9 @@ function jsonClis(): JsonHookCli[] {
     { id: 'gemini', label: 'Gemini CLI', dir: join(home, '.gemini'), file: 'settings.json', hookKey: 'SessionStart' },
     { id: 'qwen', label: 'Qwen Code', dir: join(home, '.qwen'), file: 'settings.json', hookKey: 'SessionStart' },
     { id: 'cursor', label: 'Cursor CLI', dir: join(home, '.cursor'), file: 'cli.json', hookKey: 'sessionStart' },
+    // Codex supports the same hook schema in a user-level hooks.json. Keeping
+    // it separate from config.toml avoids rewriting hand-maintained settings.
+    { id: 'codex', label: 'Codex CLI', dir: join(home, '.codex'), file: 'hooks.json', hookKey: 'SessionStart' },
   ];
 }
 
@@ -142,9 +147,23 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
-/** A hooks entry counts as ours iff its command mentions the script path. */
-function mentionsScript(json: unknown): boolean {
-  return JSON.stringify(json ?? '').includes('focus-context.ps1');
+/** A handler counts as ours iff its command mentions Iris's generated script. */
+function isIrisHandler(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object') return false;
+  const command = (value as Record<string, unknown>)['command'];
+  return typeof command === 'string' && command.includes('focus-context.ps1');
+}
+
+function eventHandlers(config: Record<string, unknown>, hookKey: string): unknown[] {
+  const hooks = config['hooks'];
+  if (!hooks || typeof hooks !== 'object') return [];
+  const groups = (hooks as Record<string, unknown>)[hookKey];
+  if (!Array.isArray(groups)) return [];
+  return groups.flatMap((group) => {
+    if (!group || typeof group !== 'object') return [];
+    const handlers = (group as Record<string, unknown>)['hooks'];
+    return Array.isArray(handlers) ? handlers : [];
+  });
 }
 
 export async function injectionState(): Promise<InjectionState> {
@@ -159,29 +178,30 @@ export async function injectionState(): Promise<InjectionState> {
     let state: HookCliState = 'not-configured';
     try {
       const text = await fs.readFile(configPath, 'utf8');
-      if (mentionsScript(JSON.parse(text))) state = 'configured';
+      const config = JSON.parse(text) as Record<string, unknown>;
+      const ours = eventHandlers(config, cli.hookKey).filter(isIrisHandler);
+      if (ours.length > 0) {
+        state = ours.every(
+          (handler) => handler['type'] === 'command' && handler['command'] === hookCommand(),
+        )
+          ? 'configured'
+          : 'stale';
+      }
     } catch {
       /* missing or unparsable settings file → treat as not configured */
     }
     clis.push({ id: cli.id, label: cli.label, configPath, state });
   }
 
-  // Codex: hooks exist (GA 2026) but the config is TOML and project-level
-  // hooks go through its own /hooks trust review — Iris detects and points,
-  // never writes (write risk to a hand-maintained TOML outweighs the save).
-  const codexDir = join(homedir(), '.codex');
-  clis.push({
-    id: 'codex',
-    label: 'Codex CLI',
-    configPath: join(codexDir, 'config.toml'),
-    state: (await exists(codexDir)) ? 'manual-only' : 'cli-not-found',
-    detail: '检测到 Codex；其 hook 配置为 TOML 且有自带信任审核（/hooks），请在 Codex 里手动把 SessionStart hook 指到上面的脚本命令。',
-  });
+  const codex = clis.find((cli) => cli.id === 'codex');
+  if (codex) {
+    codex.detail = '安装后请在 Codex 里运行 /hooks，审核并信任这个 SessionStart hook；脚本更新后可能需要重新审核。';
+  }
 
   return {
     script: {
       path: focusScriptPath(),
-      exists: await exists(focusScriptPath()),
+      state: await focusScriptState(),
       hookCommand: hookCommand(),
     },
     clis,
@@ -194,6 +214,15 @@ export async function injectionState(): Promise<InjectionState> {
  *  the Chinese text / em-dashes break the parse (the SessionStart hook error
  *  reported at focus-context.ps1:17). */
 const UTF8_BOM = String.fromCharCode(0xfeff); // U+FEFF — see installFocusScript
+
+async function focusScriptState(): Promise<'missing' | 'stale' | 'current'> {
+  try {
+    const text = await fs.readFile(focusScriptPath(), 'utf8');
+    return text === UTF8_BOM + FOCUS_CONTEXT_SCRIPT ? 'current' : 'stale';
+  } catch {
+    return 'missing';
+  }
+}
 
 export async function installFocusScript(): Promise<{ path: string }> {
   const path = focusScriptPath();
@@ -319,7 +348,7 @@ async function readPromptLayer(
  */
 export async function installHook(cliId: string): Promise<HookCliInfo> {
   const cli = jsonClis().find((c) => c.id === cliId);
-  if (!cli) throw new Error(`[agent:install-hook] unknown or manual-only CLI: ${cliId}`);
+  if (!cli) throw new Error(`[agent:install-hook] unknown CLI: ${cliId}`);
   const configPath = join(cli.dir, cli.file);
 
   let config: Record<string, unknown> = {};
@@ -337,17 +366,27 @@ export async function installHook(cliId: string): Promise<HookCliInfo> {
     }
   }
 
-  if (mentionsScript(config)) {
-    return { id: cli.id, label: cli.label, configPath, state: 'configured' };
-  }
-
   // Claude-compatible shape: hooks.<Key> = [{ hooks: [{type:'command', command}] }]
   const hooks = (config['hooks'] ??= {}) as Record<string, unknown>;
   const entries = (hooks[cli.hookKey] ??= []) as unknown[];
   if (!Array.isArray(entries)) {
     throw new Error(`${cli.label} 配置中的 hooks.${cli.hookKey} 不是数组——请手动配置。`);
   }
-  entries.push({ hooks: [{ type: 'command', command: hookCommand() }] });
+  const ours = eventHandlers(config, cli.hookKey).filter(isIrisHandler);
+  if (
+    ours.length > 0 &&
+    ours.every((handler) => handler['type'] === 'command' && handler['command'] === hookCommand())
+  ) {
+    return { id: cli.id, label: cli.label, configPath, state: 'configured' };
+  }
+  let updated = false;
+  for (const handler of eventHandlers(config, cli.hookKey)) {
+    if (!isIrisHandler(handler)) continue;
+    handler['type'] = 'command';
+    handler['command'] = hookCommand();
+    updated = true;
+  }
+  if (!updated) entries.push({ hooks: [{ type: 'command', command: hookCommand() }] });
 
   await fs.mkdir(cli.dir, { recursive: true });
   if (hadFile) {

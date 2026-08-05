@@ -22,6 +22,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { JsonStore } from './persistence';
 import { SettingsManager, settingsFilePath } from './settings-manager';
 import { ProjectManager } from './project-manager';
+import { GitManager } from './git-manager';
 import { SessionManager } from './session-manager';
 import { registerIpcHandlers, wireBroadcasts } from './ipc';
 import {
@@ -115,9 +116,10 @@ const settingsManager = new SettingsManager(new JsonStore(settingsFilePath()));
 /** Build a window's per-window managers, wire its broadcasts, register it. */
 function createWindowContext(win: BrowserWindow, initialRoot: string | null): WindowContext {
   const projectManager = new ProjectManager();
+  const gitManager = new GitManager();
   const sessionManager = new SessionManager(settingsManager);
-  const unwire = wireBroadcasts(settingsManager, projectManager, sessionManager, win);
-  const ctx: WindowContext = { win, projectManager, sessionManager, projectRoot: initialRoot, unwire };
+  const unwire = wireBroadcasts(settingsManager, projectManager, gitManager, sessionManager, win);
+  const ctx: WindowContext = { win, projectManager, gitManager, sessionManager, projectRoot: initialRoot, unwire };
   registerContext(ctx);
   return ctx;
 }
@@ -140,6 +142,7 @@ function disposeWindowContext(id: number): void {
   }
   ctx.sessionManager.shutdown();
   void ctx.projectManager.close();
+  void ctx.gitManager.close();
   if (!isQuitting) persistOpenRoots(settingsManager);
 }
 
@@ -412,6 +415,7 @@ app.on('before-quit', () => {
   for (const ctx of allContexts()) {
     ctx.sessionManager.shutdown();
     void ctx.projectManager.close();
+    void ctx.gitManager.close();
   }
   void settingsManager.flush();
 });

@@ -17,19 +17,16 @@
  * privileged); focus returns to ProseMirror first so the action lands on
  * the editor's preserved selection.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { Crepe } from '@milkdown/crepe';
-import { editorViewCtx } from '@milkdown/kit/core';
-import { Selection } from '@milkdown/kit/prose/state';
-import type { EditorView } from '@milkdown/kit/prose/view';
 import { languages } from '@codemirror/language-data';
 import { rosePineCodeMirror } from '@renderer/styles/codemirror-theme';
 import { CHANNELS } from '@shared/protocol';
 import { editorStore } from '@renderer/stores/editor-store';
-import { useClaimFocus } from '@renderer/lib/use-claim-focus';
 import { mountCrepeSerially, type CrepeLifecycle } from '@renderer/lib/crepe-lifecycle';
-import { attachScrollMemory, type ScrollKeeper } from '@renderer/lib/scroll-memory';
 import { useSettings } from '@renderer/stores/settings-store';
+import { markImageLoadFailure, resolveMarkdownImage } from '@renderer/lib/markdown-media';
+import { renderMermaidPreview } from '@renderer/lib/mermaid-preview';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -57,23 +54,6 @@ export function CrepeEditor({
   const blockEdit = settings?.behavior.editorBlockEdit ?? false;
   const bodyAlign = settings?.behavior.editorBodyAlign ?? 'center';
 
-  // Focus coordination (P1): claim 'editor' focus once Crepe is ready, instead
-  // of the old one-shot focusOnMount limited to new-doc create. The caret lands
-  // at the END of the doc (not the start) — entering a doc to keep writing is
-  // the common case.
-  const viewRef = useRef<EditorView | null>(null);
-  const [ready, setReady] = useState(false);
-  useClaimFocus(
-    'editor',
-    () => {
-      const view = viewRef.current;
-      if (!view) return;
-      view.dispatch(view.state.tr.setSelection(Selection.atEnd(view.state.doc)).scrollIntoView());
-      view.focus();
-    },
-    ready,
-  );
-
   useEffect(() => {
     const el = rootRef.current;
     if (!el) return;
@@ -84,7 +64,7 @@ export function CrepeEditor({
       defaultValue: body,
       features: {
         [Crepe.Feature.AI]: false,
-        [Crepe.Feature.Latex]: false,
+        [Crepe.Feature.Latex]: true,
         [Crepe.Feature.BlockEdit]: blockEdit,
       },
       featureConfigs: {
@@ -95,6 +75,14 @@ export function CrepeEditor({
         [Crepe.Feature.CodeMirror]: {
           languages,
           extensions: [rosePineCodeMirror],
+          renderPreview: renderMermaidPreview,
+          previewOnlyByDefault: true,
+          previewLabel: '预览',
+          previewLoading: '渲染中…',
+        },
+        [Crepe.Feature.ImageBlock]: {
+          proxyDomURL: (source) => resolveMarkdownImage(path, source),
+          onImageLoadError: markImageLoadFailure,
         },
       },
     });
@@ -105,11 +93,6 @@ export function CrepeEditor({
       });
     });
 
-    // C1/C2 scroll memory. No Milkdown scroll API (docs/milkdown-crepe-api.md);
-    // attachScrollMemory finds the real DOM scroller from the ProseMirror
-    // content node (via editorViewCtx), restores off content-height stability,
-    // and only records genuine user scrolls (no restore-induced ratchet).
-    let keeper: ScrollKeeper | null = null;
     const lifecycle: CrepeLifecycle = mountCrepeSerially({
       root: el,
       crepe,
@@ -117,19 +100,11 @@ export function CrepeEditor({
       onCreated: () => {
         if (stopped) return;
         editorStore.setBodyBaseline(crepe.getMarkdown());
-        const view = crepe.editor.action((ctx) => ctx.get(editorViewCtx));
-        keeper = attachScrollMemory({ key: `wysiwyg:${path}`, content: view.dom as HTMLElement });
-        // Ready to claim keyboard focus (the coordinator decides whether to).
-        viewRef.current = view;
-        setReady(true);
       },
     });
 
     return () => {
       stopped = true;
-      viewRef.current = null;
-      setReady(false);
-      keeper?.stop();
       lifecycle.stop();
     };
     // Remount only on a different doc, an explicit generation bump, or a
