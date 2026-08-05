@@ -485,21 +485,6 @@ function AppearancePanel({ setError }: { setError: (m: string | null) => void })
         />
       </SettingRow>
 
-      <SettingRow
-        label="选中文档时聚焦"
-        hint="点开文档后键盘焦点的落点：编辑器（总是进正文）/ 终端（有会话则进终端）/ 自动（会话在运行才进终端）"
-      >
-        <Segmented
-          value={settings?.behavior.focusOnSelectDoc ?? 'editor'}
-          options={[
-            { value: 'editor', label: '编辑器' },
-            { value: 'terminal', label: '终端' },
-            { value: 'auto', label: '自动' },
-          ]}
-          onChange={(v) => void updateSettings({ behavior: { focusOnSelectDoc: v } }, setError)}
-        />
-      </SettingRow>
-
       <SettingRow label="正文列宽" hint="正文阅读列的最大宽度；标题表头随列同宽">
         <Segmented
           value={String(settings?.behavior.editorMaxWidth ?? 58)}
@@ -813,9 +798,9 @@ const HOOK_STATE_META: Record<
   { label: string; cls: string }
 > = {
   configured: { label: '已配置', cls: 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]' },
+  stale: { label: '旧版 · 可更新', cls: 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]' },
   'not-configured': { label: '未配置 hook', cls: 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]' },
   'cli-not-found': { label: '未检测到', cls: 'bg-muted text-muted-foreground' },
-  'manual-only': { label: '需手动配置', cls: 'bg-[var(--rp-iris)]/20 text-[var(--rp-iris)]' },
 };
 
 /** New-agent quick presets — flag templates for the hook-less CLIs included

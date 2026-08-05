@@ -4,12 +4,11 @@
  * caption buttons; window verbs go through the window:* UI-helper channels.
  */
 import { useEffect, useState } from 'react';
-import { Moon, Sun, MoonStar, Palette, Activity, ChartColumn, Settings2, Minus, Square, Copy, X, Cog } from 'lucide-react';
+import { Moon, Sun, MoonStar, Palette, Activity, Settings2, Minus, Square, Copy, X, Cog } from 'lucide-react';
 import type { DeepPartial, PingResult, Settings, ThemeId } from '@shared/types';
 import { CHANNELS, EVENTS } from '@shared/protocol';
 import { cn } from '@renderer/lib/utils';
 import { openSettingsView } from '@renderer/components/settings/SettingsView';
-import { openPerfPanel } from '@renderer/components/perf/PerfPanel';
 import { IrisMark } from '@renderer/components/layout/IrisMark';
 import { pipeline } from '@renderer/cpu';
 import { useSettings } from '@renderer/stores/settings-store';
@@ -199,15 +198,6 @@ export function TitleBar(): JSX.Element {
             </Button>
           </TooltipTrigger>
           <TooltipContent>app.ping — 流水线 → IPC → 主进程往返</TooltipContent>
-        </Tooltip>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon" onClick={openPerfPanel}>
-              <ChartColumn />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>性能监视器</TooltipContent>
         </Tooltip>
 
         <DropdownMenu>

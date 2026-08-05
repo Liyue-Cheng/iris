@@ -10,7 +10,6 @@ import { collectDocs, docDate } from '@renderer/lib/collect-docs';
 import { docDisplayTitle } from '@renderer/lib/doc-utils';
 import { setDocDragData } from '@renderer/lib/doc-drag';
 import { projectStore } from '@renderer/stores/project-store';
-import { usePanelFocusRef } from '@renderer/lib/use-claim-focus';
 import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DocContextMenu } from '@renderer/components/doc/DocContextMenu';
 import { Button } from '@renderer/components/ui/button';
@@ -34,14 +33,13 @@ export function SimpleList({
   type: DocType;
   workspacePath: string | null;
 }): JSX.Element {
-  const panelRef = usePanelFocusRef();
   const rows = collectDocs(root, type, workspacePath);
   rows.sort(
     (a, b) => docDate(b.doc).localeCompare(docDate(a.doc)) || a.doc.path.localeCompare(b.doc.path),
   );
 
   return (
-    <div ref={panelRef} tabIndex={-1} className="flex h-full flex-col outline-none">
+    <div className="flex h-full flex-col">
       <div className={PANEL_BAR}>
         <h2 className="text-sm font-semibold">{TYPE_TITLE[type]}</h2>
         {workspacePath && (

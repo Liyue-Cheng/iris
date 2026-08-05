@@ -62,7 +62,6 @@ export const DEFAULT_SETTINGS: Settings = {
     editorBlockEdit: false,
     editorBodyAlign: 'center',
     editorMaxWidth: 58,
-    focusOnSelectDoc: 'editor',
   },
   project: {
     lastRoot: null,
@@ -276,12 +275,6 @@ export function validateSettings(s: Settings): void {
     throw new SettingsError(
       'InvalidSettings',
       `behavior.editorMaxWidth=${s.behavior.editorMaxWidth} must be a number in [30, 120]`,
-    );
-  }
-  if (!['editor', 'terminal', 'auto'].includes(s.behavior.focusOnSelectDoc)) {
-    throw new SettingsError(
-      'InvalidSettings',
-      `behavior.focusOnSelectDoc="${s.behavior.focusOnSelectDoc}" must be editor, terminal or auto`,
     );
   }
   if (typeof s.appearance.uiFontFamily !== 'string' || !s.appearance.uiFontFamily.trim()) {

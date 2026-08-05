@@ -70,9 +70,7 @@ export function CreateDocDialog(): JSX.Element | null {
         title: title.trim(),
       })) as { path: string };
       close();
-      // Switch to the new doc AND drop the cursor into its (empty) body, so
-      // creating a doc is immediately writable without a second manual click.
-      void projectStore.selectDoc(result.path, { focusEditor: true });
+      void projectStore.selectDoc(result.path);
     } catch (err) {
       setBusy(false);
       setError(err instanceof Error ? err.message : String(err));

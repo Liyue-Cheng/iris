@@ -13,7 +13,6 @@ import { collectTodos, docDate, type CollectedTodo } from '@renderer/lib/collect
 import { docDisplayTitle } from '@renderer/lib/doc-utils';
 import { checkTodo } from '@renderer/lib/todo-actions';
 import { projectStore } from '@renderer/stores/project-store';
-import { usePanelFocusRef } from '@renderer/lib/use-claim-focus';
 
 interface TodoGroup {
   docPath: string;
@@ -52,7 +51,6 @@ export function TodoPanel({
   root: IrisWorkspace;
   workspacePath: string | null;
 }): JSX.Element {
-  const panelRef = usePanelFocusRef();
   // Lines with a write in flight: render checked+spinner until the rescan
   // removes the row (or the surgery refuses and the key is dropped).
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
@@ -80,7 +78,7 @@ export function TodoPanel({
   };
 
   return (
-    <div ref={panelRef} tabIndex={-1} className="flex h-full flex-col outline-none">
+    <div className="flex h-full flex-col">
       <div className="flex h-11 shrink-0 items-center gap-2 bg-card/30 px-4">
         <h2 className="text-sm font-semibold">
           待办

@@ -26,7 +26,6 @@ import { useViewPref } from '@renderer/lib/view-prefs';
 import { LabelChip } from '@renderer/components/ui/label-chip';
 import { StatusBadge } from '@renderer/components/ui/status-badge';
 import { projectStore } from '@renderer/stores/project-store';
-import { usePanelFocusRef } from '@renderer/lib/use-claim-focus';
 import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DocContextMenu } from '@renderer/components/doc/DocContextMenu';
 import { Button } from '@renderer/components/ui/button';
@@ -185,8 +184,6 @@ export function IssuePanel({
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [activeIdx, setActiveIdx] = useState(0);
   const rowRefs = useRef<Array<HTMLDivElement | null>>([]);
-  // P4: claim panel focus on open so j/k/Enter work without a mouse click.
-  const panelRef = usePanelFocusRef();
 
   const q = query.trim().toLowerCase();
   const all = collectDocs(root, 'issue', workspacePath).filter((item) => {
@@ -278,7 +275,6 @@ export function IssuePanel({
 
   return (
     <div
-      ref={panelRef}
       className="flex h-full flex-col outline-none"
       tabIndex={0}
       onKeyDown={onKeyDown}
