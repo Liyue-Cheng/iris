@@ -407,6 +407,14 @@ export interface SessionOutputPayload {
   seq: number;
 }
 
+/** Atomic main-process snapshot prepared for one renderer replay size. */
+export interface SessionReplaySnapshot {
+  data: string;
+  lastSeq: number;
+  cols: number;
+  rows: number;
+}
+
 export interface SessionStateChangedPayload {
   sessionId: string;
   patch: Partial<SessionInfo>;

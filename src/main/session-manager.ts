@@ -33,19 +33,18 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { existsSync, statSync } from 'node:fs';
-import { performance } from 'node:perf_hooks';
 import { spawn as defaultSpawnPty, type IPty, type IDisposable } from 'node-pty';
 import type {
   AgentConfig,
   SessionExitedPayload,
   SessionInfo,
   SessionOutputPayload,
+  SessionReplaySnapshot,
   SessionStateChangedPayload,
 } from '@shared/types';
 import type { SettingsManager } from './settings-manager';
 import { buildSpawnEnv, injectTerminalHintEnv, validateDimensions } from './pty-utils';
 import { logger } from './logger';
-import { perf } from './perf-runtime';
 // @xterm/headless is plain CommonJS (no ESM exports map) — default-import
 // the module and destructure (Marina's lesson; named imports throw under
 // the Electron main ESM loader).
@@ -68,11 +67,28 @@ const EMIT_BATCH_MS = 8;
 /** Renderer xterm scrollback is 5000 — headless mirror must match so the
  *  serialized replay covers everything the user can scroll to. */
 const SCROLLBACK_LINES = 5000;
-/** Hard cap on the replay parser-drain fence (see getScrollbackForReplay).
+/** Hard cap on the replay parser-drain fence (see prepareReplayNow).
  *  The fence almost always resolves in <1ms; this only fires if xterm drops
  *  the fence callback, so we serialize a tick-stale mirror instead of hanging
  *  the IPC reply until the renderer's 5s failsafe (持久-2026-06-25). */
 const REPLAY_FENCE_CAP_MS = 250;
+/** Alt-buffer replay waits for the TUI's resize redraw to go quiet before
+ *  serializing. The cap covers both the nudge and final target resize. */
+const REPLAY_REDRAW_QUIET_MS = 50;
+const REPLAY_REDRAW_CAP_MS = 500;
+const REPLAY_NUDGE_QUIET_MS = 20;
+const REPLAY_NUDGE_CAP_MS = 150;
+
+interface OutputQuietResult {
+  sawOutput: boolean;
+  capped: boolean;
+  elapsedMs: number;
+}
+
+interface OutputQuietWaiter {
+  promise: Promise<OutputQuietResult>;
+  cancel: () => void;
+}
 
 export type PtySpawnFn = (
   file: string,
@@ -185,6 +201,7 @@ function resolveHostShell(env: Record<string, string>): {
 
 export class SessionManager extends EventEmitter {
   private readonly sessions = new Map<string, ManagedSession>();
+  private readonly replayPreparations = new Map<string, Promise<void>>();
   private readonly spawnFn: PtySpawnFn;
 
   constructor(
@@ -373,11 +390,7 @@ export class SessionManager extends EventEmitter {
     return { accepted: true };
   }
 
-  /**
-   * Resize. The quiet window opens even for a no-op resize: a remount
-   * always fires one, and TUIs repaint on that poke — those bytes must not
-   * flip an idle session active (Marina 勘误第二轮).
-   */
+  /** Resize from a real renderer layout change. */
   resize(
     sessionId: string,
     cols: number,
@@ -391,15 +404,8 @@ export class SessionManager extends EventEmitter {
     if (dims.cols === managed.info.cols && dims.rows === managed.info.rows) {
       return { accepted: true };
     }
-    managed.info.cols = dims.cols;
-    managed.info.rows = dims.rows;
     try {
-      managed.pty.resize(dims.cols, dims.rows);
-      try {
-        managed.headlessTerm?.resize(dims.cols, dims.rows);
-      } catch {
-        /* headless resize must never block the real one */
-      }
+      this.applyDimensions(managed, dims.cols, dims.rows, true);
     } catch (err) {
       logger.warn('session', `resize ignored sid=${sessionId} ${dims.cols}x${dims.rows}`, err);
       return { accepted: false, reason: 'invalid-dimensions' };
@@ -427,16 +433,85 @@ export class SessionManager extends EventEmitter {
    * processes (and calls back) normally; REPLAY_FENCE_CAP_MS is the belt to
    * its suspenders.
    */
-  async getScrollbackForReplay(
+  async prepareReplay(
     sessionId: string,
-    replayId?: string,
-  ): Promise<{ data: string; lastSeq: number }> {
+    cols: number,
+    rows: number,
+  ): Promise<SessionReplaySnapshot> {
+    const previous = this.replayPreparations.get(sessionId) ?? Promise.resolve();
+    let release: () => void = () => undefined;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.replayPreparations.set(sessionId, current);
+    await previous;
+
+    try {
+      return await this.prepareReplayNow(sessionId, cols, rows);
+    } finally {
+      release();
+      if (this.replayPreparations.get(sessionId) === current) {
+        this.replayPreparations.delete(sessionId);
+      }
+    }
+  }
+
+  private async prepareReplayNow(
+    sessionId: string,
+    cols: number,
+    rows: number,
+  ): Promise<SessionReplaySnapshot> {
     const managed = this.sessions.get(sessionId);
     if (!managed || !managed.headlessTerm || !managed.serializeAddon) {
-      return { data: '', lastSeq: -1 };
+      const dims = validateDimensions(cols, rows);
+      return { data: '', lastSeq: -1, ...dims };
     }
     const term = managed.headlessTerm;
     const addon = managed.serializeAddon;
+    const dims = validateDimensions(cols, rows);
+
+    managed.resizeQuietUntil = Date.now() + RESIZE_QUIET_MS;
+    const altBufferActive = term.buffer.active.type === 'alternate';
+    if (managed.pty && altBufferActive) {
+      const redrawDeadline = Date.now() + REPLAY_REDRAW_CAP_MS;
+      managed.resizeQuietUntil = redrawDeadline + RESIZE_QUIET_MS;
+      const unchanged = dims.cols === managed.info.cols && dims.rows === managed.info.rows;
+
+      if (unchanged) {
+        // ConPTY ignores a same-size resize. Give the TUI enough time to see a
+        // one-row nudge before restoring the requested size; doing both calls
+        // synchronously lets ConPTY coalesce them into no notification at all.
+        const nudgeRows = dims.rows > 5 ? dims.rows - 1 : dims.rows + 1;
+        await this.resizeAndWaitForOutput(
+          managed,
+          dims.cols,
+          nudgeRows,
+          false,
+          REPLAY_NUDGE_QUIET_MS,
+          Math.min(REPLAY_NUDGE_CAP_MS, Math.max(1, redrawDeadline - Date.now())),
+        );
+      }
+
+      const targetResult = await this.resizeAndWaitForOutput(
+        managed,
+        dims.cols,
+        dims.rows,
+        true,
+        REPLAY_REDRAW_QUIET_MS,
+        Math.max(1, redrawDeadline - Date.now()),
+      );
+      if (targetResult.capped) {
+        logger.warn(
+          'session',
+          `replay redraw capped sid=${sessionId} ${dims.cols}x${dims.rows} ` +
+            `output=${targetResult.sawOutput} elapsed=${targetResult.elapsedMs}ms`,
+        );
+      }
+    } else {
+      // Normal buffers can be reflowed authoritatively by xterm itself. Exited
+      // sessions also have no process left to redraw, so only resize the mirror.
+      this.applyDimensions(managed, dims.cols, dims.rows, true);
+    }
 
     if (managed.pendingEmitTimer) {
       clearTimeout(managed.pendingEmitTimer);
@@ -455,17 +530,13 @@ export class SessionManager extends EventEmitter {
         if (settled) return;
         settled = true;
         if (fenceTimer) clearTimeout(fenceTimer);
-        if (capped) {
-          perf.counter('terminal.replay.fenceCapped', 1, { sessionId, replayId });
-          logger.warn('session', `replay fence capped sid=${sessionId} (callback dropped?)`);
-        }
+        if (capped) logger.warn('session', `replay fence capped sid=${sessionId} (callback dropped?)`);
         resolve();
       };
       fenceTimer = setTimeout(() => done(true), REPLAY_FENCE_CAP_MS);
       term.write(new Uint8Array(0), () => done(false));
     });
 
-    const serializeStarted = performance.now();
     let ansi = addon.serialize({ scrollback: SCROLLBACK_LINES });
 
     // xterm-serialize mode polyfill (Marina): older serializers miss cursor
@@ -487,22 +558,91 @@ export class SessionManager extends EventEmitter {
     if (typeof top === 'number' && typeof bot === 'number' && (top !== 0 || bot !== term.rows - 1)) {
       ansi += `\x1b[${top + 1};${bot + 1}r`;
     }
-    const serializeMs = performance.now() - serializeStarted;
-    const ansiBytes = Buffer.byteLength(ansi, 'utf8');
     const data = Buffer.from(ansi, 'utf8').toString('base64');
-    perf.span('terminal.replay.serialize', serializeMs, {
-      sessionId,
-      replayId,
-      ansiBytes,
-      base64Bytes: Buffer.byteLength(data, 'utf8'),
-      scrollbackLines: SCROLLBACK_LINES,
-      lastSeq: replayLastSeq,
-    });
 
     return {
       data,
       lastSeq: replayLastSeq,
+      cols: dims.cols,
+      rows: dims.rows,
     };
+  }
+
+  private applyDimensions(
+    managed: ManagedSession,
+    cols: number,
+    rows: number,
+    updateInfo: boolean,
+  ): void {
+    managed.pty?.resize(cols, rows);
+    try {
+      managed.headlessTerm?.resize(cols, rows);
+    } catch {
+      /* headless resize must never block the real one */
+    }
+    if (updateInfo) {
+      managed.info.cols = cols;
+      managed.info.rows = rows;
+    }
+  }
+
+  private async resizeAndWaitForOutput(
+    managed: ManagedSession,
+    cols: number,
+    rows: number,
+    updateInfo: boolean,
+    quietMs: number,
+    capMs: number,
+  ): Promise<OutputQuietResult> {
+    if (!managed.pty) {
+      this.applyDimensions(managed, cols, rows, updateInfo);
+      return { sawOutput: false, capped: false, elapsedMs: 0 };
+    }
+
+    const waiter = this.createOutputQuietWaiter(managed.info.id, managed.outputSeq, quietMs, capMs);
+    try {
+      this.applyDimensions(managed, cols, rows, updateInfo);
+    } catch (err) {
+      waiter.cancel();
+      throw err;
+    }
+    return waiter.promise;
+  }
+
+  private createOutputQuietWaiter(
+    sessionId: string,
+    minSeq: number,
+    quietMs: number,
+    capMs: number,
+  ): OutputQuietWaiter {
+    const startedAt = Date.now();
+    let settle: (capped: boolean) => void = () => undefined;
+    const promise = new Promise<OutputQuietResult>((resolve) => {
+      let settled = false;
+      let sawOutput = false;
+      let quietTimer: ReturnType<typeof setTimeout> | null = null;
+      let capTimer: ReturnType<typeof setTimeout> | null = null;
+      const onOutput = (payload: SessionOutputPayload): void => {
+        if (payload.sessionId !== sessionId || payload.seq < minSeq) return;
+        sawOutput = true;
+        if (quietTimer) clearTimeout(quietTimer);
+        quietTimer = setTimeout(() => settle(false), quietMs);
+      };
+
+      settle = (capped: boolean): void => {
+        if (settled) return;
+        settled = true;
+        if (quietTimer) clearTimeout(quietTimer);
+        if (capTimer) clearTimeout(capTimer);
+        this.off('sessionOutput', onOutput);
+        resolve({ sawOutput, capped, elapsedMs: Date.now() - startedAt });
+      };
+
+      this.on('sessionOutput', onOutput);
+      capTimer = setTimeout(() => settle(true), Math.max(1, capMs));
+    });
+
+    return { promise, cancel: () => settle(true) };
   }
 
   // ──────────────────────────────────────────────────────────────────
@@ -556,10 +696,6 @@ export class SessionManager extends EventEmitter {
     const { bytes, lastSeq } = managed.pendingEmit;
     managed.pendingEmit = null;
     managed.scrollbackLastSeq = lastSeq;
-    perf.counter('session.output.batchBytes', bytes.length, {
-      sessionId: managed.info.id,
-      lastSeq,
-    });
     const payload: SessionOutputPayload = {
       sessionId: managed.info.id,
       data: bytes.toString('base64'),

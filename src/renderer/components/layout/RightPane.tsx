@@ -18,11 +18,9 @@ import {
   sessionAnchorKey,
   workspaceAnchorKey,
 } from '@renderer/stores/session-store';
-import { focusStore } from '@renderer/stores/focus-store';
 import { useSettings } from '@renderer/stores/settings-store';
 import { useProject } from '@renderer/stores/project-store';
 import { closeSession, openSession, openWorkspaceSession } from '@renderer/lib/session-actions';
-import { beginTerminalTrace } from '@renderer/lib/terminal-trace';
 import { docDisplayTitle, findDocByPath } from '@renderer/lib/doc-utils';
 import { TerminalView } from '@renderer/components/terminal/TerminalView';
 import { Button } from '@renderer/components/ui/button';
@@ -133,11 +131,7 @@ export function RightPane(): JSX.Element {
                     {visibleSessions.map((s) => (
                       <DropdownMenuItem
                         key={s.id}
-                        onClick={() => {
-                          beginTerminalTrace('switch', { sessionId: s.id, label: s.displayName });
-                          sessionStore.select(s.id);
-                          focusStore.request('terminal');
-                        }}
+                        onClick={() => sessionStore.select(s.id)}
                         className="flex items-center gap-1.5"
                       >
                         <SessionDot state={s.state} />

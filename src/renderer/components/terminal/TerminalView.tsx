@@ -45,23 +45,16 @@ import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 import { pipeline } from '@renderer/cpu';
 import { CHANNELS, EVENTS } from '@shared/protocol';
-import type { DocContent, SessionOutputPayload } from '@shared/types';
+import type { DocContent, SessionOutputPayload, SessionReplaySnapshot } from '@shared/types';
 import { composeDocPasteBlock, getDocDragPath, isDocDrag } from '@renderer/lib/doc-drag';
 import { matchKeybinding } from '@shared/terminal-keybindings';
 import { attachImeCompositionEndCleaner } from '@shared/ime-textarea-workaround';
 import { attachImeCompositionPositionLock } from '@shared/ime-composition-position-lock';
 import { readClipboardText, writeClipboardText } from '@renderer/lib/clipboard';
 import { confirmDialog } from '@renderer/components/ui/confirm-dialog';
-import { useClaimFocus } from '@renderer/lib/use-claim-focus';
 import { getXtermTheme, isLightTheme, LIGHT_THEME_MIN_CONTRAST } from '@renderer/theme/xterm-themes';
 import { getSettings, useSettings } from '@renderer/stores/settings-store';
 import { setLastTerminalDims } from '@renderer/stores/session-store';
-import { perf } from '@renderer/lib/perf-runtime';
-import {
-  traceForSession,
-  traceMark,
-  endTerminalTrace,
-} from '@renderer/lib/terminal-trace';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -106,7 +99,7 @@ const REPLAY_FAILSAFE_MS = 5000;
 export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
+  const safeFitRef = useRef<(() => void) | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
   const settings = useSettings();
 
@@ -122,7 +115,6 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
   // (its descendants can't be focused), and why the old `inert` is gone:
   // focus is now intent-driven, so keys only reach the terminal when it's the
   // focus target anyway (no leak to leave inert to guard against).
-  const [termReady, setTermReady] = useState(false);
   // Snapshot taken when the context menu opens (the menu itself would
   // steal focus and could race selection state at click time).
   const [ctxHasSelection, setCtxHasSelection] = useState(false);
@@ -354,11 +346,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     if (next === current) return;
     pendingFontSizeRef.current = next;
     term.options.fontSize = next; // instant visual feedback
-    try {
-      fitRef.current?.fit();
-    } catch {
-      /* ignore */
-    }
+    safeFitRef.current?.();
     if (wheelTimerRef.current) clearTimeout(wheelTimerRef.current);
     wheelTimerRef.current = setTimeout(() => {
       wheelTimerRef.current = null;
@@ -392,17 +380,6 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     const host = hostRef.current;
     if (!host) return;
 
-    // End-to-end terminal-event trace: an 'open' gesture started in
-    // session-actions and bound this sessionId; pick it up so the mount /
-    // replay / reveal marks land on the same timeline as the pre-spawn awaits.
-    // Pick up whichever in-flight trace is bound to this session — an 'open'
-    // (new spawn, bound after the spawn IPC) or a 'switch' (dropdown select,
-    // which now remounts this view and replays, same as an open). Either way
-    // the mount / replay / reveal marks land on that trace's timeline.
-    const pendingTrace = traceForSession(sessionId);
-    const traceId = pendingTrace?.id ?? null;
-    traceMark(traceId, 'mount:effectStart');
-
     const s = getSettings();
     const themeId = s?.appearance.theme;
     const term = new Terminal({
@@ -429,6 +406,8 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     termRef.current = term;
 
     let disposed = false;
+    let replayInProgress = true;
+    let fitDeferred = false;
 
     // KBD-1: scan the shared binding table; consume matches so xterm never
     // encodes them as control bytes (unhandled Ctrl+V becomes 0x16 to the
@@ -477,7 +456,6 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
 
     const fit = new FitAddon();
     term.loadAddon(fit);
-    fitRef.current = fit;
     term.loadAddon(new WebLinksAddon());
 
     // SearchAddon (Ctrl+F). onDidChangeResults feeds the "x / N" hit counter;
@@ -497,10 +475,6 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     });
 
     term.open(host);
-    traceMark(traceId, 'xterm.open');
-    // P2: textarea now exists — eligible to claim keyboard focus immediately,
-    // even while the replay is still painting under opacity:0.
-    setTermReady(true);
 
     // PER-1: WebGL after open() (needs the canvas); on GPU context loss
     // dispose the addon and let xterm fall back to the DOM renderer.
@@ -593,16 +567,22 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     const resizeDisposable = term.onResize(({ cols, rows }) => {
       if (cols < MIN_COLS || rows < MIN_ROWS) return;
       setLastTerminalDims({ cols, rows });
+      if (replayInProgress) return;
       void window.api.invoke(CHANNELS.SESSION_RESIZE, { sessionId, cols, rows });
     });
 
-    const safeFit = (): void => {
+    const safeFit = (allowDuringReplay = false): void => {
+      if (replayInProgress && !allowDuringReplay) {
+        fitDeferred = true;
+        return;
+      }
       try {
         fit.fit();
       } catch {
         /* zero-size during layout shuffles */
       }
     };
+    safeFitRef.current = () => safeFit();
 
     // 勘误 #4: trailing debounce — dragging the pane sash fires dozens of
     // RO callbacks per second, and every one used to hit ConPTY with a
@@ -645,11 +625,6 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     let replayDone = false;
     let lastSeq = -1;
     const holdQueue: SessionOutputPayload[] = [];
-    const replayId =
-      typeof crypto !== 'undefined' && 'randomUUID' in crypto
-        ? crypto.randomUUID()
-        : `${sessionId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    const mountStarted = performance.now();
 
     // 1) subscribe FIRST (hold until replay lands)
     const unsubscribe = window.api.on<SessionOutputPayload>(EVENTS.SESSION_OUTPUT, (payload) => {
@@ -683,7 +658,6 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       // inside it is "bottom" the real final bottom. Reveal one RAF later so
       // the first visible frame is the final canvas.
       let revealed = false;
-      const fenceStarted = performance.now();
       // The fence is a Uint8Array(0), NOT write('', cb): an empty string is
       // falsy, so a fit()/resize() landing during the fence makes
       // WriteBuffer.flushSync() drop the chunk AND its callback (its
@@ -693,34 +667,21 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       const reveal = (): void => {
         if (disposed || revealed) return;
         revealed = true;
-        // The fence (zero-length-write drain) is the one reveal-path stretch
-        // with no span of its own — a stall here used to surface only as a 5s
-        // gap in totalToReveal with no obvious culprit (持久-2026-06-25).
-        perf.span('terminal.replay.fence', performance.now() - fenceStarted, {
-          sessionId,
-          replayId,
-        });
-        perf.span('terminal.replay.totalToReveal', performance.now() - mountStarted, {
-          sessionId,
-          replayId,
-        });
-        traceMark(traceId, 'fence:done');
+        replayInProgress = false;
+        if (fitDeferred) {
+          fitDeferred = false;
+          safeFit();
+        }
         term.scrollToBottom();
         requestAnimationFrame(() => {
           if (!disposed) setHostRevealed(true);
-          // The RAF after the fence is the first painted frame — the true end
-          // of the open gesture.
-          endTerminalTrace(traceId, 'painted');
         });
       };
-      traceMark(traceId, 'fence:start');
       const fallbackTimer = setTimeout(() => {
         if (disposed || revealed) return;
         console.warn('[TerminalView] replay fence timed out; revealing terminal fallback', {
           sessionId,
         });
-        perf.counter('terminal.replay.fenceTimeout', 1, { sessionId, replayId });
-        traceMark(traceId, 'fence:TIMEOUT');
         reveal();
       }, REPLAY_FAILSAFE_MS);
       term.write(new Uint8Array(0), () => {
@@ -730,101 +691,81 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     };
 
     void (async () => {
-      safeFit();
-      // mount-resize: even a no-op opens main's resize-quiet window so the
-      // TUI's "I got re-shown" repaint doesn't light the status dot.
-      void window.api.invoke(CHANNELS.SESSION_RESIZE, {
-        sessionId,
-        cols: term.cols,
-        rows: term.rows,
-      });
+      safeFit(true);
       try {
-        traceMark(traceId, 'replay.ipc:start');
-        const ipcStarted = performance.now();
-        const scrollbackPromise = window.api.invoke<
-          { sessionId: string; replayId: string },
-          { data: string; lastSeq: number }
-        >(CHANNELS.SESSION_SCROLLBACK, { sessionId, replayId });
-        let scrollbackTimer: ReturnType<typeof setTimeout> | null = null;
-        const replay = await Promise.race([
-          scrollbackPromise,
-          new Promise<{ data: string; lastSeq: number }>((_, reject) => {
-            scrollbackTimer = setTimeout(
-              () => reject(new Error(`SESSION_SCROLLBACK timed out after ${REPLAY_FAILSAFE_MS}ms`)),
-              REPLAY_FAILSAFE_MS,
-            );
-          }),
-        ]).finally(() => {
-          if (scrollbackTimer !== null) clearTimeout(scrollbackTimer);
-        });
-        perf.span('terminal.replay.ipc', performance.now() - ipcStarted, {
-          sessionId,
-          replayId,
-          base64Bytes: replay.data.length,
-          lastSeq: replay.lastSeq,
-        });
-        traceMark(traceId, 'replay.ipc:done');
+        const requestReplay = async (): Promise<SessionReplaySnapshot> => {
+          const scrollbackPromise = window.api.invoke<
+            { sessionId: string; cols: number; rows: number },
+            SessionReplaySnapshot
+          >(CHANNELS.SESSION_SCROLLBACK, {
+            sessionId,
+            cols: term.cols,
+            rows: term.rows,
+          });
+          let scrollbackTimer: ReturnType<typeof setTimeout> | null = null;
+          return Promise.race([
+            scrollbackPromise,
+            new Promise<SessionReplaySnapshot>((_, reject) => {
+              scrollbackTimer = setTimeout(
+                () => reject(new Error(`SESSION_SCROLLBACK timed out after ${REPLAY_FAILSAFE_MS}ms`)),
+                REPLAY_FAILSAFE_MS,
+              );
+            }),
+          ]).finally(() => {
+            if (scrollbackTimer !== null) clearTimeout(scrollbackTimer);
+          });
+        };
+
+        let replay = await requestReplay();
+        if (disposed) return;
+
+        // Font readiness and ResizeObserver callbacks can land while main is
+        // preparing the snapshot. Apply one deferred fit before writing any
+        // ANSI; if its grid changed, discard the old-size snapshot and retry
+        // exactly once. Fits arriving during the retry remain deferred until
+        // the replay fence, so the second snapshot's grid stays stable.
+        if (fitDeferred) {
+          fitDeferred = false;
+          safeFit(true);
+          if (term.cols !== replay.cols || term.rows !== replay.rows) {
+            replay = await requestReplay();
+            if (disposed) return;
+          }
+        }
+
+        if (term.cols !== replay.cols || term.rows !== replay.rows) {
+          throw new Error(
+            `SESSION_SCROLLBACK size mismatch renderer=${term.cols}x${term.rows} ` +
+              `snapshot=${replay.cols}x${replay.rows}`,
+          );
+        }
         if (disposed) return;
         if (replay.data) {
           // FLK-1: chunked write + yields — a multi-MB scrollback written in
           // one call blocks the main thread for 100-300ms.
-          const decodeStarted = performance.now();
           const all = b64ToBytes(replay.data);
-          perf.span('terminal.replay.decode', performance.now() - decodeStarted, {
-            sessionId,
-            replayId,
-            base64Bytes: replay.data.length,
-            bytes: all.length,
-          });
-          const writeStarted = performance.now();
-          let chunks = 0;
           for (let i = 0; i < all.length; i += REPLAY_CHUNK_BYTES) {
             if (disposed) return;
-            chunks += 1;
             term.write(all.subarray(i, i + REPLAY_CHUNK_BYTES));
             if (all.length > REPLAY_CHUNK_BYTES && i + REPLAY_CHUNK_BYTES < all.length) {
               await new Promise((r) => setTimeout(r, 0));
             }
           }
-          perf.span('terminal.replay.write', performance.now() - writeStarted, {
-            sessionId,
-            replayId,
-            bytes: all.length,
-            chunks,
-            holdQueue: holdQueue.length,
-          });
-          traceMark(traceId, 'replay.write');
         }
         if (disposed) return;
         lastSeq = replay.lastSeq;
         replayDone = true;
-        let filteredHold = 0;
-        let flushedHold = 0;
         for (const payload of holdQueue) {
           if (payload.seq <= lastSeq) {
-            filteredHold += 1;
             continue;
           }
           lastSeq = payload.seq;
-          flushedHold += 1;
           term.write(b64ToBytes(payload.data));
         }
-        perf.counter('terminal.replay.holdQueueFiltered', filteredHold, {
-          sessionId,
-          replayId,
-        });
-        perf.counter('terminal.replay.holdQueueFlushed', flushedHold, {
-          sessionId,
-          replayId,
-        });
         holdQueue.length = 0;
         finishReplay();
       } catch (err) {
         console.warn('[TerminalView] scrollback replay failed, going live', err);
-        perf.counter('terminal.replay.failed', 1, {
-          sessionId,
-          replayId,
-        });
         if (disposed) return;
         for (const payload of holdQueue) {
           if (payload.seq > lastSeq) {
@@ -840,7 +781,6 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
 
     return () => {
       disposed = true;
-      setTermReady(false);
       if (resizeTimer !== null) clearTimeout(resizeTimer);
       if (selectionTimer !== null) clearTimeout(selectionTimer);
       unsubscribe();
@@ -863,19 +803,12 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       }
       term.dispose();
       termRef.current = null;
-      fitRef.current = null;
+      safeFitRef.current = null;
       searchRef.current = null;
     };
     // Recreate only per session — theme/font changes apply via the effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
-
-  // P2: the SCROLL-1 `inert`-while-hidden guard is gone. It existed because the
-  // terminal used to grab focus on every reveal, so keys typed during replay
-  // had to be blocked from leaking. Focus is now intent-driven (useClaimFocus):
-  // keys reach the terminal only when it's the focus target, and then they
-  // SHOULD go to the PTY. The host stays focusable throughout (opacity:0, not
-  // visibility:hidden) so that early input isn't dropped.
 
   // Flush any pending Ctrl+wheel font-size write on unmount.
   useEffect(() => {
@@ -883,21 +816,6 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       if (wheelTimerRef.current) clearTimeout(wheelTimerRef.current);
     };
   }, []);
-
-  // Focus coordination (P5): claim 'terminal' focus only when the focus-store
-  // intent is the terminal (explicit session select / spawn / root view) —
-  // NOT on every reveal. Selecting a doc whose intent is the editor leaves the
-  // terminal unfocused even though it just remounted. Gated on termReady (P2),
-  // so focus lands as soon as xterm opens — keystrokes reach the PTY during
-  // the replay instead of being dropped. Skip when the search bar owns focus.
-  useClaimFocus(
-    'terminal',
-    () => {
-      if (searchVisibleRef.current) return;
-      termRef.current?.focus();
-    },
-    termReady,
-  );
 
   // Live search: each query/case change re-runs findNext so the hit counter
   // updates per keystroke; clearing the query drops the highlights.
@@ -927,11 +845,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     term.options.fontFamily = settings.appearance.terminalFontFamily;
     term.options.fontSize = settings.appearance.terminalFontSize;
     term.options.lineHeight = settings.appearance.terminalLineHeight;
-    try {
-      fitRef.current?.fit(); // metrics changed → re-measure (PTY hears via onResize)
-    } catch {
-      /* ignore */
-    }
+    safeFitRef.current?.(); // metrics changed → re-measure (PTY hears via onResize)
   }, [settings]);
 
   return (

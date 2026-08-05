@@ -345,10 +345,11 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
 
   ipcMain.handle(
     CHANNELS.SESSION_SCROLLBACK,
-    (event, payload: { sessionId: string; replayId?: string }) =>
-      requireContext(event).sessionManager.getScrollbackForReplay(
+    (event, payload: { sessionId: string; cols: number; rows: number }) =>
+      requireContext(event).sessionManager.prepareReplay(
         payload.sessionId,
-        payload.replayId,
+        payload.cols,
+        payload.rows,
       ),
   );
 
