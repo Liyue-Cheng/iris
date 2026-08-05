@@ -19,6 +19,41 @@
 @tailwind components;
 @tailwind utilities;
 
+@keyframes iris-dialog-fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes iris-dialog-fade-out {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+.iris-dialog-content[data-state='open'] {
+  animation: iris-dialog-fade-in 150ms ease-out;
+}
+
+.iris-dialog-content[data-state='closed'] {
+  animation: iris-dialog-fade-out 100ms ease-in;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .iris-dialog-content[data-state='open'],
+  .iris-dialog-content[data-state='closed'] {
+    animation: none;
+  }
+}
+
 /* ──────────────────────────────────────────────────────────────────
  * Rose Pine (default dark)
  * ────────────────────────────────────────────────────────────────── */
