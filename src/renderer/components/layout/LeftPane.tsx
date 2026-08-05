@@ -127,7 +127,7 @@ export function LeftPane(): JSX.Element {
               >
                 <GitBranch className={cn('!size-4', (gitLoading || gitPending) && 'animate-pulse')} />
                 {gitCount > 0 && (
-                  <span className="absolute -right-px -top-px min-w-3 rounded-sm bg-primary px-0.5 text-[9px] leading-3 text-primary-foreground">
+                  <span className="absolute -right-px -top-px min-w-3 rounded-sm bg-muted px-0.5 text-[9px] leading-3 text-muted-foreground">
                     {gitCount}
                   </span>
                 )}

@@ -5,17 +5,22 @@ import { CreateDocDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DeleteDocDialog } from '@renderer/components/doc/DeleteDocDialog';
 import { ConfirmDialog } from '@renderer/components/ui/confirm-dialog';
 import { SettingsView, useSettingsViewOpen } from '@renderer/components/settings/SettingsView';
+import { WelcomeView } from '@renderer/components/project/WelcomeView';
+import { useProject } from '@renderer/stores/project-store';
 
 export function App(): JSX.Element {
   // Settings is a view, not a modal (Marina CP-4 decision): it replaces the
   // three-pane body; TitleBar stays for the drag region and window controls.
   const settingsOpen = useSettingsViewOpen();
+  const { scan } = useProject();
 
   return (
     <TooltipProvider delayDuration={400}>
       <div className="flex h-full flex-col">
         <TitleBar />
-        <div className="min-h-0 flex-1">{settingsOpen ? <SettingsView /> : <ThreePane />}</div>
+        <div className="min-h-0 flex-1">
+          {settingsOpen ? <SettingsView /> : scan ? <ThreePane /> : <WelcomeView />}
+        </div>
       </div>
       <CreateDocDialog />
       <DeleteDocDialog />

@@ -12,6 +12,7 @@ import { docISA } from './doc-isa';
 import { sessionISA } from './session-isa';
 import { stylesISA } from './styles-isa';
 import { agentISA } from './agent-isa';
+import { gitISA } from './git-isa';
 
 export const ISA: Record<string, InstructionDefinition> = {
   ...appISA,
@@ -21,4 +22,5 @@ export const ISA: Record<string, InstructionDefinition> = {
   ...sessionISA,
   ...stylesISA,
   ...agentISA,
+  ...gitISA,
 };

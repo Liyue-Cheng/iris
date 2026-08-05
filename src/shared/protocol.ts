@@ -16,6 +16,10 @@ export const CHANNELS = {
   SETTINGS_UPDATE: 'settings:update',
   /** Verb (instruction-backed): open a project, start watching, persist lastRoot. */
   PROJECT_OPEN: 'project:open',
+  /** Read-side projection for the welcome page's MRU list. */
+  PROJECT_RECENT_LIST: 'project:recent-list',
+  /** Verb: forget one entry from the welcome page's MRU list. */
+  PROJECT_RECENT_REMOVE: 'project:recent-remove',
   /** Verb: idempotent protocol scaffold (folders + constitution + AGENTS.md). */
   PROJECT_INIT: 'project:init',
   /** Verb: create a sub-workspace (human gesture only). */

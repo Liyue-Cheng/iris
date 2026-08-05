@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { CHANNELS, EVENTS } from '@shared/protocol';
 import type { GitResource, GitResourceGroup, GitSnapshot } from '@shared/types';
+import { pipeline } from '@renderer/cpu';
 
 type State = { loading: boolean; snapshot: GitSnapshot | null; error: string | null; pending: string | null };
 let state: State = { loading: false, snapshot: null, error: null, pending: null };
@@ -15,13 +16,16 @@ export const gitStore = {
     try { set({ snapshot: await window.api.invoke<undefined, GitSnapshot>(CHANNELS.GIT_STATUS), loading: false }); }
     catch (err) { set({ loading: false, error: err instanceof Error ? err.message : String(err) }); }
   },
-  async stage(paths: string[]): Promise<void> { await this.mutate('stage', CHANNELS.GIT_STAGE, { paths }); },
-  async unstage(paths: string[]): Promise<void> { await this.mutate('unstage', CHANNELS.GIT_UNSTAGE, { paths }); },
-  async commit(message: string): Promise<void> { await this.mutate('commit', CHANNELS.GIT_COMMIT, { message }); },
-  async switchBranch(branch: string): Promise<void> { await this.mutate('switch-branch', CHANNELS.GIT_SWITCH_BRANCH, { branch }); },
-  async mutate(kind: string, channel: string, payload: unknown): Promise<void> {
+  async stage(paths: string[]): Promise<void> { await this.mutate('stage', 'git.stage', { paths }); },
+  async unstage(paths: string[]): Promise<void> { await this.mutate('unstage', 'git.unstage', { paths }); },
+  async commit(message: string): Promise<void> { await this.mutate('commit', 'git.commit', { message }); },
+  async switchBranch(branch: string): Promise<void> { await this.mutate('switch-branch', 'git.switch-branch', { branch }); },
+  async mutate(kind: string, instruction: string, payload: unknown): Promise<void> {
     set({ pending: kind, error: null });
-    try { set({ snapshot: await window.api.invoke<unknown, GitSnapshot>(channel, payload), pending: null }); }
+    try {
+      const snapshot = await pipeline.dispatch(instruction, payload) as GitSnapshot;
+      set({ snapshot, pending: null });
+    }
     catch (err) { set({ pending: null, error: err instanceof Error ? err.message : String(err) }); }
   },
 };

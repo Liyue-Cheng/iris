@@ -20,7 +20,11 @@ import { statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { JsonStore } from './persistence';
-import { SettingsManager, settingsFilePath } from './settings-manager';
+import {
+  projectRootsForStartup,
+  SettingsManager,
+  settingsFilePath,
+} from './settings-manager';
 import { ProjectManager } from './project-manager';
 import { GitManager } from './git-manager';
 import { SessionManager } from './session-manager';
@@ -87,7 +91,7 @@ function parseProjectRootFromArgv(argv: string[], cwd: string): string | null {
 
 // A second launch opens a NEW window (VS Code-style multi-window) instead of
 // just focusing the first. If the launch named a folder, bind the new window
-// to it; otherwise fall back to the last project. (Runs only in the instance
+// to it; otherwise follow the startup-restore preference. (Runs only in the instance
 // that holds the lock; the loser exited synchronously in index.ts after the
 // requestSingleInstanceLock call that fired this very event.)
 app.on('second-instance', (_event, argv, workingDirectory) => {
@@ -96,9 +100,10 @@ app.on('second-instance', (_event, argv, workingDirectory) => {
   // would take down the WHOLE app, including the already-open first window
   // (the "开窗口2 把窗口1 搞坏" symptom). Catch, log, and keep the app alive.
   try {
+    const settings = settingsManager.get();
     const root =
       parseProjectRootFromArgv(argv, workingDirectory) ??
-      settingsManager.get().project.lastRoot ??
+      projectRootsForStartup(settings).at(-1) ??
       null;
     logger.info('window', `second-instance: argv=${JSON.stringify(argv)} → root=${root ?? '∅'}`);
     createWindow(root);
@@ -379,24 +384,15 @@ app.whenReady().then(async () => {
     },
   );
 
-  // Restore the windows open at last quit: one per project root (multi-window).
-  // Fall back to the deprecated lastRoot for settings written by v1.0, and to a
-  // single empty window when there's no history. Each window's renderer learns
-  // its bound root via WINDOW_BOOTSTRAP. A root that no longer opens surfaces
-  // the in-app error state in its own window and never blocks the others.
-  const restore = settingsManager.get().project;
-  const roots =
-    restore.openRoots.length > 0
-      ? restore.openRoots
-      : restore.lastRoot
-        ? [restore.lastRoot]
-        : [];
+  // Welcome is the default startup. When explicitly enabled, restore the
+  // windows open at last quit (falling back to v1.0's deprecated lastRoot).
+  const roots = projectRootsForStartup(settingsManager.get());
   if (roots.length === 0) createWindow(null);
   else for (const root of roots) createWindow(root);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow(settingsManager.get().project.lastRoot ?? null);
+      createWindow(projectRootsForStartup(settingsManager.get()).at(-1) ?? null);
     }
   });
 });

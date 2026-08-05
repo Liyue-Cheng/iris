@@ -1,6 +1,6 @@
 ---
 title: Markdown 渲染兼容性测试
-reflects: 6cd7ab97d565a684689f2280bad0c68269df8111
+reflects: c07af2434e26b5bfb6d5899fa131954062396ade
 tags:
   - markdown
   - compatibility
@@ -172,6 +172,18 @@ Write-Output $document.Length
 | A | B |
 | - | - |
 | 1 | 2 |
+
+表格单元格中的长结构：
+
+以下样例用于检查长内容是否导致表格横向撑破、单元格换行异常、格式解析错误或编辑/阅读模式切换跳动：
+
+| 场景 | 长内容 | 观察点 |
+| :--- | :--- | :--- |
+| 不可断字符串 | `abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789` | 长 token 应在单元格内换行或由容器横向滚动，不得撑破页面。 |
+| 长中文文本 | 这是一段用于测试表格单元格自动换行的中文文本，内容足够长以覆盖窄屏和宽屏布局，并检查行高是否稳定。 | 中文应按字符换行，不能遮挡相邻列或导致列宽无限增长。 |
+| 长链接 | [长路径与查询参数示例](https://example.com/markdown/compatibility/table/cell/with/a/very/long/path?source=iris&mode=compatibility&case=long-structures) | 链接文本应保持可点击，目标地址不应撑宽表格。 |
+| 长行内代码 | `const documentMeta = { title: "Markdown 渲染兼容性测试", reflects: "c07af2434e26b5bfb6d5899fa131954062396ade" }` | 等宽文本应保持格式，并在可用宽度不足时稳定降级。 |
+| 混合格式与转义 | ***加粗斜体的长文本内容***、~~删除线内容~~、`inline code`、[链接](https://example.com) 与 A \| B | 粗体、删除线、代码、链接和转义竖线应同时正确解析。 |
 
 ## 8. 图片
 
@@ -360,6 +372,8 @@ HTML 实体：& < > " © ☃。
 * [x] 各语言代码块高亮合理且不会横向撑破页面。
 
 * [x] 表格对齐、换行、转义竖线和窄屏滚动正确。
+
+* [ ] 表格单元格中的长文本、不可断字符串、长链接、长行内代码和混合格式不会撑破布局或破坏解析。
 
 * [ ] 本地 PNG、本地 SVG、HTML 图片、图片链接和远程图片正确显示。 无法显示
 

@@ -32,6 +32,18 @@ const THEME_LABELS: Record<ThemeId, { label: string; icon: typeof Moon }> = {
   'rose-pine': { label: 'Rosé Pine', icon: Moon },
   'rose-pine-dawn': { label: 'Rosé Pine Dawn', icon: Sun },
   'rose-pine-moon': { label: 'Rosé Pine Moon', icon: MoonStar },
+  cutie: { label: 'Cutie', icon: Sun },
+  business: { label: 'Business', icon: Moon },
+  ubuntu: { label: 'Ubuntu', icon: Moon },
+  'windows-terminal': { label: 'Windows Terminal', icon: Moon },
+  'one-dark-pro': { label: 'One Dark Pro', icon: Moon },
+  dracula: { label: 'Dracula', icon: Moon },
+  'tokyo-night': { label: 'Tokyo Night', icon: Moon },
+  'catppuccin-mocha': { label: 'Catppuccin Mocha', icon: Moon },
+  'catppuccin-latte': { label: 'Catppuccin Latte', icon: Sun },
+  'tokyo-night-day': { label: 'Tokyo Night Day', icon: Sun },
+  'light-pink': { label: 'Light Pink', icon: Sun },
+  fairyfloss: { label: 'Fairyfloss', icon: Moon },
 };
 
 function ProjectCrumb(): JSX.Element | null {
@@ -211,7 +223,7 @@ export function TitleBar(): JSX.Element {
             </TooltipTrigger>
             <TooltipContent>主题</TooltipContent>
           </Tooltip>
-          <DropdownMenuContent align="end">
+          <DropdownMenuContent align="end" className="max-h-[70vh] overflow-y-auto">
             <DropdownMenuRadioGroup value={theme} onValueChange={switchTheme}>
               {(Object.keys(THEME_LABELS) as ThemeId[]).map((id) => {
                 const { label, icon: Icon } = THEME_LABELS[id];

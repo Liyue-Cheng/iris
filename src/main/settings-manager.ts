@@ -14,7 +14,7 @@
  */
 import { EventEmitter } from 'node:events';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, normalize, resolve } from 'node:path';
 import type { DeepPartial, Settings, ThemeId } from '@shared/types';
 import { getBuildType } from './build-type';
 import { JsonStore } from './persistence';
@@ -44,6 +44,8 @@ export function settingsFilePath(): string {
   return join(appDataDir(), 'settings.json');
 }
 
+export const MAX_RECENT_ROOTS = 10;
+
 export const DEFAULT_SETTINGS: Settings = {
   version: 1,
   appearance: {
@@ -56,6 +58,7 @@ export const DEFAULT_SETTINGS: Settings = {
     uiZoom: 1.0,
   },
   behavior: {
+    restoreProjectsOnStartup: false,
     selectOnCopy: true,
     terminalRightClick: 'menu',
     confirmOnQuit: true,
@@ -66,6 +69,7 @@ export const DEFAULT_SETTINGS: Settings = {
   project: {
     lastRoot: null,
     openRoots: [],
+    recentRoots: [],
   },
   agents: [
     { id: 'claude', label: 'claude', command: 'claude', injection: 'hook', onExit: 'keep-shell' },
@@ -79,7 +83,23 @@ export const DEFAULT_SETTINGS: Settings = {
   },
 };
 
-const VALID_THEMES: ThemeId[] = ['rose-pine', 'rose-pine-dawn', 'rose-pine-moon'];
+const VALID_THEMES: ThemeId[] = [
+  'rose-pine',
+  'rose-pine-dawn',
+  'rose-pine-moon',
+  'cutie',
+  'business',
+  'ubuntu',
+  'windows-terminal',
+  'one-dark-pro',
+  'dracula',
+  'tokyo-night',
+  'catppuccin-mocha',
+  'catppuccin-latte',
+  'tokyo-night-day',
+  'light-pink',
+  'fairyfloss',
+];
 
 export class SettingsError extends Error {
   constructor(
@@ -143,6 +163,20 @@ export class SettingsManager extends EventEmitter {
     this.emit('settingsChanged', { settings: structuredClone(next), changedKeys });
   }
 
+  /** Record a successfully opened project in most-recent-first order. */
+  recordRecentProject(root: string): void {
+    this.update({
+      project: { recentRoots: addRecentRoot(this.settings.project.recentRoots, root) },
+    });
+  }
+
+  /** Forget one recent project without affecting open-window restoration. */
+  removeRecentProject(root: string): void {
+    this.update({
+      project: { recentRoots: removeRecentRoot(this.settings.project.recentRoots, root) },
+    });
+  }
+
   /** Wait for pending writes (call before quit). */
   async flush(): Promise<void> {
     await this.store.flush();
@@ -181,6 +215,41 @@ export function deepMerge<T>(target: T, partial: DeepPartial<T> | undefined): T 
     }
   }
   return result as T;
+}
+
+/** Normalize for storage while preserving the filesystem's display casing. */
+function normalizeRecentRoot(root: string): string {
+  return normalize(resolve(root));
+}
+
+/** Windows paths are case-insensitive; other platforms keep native semantics. */
+function recentRootKey(root: string): string {
+  const normalized = normalizeRecentRoot(root);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+export function addRecentRoot(current: readonly string[], root: string): string[] {
+  const normalized = normalizeRecentRoot(root);
+  const key = recentRootKey(normalized);
+  const rest = current
+    .map(normalizeRecentRoot)
+    .filter((item) => recentRootKey(item) !== key);
+  return [normalized, ...rest].slice(0, MAX_RECENT_ROOTS);
+}
+
+export function removeRecentRoot(current: readonly string[], root: string): string[] {
+  const key = recentRootKey(root);
+  return current
+    .map(normalizeRecentRoot)
+    .filter((item) => recentRootKey(item) !== key)
+    .slice(0, MAX_RECENT_ROOTS);
+}
+
+/** Startup projection: welcome page by default, optional multi-window restore. */
+export function projectRootsForStartup(settings: Settings): string[] {
+  if (!settings.behavior.restoreProjectsOnStartup) return [];
+  if (settings.project.openRoots.length > 0) return [...settings.project.openRoots];
+  return settings.project.lastRoot ? [settings.project.lastRoot] : [];
 }
 
 /** Field-level diff as dotted paths ("appearance.theme"). */
@@ -245,6 +314,12 @@ export function validateSettings(s: Settings): void {
       `appearance.uiZoom=${zoom} out of range [0.75, 1.5]`,
     );
   }
+  if (typeof s.behavior.restoreProjectsOnStartup !== 'boolean') {
+    throw new SettingsError(
+      'InvalidSettings',
+      'behavior.restoreProjectsOnStartup must be a boolean',
+    );
+  }
   if (typeof s.behavior.selectOnCopy !== 'boolean') {
     throw new SettingsError('InvalidSettings', 'behavior.selectOnCopy must be a boolean');
   }
@@ -294,6 +369,16 @@ export function validateSettings(s: Settings): void {
   }
   if (!Array.isArray(s.project.openRoots) || s.project.openRoots.some((r) => typeof r !== 'string')) {
     throw new SettingsError('InvalidSettings', 'project.openRoots must be a string[]');
+  }
+  if (
+    !Array.isArray(s.project.recentRoots) ||
+    s.project.recentRoots.length > MAX_RECENT_ROOTS ||
+    s.project.recentRoots.some((r) => typeof r !== 'string' || !isAbsolute(r))
+  ) {
+    throw new SettingsError(
+      'InvalidSettings',
+      `project.recentRoots must be an absolute string[] with at most ${MAX_RECENT_ROOTS} entries`,
+    );
   }
   if (!Array.isArray(s.agents) || s.agents.length === 0) {
     throw new SettingsError('InvalidSettings', 'agents must be a non-empty array');

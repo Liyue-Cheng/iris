@@ -5,8 +5,23 @@
  * M0 scope: settings only. Session / document models arrive in M1/M3.
  */
 
-/** v1 ships the three Rose Pine variants only (technical-design.md, 主题系统). */
-export type ThemeId = 'rose-pine' | 'rose-pine-dawn' | 'rose-pine-moon';
+/** Theme ids shared by settings, CSS palettes, and xterm. */
+export type ThemeId =
+  | 'rose-pine'
+  | 'rose-pine-dawn'
+  | 'rose-pine-moon'
+  | 'cutie'
+  | 'business'
+  | 'ubuntu'
+  | 'windows-terminal'
+  | 'one-dark-pro'
+  | 'dracula'
+  | 'tokyo-night'
+  | 'catppuccin-mocha'
+  | 'catppuccin-latte'
+  | 'tokyo-night-day'
+  | 'light-pink'
+  | 'fairyfloss';
 
 export interface Settings {
   version: 1;
@@ -25,6 +40,9 @@ export interface Settings {
     uiZoom: number;
   };
   behavior: {
+    /** Restore the projects that were open at last quit. Off by default so
+     *  startup lands on the welcome page and its recent-project list. */
+    restoreProjectsOnStartup: boolean;
     /** Terminal selection lands on the clipboard automatically (Marina CPB-C2). */
     selectOnCopy: boolean;
     /** Terminal right click: context menu, or paste straight away. */
@@ -51,6 +69,9 @@ export interface Settings {
     /** Absolute paths of the projects open at last quit — one window restored
      *  per entry on startup (multi-window). Empty → a single empty window. */
     openRoots: string[];
+    /** Most-recently-used project folders. Independent from openRoots so
+     *  closing a window never erases the welcome page's history. */
+    recentRoots: string[];
   };
   /**
    * Agent CLIs offered by the "open with X" gesture. The shell is dumb:
@@ -66,6 +87,14 @@ export interface Settings {
      *  Applies to newly mounted terminals (sessions remount on switch). */
     terminalRenderer: 'auto' | 'webgl' | 'dom';
   };
+}
+
+/** Read-side projection for one welcome-page recent project row. */
+export interface RecentProject {
+  path: string;
+  name: string;
+  /** True only when the path is currently accessible and is a directory. */
+  exists: boolean;
 }
 
 export interface AgentConfig {

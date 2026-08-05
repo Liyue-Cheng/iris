@@ -414,6 +414,18 @@ const THEMES: Array<{ id: ThemeId; label: string; icon: typeof Moon; tone: strin
   { id: 'rose-pine', label: 'Rosé Pine', icon: Moon, tone: '深色 · 默认' },
   { id: 'rose-pine-dawn', label: 'Rosé Pine Dawn', icon: Sun, tone: '浅色' },
   { id: 'rose-pine-moon', label: 'Rosé Pine Moon', icon: MoonStar, tone: '深色' },
+  { id: 'cutie', label: 'Cutie', icon: Sun, tone: '浅色 · Kawaii' },
+  { id: 'light-pink', label: 'Light Pink', icon: Sun, tone: '浅色 · Kawaii' },
+  { id: 'fairyfloss', label: 'Fairyfloss', icon: Moon, tone: '深色 · Kawaii' },
+  { id: 'business', label: 'Business', icon: Moon, tone: '深色' },
+  { id: 'ubuntu', label: 'Ubuntu', icon: Moon, tone: '深色' },
+  { id: 'windows-terminal', label: 'Windows Terminal', icon: Moon, tone: '深色' },
+  { id: 'one-dark-pro', label: 'One Dark Pro', icon: Moon, tone: '深色' },
+  { id: 'dracula', label: 'Dracula', icon: Moon, tone: '深色' },
+  { id: 'tokyo-night', label: 'Tokyo Night', icon: Moon, tone: '深色' },
+  { id: 'tokyo-night-day', label: 'Tokyo Night Day', icon: Sun, tone: '浅色' },
+  { id: 'catppuccin-mocha', label: 'Catppuccin Mocha', icon: Moon, tone: '深色' },
+  { id: 'catppuccin-latte', label: 'Catppuccin Latte', icon: Sun, tone: '浅色' },
 ];
 
 function AppearancePanel({ setError }: { setError: (m: string | null) => void }): JSX.Element {
@@ -425,14 +437,14 @@ function AppearancePanel({ setError }: { setError: (m: string | null) => void })
       <PanelTitle>外观</PanelTitle>
 
       <SettingRow label="主题" hint="立即生效；终端配色同步切换">
-        <div className="flex gap-2">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
           {THEMES.map((t) => (
             <button
               key={t.id}
               type="button"
               onClick={() => void updateSettings({ appearance: { theme: t.id } }, setError)}
               className={cn(
-                'flex flex-1 flex-col items-start gap-1 rounded-md border px-3 py-2 text-left',
+                'flex min-w-0 flex-col items-start gap-1 rounded-md border px-3 py-2 text-left',
                 theme === t.id ? 'border-primary bg-accent' : 'hover:bg-muted',
               )}
             >
@@ -1358,6 +1370,18 @@ function AdvancedPanel({ setError }: { setError: (m: string | null) => void }): 
   return (
     <section>
       <PanelTitle>高级</PanelTitle>
+
+      <SettingRow
+        label="启动时恢复项目"
+        hint="开启后恢复上次退出时仍打开的项目窗口；关闭时进入欢迎页"
+      >
+        <ToggleSwitch
+          checked={settings?.behavior.restoreProjectsOnStartup ?? false}
+          onChange={(v) =>
+            void updateSettings({ behavior: { restoreProjectsOnStartup: v } }, setError)
+          }
+        />
+      </SettingRow>
 
       <SettingRow
         label="会话空闲阈值（秒）"

@@ -32,6 +32,19 @@ export const projectISA: Record<string, InstructionDefinition> = {
     },
   },
 
+  'project.recent-remove': {
+    meta: {
+      description: 'Forget one project from the welcome page recent list',
+      category: 'system',
+      resourceIdentifier: () => ['settings:recent-projects'],
+      schedulingStrategy: 'serial',
+      priority: 5,
+      timeout: 5000,
+    },
+    executor: 'ipc',
+    config: { channel: CHANNELS.PROJECT_RECENT_REMOVE },
+  },
+
   'project.init': {
     meta: {
       description:

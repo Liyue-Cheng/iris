@@ -141,14 +141,20 @@ function TypeSection({
 }): JSX.Element | null {
   const [open, setOpen] = useState(true);
   const { sort, filter } = useLensPrefs();
+  const { sessions } = useSessions();
   const { label, icon: Icon } = TYPE_META[type];
 
-  // Lens filters: issues show active only; reports hide `Backlog` (literal
-  // match — the two-state report machine, C 条). Archived sections freeze
-  // whole and show everything. Then the user's sort + text filter apply.
+  // Lens filters: issues show active ones plus any resolved issue that still
+  // anchors a terminal. Exited sessions count too: their scrollback remains
+  // available until the user explicitly closes the session. Reports hide
+  // `Backlog` (literal match — the two-state report machine, C 条). Archived
+  // sections freeze whole and show everything. Then sort + text filter apply.
   const lensDocs =
     type === 'issue' && !archived
-      ? docs.filter(isActiveIssue)
+      ? docs.filter(
+          (doc) =>
+            isActiveIssue(doc) || sessions.some((session) => session.docPath === doc.path),
+        )
       : type === 'report' && !archived
         ? docs.filter((d) => d.status !== 'Backlog')
         : docs;

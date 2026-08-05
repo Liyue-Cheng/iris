@@ -9,7 +9,8 @@
  * channels are projection reads called directly by stores/ISRs.
  */
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
-import { isAbsolute, join } from 'node:path';
+import { stat } from 'node:fs/promises';
+import { basename, isAbsolute, join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { CHANNELS, EVENTS } from '@shared/protocol';
@@ -22,6 +23,7 @@ import type {
   IrisScanResult,
   PingResult,
   RawTreeNode,
+  RecentProject,
   SessionExitedPayload,
   SessionInfo,
   SessionOutputPayload,
@@ -82,15 +84,42 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     async (event, payload: { root: string }): Promise<IrisScanResult> => {
       const ctx = requireContext(event);
       const result = await ctx.projectManager.open(payload.root);
-      await ctx.gitManager.open(payload.root);
+      await ctx.gitManager.open(result.projectRoot);
       // Bind this window to the opened project so WINDOW_BOOTSTRAP and restore
       // persistence see the current root.
       ctx.projectRoot = result.projectRoot;
       // Snapshot all open windows' projects for restore on next launch. Verb
       // side effect, so it lives here in the instruction body, not in some
       // renderer afterthought.
+      settingsManager.recordRecentProject(result.projectRoot);
       persistOpenRoots(settingsManager);
       return result;
+    },
+  );
+
+  ipcMain.handle(CHANNELS.PROJECT_RECENT_LIST, async (): Promise<RecentProject[]> => {
+    const roots = settingsManager.get().project.recentRoots;
+    return Promise.all(
+      roots.map(async (path): Promise<RecentProject> => {
+        let exists = false;
+        try {
+          exists = (await stat(path)).isDirectory();
+        } catch {
+          // Keep stale history visible so the user can understand and remove it.
+        }
+        return { path, name: basename(path) || path, exists };
+      }),
+    );
+  });
+
+  ipcMain.handle(
+    CHANNELS.PROJECT_RECENT_REMOVE,
+    (_event, payload: { path: string }): { removed: true } => {
+      if (!payload || typeof payload.path !== 'string' || payload.path.trim() === '') {
+        throw new Error('[project:recent-remove] path must be a non-empty string');
+      }
+      settingsManager.removeRecentProject(payload.path);
+      return { removed: true };
     },
   );
 
