@@ -39,7 +39,7 @@ describe('initIris', () => {
     expect(r.agentsMd).toBe('created');
 
     const constitution = await fs.readFile(join(dir, '.iris', 'CONVENTIONS.md'), 'utf8');
-    expect(constitution).toContain('protocol: 1');
+    expect(constitution).toContain('protocol: 2');
     // AGENTS.md carries the version-stamped managed block.
     const agents = await fs.readFile(join(dir, 'AGENTS.md'), 'utf8');
     expect(agents).toContain(`<iris-software version="${V}"`);
@@ -47,7 +47,7 @@ describe('initIris', () => {
 
     const scan = await pm.scan();
     expect(scan.hasIris).toBe(true);
-    expect(scan.constitution).toEqual({ exists: true, protocol: 1 });
+    expect(scan.constitution).toEqual({ exists: true, protocol: 2 });
   });
 
   it('is idempotent — second run touches nothing', async () => {

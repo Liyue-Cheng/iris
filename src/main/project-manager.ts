@@ -30,7 +30,7 @@ import type {
   SoftwarePromptState,
 } from '@shared/types';
 import { DOC_TYPES } from '@shared/types';
-import { slugify, yamlScalar } from '@shared/markdown-utils';
+import { slugify } from '@shared/markdown-utils';
 import { parseFrontmatter, scanProject, scanRawTree } from './iris-scanner';
 import { seedProjectStyleMaps } from './style-maps-store';
 import { CONSTITUTION_TEMPLATE, FOREIGN_AGENT_ENTRIES } from './iris-templates';
@@ -38,6 +38,7 @@ import { assembleContextPreview, syncEntryFile } from './agent-injection';
 import {
   classifyConstitution,
   classifySoftwareBlock,
+  docSkeleton,
   SOFTWARE_PROMPT_SHA,
 } from './software-prompt';
 import { logger } from './logger';
@@ -249,13 +250,9 @@ export class ProjectManager extends EventEmitter {
       }
     }
 
-    const fmLines = [`title: ${yamlScalar(title)}`];
-    // Stored value = displayed value (规约六态/两态, 批次2).
-    if (type === 'issue') fmLines.push('status: Todo');
-    if (type === 'report') fmLines.push('status: Active');
     // No body H1: the typed header owns the title (frontmatter 不进正文编辑器);
     // a scaffolded heading would render the title twice.
-    const content = `---\n${fmLines.join('\n')}\n---\n`;
+    const content = docSkeleton(type, title);
 
     const relPath = `${workspacePath}/${type}/${fileName}`;
     const abs = this.resolveInside(root, relPath);

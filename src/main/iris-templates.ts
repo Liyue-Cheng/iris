@@ -18,8 +18,10 @@
  */
 
 /** Current protocol version written into fresh constitutions and the
- *  `<iris-software>` block's `protocol=` attribute. */
-export const PROTOCOL_VERSION = 1;
+ *  `<iris-software>` block's `protocol=` attribute.
+ *  2 — issue/report 写入纪律对调（issue 正文倾向追加，report 可自由修改）、
+ *  frontmatter schema 与 todo 收集机制进入 software 层。 */
+export const PROTOCOL_VERSION = 2;
 
 // ──────────────────────────────────────────────────────────────────
 // Software layer — the `<iris-software>` managed-block body.
@@ -43,13 +45,46 @@ Typed folders — \`status/\`, \`issue/\`, \`report/\`, \`misc/\` — may appear
 depth. Any folder containing typed folders is a **workspace**; a document's
 type is decided by the nearest enclosing typed folder.
 
-- \`status/\` — Current state of the codebase; keep in sync with reality. Every
-  status doc carries \`reflects: <git-commit-sha>\` in frontmatter.
-- \`issue/\` — Things to do, bugs, open questions. Mark resolved via \`status:\`;
-  do not delete.
-- \`report/\` — Append-only snapshots and journals: never rewrite an existing
-  report, add new files. Frontmatter may still change.
+- \`status/\` — Current state of the codebase — a mirror, not a record: rewrite
+  freely, keep in sync with reality. Every status doc carries
+  \`reflects: <git-commit-sha>\` in frontmatter.
+- \`issue/\` — Things to do, bugs, open questions — the working record of a
+  problem. Treat the body as a record: prefer appending updates; do not
+  rewrite or delete existing content unprompted (frontmatter transitions and
+  checkbox flips are always fine). Mark resolved via \`status:\`; never delete
+  the file.
+- \`report/\` — Dated deliverables: analyses, reviews, summaries. Edit freely
+  while a report is fresh; once reality has moved on, prefer a new dated
+  report over reshaping an old one.
 - \`misc/\` — Human scratch space. Do not touch unless asked.
+
+## What the app parses
+
+Frontmatter keys are read literally — use exactly these (unknown keys are
+ignored, and a misspelled key silently drops the field):
+
+- \`title:\` — display title; falls back to the filename when absent.
+- \`status:\` — drives the issue/report lenses; values are defined in
+  \`.iris/CONVENTIONS.md\`.
+- \`labels:\` — optional list; feeds the filter chips.
+- \`reflects:\` — status docs only: the git commit sha the doc reflects.
+
+A new issue starts as (a report starts with \`status: Active\`; a status doc
+carries \`reflects:\` instead of \`status:\`):
+
+\`\`\`
+---
+title: <short title>
+status: Todo
+---
+\`\`\`
+
+The app also collects every GFM task checkbox (\`- [ ] …\`) across \`.iris/\`
+docs into a todo panel, where the user tracks open items and checks them
+off. Anything that awaits someone's action — acceptance checks, things for
+the user to verify or decide, follow-ups — must be written as task
+checkboxes, one per discrete item, never as prose or plain bullets: a
+pending item written as prose is invisible to the panel.
 
 ## How context reaches you
 
@@ -77,9 +112,12 @@ to reading \`$FOCUS_DOC\` and the referenced files themselves.
    loading context is not a task.
 2. **Write-back scope.** Write results into the nearest workspace enclosing
    \`$FOCUS_DOC\`. Do not create new workspaces unless asked.
-3. **Stamping.** After changing anything a status doc tracks, regenerate that
-   doc and restamp \`reflects:\` with current \`git HEAD\`. After a git merge, do
-   not hand-merge status docs — regenerate and restamp.
+3. **Stamping.** Status docs do not update themselves. Before ending any
+   work that changed the codebase, list the write-back workspace's
+   \`status/\` docs, update those your changes falsified, and restamp their
+   \`reflects:\` with current \`git HEAD\` — the change is not done until the
+   mirror is true again. After a git merge, do not hand-merge status docs —
+   regenerate and restamp.
 4. **No unsolicited files.** Never create a new file — reports included —
    unless the user explicitly asks. Editing the focused document is always
    fine, as are frontmatter updates (e.g. \`status:\` transitions) on existing
@@ -102,20 +140,21 @@ markdown style to write in — read \`.iris/CONVENTIONS.md\`.`;
 
 /** Appendix B — .iris/CONVENTIONS.md (project constitution), project policy only. */
 export const CONSTITUTION_TEMPLATE = `---
-protocol: 1
+protocol: 2
 ---
 
 # Iris Project Conventions
 
 This file is the **project layer**: policy that may differ per project. The
-invariant protocol (folder semantics, focus protocol, write-back scope) is
-owned by Iris and injected separately as the \`<iris-software>\` block — you do
-not need to restate it here. Keep this file short.
+invariant protocol (folder semantics, frontmatter schema, focus protocol,
+write-back scope) is owned by Iris and injected separately as the
+\`<iris-software>\` block — you do not need to restate it here. Keep this
+file short.
 
 ## State machine (\`status:\` field)
 
-The stored value IS the displayed value — write it exactly as shown (deviate
-only when reality demands).
+\`status:\` lives in frontmatter. The stored value IS the displayed value —
+write it exactly as shown (deviate only when reality demands).
 
 - Issues: \`Todo\` → \`In Progress\` → \`In Review\` → \`Done\`, with \`Blocked\` /
   \`Canceled\` as side states.
@@ -130,11 +169,6 @@ closing one out waits for the user to ask.
 
 Write plain CommonMark; the app's editor serializes with fixed remark
 defaults — match them to keep diffs quiet.
-
-Anything that asks the user to verify by hand — acceptance points, "✋ 手工
-验收" lists, "待你测试" notes — must be written as GFM task checkboxes
-(\`- [ ] …\`), one per discrete check, never as prose or plain bullets. This
-keeps every open verification trackable and impossible to overlook.
 `;
 
 /**
@@ -206,6 +240,43 @@ any depth: any folder containing typed folders is a **workspace**.
    quiet.
 10. **Off-limits.** Never modify this file. Never write outside typed
     folders. Never touch code directories unless explicitly asked.
+`,
+  // protocol-1 拆分版：三层拆分后、issue/report 纪律对调前的出厂 constitution
+  // （report 仍是 append-only，checkbox 规则还留在项目层）。
+  `---
+protocol: 1
+---
+
+# Iris Project Conventions
+
+This file is the **project layer**: policy that may differ per project. The
+invariant protocol (folder semantics, focus protocol, write-back scope) is
+owned by Iris and injected separately as the \`<iris-software>\` block — you do
+not need to restate it here. Keep this file short.
+
+## State machine (\`status:\` field)
+
+The stored value IS the displayed value — write it exactly as shown (deviate
+only when reality demands).
+
+- Issues: \`Todo\` → \`In Progress\` → \`In Review\` → \`Done\`, with \`Blocked\` /
+  \`Canceled\` as side states.
+- Reports: \`Active\` / \`Backlog\`.
+
+**Never resolve an issue unprompted.** A transition to \`Done\` or \`Canceled\`
+(and a report to \`Backlog\`) removes it from the active lens — those are the
+user's call. Advance up to \`In Review\` on your own when reality warrants;
+closing one out waits for the user to ask.
+
+## Markdown style
+
+Write plain CommonMark; the app's editor serializes with fixed remark
+defaults — match them to keep diffs quiet.
+
+Anything that asks the user to verify by hand — acceptance points, "✋ 手工
+验收" lists, "待你测试" notes — must be written as GFM task checkboxes
+(\`- [ ] …\`), one per discrete check, never as prose or plain bullets. This
+keeps every open verification trackable and impossible to overlook.
 `,
 ];
 

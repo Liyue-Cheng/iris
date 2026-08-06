@@ -100,6 +100,8 @@ export type PtySpawnFn = (
     cwd: string;
     env: Record<string, string>;
     useConpty?: boolean;
+    /** Use node-pty's bundled ConPTY DLL on Windows. */
+    useConptyDll?: boolean;
   },
 ) => IPty;
 
@@ -254,6 +256,11 @@ export class SessionManager extends EventEmitter {
         env,
         // Explicit ConPTY: avoids winpty fallback flashing a conhost window.
         useConpty: true,
+        // The bundled DLL preserves synchronized-output boundaries that the
+        // system ConPTY can split into separate data packets, which exposes a
+        // transient cursor position in xterm during Codex frame rendering.
+        // node-pty ignores this option on non-Windows platforms.
+        useConptyDll: process.platform === 'win32',
       });
     } catch (err) {
       throw new SessionManagerError(

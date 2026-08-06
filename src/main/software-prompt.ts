@@ -18,6 +18,8 @@
  *   iris-templates.ts. This module is the logic between them.
  */
 import { createHash } from 'node:crypto';
+import type { DocType } from '@shared/types';
+import { yamlScalar } from '@shared/markdown-utils';
 import {
   CONSTITUTION_TEMPLATE,
   LEGACY_CONSTITUTION_DEFAULTS,
@@ -58,7 +60,11 @@ export const SOFTWARE_PROMPT_SHA = contentHash(SOFTWARE_PROMPT_TEMPLATE);
  * untouched factory block → `stale`, safe to re-sync. APPEND the outgoing
  * SOFTWARE_PROMPT_SHA here when SOFTWARE_PROMPT_TEMPLATE changes.
  */
-export const HISTORICAL_SOFTWARE_PROMPT_SHAS: readonly string[] = [];
+export const HISTORICAL_SOFTWARE_PROMPT_SHAS: readonly string[] = [
+  // protocol-1 body: report 还是 append-only、issue 无追加纪律、无 frontmatter
+  // schema / todo 机制（"What the app parses" 一节是 protocol 2 加入的）。
+  '787bcd6a3a44',
+];
 
 const BLOCK_RE = new RegExp(`<${SOFTWARE_BLOCK_TAG}\\b([^>]*)>([\\s\\S]*?)</${SOFTWARE_BLOCK_TAG}>\\n?`);
 
@@ -167,6 +173,27 @@ export function upsertSoftwareBlock(
   }
   const [start, end] = existing.range;
   return { text: text.slice(0, start) + block + text.slice(end), action: 'updated' };
+}
+
+// ──────────────────────────────────────────────────────────────────
+// New-doc frontmatter skeleton — the single source both createDoc (UI leg)
+// and the software prompt's example (agent leg) must agree on; the
+// consistency is locked by test so the two cannot drift apart.
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * Frontmatter skeleton for a newly created doc. `reflects:` is written as an
+ * empty placeholder on status docs: stamping a sha at creation would be a lie
+ * (an empty doc reflects nothing), but the mandatory key must be visible from
+ * birth so whoever writes the first real content knows to stamp it.
+ */
+export function docSkeleton(type: DocType, title: string): string {
+  const lines = [`title: ${yamlScalar(title)}`];
+  // Stored value = displayed value (规约六态/两态, 批次2).
+  if (type === 'issue') lines.push('status: Todo');
+  if (type === 'report') lines.push('status: Active');
+  if (type === 'status') lines.push('reflects:');
+  return `---\n${lines.join('\n')}\n---\n`;
 }
 
 // ──────────────────────────────────────────────────────────────────

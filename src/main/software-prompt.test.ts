@@ -13,7 +13,10 @@ import {
   buildSoftwareBlock,
   classifyConstitution,
   classifySoftwareBlock,
+  docSkeleton,
+  HISTORICAL_SOFTWARE_PROMPT_SHAS,
   parseSoftwareBlock,
+  SOFTWARE_PROMPT_SHA,
   upsertSoftwareBlock,
 } from './software-prompt';
 
@@ -29,7 +32,7 @@ describe('software block — build & parse', () => {
     const parsed = parseSoftwareBlock(buildSoftwareBlock(V));
     expect(parsed).not.toBeNull();
     expect(parsed!.version).toBe(V);
-    expect(parsed!.attrs.protocol).toBe('1');
+    expect(parsed!.attrs.protocol).toBe('2');
     expect(parsed!.declaredSha).toBe(parsed!.actualSha); // intact
     expect(parsed!.body).toContain('Folder semantics');
   });
@@ -89,8 +92,11 @@ describe('constitution — factory-default recognition', () => {
     expect(classifyConstitution(CONSTITUTION_TEMPLATE)).toBe('current-default');
   });
 
-  it('recognizes a prior shipped template as stale (upgradeable)', () => {
-    expect(classifyConstitution(LEGACY_CONSTITUTION_DEFAULTS[0]!)).toBe('stale-default');
+  it('recognizes every prior shipped template as stale (upgradeable)', () => {
+    expect(LEGACY_CONSTITUTION_DEFAULTS.length).toBeGreaterThan(0);
+    for (const legacy of LEGACY_CONSTITUTION_DEFAULTS) {
+      expect(classifyConstitution(legacy)).toBe('stale-default');
+    }
   });
 
   it('treats a hand-edited constitution as customized', () => {
@@ -108,5 +114,35 @@ describe('software prompt body sanity', () => {
   it('carries the injection fallback rule', () => {
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('FALLBACK');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('do not re-read it from disk');
+  });
+});
+
+describe('prompt governance discipline', () => {
+  it('the historical sha archive holds well-formed shas, never the current one', () => {
+    expect(HISTORICAL_SOFTWARE_PROMPT_SHAS.length).toBeGreaterThan(0);
+    for (const sha of HISTORICAL_SOFTWARE_PROMPT_SHAS) {
+      expect(sha).toMatch(/^[0-9a-f]{12}$/);
+      expect(sha).not.toBe(SOFTWARE_PROMPT_SHA);
+    }
+  });
+});
+
+describe('doc skeleton ↔ prompt example consistency', () => {
+  it('createDoc skeletons carry exactly the protocol frontmatter', () => {
+    expect(docSkeleton('issue', 'x')).toBe('---\ntitle: x\nstatus: Todo\n---\n');
+    expect(docSkeleton('report', 'x')).toBe('---\ntitle: x\nstatus: Active\n---\n');
+    expect(docSkeleton('status', 'x')).toBe('---\ntitle: x\nreflects:\n---\n');
+    expect(docSkeleton('misc', 'x')).toBe('---\ntitle: x\n---\n');
+  });
+
+  it('the software prompt example shows the same literals the skeletons write', () => {
+    for (const literal of ['title:', 'status: Todo', 'status: Active', 'reflects:', 'labels:']) {
+      expect(SOFTWARE_PROMPT_TEMPLATE).toContain(literal);
+    }
+  });
+
+  it('the constitution owns the status values the skeletons seed', () => {
+    expect(CONSTITUTION_TEMPLATE).toContain('`Todo`');
+    expect(CONSTITUTION_TEMPLATE).toContain('`Active`');
   });
 });

@@ -1,8 +1,9 @@
 /**
- * Report panel — "冻结的过去". Reports are append-only dated snapshots, so the
- * natural shape is a timeline: newest first, bucketed by recency (今天 / 近7天
- * / 近30天 / 更早) with sticky headers. Active vs 全部 mirrors the left lens
- * (Backlog reports are settled, hidden by default).
+ * Report panel — 有日期的交付物. Reports are dated deliverables (analyses,
+ * reviews, summaries) — editable while fresh — so the natural shape is a
+ * timeline: newest first, bucketed by recency (今天 / 近7天 / 近30天 / 更早)
+ * with sticky headers. Active vs 全部 mirrors the left lens (Backlog reports
+ * are settled, hidden by default).
  */
 import { useState } from 'react';
 import { Archive, FileWarning, Plus } from 'lucide-react';
@@ -86,7 +87,7 @@ export function ReportTimeline({
     <div className="flex h-full flex-col">
       <div className={PANEL_BAR}>
         <h2 className="text-sm font-semibold">Report</h2>
-        <span className="text-[11px] text-muted-foreground">冻结的过去</span>
+        <span className="text-[11px] text-muted-foreground">有日期的交付物</span>
         {workspacePath && (
           <button
             type="button"
