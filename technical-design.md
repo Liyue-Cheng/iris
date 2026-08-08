@@ -18,6 +18,7 @@
 | 源码编辑 | CodeMirror 6 | raw toggle 逃生舱 |
 | 文档树 | react-arborist 或社区 shadcn tree-view | shadcn 唯一缺口 |
 | 文件监听 | chokidar | Electron 主进程（Node） |
+| 文档资产 | sibling `.assets/` + remark AST | 主进程按内容 hash 原子落盘；无 manifest，引用即索引 |
 | PTY | node-pty + xterm.js（含 webgl/fit/serialize/headless 等 addon） | 直接复用 Marina 的会话层 |
 | git | shell out 或 simple-git | v1 无 git 功能（reflects 延后），暂不引入 |
 | License | AGPL-3.0 | Marina 为 MIT、同一作者，复制无障碍 |

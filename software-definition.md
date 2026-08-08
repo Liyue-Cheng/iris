@@ -58,6 +58,8 @@ my-project/
 │   ├── CONVENTIONS.md        # 宪法本体。手写一次。App 只读,agent 不许动。
 │   ├── status/               # 当前真相。AI 实时维护。带 commit 戳。
 │   ├── issue/                # 待处理的事和已知问题。
+│   │   ├── auth.md
+│   │   └── auth.assets/      # auth.md 独占的资产目录,不参与 PM 扫描。
 │   ├── report/               # 一次性快照,只追加归档。
 │   ├── misc/                 # 人的草稿。系统外。
 │   └── spike-auth/           # ← 一个子工作区(任意名字,内含类型文件夹)
@@ -107,6 +109,19 @@ reflects: a1b3c2              # agent 侧盖戳约定:本文反映哪个 commit(
 - **键**:按字面识别(`status:` 存在 → 任务视图;`reflects:` → 留给后续的过期计算)。
 - **值**:agent 按宪法填,允许偏离。
 - **文件命名**:`issue/` 与 `report/` 中新建文件带日期前缀(`2026-06-10-auth-refactor.md`),保证多人/多 agent 并发新建不撞名。
+
+### 文档资产
+
+每篇文档可拥有一个同目录、同名的 companion 目录:`auth.md` 拥有
+`auth.assets/`。正文只写普通相对 Markdown 链接,例如
+`![流程](./auth.assets/flow--c34ab87d2e10.png)`。协议不增加 manifest、
+frontmatter 资产表或全局数据库;磁盘文件与 Markdown 引用本身就是索引。
+
+导入文件使用“可读原名 + SHA-256 前缀”命名,同一文档内按内容去重。已引用资产
+不可原地覆盖,替换时写新文件并更新链接。Iris 从磁盘推导 `referenced`、
+`orphan`、`missing`、`unmanaged` 四种状态;孤儿不会自动删除。人类删除文档时,
+文档与 companion 目录作为聚合进入系统回收站。既有项目内相对链接和 HTTPS 链接
+继续兼容但不受管;`blob:` 不得持久化。
 
 ### 规约的作用域链
 

@@ -63,6 +63,8 @@ my-project/
 │   ├── CONVENTIONS.md        # The constitution. Hand-written once. App reads it; agents must not touch it.
 │   ├── status/               # Current truth. Maintained live by the AI. Carries a commit stamp.
 │   ├── issue/                # Things to do and known problems.
+│   │   ├── auth.md
+│   │   └── auth.assets/      # Assets owned by auth.md; opaque to PM scanning.
 │   ├── report/               # One-shot snapshots; append-only archive.
 │   ├── misc/                 # Human scratch space. Outside the system.
 │   └── spike-auth/           # ← a sub-workspace (any name; contains typed folders)
@@ -110,6 +112,22 @@ labels: [auth, backend]    # soft values, passed through verbatim
 - **Keys** are recognized literally (`status:` present → task view; `reflects:` → reserved for staleness calculation).
 - **Values** are filled by the agent per the constitution; deviation is allowed.
 - **File naming:** new files in `issue/` and `report/` carry a date prefix (`2026-06-10-auth-refactor.md`) so concurrent creation by multiple humans/agents never collides.
+
+### Document assets
+
+An Iris document owns an optional sibling directory named after it: `auth.md`
+owns `auth.assets/`. The body uses ordinary relative Markdown links such as
+`![flow](./auth.assets/flow--c34ab87d2e10.png)`, so the aggregate remains usable
+without Iris and moves cleanly between machines. There is no manifest,
+frontmatter registry, or global asset database.
+
+Imported names combine a readable sanitized stem with a SHA-256 prefix. The
+same bytes are reused within one document; referenced assets are immutable and
+replacement creates a new file. Iris audits four disk-derived states:
+`referenced`, `orphan`, `missing`, and `unmanaged`. Orphans are never deleted
+automatically. The document and companion directory move to the system trash
+together after human confirmation. Legacy project-relative and HTTPS links
+continue to render as unmanaged references; `blob:` URLs are never persisted.
 
 ### The convention scope chain
 

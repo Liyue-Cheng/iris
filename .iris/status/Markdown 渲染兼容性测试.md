@@ -1,6 +1,6 @@
 ---
 title: Markdown 渲染兼容性测试
-reflects: c07af2434e26b5bfb6d5899fa131954062396ade
+reflects: 5ddd91de16c182a9b19c7432ca6696bdf1eae3fe
 tags:
   - markdown
   - compatibility
@@ -8,6 +8,12 @@ tags:
 # Markdown 渲染兼容性测试
 
 本文档用于人工检查 Iris 对 CommonMark、GFM 及常见 Markdown 扩展的解析、排版与安全处理。某些扩展可能不受支持；原样显示也属于有效测试结果。
+
+受管图片与附件使用同目录 `<文档名>.assets/` companion 目录和标准相对链接。Crepe 的
+粘贴、拖入和上传先经主进程按内容 hash 落盘，成功后才插入链接；本地读取限制在项目
+真实路径内并拒绝 SVG、符号链接和超过 10 MiB 的图片。文档头部资产面板按 AST 引用
+显示 `referenced`、`orphan`、`missing`、`unmanaged`，支持收编旧相对图片与 data URL，
+但不自动下载 HTTPS 或自动清理孤儿。
 
 ## 1. 标题与文本
 
@@ -157,6 +163,12 @@ Write-Output $document.Length
 这是四空格缩进代码块。
 第二行应保持等宽。
 ```
+
+所见即所得编辑器中的代码块隐藏 CodeMirror gutter（包括行号及其占位），左侧以加粗且与代码正文对齐的独立文字标签显示语言，右侧常显无底板的复制图标；语言选择弹层不受代码块边界裁剪，内容区域保留适中的左右内边距，当前行仅在代码块获得焦点时高亮。
+
+应用级 DropdownMenu 默认使用非模态模式，打开主题、状态、标签、分支等下拉菜单时不会对编辑器施加全局滚动锁，也不会触发可见 CodeMirror 代码块退化为 placeholder 后重建；需要模态交互的调用方仍可显式覆盖。
+
+Iris 在 Crepe 中注册自有的 `code_block` NodeView 工厂来控制代码块虚拟化生命周期。Milkdown 仍负责代码块 UI、语言加载和首次进入视口时的惰性初始化；代码块初始化后由 Iris 禁止离屏 teardown，因此滚出视口超过 5 秒也不会替换为 placeholder。策略只作用于 Iris 创建的 NodeView 实例，不修改 Milkdown 全局 prototype；代码块被删除或文档销毁时仍正常释放资源。运行态验证确认离屏 6.5 秒和打开应用下拉菜单后均保持同一个 CodeMirror DOM 实例。
 
 ## 7. 表格
 
@@ -378,6 +390,10 @@ HTML 实体：& < > " © ☃。
 * [ ] 本地 PNG、本地 SVG、HTML 图片、图片链接和远程图片正确显示。 无法显示
 
 * [ ] 失效图片能显示合理的替代或错误状态。
+
+* [ ] 受管图片粘贴后关闭并重开仍显示，正文链接为 companion 相对路径且不含 `blob:`。
+
+* [ ] 资产面板能正确显示引用、孤儿、缺失、非受管状态，并完成收编与回收站清理。
 
 * [ ] Mermaid 流程图、时序图、状态图和饼图正确渲染。 无法显示
 
