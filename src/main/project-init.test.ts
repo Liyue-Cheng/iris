@@ -1,18 +1,11 @@
-/**
- * project.init / workspace.create unit tests against a temp dir: the
- * scaffold is idempotent, never clobbers human-authored files, and rejects
- * reserved workspace names.
- */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { ProjectManager } from './project-manager';
 import { createTempDataDir, removeTempDataDir } from './persistence';
-import { AGENTS_GUIDANCE_MARKER } from './iris-templates';
+import { parseProjectBlock, upsertProjectBlock } from './software-prompt';
 
-/** Fixed version so the managed block is deterministic across runs. */
-const V = '0.0.0-test';
-const init = (pm: ProjectManager) => pm.initIris({ appVersion: V });
+const init = (manager: ProjectManager) => manager.initIris();
 
 let dir: string;
 let pm: ProjectManager;
@@ -28,107 +21,151 @@ afterEach(async () => {
   await removeTempDataDir(dir).catch(() => {});
 });
 
+async function waitUntil(predicate: () => Promise<boolean>, timeoutMs = 2500): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  }
+  throw new Error('condition did not become true');
+}
+
 describe('initIris', () => {
-  it('creates the full scaffold on a bare project', async () => {
-    const r = await init(pm);
-    expect(r.createdFolders.sort()).toEqual(
+  it('creates folders and an attribute-free software block, but no project prompt file', async () => {
+    const result = await init(pm);
+    expect(result.createdFolders.sort()).toEqual(
       ['.iris/issue', '.iris/misc', '.iris/report', '.iris/status'].sort(),
     );
-    expect(r.constitution).toBe('created');
-    expect(r.constitutionSeed).toBe('software-default');
-    expect(r.agentsMd).toBe('created');
+    expect(result.agentsMd).toBe('created');
+    await expect(fs.access(join(dir, '.iris', 'CONVENTIONS.md'))).rejects.toThrow();
+    await expect(fs.access(join(dir, '.iris', 'styles.json'))).rejects.toThrow();
 
-    const constitution = await fs.readFile(join(dir, '.iris', 'CONVENTIONS.md'), 'utf8');
-    expect(constitution).toContain('protocol: 2');
-    // AGENTS.md carries the version-stamped managed block.
     const agents = await fs.readFile(join(dir, 'AGENTS.md'), 'utf8');
-    expect(agents).toContain(`<iris-software version="${V}"`);
-    expect(agents).toContain('</iris-software>');
-
-    const scan = await pm.scan();
-    expect(scan.hasIris).toBe(true);
-    expect(scan.constitution).toEqual({ exists: true, protocol: 2 });
+    expect(agents).toContain('<iris-software>');
+    expect(agents).not.toMatch(/<iris-software\s+[^>]+>/);
+    expect((await pm.scan()).hasIris).toBe(true);
+    const preview = await pm.contextPreview();
+    expect(preview.assembled).not.toContain('<iris-software');
+    expect(preview.assembled).not.toContain('<iris-project');
+    expect(preview.assembled).not.toContain('<iris-user');
   });
 
-  it('is idempotent — second run touches nothing', async () => {
+  it('is idempotent and creates no ad hoc backup', async () => {
     await init(pm);
-    const agentsBefore = await fs.readFile(join(dir, 'AGENTS.md'), 'utf8');
-    const r2 = await init(pm);
-    expect(r2.createdFolders).toEqual([]);
-    expect(r2.constitution).toBe('already-exists');
-    expect(r2.agentsMd).toBe('already-has-section');
-    const agentsAfter = await fs.readFile(join(dir, 'AGENTS.md'), 'utf8');
-    expect(agentsAfter).toBe(agentsBefore);
-    // Exactly one block (the body mentions the opening tag in prose, so count
-    // the closing tag, which only the real block carries).
-    expect(agentsAfter.split('</iris-software>').length).toBe(2);
+    const before = await fs.readFile(join(dir, 'AGENTS.md'), 'utf8');
+    const second = await init(pm);
+    expect(second.createdFolders).toEqual([]);
+    expect(second.agentsMd).toBe('already-has-section');
+    expect(await fs.readFile(join(dir, 'AGENTS.md'), 'utf8')).toBe(before);
+    await expect(fs.access(join(dir, 'AGENTS.md.bak'))).rejects.toThrow();
   });
 
-  it('appends the block to an existing AGENTS.md without rewriting it', async () => {
-    await fs.writeFile(join(dir, 'AGENTS.md'), '# My project\n\nhand-written intro\n', 'utf8');
-    const r = await init(pm);
-    expect(r.agentsMd).toBe('appended');
+  it('preserves prose and restores drift only when init is explicitly run', async () => {
+    const source = '# My project\n\nhand-written intro\n\n<iris-software>\nold body\n</iris-software>\n';
+    await fs.writeFile(join(dir, 'AGENTS.md'), source, 'utf8');
+    expect((await pm.softwarePromptState()).entries[0]?.state).toBe('drifted');
+
+    const result = await init(pm);
+    expect(result.agentsMd).toBe('updated');
     const text = await fs.readFile(join(dir, 'AGENTS.md'), 'utf8');
     expect(text.startsWith('# My project\n\nhand-written intro')).toBe(true);
-    expect(text).toContain(AGENTS_GUIDANCE_MARKER);
+    expect((await pm.softwarePromptState()).entries[0]?.state).toBe('ok');
   });
 
-  it('refreshes a stale (old-version) block in place', async () => {
-    // A pre-existing AGENTS.md whose block was stamped by an older app version.
-    await pm.initIris({ appVersion: '0.0.1-old' });
-    const before = await fs.readFile(join(dir, 'AGENTS.md'), 'utf8');
-    expect(before).toContain('version="0.0.1-old"');
-    const r = await init(pm);
-    expect(r.agentsMd).toBe('updated');
-    const after = await fs.readFile(join(dir, 'AGENTS.md'), 'utf8');
-    expect(after).toContain(`version="${V}"`);
-    expect(after.split('</iris-software>').length).toBe(2); // still exactly one
+  it('maintains existing vendor entries without creating absent ones or backups', async () => {
+    await fs.writeFile(join(dir, 'CLAUDE.md'), '# Claude\n', 'utf8');
+    const result = await init(pm);
+    expect(result.vendorEntries).toContainEqual({ path: 'CLAUDE.md', action: 'created' });
+    expect(await fs.readFile(join(dir, 'CLAUDE.md'), 'utf8')).toContain('</iris-software>');
+    await expect(fs.access(join(dir, 'CLAUDE.md.bak'))).rejects.toThrow();
+    await expect(fs.access(join(dir, 'GEMINI.md'))).rejects.toThrow();
+  });
+});
+
+describe('project prompt disk synchronization', () => {
+  it('imports one disk block on open and mirrors it to the standard entry', async () => {
+    await pm.close();
+    await fs.writeFile(
+      join(dir, 'CLAUDE.md'),
+      '# Claude\n\n<iris-project>\nUse pnpm.\n</iris-project>\n',
+      'utf8',
+    );
+    await pm.open(dir);
+
+    expect((await pm.softwarePromptState()).project).toMatchObject({
+      state: 'synced',
+      text: 'Use pnpm.',
+      conflicts: [],
+    });
+    const agents = await fs.readFile(join(dir, 'AGENTS.md'), 'utf8');
+    expect(parseProjectBlock(agents)?.body).toBe('Use pnpm.');
   });
 
-  it('maintains the block in an existing vendor entry (CLAUDE.md), with a .bak', async () => {
-    // Governance decision: Iris maintains the <iris-software> block in vendor
-    // entries that already exist (it never creates an absent one).
-    const claudeBody = '# CLAUDE.md\n\nhand-written claude guidance\n';
-    await fs.writeFile(join(dir, 'CLAUDE.md'), claudeBody, 'utf8');
+  it('reports divergent entry blocks and does not overwrite either', async () => {
+    await pm.close();
+    const agents = '<iris-project>\nA\n</iris-project>\n';
+    const claude = '<iris-project>\nB\n</iris-project>\n';
+    await fs.writeFile(join(dir, 'AGENTS.md'), agents, 'utf8');
+    await fs.writeFile(join(dir, 'CLAUDE.md'), claude, 'utf8');
+    await pm.open(dir);
 
-    const r = await init(pm);
-
-    expect(r.agentsMd).toBe('created');
-    expect(r.foreignEntries).toContain('CLAUDE.md');
-    expect(r.vendorEntries).toContainEqual({ path: 'CLAUDE.md', action: 'created' });
-
-    const claude = await fs.readFile(join(dir, 'CLAUDE.md'), 'utf8');
-    expect(claude.startsWith('# CLAUDE.md\n\nhand-written claude guidance')).toBe(true);
-    expect(claude).toContain('</iris-software>');
-    // Original content preserved as a .bak before the first write.
-    expect(await fs.readFile(join(dir, 'CLAUDE.md.bak'), 'utf8')).toBe(claudeBody);
+    const state = await pm.softwarePromptState();
+    expect(state.project.state).toBe('conflict');
+    expect(state.project.conflicts).toEqual([
+      { path: 'AGENTS.md', text: 'A' },
+      { path: 'CLAUDE.md', text: 'B' },
+    ]);
+    expect(await fs.readFile(join(dir, 'AGENTS.md'), 'utf8')).toBe(agents);
+    expect(await fs.readFile(join(dir, 'CLAUDE.md'), 'utf8')).toBe(claude);
   });
 
-  it('does not create an absent vendor entry', async () => {
-    await init(pm);
-    await expect(fs.access(join(dir, 'CLAUDE.md'))).rejects.toThrow();
+  it('a user save resolves conflict, fans out, and empty text removes every block', async () => {
+    await fs.writeFile(join(dir, 'CLAUDE.md'), '# Claude\n', 'utf8');
+    await pm.syncProjectPrompt('One rule\r\n');
+    expect(parseProjectBlock(await fs.readFile(join(dir, 'AGENTS.md'), 'utf8'))?.body).toBe('One rule');
+    expect(parseProjectBlock(await fs.readFile(join(dir, 'CLAUDE.md'), 'utf8'))?.body).toBe('One rule');
+
+    await pm.syncProjectPrompt('');
+    expect(parseProjectBlock(await fs.readFile(join(dir, 'AGENTS.md'), 'utf8'))).toBeNull();
+    expect(parseProjectBlock(await fs.readFile(join(dir, 'CLAUDE.md'), 'utf8'))).toBeNull();
+    expect((await pm.softwarePromptState()).project.state).toBe('missing');
   });
 
-  it('reports no vendor entries on a bare project', async () => {
-    const r = await init(pm);
-    expect(r.foreignEntries).toEqual([]);
-    expect(r.vendorEntries).toEqual([]);
+  it('imports a single external edit during a session and mirrors it', async () => {
+    await fs.writeFile(join(dir, 'CLAUDE.md'), '# Claude\n', 'utf8');
+    await pm.syncProjectPrompt('Initial');
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    const claudePath = join(dir, 'CLAUDE.md');
+    const claude = await fs.readFile(claudePath, 'utf8');
+    await fs.writeFile(claudePath, upsertProjectBlock(claude, 'External').text, 'utf8');
+
+    await waitUntil(async () => (await pm.softwarePromptState()).project.text === 'External');
+    expect(parseProjectBlock(await fs.readFile(join(dir, 'AGENTS.md'), 'utf8'))?.body).toBe('External');
   });
 
-  it('prefers the user-default constitution when one is supplied', async () => {
-    const userDefault = '---\nprotocol: 1\n---\n\n# My house constitution\n';
-    const r = await pm.initIris({ appVersion: V, userConstitution: userDefault });
-    expect(r.constitution).toBe('created');
-    expect(r.constitutionSeed).toBe('user-default');
-    expect(await fs.readFile(join(dir, '.iris', 'CONVENTIONS.md'), 'utf8')).toBe(userDefault);
-  });
+  it('stops on distinct concurrent external edits instead of choosing a winner', async () => {
+    await fs.writeFile(join(dir, 'CLAUDE.md'), '# Claude\n', 'utf8');
+    await pm.syncProjectPrompt('Initial');
+    await new Promise((resolve) => setTimeout(resolve, 350));
 
-  it('never overwrites an existing constitution', async () => {
-    await fs.mkdir(join(dir, '.iris'), { recursive: true });
-    await fs.writeFile(join(dir, '.iris', 'CONVENTIONS.md'), 'HUMAN OWNED\n', 'utf8');
-    const r = await init(pm);
-    expect(r.constitution).toBe('already-exists');
-    expect(await fs.readFile(join(dir, '.iris', 'CONVENTIONS.md'), 'utf8')).toBe('HUMAN OWNED\n');
+    const agentsPath = join(dir, 'AGENTS.md');
+    const claudePath = join(dir, 'CLAUDE.md');
+    const [agents, claude] = await Promise.all([
+      fs.readFile(agentsPath, 'utf8'),
+      fs.readFile(claudePath, 'utf8'),
+    ]);
+    await Promise.all([
+      fs.writeFile(agentsPath, upsertProjectBlock(agents, 'External A').text, 'utf8'),
+      fs.writeFile(claudePath, upsertProjectBlock(claude, 'External B').text, 'utf8'),
+    ]);
+
+    await waitUntil(async () => (await pm.softwarePromptState()).project.state === 'conflict');
+    const state = await pm.softwarePromptState();
+    expect(state.project.conflicts.map((item) => item.text).sort()).toEqual([
+      'External A',
+      'External B',
+    ]);
   });
 });
 
@@ -137,37 +174,18 @@ describe('createWorkspace', () => {
     await init(pm);
   });
 
-  it('standard template creates the four typed folders', async () => {
-    const r = await pm.createWorkspace({
-      parentPath: '.iris',
-      name: 'spike-x',
-      template: 'standard',
-    });
-    expect(r.path).toBe('.iris/spike-x');
-    const scan = await pm.scan();
-    expect(scan.root!.children.map((c) => c.path)).toContain('.iris/spike-x');
-  });
-
-  it('empty template creates a bare folder (not yet a workspace)', async () => {
+  it('creates standard and empty workspace shapes', async () => {
+    await pm.createWorkspace({ parentPath: '.iris', name: 'spike-x', template: 'standard' });
     await pm.createWorkspace({ parentPath: '.iris', name: 'notes', template: 'empty' });
-    const entries = await fs.readdir(join(dir, '.iris', 'notes'));
-    expect(entries).toEqual([]);
     const scan = await pm.scan();
-    expect(scan.root!.children.map((c) => c.path)).not.toContain('.iris/notes');
+    expect(scan.root!.children.map((child) => child.path)).toContain('.iris/spike-x');
+    expect(scan.root!.children.map((child) => child.path)).not.toContain('.iris/notes');
   });
 
-  it('rejects reserved typed-folder names and illegal characters', async () => {
-    await expect(
-      pm.createWorkspace({ parentPath: '.iris', name: 'status', template: 'standard' }),
-    ).rejects.toThrow(/保留名/);
-    await expect(
-      pm.createWorkspace({ parentPath: '.iris', name: 'a/b', template: 'standard' }),
-    ).rejects.toThrow(/不合法/);
-    await expect(
-      pm.createWorkspace({ parentPath: '.iris', name: 'spike-x', template: 'standard' }),
-    ).resolves.toBeTruthy();
-    await expect(
-      pm.createWorkspace({ parentPath: '.iris', name: 'spike-x', template: 'standard' }),
-    ).rejects.toThrow(/已存在/);
+  it('rejects reserved and duplicate names', async () => {
+    await expect(pm.createWorkspace({ parentPath: '.iris', name: 'status', template: 'standard' })).rejects.toThrow(/保留名/);
+    await expect(pm.createWorkspace({ parentPath: '.iris', name: 'a/b', template: 'standard' })).rejects.toThrow(/不合法/);
+    await pm.createWorkspace({ parentPath: '.iris', name: 'spike-x', template: 'standard' });
+    await expect(pm.createWorkspace({ parentPath: '.iris', name: 'spike-x', template: 'standard' })).rejects.toThrow(/已存在/);
   });
 });

@@ -17,6 +17,7 @@ import type { ProjectManager } from './project-manager';
 import type { SessionManager } from './session-manager';
 import type { SettingsManager } from './settings-manager';
 import type { GitManager } from './git-manager';
+import type { ProjectScope } from '@shared/types';
 
 export interface WindowContext {
   readonly win: BrowserWindow;
@@ -26,6 +27,13 @@ export interface WindowContext {
   /** Project bound to this window (null when none open yet). Updated on
    *  project:open so WINDOW_BOOTSTRAP and persistence see the current root. */
   projectRoot: string | null;
+  /** Main-authoritative committed identity. null means initialRoot is only a
+   *  request that the renderer still has to open through the CPU pipeline. */
+  projectScope: ProjectScope | null;
+  /** Hard gate for every project-bound IPC while a switch is in flight. */
+  projectSwitching: boolean;
+  /** Main-side serialization survives renderer timeout/retry and direct IPC. */
+  projectSwitchTail: Promise<void>;
   /** Detach this window's manager → renderer broadcasts (from wireBroadcasts). */
   readonly unwire: () => void;
 }
@@ -71,7 +79,11 @@ export function removeContext(id: number): WindowContext | undefined {
  */
 export function persistOpenRoots(settingsManager: SettingsManager): void {
   const roots = [
-    ...new Set(allContexts().map((c) => c.projectRoot).filter((r): r is string => !!r)),
+    ...new Set(
+      allContexts()
+        .map((c) => c.projectScope?.root ?? c.projectRoot)
+        .filter((r): r is string => !!r),
+    ),
   ];
   settingsManager.update({ project: { openRoots: roots, lastRoot: roots.at(-1) ?? null } });
 }

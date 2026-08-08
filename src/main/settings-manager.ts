@@ -4,10 +4,8 @@
  *   persist / broadcast. Pattern ported from Marina's SettingsManager,
  *   trimmed to Iris's M0 schema (theme + fonts).
  *
- * Storage location: ~/.iris/settings.json — the machine-level namespace
- * (software-definition.md §3 规约的作用域链). NOT Electron userData: settings
- * are App-owned citizens of ~/.iris/, alongside the human-owned
- * ~/.iris/CONVENTIONS.md which the App never parses.
+ * Storage location: ~/.iris/settings.json — Iris's machine-level namespace.
+ * NOT Electron userData.
  *
  * Settings apply immediately on update (no save button); the manager emits
  * 'settingsChanged' with dotted-path changedKeys for renderer broadcast.
@@ -20,9 +18,8 @@ import { getBuildType } from './build-type';
 import { JsonStore } from './persistence';
 
 /**
- * Directory of Iris's machine-level namespace — the protocol citizens
- * (~/.iris/CONVENTIONS.md). Always the real ~/.iris regardless of build
- * type: machine facts don't fork between dev and packaged.
+ * Directory of Iris's machine-level namespace. Always the real ~/.iris so
+ * generated hook scripts remain stable across dev and packaged builds.
  */
 export function irisHomeDir(): string {
   return join(homedir(), '.iris');
@@ -65,6 +62,10 @@ export const DEFAULT_SETTINGS: Settings = {
     editorBlockEdit: false,
     editorBodyAlign: 'center',
     editorMaxWidth: 58,
+    editorAutosave: true,
+    editorAutosaveDelayMs: 1500,
+    editorSaveOnBlur: true,
+    editorConflictPolicy: 'ask',
   },
   project: {
     lastRoot: null,
@@ -350,6 +351,29 @@ export function validateSettings(s: Settings): void {
     throw new SettingsError(
       'InvalidSettings',
       `behavior.editorMaxWidth=${s.behavior.editorMaxWidth} must be a number in [30, 120]`,
+    );
+  }
+  if (typeof s.behavior.editorAutosave !== 'boolean') {
+    throw new SettingsError('InvalidSettings', 'behavior.editorAutosave must be a boolean');
+  }
+  if (
+    typeof s.behavior.editorAutosaveDelayMs !== 'number' ||
+    !Number.isFinite(s.behavior.editorAutosaveDelayMs) ||
+    s.behavior.editorAutosaveDelayMs < 300 ||
+    s.behavior.editorAutosaveDelayMs > 10000
+  ) {
+    throw new SettingsError(
+      'InvalidSettings',
+      `behavior.editorAutosaveDelayMs=${s.behavior.editorAutosaveDelayMs} must be a number in [300, 10000]`,
+    );
+  }
+  if (typeof s.behavior.editorSaveOnBlur !== 'boolean') {
+    throw new SettingsError('InvalidSettings', 'behavior.editorSaveOnBlur must be a boolean');
+  }
+  if (!['ask', 'overwrite'].includes(s.behavior.editorConflictPolicy)) {
+    throw new SettingsError(
+      'InvalidSettings',
+      `behavior.editorConflictPolicy="${s.behavior.editorConflictPolicy}" must be ask or overwrite`,
     );
   }
   if (typeof s.appearance.uiFontFamily !== 'string' || !s.appearance.uiFontFamily.trim()) {

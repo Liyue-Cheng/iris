@@ -13,11 +13,14 @@
  * as evt:fs:iris-changed, where an ISR re-projects.
  */
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import { dirname, join, normalize, resolve, sep } from 'node:path';
+import { basename, dirname, join, normalize, resolve, sep } from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
 import type {
-  ConstitutionStateUi,
+  AssetImportPayload,
+  AssetImportResult,
+  AssetInventory,
   ContextPreview,
   DocContent,
   DocImageResult,
@@ -25,6 +28,7 @@ import type {
   FsIrisChangedEvent,
   IrisScanResult,
   ProjectInitResult,
+  ProjectPromptConflict,
   RawTreeNode,
   SoftwareEntryStatus,
   SoftwarePromptState,
@@ -32,16 +36,17 @@ import type {
 import { DOC_TYPES } from '@shared/types';
 import { slugify } from '@shared/markdown-utils';
 import { parseFrontmatter, scanProject, scanRawTree } from './iris-scanner';
-import { seedProjectStyleMaps } from './style-maps-store';
-import { CONSTITUTION_TEMPLATE, FOREIGN_AGENT_ENTRIES } from './iris-templates';
+import { FOREIGN_AGENT_ENTRIES } from './iris-templates';
 import { assembleContextPreview, syncEntryFile } from './agent-injection';
 import {
-  classifyConstitution,
   classifySoftwareBlock,
   docSkeleton,
-  SOFTWARE_PROMPT_SHA,
+  normalizePromptBody,
+  parseProjectBlock,
+  upsertProjectBlock,
 } from './software-prompt';
 import { logger } from './logger';
+import { AssetManager } from './asset-manager';
 
 /** Entry files Iris may write the `<iris-software>` block into. */
 const WRITABLE_ENTRIES: readonly string[] = ['AGENTS.md', ...FOREIGN_AGENT_ENTRIES];
@@ -64,6 +69,7 @@ export class ProjectError extends Error {
       | 'NoProject'
       | 'OutsideProject'
       | 'ReadFailed'
+      | 'WriteConflict'
       | 'WriteFailed'
       | 'InvalidPayload',
     message: string,
@@ -73,11 +79,21 @@ export class ProjectError extends Error {
   }
 }
 
+export interface PreparedProject {
+  root: string;
+  scan: IrisScanResult;
+}
+
 export class ProjectManager extends EventEmitter {
+  private readonly assetManager = new AssetManager();
   private projectRoot: string | null = null;
   private watcher: FSWatcher | null = null;
   private pendingChanges: FsIrisChangedEvent['changes'] = [];
+  private pendingPromptChanges: FsIrisChangedEvent['changes'] = [];
   private flushTimer: NodeJS.Timeout | null = null;
+  private promptReconcileTail: Promise<void> = Promise.resolve();
+  private projectPromptBaseline = '';
+  private projectPromptConflicts: ProjectPromptConflict[] = [];
 
   /** Absolute root of the currently open project (null when none). */
   getRoot(): string | null {
@@ -85,30 +101,55 @@ export class ProjectManager extends EventEmitter {
   }
 
   /**
-   * Open a project: validate the directory, start watching its .iris/ tree
-   * (if present), and return the initial scan. Replaces any previous project.
+   * Validate and scan a target without disturbing the currently open project.
+   * Project switching uses this as its reversible preparation phase.
    */
-  async open(root: string): Promise<IrisScanResult> {
+  async prepareOpen(root: string): Promise<PreparedProject> {
     const abs = normalize(resolve(root));
+    let canonicalRoot: string;
     let stat;
     try {
-      stat = await fs.stat(abs);
+      canonicalRoot = normalize(await fs.realpath(abs));
+      stat = await fs.stat(canonicalRoot);
     } catch {
       throw new ProjectError('NotADirectory', `cannot access ${abs}`);
     }
     if (!stat.isDirectory()) {
-      throw new ProjectError('NotADirectory', `${abs} is not a directory`);
+      throw new ProjectError('NotADirectory', `${canonicalRoot} is not a directory`);
     }
 
-    await this.close();
-    this.projectRoot = abs;
+    return { root: canonicalRoot, scan: await scanProject(canonicalRoot) };
+  }
 
-    const result = await scanProject(abs);
+  /** Commit a prepared project and replace the current watcher. */
+  async activatePrepared(prepared: PreparedProject): Promise<IrisScanResult> {
+    await this.close();
+    this.projectRoot = prepared.root;
+
+    // Project switch becomes irreversible before activation: old PTYs have
+    // already been drained. Prompt mirroring and watcher setup are auxiliary
+    // services, so failures here degrade the opened project instead of
+    // stranding main on B while renderer rolls back to A.
+    try {
+      await this.reconcileProjectPromptInitial(prepared.root);
+    } catch (err) {
+      logger.warn('project', `initial project prompt reconciliation failed for ${prepared.root}`, err);
+    }
+
     // Watch even when .iris/ doesn't exist yet: its later creation (manual
     // mkdir or the M5 init wizard) must light the tree up without a restart.
-    this.startWatcher(abs);
-    logger.info('project', `opened ${abs} (hasIris=${result.hasIris})`);
-    return result;
+    try {
+      this.startWatcher(prepared.root);
+    } catch (err) {
+      logger.warn('project', `watcher setup failed for ${prepared.root}`, err);
+    }
+    logger.info('project', `opened ${prepared.root} (hasIris=${prepared.scan.hasIris})`);
+    return prepared.scan;
+  }
+
+  /** Back-compatible one-shot open used by non-transactional callers/tests. */
+  async open(root: string): Promise<IrisScanResult> {
+    return this.activatePrepared(await this.prepareOpen(root));
   }
 
   async close(): Promise<void> {
@@ -117,11 +158,14 @@ export class ProjectManager extends EventEmitter {
       this.flushTimer = null;
     }
     this.pendingChanges = [];
+    this.pendingPromptChanges = [];
     if (this.watcher) {
       await this.watcher.close().catch(() => {});
       this.watcher = null;
     }
     this.projectRoot = null;
+    this.projectPromptBaseline = '';
+    this.projectPromptConflicts = [];
   }
 
   /** Rescan the open project (projection query). */
@@ -181,8 +225,9 @@ export class ProjectManager extends EventEmitter {
     if (!mime) return { dataUrl: null, error: 'unsupported-type' };
 
     try {
-      const stat = await fs.stat(abs);
-      if (!stat.isFile()) return { dataUrl: null, error: 'read-failed' };
+      const stat = await fs.lstat(abs);
+      if (!stat.isFile() || stat.isSymbolicLink()) return { dataUrl: null, error: 'read-failed' };
+      this.resolveInside(root, await fs.realpath(abs));
       if (stat.size > MAX_IMAGE_BYTES) return { dataUrl: null, error: 'too-large' };
       const bytes = await fs.readFile(abs);
       return { dataUrl: `data:${mime};base64,${bytes.toString('base64')}`, error: null };
@@ -191,17 +236,53 @@ export class ProjectManager extends EventEmitter {
     }
   }
 
-  /**
-   * Write a doc verbatim (doc.save instruction body). The renderer composed
-   * the exact bytes; main adds nothing — same atomic tmp+rename discipline
-   * as JsonStore so a crash never leaves a half-written doc.
-   */
-  async writeDoc(relPath: string, content: string): Promise<{ path: string }> {
+  async listAssets(docPath: string): Promise<AssetInventory> {
+    return this.assetManager.list(this.requireRoot(), docPath);
+  }
+
+  async importAsset(payload: AssetImportPayload): Promise<AssetImportResult> {
+    return this.assetManager.import(this.requireRoot(), payload);
+  }
+
+  async trashAsset(
+    docPath: string,
+    assetPath: string,
+    trashItem: (absolutePath: string) => Promise<void>,
+  ): Promise<{ path: string }> {
+    return this.assetManager.trash(this.requireRoot(), docPath, assetPath, trashItem);
+  }
+
+  async adoptAsset(docPath: string, source: string): Promise<AssetImportResult> {
+    return this.assetManager.adopt(this.requireRoot(), docPath, source);
+  }
+
+  /** Compare-and-swap a document. expectedContent is the renderer's baseline;
+   * null is the explicit user-authorized overwrite path. Identical content is
+   * a no-op so false dirty state can never perturb mtime ordering. */
+  async writeDoc(
+    relPath: string,
+    content: string,
+    expectedContent: string | null,
+  ): Promise<{ path: string }> {
     const root = this.requireRoot();
-    if (typeof content !== 'string') {
-      throw new ProjectError('InvalidPayload', 'content must be a string');
+    if (typeof content !== 'string' || (expectedContent !== null && typeof expectedContent !== 'string')) {
+      throw new ProjectError('InvalidPayload', 'content and expectedContent must be strings (or null)');
     }
     const abs = this.resolveInside(root, relPath);
+    let current: string;
+    try {
+      current = await fs.readFile(abs, 'utf8');
+    } catch (err) {
+      throw new ProjectError(
+        'WriteConflict',
+        `cannot compare ${relPath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (current === content) return { path: relPath };
+    if (expectedContent !== null && current !== expectedContent) {
+      throw new ProjectError('WriteConflict', `${relPath} changed since the editor baseline`);
+    }
+
     const tmp = `${abs}.tmp.${process.pid}.${Date.now()}`;
     try {
       await fs.mkdir(dirname(abs), { recursive: true });
@@ -270,47 +351,66 @@ export class ProjectManager extends EventEmitter {
 
   /**
    * Delete a doc (doc.delete instruction body — a HUMAN UI gesture; the
-   * constitution's "do not delete issues" binds agent write-back, not the
+   * software prompt's "do not delete issues" binds agent write-back, not the
    * user). Scoped to markdown files under .iris/ — the only files Iris owns.
    */
-  async deleteDoc(relPath: string): Promise<{ path: string }> {
+  async deleteDoc(
+    relPath: string,
+    trashItem: (absolutePath: string) => Promise<void> = (path) =>
+      fs.rm(path, { recursive: true }),
+  ): Promise<{ path: string; assetCount: number }> {
     const root = this.requireRoot();
     if (!/\.md$/i.test(relPath) || !relPath.replace(/\\/g, '/').startsWith('.iris/')) {
       throw new ProjectError('InvalidPayload', `refusing to delete non-iris file: ${relPath}`);
     }
     const abs = this.resolveInside(root, relPath);
+    const companionRel = this.assetManager.companionPath(relPath);
+    const companionAbs = this.resolveInside(root, companionRel);
+    const assetCount = await this.assetManager.managedFileCount(root, relPath);
+    const companionStat = await fs.lstat(companionAbs).catch(() => null);
+    if (companionStat && (!companionStat.isDirectory() || companionStat.isSymbolicLink())) {
+      throw new ProjectError('InvalidPayload', `unsafe companion directory: ${companionRel}`);
+    }
+
+    // Stage the aggregate in its current filesystem before trashing it. If
+    // the OS trash operation fails, both names can be restored in place.
+    const stage = join(dirname(abs), `.iris-delete-${process.pid}-${randomUUID()}`);
+    const stagedDoc = join(stage, basename(abs));
+    const stagedAssets = join(stage, basename(companionAbs));
+    let docMoved = false;
+    let assetsMoved = false;
     try {
-      await fs.unlink(abs);
+      await fs.mkdir(stage);
+      await fs.rename(abs, stagedDoc);
+      docMoved = true;
+      if (companionStat) {
+        await fs.rename(companionAbs, stagedAssets);
+        assetsMoved = true;
+      }
+      await trashItem(stage);
     } catch (err) {
+      if (assetsMoved) await fs.rename(stagedAssets, companionAbs).catch(() => {});
+      if (docMoved) await fs.rename(stagedDoc, abs).catch(() => {});
+      await fs.rmdir(stage).catch(() => {});
       throw new ProjectError(
         'WriteFailed',
         `cannot delete ${relPath}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    return { path: relPath };
+    return { path: relPath, assetCount };
   }
 
   /**
    * Idempotent protocol scaffold (project.init / cold start §4 冷启动):
-   * ensure the four typed folders, write the constitution if absent (never
-   * overwrite — it's the human-authored contract), and write/refresh the
+   * ensure the four typed folders and write/refresh the
    * `<iris-software>` block in AGENTS.md plus any existing vendor entry files
    * (§3A maintains vendor entries; never creates absent ones). Touching the
    * project root requires explicit user confirmation in the UI — the single
    * sanctioned exception to 尊重边界.
    *
-   * `appVersion` and `userConstitution` are injected by the electron seam
-   * (ipc.ts): version stamps the managed block; userConstitution is the
-   * machine-level project-prompt default (~/.iris/templates/CONVENTIONS.md),
-   * preferred over the software default when seeding (§5 三个版本). Keeping
-   * them as params leaves this class electron-free and unit-testable.
    */
-  async initIris(opts: {
-    appVersion: string;
-    userConstitution?: string | undefined;
-  }): Promise<ProjectInitResult> {
+  async initIris(): Promise<ProjectInitResult> {
     const root = this.requireRoot();
-    const { appVersion, userConstitution } = opts;
     const irisAbs = join(root, '.iris');
 
     const createdFolders: string[] = [];
@@ -322,23 +422,9 @@ export class ProjectManager extends EventEmitter {
       }
     }
 
-    let constitution: ProjectInitResult['constitution'] = 'already-exists';
-    let constitutionSeed: ProjectInitResult['constitutionSeed'];
-    const constitutionAbs = join(irisAbs, 'CONVENTIONS.md');
-    if (!(await exists(constitutionAbs))) {
-      const seedText = userConstitution ?? CONSTITUTION_TEMPLATE;
-      await fs.writeFile(constitutionAbs, seedText, { encoding: 'utf8', flag: 'wx' });
-      constitution = 'created';
-      constitutionSeed = userConstitution !== undefined ? 'user-default' : 'software-default';
-    }
-
-    // Seed the project style tables from the machine defaults (never
-    // overwrites an existing .iris/styles.json — project-owned from then on).
-    await seedProjectStyleMaps(root);
-
     // AGENTS.md — the standard entry Iris owns and always writes.
     const agentsAbs = join(root, 'AGENTS.md');
-    const a = await syncEntryFile(agentsAbs, appVersion);
+    const a = await syncEntryFile(agentsAbs);
     const agentsMd: ProjectInitResult['agentsMd'] = !a.existed
       ? 'created'
       : a.action === 'unchanged'
@@ -354,22 +440,20 @@ export class ProjectManager extends EventEmitter {
     for (const rel of FOREIGN_AGENT_ENTRIES) {
       if (!(await exists(join(root, rel)))) continue;
       foreignEntries.push(rel);
-      const { action } = await syncEntryFile(join(root, rel), appVersion);
+      const { action } = await syncEntryFile(join(root, rel));
       vendorEntries.push({ path: rel, action });
     }
 
     logger.info(
       'project',
-      `init: folders=[${createdFolders.join(', ')}] constitution=${constitution}/${constitutionSeed ?? '-'} agents=${agentsMd} vendor=[${vendorEntries.map((v) => `${v.path}:${v.action}`).join(', ')}]`,
+      `init: folders=[${createdFolders.join(', ')}] agents=${agentsMd} vendor=[${vendorEntries.map((v) => `${v.path}:${v.action}`).join(', ')}]`,
     );
     const result: ProjectInitResult = {
       createdFolders,
-      constitution,
       agentsMd,
       vendorEntries,
       foreignEntries,
     };
-    if (constitutionSeed) result.constitutionSeed = constitutionSeed;
     return result;
   }
 
@@ -378,25 +462,27 @@ export class ProjectManager extends EventEmitter {
   /**
    * Read-only governance snapshot for the open project: the `<iris-software>`
    * block state in AGENTS.md (always listed) + any existing vendor entries,
-   * and whether `.iris/CONVENTIONS.md` is still a factory default. Deterministic
-   * (tag parse + hash compare); never writes.
+   * and the synchronized project-prompt state.
    */
-  async softwarePromptState(appVersion: string): Promise<SoftwarePromptState> {
+  async softwarePromptState(): Promise<SoftwarePromptState> {
     const root = this.requireRoot();
     const entries: SoftwareEntryStatus[] = [await this.entryStatus(root, 'AGENTS.md', true)];
     for (const rel of FOREIGN_AGENT_ENTRIES) {
       if (await exists(join(root, rel))) entries.push(await this.entryStatus(root, rel, false));
     }
 
-    let constitution: ConstitutionStateUi;
-    try {
-      const text = await fs.readFile(join(root, '.iris', 'CONVENTIONS.md'), 'utf8');
-      constitution = classifyConstitution(text);
-    } catch {
-      constitution = 'missing';
-    }
-
-    return { appVersion, currentSha: SOFTWARE_PROMPT_SHA, entries, constitution: { state: constitution } };
+    return {
+      entries,
+      project: {
+        state: this.projectPromptConflicts.length > 0
+          ? 'conflict'
+          : this.projectPromptBaseline === ''
+            ? 'missing'
+            : 'synced',
+        text: this.projectPromptBaseline,
+        conflicts: this.projectPromptConflicts,
+      },
+    };
   }
 
   /**
@@ -404,8 +490,8 @@ export class ProjectManager extends EventEmitter {
    * injection an agent receives — the text behind the freshness badges, for the
    * settings 软件提示词 viewer. Pure read (never writes).
    */
-  async contextPreview(appVersion: string): Promise<ContextPreview> {
-    return assembleContextPreview(this.requireRoot(), appVersion);
+  async contextPreview(): Promise<ContextPreview> {
+    return assembleContextPreview(this.requireRoot());
   }
 
   private async entryStatus(
@@ -415,10 +501,8 @@ export class ProjectManager extends EventEmitter {
   ): Promise<SoftwareEntryStatus> {
     try {
       const text = await fs.readFile(this.resolveInside(root, rel), 'utf8');
-      const { state, version } = classifySoftwareBlock(text);
-      return version !== undefined
-        ? { path: rel, isStandard, state, version }
-        : { path: rel, isStandard, state };
+      const { state } = classifySoftwareBlock(text);
+      return { path: rel, isStandard, state };
     } catch {
       return { path: rel, isStandard, state: 'no-entry' };
     }
@@ -426,11 +510,11 @@ export class ProjectManager extends EventEmitter {
 
   /**
    * Write/refresh the `<iris-software>` block in one entry file (user-confirmed
-   * in the settings UI; .bak written first by syncEntryFile). AGENTS.md may be
+   * in the settings UI). AGENTS.md may be
    * created; a vendor entry is refused if it does not already exist (Iris never
    * grows a vendor zoo). Returns the fresh state for the UI to re-render.
    */
-  async syncSoftwareEntry(relPath: string, appVersion: string): Promise<SoftwarePromptState> {
+  async syncSoftwareEntry(relPath: string): Promise<SoftwarePromptState> {
     const root = this.requireRoot();
     if (!WRITABLE_ENTRIES.includes(relPath)) {
       throw new ProjectError('InvalidPayload', `refusing to write the block into ${relPath}`);
@@ -439,35 +523,22 @@ export class ProjectManager extends EventEmitter {
     if (relPath !== 'AGENTS.md' && !(await exists(abs))) {
       throw new ProjectError('InvalidPayload', `vendor entry ${relPath} does not exist (Iris does not create it)`);
     }
-    await syncEntryFile(abs, appVersion);
-    return this.softwarePromptState(appVersion);
+    await syncEntryFile(abs);
+    return this.softwarePromptState();
   }
 
-  /**
-   * Upgrade `.iris/CONVENTIONS.md` to the current shipped default — ONLY when
-   * it is still an untouched prior factory default (§5). A current-default,
-   * customized, or missing constitution is refused: Iris never overwrites
-   * human edits. .bak written first.
-   */
-  async upgradeConstitution(appVersion: string): Promise<SoftwarePromptState> {
+  /** User-edited project prompt becomes the new disk truth and is mirrored. */
+  async syncProjectPrompt(text: string): Promise<SoftwarePromptState> {
+    if (typeof text !== 'string') {
+      throw new ProjectError('InvalidPayload', 'project prompt must be a string');
+    }
     const root = this.requireRoot();
-    const abs = join(root, '.iris', 'CONVENTIONS.md');
-    let text: string;
-    try {
-      text = await fs.readFile(abs, 'utf8');
-    } catch {
-      throw new ProjectError('ReadFailed', '.iris/CONVENTIONS.md not found');
-    }
-    if (classifyConstitution(text) !== 'stale-default') {
-      throw new ProjectError(
-        'InvalidPayload',
-        '宪法不是可升级的出厂旧默认（当前已是最新、或已被自定义）——拒绝覆盖',
-      );
-    }
-    await fs.copyFile(abs, `${abs}.bak`).catch(() => {});
-    await fs.writeFile(abs, CONSTITUTION_TEMPLATE, 'utf8');
-    logger.info('project', `constitution upgraded to current default (.bak kept): ${abs}`);
-    return this.softwarePromptState(appVersion);
+    const normalized = normalizePromptBody(text);
+    await this.writeProjectPrompt(root, normalized);
+    this.projectPromptBaseline = normalized;
+    this.projectPromptConflicts = [];
+    this.emit('promptChanged');
+    return this.softwarePromptState();
   }
 
   /**
@@ -521,18 +592,126 @@ export class ProjectManager extends EventEmitter {
     return abs;
   }
 
+  private async existingEntryPaths(root: string): Promise<string[]> {
+    const paths: string[] = [];
+    for (const rel of WRITABLE_ENTRIES) {
+      if (await exists(join(root, rel))) paths.push(rel);
+    }
+    return paths;
+  }
+
+  private async readProjectPrompt(
+    root: string,
+    rel: string,
+  ): Promise<{ path: string; text: string; hasBlock: boolean }> {
+    try {
+      const source = await fs.readFile(this.resolveInside(root, rel), 'utf8');
+      const block = parseProjectBlock(source);
+      return { path: rel, text: block?.body ?? '', hasBlock: block !== null };
+    } catch {
+      return { path: rel, text: '', hasBlock: false };
+    }
+  }
+
+  private async reconcileProjectPromptInitial(root: string): Promise<void> {
+    const paths = await this.existingEntryPaths(root);
+    const snapshots = await Promise.all(paths.map((rel) => this.readProjectPrompt(root, rel)));
+    const bodies = [...new Set(snapshots.filter((item) => item.hasBlock && item.text !== '').map((item) => item.text))];
+
+    if (bodies.length > 1) {
+      this.projectPromptBaseline = '';
+      this.projectPromptConflicts = snapshots
+        .filter((item) => item.hasBlock && item.text !== '')
+        .map(({ path, text }) => ({ path, text }));
+      this.emit('promptChanged');
+      return;
+    }
+
+    this.projectPromptBaseline = bodies[0] ?? '';
+    this.projectPromptConflicts = [];
+    if (bodies.length === 1 || snapshots.some((item) => item.hasBlock)) {
+      await this.writeProjectPrompt(root, this.projectPromptBaseline);
+    }
+    this.emit('promptChanged');
+  }
+
+  private async reconcileProjectPromptChanges(
+    root: string,
+    changes: FsIrisChangedEvent['changes'],
+  ): Promise<void> {
+    if (this.projectRoot !== root) return;
+    if (this.projectPromptConflicts.length > 0) {
+      await this.reconcileProjectPromptInitial(root);
+      return;
+    }
+
+    const candidates: ProjectPromptConflict[] = [];
+    const changedPaths = [...new Set(changes.filter((change) => change.kind === 'add' || change.kind === 'change').map((change) => change.path))];
+    for (const rel of changedPaths) {
+      const snapshot = await this.readProjectPrompt(root, rel);
+      // Creating an unrelated vendor entry without a project block is not a
+      // request to clear the current project prompt.
+      const wasAdded = changes.some((change) => change.path === rel && change.kind === 'add');
+      if (wasAdded && !snapshot.hasBlock) continue;
+      if (snapshot.text !== this.projectPromptBaseline) {
+        candidates.push({ path: rel, text: snapshot.text });
+      }
+    }
+
+    const distinct = [...new Set(candidates.map((item) => item.text))];
+    if (distinct.length === 0) return;
+    if (distinct.length > 1) {
+      this.projectPromptConflicts = candidates;
+      this.emit('promptChanged');
+      return;
+    }
+
+    const nextBaseline = distinct[0] ?? '';
+    await this.writeProjectPrompt(root, nextBaseline);
+    if (this.projectRoot !== root) return;
+    this.projectPromptBaseline = nextBaseline;
+    this.projectPromptConflicts = [];
+    this.emit('promptChanged');
+  }
+
+  private async writeProjectPrompt(root: string, body: string): Promise<void> {
+    const targets = new Set(await this.existingEntryPaths(root));
+    if (body !== '') targets.add('AGENTS.md');
+    for (const rel of targets) {
+      const abs = this.resolveInside(root, rel);
+      let source = '';
+      try {
+        source = await fs.readFile(abs, 'utf8');
+      } catch {
+        // A non-empty prompt may create the standard entry below.
+      }
+      const result = upsertProjectBlock(source, body === '' ? null : body);
+      if (result.action === 'unchanged') continue;
+      await fs.mkdir(dirname(abs), { recursive: true });
+      await fs.writeFile(abs, result.text, 'utf8');
+      logger.info('project', `project prompt ${result.action} in ${abs}`);
+    }
+  }
+
   private startWatcher(root: string): void {
     const irisAbs = join(root, '.iris');
-    this.watcher = chokidar.watch(irisAbs, {
+    const entryPaths = WRITABLE_ENTRIES.map((rel) => join(root, rel));
+    this.watcher = chokidar.watch([irisAbs, ...entryPaths], {
       ignoreInitial: true,
       // Editors/agents writing files produce write bursts; wait for quiet.
       awaitWriteFinish: { stabilityThreshold: 80, pollInterval: 20 },
     });
 
     const push = (kind: FsIrisChangedEvent['changes'][number]['kind']) => (path: string) => {
-      if (!this.projectRoot) return;
-      const rel = path.slice(this.projectRoot.length + 1).split(sep).join('/');
-      this.pendingChanges.push({ kind, path: rel });
+      // A callback already queued by an old watcher must never be relabeled as
+      // the newly active project after a switch.
+      if (this.projectRoot !== root) return;
+      const rel = path.slice(root.length + 1).split(sep).join('/');
+      if ((WRITABLE_ENTRIES as readonly string[]).includes(rel)) {
+        this.pendingPromptChanges.push({ kind, path: rel });
+      } else {
+        this.pendingChanges.push({ kind, path: rel });
+      }
       this.scheduleFlush();
     };
 
@@ -550,13 +729,20 @@ export class ProjectManager extends EventEmitter {
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null;
-      if (!this.projectRoot || this.pendingChanges.length === 0) return;
-      const event: FsIrisChangedEvent = {
-        projectRoot: this.projectRoot,
-        changes: this.pendingChanges,
-      };
+      if (!this.projectRoot) return;
+      const root = this.projectRoot;
+      const irisChanges = this.pendingChanges;
+      const promptChanges = this.pendingPromptChanges;
       this.pendingChanges = [];
-      this.emit('irisChanged', event);
+      this.pendingPromptChanges = [];
+      if (irisChanges.length > 0) {
+        this.emit('irisChanged', { projectRoot: root, changes: irisChanges } satisfies FsIrisChangedEvent);
+      }
+      if (promptChanges.length > 0) {
+        this.promptReconcileTail = this.promptReconcileTail
+          .then(() => this.reconcileProjectPromptChanges(root, promptChanges))
+          .catch((err) => logger.warn('project', 'project prompt reconciliation failed', err));
+      }
     }, DEBOUNCE_MS);
   }
 }

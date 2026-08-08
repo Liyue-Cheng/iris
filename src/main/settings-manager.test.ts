@@ -15,11 +15,20 @@ describe('recent project settings', () => {
   it('adds older settings files with an empty recentRoots default', () => {
     const legacy = structuredClone(DEFAULT_SETTINGS) as Settings;
     delete (legacy.project as Partial<Settings['project']>).recentRoots;
+    const legacyBehavior = legacy.behavior as Partial<Settings['behavior']>;
+    delete legacyBehavior.editorAutosave;
+    delete legacyBehavior.editorAutosaveDelayMs;
+    delete legacyBehavior.editorSaveOnBlur;
+    delete legacyBehavior.editorConflictPolicy;
 
     const merged = deepMerge(DEFAULT_SETTINGS, legacy as DeepPartial<Settings>);
 
     expect(merged.project.recentRoots).toEqual([]);
     expect(merged.behavior.restoreProjectsOnStartup).toBe(false);
+    expect(merged.behavior.editorAutosave).toBe(true);
+    expect(merged.behavior.editorAutosaveDelayMs).toBe(1500);
+    expect(merged.behavior.editorSaveOnBlur).toBe(true);
+    expect(merged.behavior.editorConflictPolicy).toBe('ask');
     expect(() => validateSettings(merged)).not.toThrow();
   });
 

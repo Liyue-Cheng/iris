@@ -4,10 +4,12 @@
  *   name-is-type (recursive) / workspace inference / nearest-workspace
  *   ownership / archive-inside-report / frontmatter tolerance.
  */
-import { describe, expect, it } from 'vitest';
-import { resolve } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { promises as fs } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { scanProject, scanRawTree, parseFrontmatter } from './iris-scanner';
 import type { IrisWorkspace } from '@shared/types';
+import { createTempDataDir, removeTempDataDir } from './persistence';
 
 const FIXTURE = resolve(__dirname, '../../fixtures/sample-project');
 
@@ -97,7 +99,6 @@ describe('scanProject on the sample fixture', () => {
     collect(root!);
 
     expect(allDocs.some((p) => p.endsWith('.txt'))).toBe(false);
-    expect(allDocs).not.toContain('.iris/CONVENTIONS.md');
     expect(allDocs).not.toContain('.iris/spike-auth/index.md');
   });
 
@@ -139,7 +140,7 @@ describe('scanRawTree', () => {
     };
     walk(tree!);
     expect(flat).toContain('.iris/misc/not-markdown.txt');
-    expect(flat).toContain('.iris/CONVENTIONS.md');
+    expect(flat).toContain('.iris/spike-auth/index.md');
   });
 });
 
@@ -156,5 +157,34 @@ describe('parseFrontmatter', () => {
     const r = parseFrontmatter('---\ntitle: [oops\n  {{\n---\nbody');
     expect(r.broken).toBe(true);
     expect(r.frontmatter).toBeNull();
+  });
+});
+
+describe('companion asset isolation', () => {
+  let temp: string | null = null;
+
+  afterEach(async () => {
+    if (temp) await removeTempDataDir(temp).catch(() => {});
+    temp = null;
+  });
+
+  it('does not scan Markdown or nested typed folders below a .assets directory', async () => {
+    temp = await createTempDataDir('iris-scanner-assets-');
+    await fs.mkdir(join(temp, '.iris', 'issue', 'owner.assets', 'issue'), { recursive: true });
+    await fs.writeFile(join(temp, '.iris', 'issue', 'owner.md'), '# owner\n', 'utf8');
+    await fs.writeFile(join(temp, '.iris', 'issue', 'owner.assets', 'attachment.md'), '# file\n', 'utf8');
+    await fs.writeFile(join(temp, '.iris', 'issue', 'owner.assets', 'issue', 'fake.md'), '# fake\n', 'utf8');
+
+    const result = await scanProject(temp);
+    expect(result.root?.docs.map((doc) => doc.path)).toEqual(['.iris/issue/owner.md']);
+
+    const raw = await scanRawTree(temp);
+    const paths: string[] = [];
+    const walk = (node: NonNullable<typeof raw>): void => {
+      paths.push(node.path);
+      node.children?.forEach(walk);
+    };
+    walk(raw!);
+    expect(paths).toContain('.iris/issue/owner.assets/attachment.md');
   });
 });

@@ -40,6 +40,11 @@ function isDocType(name: string): name is DocType {
   return (DOC_TYPES as readonly string[]).includes(name);
 }
 
+/** Companion asset directories are opaque leaves to the PM projection. */
+function isAssetDir(name: string): boolean {
+  return name.toLowerCase().endsWith('.assets');
+}
+
 /** Project-relative path with forward slashes (protocol portable form). */
 function toRel(projectRoot: string, absPath: string): string {
   return absPath.slice(projectRoot.length + 1).split(sep).join('/');
@@ -184,6 +189,7 @@ async function collectTypedDocs(
   }
 
   for (const d of dirs) {
+    if (isAssetDir(d.name)) continue;
     if (await isWorkspaceDir(d.abs)) {
       // A workspace living inside a typed folder — the archive gesture when
       // that folder is report/. Recurse as a full workspace.
@@ -229,7 +235,7 @@ async function isWorkspaceDir(abs: string): Promise<boolean> {
 /**
  * Scan a workspace directory: typed-folder children become this workspace's
  * docs; non-typed dirs are searched for nested workspaces; loose .md files
- * at the workspace root (index.md, CONVENTIONS.md) are not typed docs and
+ * at a workspace root (for example, index.md) are not typed docs and
  * stay out of the lens tree (visible via the raw tree).
  */
 async function scanWorkspaceDir(
@@ -248,6 +254,7 @@ async function scanWorkspaceDir(
 
   const { dirs } = await listDir(wsAbs);
   for (const d of dirs) {
+    if (isAssetDir(d.name)) continue;
     if (isDocType(d.name)) {
       ws.docs.push(
         ...(await collectTypedDocs(
@@ -276,6 +283,7 @@ async function containsWorkspaceSomewhere(abs: string): Promise<boolean> {
   if (await isWorkspaceDir(abs)) return true;
   const { dirs } = await listDir(abs);
   for (const d of dirs) {
+    if (isAssetDir(d.name)) continue;
     if (await containsWorkspaceSomewhere(d.abs)) return true;
   }
   return false;
@@ -293,23 +301,10 @@ async function findWorkspaces(
   const out: IrisWorkspace[] = [];
   const { dirs } = await listDir(abs);
   for (const d of dirs) {
+    if (isAssetDir(d.name)) continue;
     out.push(...(await findWorkspaces(projectRoot, d.abs, archived)));
   }
   return out;
-}
-
-/** Read .iris/CONVENTIONS.md presence + frontmatter protocol version. */
-async function readConstitutionState(
-  irisAbs: string,
-): Promise<{ exists: boolean; protocol: number | null }> {
-  try {
-    const text = await fs.readFile(join(irisAbs, 'CONVENTIONS.md'), 'utf8');
-    const { frontmatter } = parseFrontmatter(text);
-    const p = frontmatter?.['protocol'];
-    return { exists: true, protocol: typeof p === 'number' ? p : null };
-  } catch {
-    return { exists: false, protocol: null };
-  }
 }
 
 /** Scan a project. Cheap full rescan (M1 granularity — .iris trees are small). */
@@ -330,18 +325,14 @@ export async function scanProject(projectRoot: string): Promise<IrisScanResult> 
       projectName,
       hasIris: false,
       root: null,
-      constitution: { exists: false, protocol: null },
       scannedAt: Date.now(),
     };
     return result;
   }
 
-  const [root, constitution] = await Promise.all([
-    scanWorkspaceDir(projectRoot, irisAbs, false),
-    readConstitutionState(irisAbs),
-  ]);
+  const root = await scanWorkspaceDir(projectRoot, irisAbs, false);
   root.name = projectName; // root workspace displays the project's name
-  const result = { projectRoot, projectName, hasIris: true, root, constitution, scannedAt: Date.now() };
+  const result = { projectRoot, projectName, hasIris: true, root, scannedAt: Date.now() };
   return result;
 }
 

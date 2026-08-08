@@ -1,27 +1,17 @@
 /**
  * @file src/main/iris-templates.ts
- * @purpose The protocol's canonical prose — split across the three governed
- *   layers (issue: iris软件提示词治理):
+ * @purpose The protocol's canonical prose and optional context templates
+ *   (issue: iris软件提示词治理):
  *
- *   - SOFTWARE_PROMPT_TEMPLATE — the invariant protocol mechanics. App-owned,
- *     versioned, injected as the `<iris-software>` managed block. Users do not
- *     edit it; edits are detected as drift and offered for re-sync. Wording
- *     changes here are PROTOCOL changes — bump nothing silently.
- *   - CONSTITUTION_TEMPLATE — the project layer: policy that may differ per
- *     project (state-machine values, markdown style). Human-owned once written.
- *     LEGACY_CONSTITUTION_DEFAULTS keeps prior shipped versions so an untouched
- *     factory constitution can be recognized and offered an upgrade (§5).
- *   - MACHINE_CONVENTIONS_TEMPLATE — the user layer (machine facts).
- *
- *   The tag/sha/classification logic lives in software-prompt.ts; this file is
- *   just the prose + the frozen legacy archive.
+ *   - SOFTWARE_PROMPT_TEMPLATE — the invariant protocol mechanics. App-owned
+ *     and injected as the `<iris-software>` managed block. Disk edits are
+ *     reported as drift and never imported into this built-in source.
+ *   Block parsing and synchronization live in software-prompt.ts.
  */
+import { ISSUE_STATUS, REPORT_STATUS } from '@shared/document-status';
 
-/** Current protocol version written into fresh constitutions and the
- *  `<iris-software>` block's `protocol=` attribute.
- *  2 — issue/report 写入纪律对调（issue 正文倾向追加，report 可自由修改）、
- *  frontmatter schema 与 todo 收集机制进入 software 层。 */
-export const PROTOCOL_VERSION = 2;
+export const SOFTWARE_BLOCK_TAG = 'iris-software';
+export const PROJECT_BLOCK_TAG = 'iris-project';
 
 // ──────────────────────────────────────────────────────────────────
 // Software layer — the `<iris-software>` managed-block body.
@@ -29,15 +19,15 @@ export const PROTOCOL_VERSION = 2;
 
 /**
  * The invariant protocol the agent must follow in ANY Iris project on ANY
- * machine. Injected verbatim inside `<iris-software>` (static, in AGENTS.md /
- * vendor entries) and re-asserted by the SessionStart hook. Project-specific
- * policy is NOT here — it lives in `.iris/CONVENTIONS.md`.
+ * machine. Injected verbatim inside `<iris-software>` in AGENTS.md and existing
+ * vendor entry files. Optional project guidance lives beside it in an
+ * `<iris-project>` block.
  */
 export const SOFTWARE_PROMPT_TEMPLATE = `This project is managed with Iris — an AI-native, document-centric PM tool.
 All PM artifacts are plain markdown files under \`.iris/\`, in typed folders.
 The rules below are Iris's invariant protocol: they ship with the app and do
-not vary per project. Project-specific policy lives in \`.iris/CONVENTIONS.md\`;
-machine-specific facts live in \`~/.iris/CONVENTIONS.md\`.
+not vary per project. Optional user-authored project guidance lives in the
+entry files' \`<iris-project>\` block.
 
 ## Folder semantics
 
@@ -58,14 +48,33 @@ type is decided by the nearest enclosing typed folder.
   report over reshaping an old one.
 - \`misc/\` — Human scratch space. Do not touch unless asked.
 
+## Document assets
+
+Managed assets live beside their owner document in a companion directory:
+\`<name>.md\` owns \`<name>.assets/\`. Use standard relative Markdown links such
+as \`./<name>.assets/image--<hash>.png\`; do not add an assets manifest or
+frontmatter registry. Asset directories are opaque to document/workspace
+scanning.
+
+- Keep each asset owned by one document; copy it when another document needs
+  an independent copy instead of linking across companion directories.
+- Name imported files \`<sanitized-name>--<sha256-prefix>.<ext>\`. Treat a
+  referenced asset as immutable: write a new file and update the link rather
+  than overwriting bytes in place.
+- Do not persist \`blob:\`, absolute filesystem paths, or new \`data:\` URLs.
+  Existing project-relative and HTTPS references remain compatible but are
+  unmanaged until explicitly imported.
+- Never delete an asset merely because its reference disappeared. It becomes
+  an orphan and awaits explicit human cleanup. When a document is moved,
+  copied, renamed, or human-deleted, handle its companion directory with it.
+
 ## What the app parses
 
 Frontmatter keys are read literally — use exactly these (unknown keys are
 ignored, and a misspelled key silently drops the field):
 
 - \`title:\` — display title; falls back to the filename when absent.
-- \`status:\` — drives the issue/report lenses; values are defined in
-  \`.iris/CONVENTIONS.md\`.
+- \`status:\` — drives the issue/report lenses and uses the state machine below.
 - \`labels:\` — optional list; feeds the filter chips.
 - \`reflects:\` — status docs only: the git commit sha the doc reflects.
 
@@ -75,9 +84,21 @@ carries \`reflects:\` instead of \`status:\`):
 \`\`\`
 ---
 title: <short title>
-status: Todo
+status: ${ISSUE_STATUS.todo}
 ---
 \`\`\`
+
+The stored \`status:\` value is also the displayed value; write canonical values
+exactly as shown unless reality requires an exceptional value.
+
+- Issues: \`${ISSUE_STATUS.todo}\` -> \`${ISSUE_STATUS.inProgress}\` -> \`${ISSUE_STATUS.inReview}\` -> \`${ISSUE_STATUS.done}\`, with
+  \`${ISSUE_STATUS.blocked}\` / \`${ISSUE_STATUS.canceled}\` as side states.
+- Reports: \`${REPORT_STATUS.active}\` / \`${REPORT_STATUS.backlog}\`.
+
+Never resolve an issue unprompted. A transition to \`Done\` or \`Canceled\`
+(and a report to \`Backlog\`) removes it from the active lens and may close
+attached terminal sessions; those transitions are the user's call. Advance up
+to \`In Review\` on your own when reality warrants.
 
 The app also collects every GFM task checkbox (\`- [ ] …\`) across \`.iris/\`
 docs into a todo panel, where the user tracks open items and checks them
@@ -88,22 +109,17 @@ pending item written as prose is invisible to the panel.
 
 ## How context reaches you
 
-Iris spawns your terminal with the environment variable \`FOCUS_DOC\` set to the
-document the user is focused on (path relative to project root), and — for
-agents with a SessionStart hook — injects a snapshot of the relevant files
-directly, each wrapped in an \`<iris-…>\` tag:
+The static software and optional project prompts are read from this entry file.
+Iris also spawns terminals with \`FOCUS_DOC\` set to the focused document path.
+For agents with a SessionStart hook it injects only dynamic context:
 
-- \`<iris-software>\` — this block (Iris protocol; app-owned, versioned).
-- \`<iris-project>\` — \`.iris/CONVENTIONS.md\` (project policy).
-- \`<iris-user>\` — \`~/.iris/CONVENTIONS.md\` (machine facts, if present).
+- \`<iris-workspace>\` — hub-session workspace metadata when there is no focus.
 - \`<iris-focus>\` — a snapshot of \`$FOCUS_DOC\`.
 
-**The \`FOCUS_DOC\` env-var and reading these files from disk are a FALLBACK.**
-If you already received a file's contents via the injected \`<iris-…>\` blocks
-above, do not re-read it from disk — unless you have reason to believe it
-changed (the injection is a snapshot taken at session start; the file may be
-edited during the session, including by you). Agents without a hook fall back
-to reading \`$FOCUS_DOC\` and the referenced files themselves.
+**The session environment variables and reading the focus from disk are a
+FALLBACK.** If you already received a dynamic snapshot via an injected
+\`<iris-…>\` block, do not re-read it from disk unless you have reason to believe
+it changed. Agents without a hook fall back to the environment variables.
 
 ## Working rules (invariant)
 
@@ -127,158 +143,14 @@ to reading \`$FOCUS_DOC\` and the referenced files themselves.
 6. **Trust calibration.** Before relying on a status doc, compare its
    \`reflects:\` stamp to \`git HEAD\`; a large gap means treat it as a weak prior
    and verify against the code.
-7. **Off-limits.** Never modify \`.iris/CONVENTIONS.md\` (the human-authored
-   contract) or this \`<iris-software>\` block. Never write outside typed
+7. **Off-limits.** Never modify the \`<iris-software>\` or \`<iris-project>\`
+   blocks. Never write outside typed
    folders. Never touch code directories unless explicitly asked.
 
-For project-specific policy — the issue/report state-machine values and the
-markdown style to write in — read \`.iris/CONVENTIONS.md\`.`;
-
-// ──────────────────────────────────────────────────────────────────
-// Project layer — .iris/CONVENTIONS.md (slimmed to policy that varies).
-// ──────────────────────────────────────────────────────────────────
-
-/** Appendix B — .iris/CONVENTIONS.md (project constitution), project policy only. */
-export const CONSTITUTION_TEMPLATE = `---
-protocol: 2
----
-
-# Iris Project Conventions
-
-This file is the **project layer**: policy that may differ per project. The
-invariant protocol (folder semantics, frontmatter schema, focus protocol,
-write-back scope) is owned by Iris and injected separately as the
-\`<iris-software>\` block — you do not need to restate it here. Keep this
-file short.
-
-## State machine (\`status:\` field)
-
-\`status:\` lives in frontmatter. The stored value IS the displayed value —
-write it exactly as shown (deviate only when reality demands).
-
-- Issues: \`Todo\` → \`In Progress\` → \`In Review\` → \`Done\`, with \`Blocked\` /
-  \`Canceled\` as side states.
-- Reports: \`Active\` / \`Backlog\`.
-
-**Never resolve an issue unprompted.** A transition to \`Done\` or \`Canceled\`
-(and a report to \`Backlog\`) removes it from the active lens — those are the
-user's call. Advance up to \`In Review\` on your own when reality warrants;
-closing one out waits for the user to ask.
-
-## Markdown style
-
-Write plain CommonMark; the app's editor serializes with fixed remark
-defaults — match them to keep diffs quiet.
-`;
-
-/**
- * Frozen prior shipped constitution defaults. Used ONLY to recognize an
- * untouched factory constitution that predates the current template, so it
- * can be offered an upgrade (§5 项目提示词的自动升级). A project whose
- * `.iris/CONVENTIONS.md` matches none of these (nor the current template) has
- * been customized and is left alone.
- *
- * APPEND (never edit/remove) the outgoing CONSTITUTION_TEMPLATE here whenever
- * you change it. The entry below is the pre-治理 monolithic constitution that
- * still mixed folder semantics into the project layer.
- */
-export const LEGACY_CONSTITUTION_DEFAULTS: readonly string[] = [
-  `---
-protocol: 1
----
-
-# Iris Project Conventions
-
-Every PM artifact is a markdown file inside a typed folder (\`status/\`,
-\`issue/\`, \`report/\`, \`misc/\`) under \`.iris/\`. Typed folders may appear at
-any depth: any folder containing typed folders is a **workspace**.
-
-## Folder semantics
-
-- \`status/\` — Current state of the codebase. **Keep in sync with
-  reality.** Every status doc carries \`reflects: <git-commit-sha>\` in
-  frontmatter, stamped with the HEAD it reflects.
-- \`issue/\` — Things to do, bugs, open questions. Mark resolved by
-  updating \`status:\` in frontmatter; do not delete.
-- \`report/\` — Append-only snapshots and session journals. The body is
-  append-only: never rewrite an existing report; add new files.
-  Frontmatter is not: flipping \`status:\` between \`Active\` and
-  \`Backlog\` is allowed.
-- \`misc/\` — Human scratch space. Do not touch unless asked.
-
-## Rules for you (the agent)
-
-1. **Focus protocol.** If \`$FOCUS_DOC\` is set, \`cat\` it first; its path
-   tells you both its type and its workspace. Then **wait for the user's
-   instruction** — context loading is not a task.
-2. **Write-back scope.** Write results into the **nearest workspace
-   enclosing \`$FOCUS_DOC\`**. Do not create new workspaces unless asked.
-3. **Stamping.** After changing anything a status doc tracks, regenerate
-   that doc and restamp \`reflects:\` with current \`git HEAD\`.
-4. **No unsolicited files.** Never create a new file — reports
-   included — unless the user explicitly asks for one. Editing the doc
-   \`$FOCUS_DOC\` points to is always allowed, and so are frontmatter
-   updates (e.g. \`status:\` transitions) on existing docs.
-5. **Naming.** New files in \`issue/\` and \`report/\` use a
-   \`YYYY-MM-DD-<slug>.md\` prefix.
-6. **Soft state machine** for the \`status:\` field — the stored value IS
-   the displayed value, so write it exactly as shown (deviate only when
-   reality demands). Issues: \`Todo\` → \`In Progress\` → \`In Review\` →
-   \`Done\`, with \`Blocked\` / \`Canceled\` as side states. Reports:
-   \`Active\` / \`Backlog\`. **Never resolve an issue unprompted.** A
-   transition to \`Done\` or \`Canceled\` (and a report to \`Backlog\`)
-   removes it from the active lens — those are the user's call. Advance up
-   to \`In Review\` on your own when reality warrants; closing one out
-   waits for the user to ask.
-7. **After a git merge**, do not hand-merge status docs — regenerate and
-   restamp them.
-8. **Trust calibration.** Before relying on a status doc, compare its
-   \`reflects:\` stamp to \`git HEAD\`. Large gap → treat as weak prior and
-   verify against the code.
-9. **Markdown style.** Write plain CommonMark; the app's editor
-   serializes with fixed remark defaults — match them to keep diffs
-   quiet.
-10. **Off-limits.** Never modify this file. Never write outside typed
-    folders. Never touch code directories unless explicitly asked.
-`,
-  // protocol-1 拆分版：三层拆分后、issue/report 纪律对调前的出厂 constitution
-  // （report 仍是 append-only，checkbox 规则还留在项目层）。
-  `---
-protocol: 1
----
-
-# Iris Project Conventions
-
-This file is the **project layer**: policy that may differ per project. The
-invariant protocol (folder semantics, focus protocol, write-back scope) is
-owned by Iris and injected separately as the \`<iris-software>\` block — you do
-not need to restate it here. Keep this file short.
-
-## State machine (\`status:\` field)
-
-The stored value IS the displayed value — write it exactly as shown (deviate
-only when reality demands).
-
-- Issues: \`Todo\` → \`In Progress\` → \`In Review\` → \`Done\`, with \`Blocked\` /
-  \`Canceled\` as side states.
-- Reports: \`Active\` / \`Backlog\`.
-
-**Never resolve an issue unprompted.** A transition to \`Done\` or \`Canceled\`
-(and a report to \`Backlog\`) removes it from the active lens — those are the
-user's call. Advance up to \`In Review\` on your own when reality warrants;
-closing one out waits for the user to ask.
-
-## Markdown style
-
-Write plain CommonMark; the app's editor serializes with fixed remark
-defaults — match them to keep diffs quiet.
-
-Anything that asks the user to verify by hand — acceptance points, "✋ 手工
-验收" lists, "待你测试" notes — must be written as GFM task checkboxes
-(\`- [ ] …\`), one per discrete check, never as prose or plain bullets. This
-keeps every open verification trackable and impossible to overlook.
-`,
-];
+Write plain CommonMark. Iris's editor serializes with fixed remark defaults;
+match them to keep diffs quiet. Follow the entry file's \`<iris-project>\` block
+when it contains user guidance, unless it conflicts with this software
+protocol.`;
 
 // ──────────────────────────────────────────────────────────────────
 // AGENTS.md guidance — now the `<iris-software>` managed block.
@@ -289,7 +161,6 @@ keeps every open verification trackable and impossible to overlook.
  * Switched from the old `## Project management (Iris)` heading to the opening
  * tag: the block is now tag-delimited, so the tag IS the boundary.
  */
-export const SOFTWARE_BLOCK_TAG = 'iris-software';
 export const AGENTS_GUIDANCE_MARKER = `<${SOFTWARE_BLOCK_TAG}`;
 
 /**
@@ -307,32 +178,3 @@ export const FOREIGN_AGENT_ENTRIES: readonly string[] = [
   '.clinerules',
   '.github/copilot-instructions.md',
 ];
-
-// ──────────────────────────────────────────────────────────────────
-// User layer — ~/.iris/CONVENTIONS.md (machine facts).
-// ──────────────────────────────────────────────────────────────────
-
-/** Appendix C — ~/.iris/CONVENTIONS.md (machine layer), with TODO blanks. */
-export const MACHINE_CONVENTIONS_TEMPLATE = `# Machine Conventions (this machine only — not in git)
-
-## Environment facts
-
-State **facts**, not rules. Keep this file the shortest of the three.
-
-<!-- 按本机实情删改下面的条目；不适用的整行删掉 -->
-
-- Encryption: this machine runs <NAME> transparent file encryption.
-  Files created outside whitelisted dirs (<DIRS>) get silently
-  encrypted; corrupted-looking build artifacts are usually this, not
-  your code. Workaround: <HOW>.
-- Network: outbound traffic requires proxy \`http://127.0.0.1:<PORT>\`;
-  npm/pip use mirrors <URLS>.
-- Machine: corporate VM; snapshots nightly — \`/tmp\` does not persist.
-- Resources: 8 GB RAM — do not run the full test suite in parallel.
-- Permissions: no sudo on this box.
-- Toolchain: node via nvm; system python locked at 3.9.
-
-## Personal preferences (optional, keep short)
-
-- Write issue/report documents in Chinese.
-`;

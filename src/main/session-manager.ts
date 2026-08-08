@@ -25,17 +25,19 @@
  * docs, cwd is always the project root), templates, SSH, LLM status
  * recheck (dumb shell), multi-window ownership (v1 single window).
  *
- * Iris-specific: FOCUS_DOC env injection — the whole point of the core
- * gesture. Dynamic focus rides process env (lives and dies with the
- * session); static contracts ride the constitution files. Two lifetimes,
- * two pipes.
+ * Iris-specific: session-context env injection — document sessions carry
+ * FOCUS_DOC; workspace hubs carry IRIS_WORKSPACE_PATH. Dynamic context rides
+ * process env (lives and dies with the session); static contracts ride the
+ * prompt entry files. Two lifetimes, two pipes.
  */
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { spawn as defaultSpawnPty, type IPty, type IDisposable } from 'node-pty';
 import type {
   AgentConfig,
+  ProjectScope,
   SessionExitedPayload,
   SessionInfo,
   SessionOutputPayload,
@@ -78,6 +80,10 @@ const REPLAY_REDRAW_QUIET_MS = 50;
 const REPLAY_REDRAW_CAP_MS = 500;
 const REPLAY_NUDGE_QUIET_MS = 20;
 const REPLAY_NUDGE_CAP_MS = 150;
+/** After the process-tree terminator returns, allow node-pty's exit event a
+ * short bounded window to close its native handles before forgetting the PTY. */
+const PTY_EXIT_WAIT_MS = 2000;
+const PROCESS_TREE_KILL_TIMEOUT_MS = 5000;
 
 interface OutputQuietResult {
   sawOutput: boolean;
@@ -104,6 +110,19 @@ export type PtySpawnFn = (
     useConptyDll?: boolean;
   },
 ) => IPty;
+
+export type ProcessTreeKillFn = (pid: number) => Promise<void>;
+
+function killWindowsProcessTree(pid: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'taskkill.exe',
+      ['/pid', String(pid), '/t', '/f'],
+      { windowsHide: true, timeout: PROCESS_TREE_KILL_TIMEOUT_MS },
+      (err) => (err ? reject(err) : resolve()),
+    );
+  });
+}
 
 export class SessionManagerError extends Error {
   constructor(
@@ -132,20 +151,22 @@ interface ManagedSession {
   resizeQuietUntil: number;
   startupGraceUntil: number;
   inputQuietUntil: number;
-  pendingEmit: { bytes: Buffer; lastSeq: number } | null;
+  pendingEmit: { chunks: Buffer[]; totalBytes: number; lastSeq: number } | null;
   pendingEmitTimer: NodeJS.Timeout | null;
   headlessTerm: HeadlessTerminal | null;
   serializeAddon: SerializeAddon | null;
+  closePromise: Promise<void> | null;
 }
 
 export interface CreateSessionInput {
   /** Doc rel path (forward slashes) or null for a workspace-hub session. */
   docPath: string | null;
-  /** Hub grouping when docPath is null (`.iris` = root). UI-only, never
-   *  injected as FOCUS_DOC. Ignored when docPath is set. */
+  /** Hub workspace when docPath is null (`.iris` = root). Injected as
+   *  IRIS_WORKSPACE_PATH, never as FOCUS_DOC. Ignored when docPath is set. */
   workspacePath?: string | null;
   agentId: string;
   projectRoot: string;
+  projectGeneration: number;
   cols: number;
   rows: number;
 }
@@ -205,13 +226,27 @@ export class SessionManager extends EventEmitter {
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly replayPreparations = new Map<string, Promise<void>>();
   private readonly spawnFn: PtySpawnFn;
+  private readonly processTreeKillFn: ProcessTreeKillFn | null;
+  private readonly ptyExitWaitMs: number;
+  private shutdownPromise: Promise<void> | null = null;
 
   constructor(
     private readonly settingsManager: SettingsManager,
-    options?: { spawnFn?: PtySpawnFn },
+    options?: {
+      spawnFn?: PtySpawnFn;
+      processTreeKillFn?: ProcessTreeKillFn | null;
+      ptyExitWaitMs?: number;
+    },
   ) {
     super();
     this.spawnFn = options?.spawnFn ?? (defaultSpawnPty as PtySpawnFn);
+    this.processTreeKillFn =
+      options?.processTreeKillFn === undefined
+        ? process.platform === 'win32'
+          ? killWindowsProcessTree
+          : null
+        : options.processTreeKillFn;
+    this.ptyExitWaitMs = options?.ptyExitWaitMs ?? PTY_EXIT_WAIT_MS;
   }
 
   createSession(input: CreateSessionInput): SessionInfo {
@@ -233,12 +268,15 @@ export class SessionManager extends EventEmitter {
 
     const env = buildSpawnEnv(process.env, SPAWN_ENV_SKIP);
     injectTerminalHintEnv(env, { programName: 'Iris' });
-    // The core gesture: dynamic focus rides the process environment.
-    // Bare launch — no prompt is sent; opening is not running.
+    // Document focus and hub scope are mutually exclusive. Clear the other
+    // variable explicitly so a child cannot inherit stale Iris context from
+    // the Electron process. Bare launch: opening is not running.
     if (input.docPath) {
       env.FOCUS_DOC = input.docPath;
+      delete env.IRIS_WORKSPACE_PATH;
     } else {
-      delete env.FOCUS_DOC; // root fallback session must NOT inherit one
+      delete env.FOCUS_DOC;
+      env.IRIS_WORKSPACE_PATH = input.workspacePath ?? '.iris';
     }
 
     const host = resolveHostShell(env);
@@ -283,6 +321,7 @@ export class SessionManager extends EventEmitter {
       displayName: agent.label,
       terminalTitle: null,
       projectRoot: cwd,
+      projectGeneration: input.projectGeneration,
       cols: dims.cols,
       rows: dims.rows,
       pid: pty.pid,
@@ -308,9 +347,13 @@ export class SessionManager extends EventEmitter {
         cols: info.cols,
         rows: info.rows,
         scrollback: SCROLLBACK_LINES,
+        // Keep Codex's DEC 2026 + ED2 redraws in scrollback. This must match
+        // TerminalView or a remount would replay a different buffer history.
+        scrollOnEraseInDisplay: true,
         allowProposedApi: true,
       }),
       serializeAddon: null,
+      closePromise: null,
     };
     const serializeAddon = new SerializeAddon();
     managed.headlessTerm!.loadAddon(serializeAddon);
@@ -332,10 +375,10 @@ export class SessionManager extends EventEmitter {
   }
 
   /** Close & destroy (user gesture or app quit) — the only removal path. */
-  closeSession(sessionId: string): void {
+  closeSession(sessionId: string): Promise<void> {
     const managed = this.sessions.get(sessionId);
-    if (!managed) return;
-    this.destroySession(managed, 'user-closed');
+    if (!managed) return Promise.resolve();
+    return this.destroySession(managed, 'user-closed');
   }
 
   /**
@@ -353,11 +396,33 @@ export class SessionManager extends EventEmitter {
     return { ...managed.info };
   }
 
-  shutdown(): void {
-    for (const sid of [...this.sessions.keys()]) {
-      const managed = this.sessions.get(sid);
-      if (managed) this.destroySession(managed, 'app-quit');
-    }
+  shutdown(): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise;
+    this.shutdownPromise = Promise.all(
+      [...this.sessions.values()].map((managed) => this.destroySession(managed, 'app-quit')),
+    ).then(() => undefined);
+    return this.shutdownPromise;
+  }
+
+  /** Drain one committed project without retiring this per-window manager. */
+  async closeProject(scope: ProjectScope): Promise<void> {
+    const matching = [...this.sessions.values()].filter(
+      (managed) =>
+        managed.info.projectRoot === scope.root &&
+        managed.info.projectGeneration === scope.generation,
+    );
+    const results = await Promise.allSettled(
+      matching.map((managed) => this.destroySession(managed, 'project-switched')),
+    );
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        logger.warn(
+          'session',
+          `project drain failed sid=${matching[index]?.info.id ?? 'unknown'}`,
+          result.reason,
+        );
+      }
+    });
   }
 
   list(): SessionInfo[] {
@@ -685,9 +750,10 @@ export class SessionManager extends EventEmitter {
    *  together; pending bytes are invisible to the renderer. */
   private queueEmit(managed: ManagedSession, bytes: Buffer, seq: number): void {
     if (managed.pendingEmit === null) {
-      managed.pendingEmit = { bytes, lastSeq: seq };
+      managed.pendingEmit = { chunks: [bytes], totalBytes: bytes.length, lastSeq: seq };
     } else {
-      managed.pendingEmit.bytes = Buffer.concat([managed.pendingEmit.bytes, bytes]);
+      managed.pendingEmit.chunks.push(bytes);
+      managed.pendingEmit.totalBytes += bytes.length;
       managed.pendingEmit.lastSeq = seq;
     }
     if (managed.pendingEmitTimer === null) {
@@ -700,10 +766,12 @@ export class SessionManager extends EventEmitter {
 
   private flushPendingEmit(managed: ManagedSession): void {
     if (!managed.pendingEmit) return;
-    const { bytes, lastSeq } = managed.pendingEmit;
+    const { chunks, totalBytes, lastSeq } = managed.pendingEmit;
     managed.pendingEmit = null;
+    const bytes = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, totalBytes);
     managed.scrollbackLastSeq = lastSeq;
     const payload: SessionOutputPayload = {
+      scope: this.scopeOf(managed),
       sessionId: managed.info.id,
       data: bytes.toString('base64'),
       seq: lastSeq,
@@ -729,6 +797,7 @@ export class SessionManager extends EventEmitter {
     this.flushPendingEmitBeforeLifecycleChange(managed);
 
     const payload: SessionExitedPayload = {
+      scope: this.scopeOf(managed),
       sessionId: managed.info.id,
       exitCode,
       ...(typeof signal === 'number' ? { signal } : {}),
@@ -749,12 +818,53 @@ export class SessionManager extends EventEmitter {
     });
   }
 
-  private destroySession(managed: ManagedSession, reason: 'user-closed' | 'app-quit'): void {
+  private destroySession(
+    managed: ManagedSession,
+    reason: 'user-closed' | 'project-switched' | 'app-quit',
+  ): Promise<void> {
     const sid = managed.info.id;
-    if (!this.sessions.has(sid)) return;
+    if (!this.sessions.has(sid)) return Promise.resolve();
+    if (managed.closePromise) return managed.closePromise;
+
+    managed.closePromise = this.destroySessionNow(managed, reason);
+    return managed.closePromise;
+  }
+
+  private async destroySessionNow(
+    managed: ManagedSession,
+    reason: 'user-closed' | 'project-switched' | 'app-quit',
+  ): Promise<void> {
+    const sid = managed.info.id;
 
     this.flushPendingEmitBeforeLifecycleChange(managed);
     this.clearTimers(managed);
+
+    const pty = managed.pty;
+    if (pty) {
+      const exited = this.waitForPtyExit(pty);
+      if (this.processTreeKillFn) {
+        try {
+          // Run while the root shell PID still exists. Once node-pty closes the
+          // pseudoconsole, detached descendants can outlive that PID and can no
+          // longer be reached reliably through taskkill's /T traversal.
+          await this.processTreeKillFn(managed.info.pid);
+        } catch (err) {
+          logger.warn('session', `process-tree kill failed sid=${sid} pid=${managed.info.pid}`, err);
+        }
+      }
+      try {
+        // taskkill terminates processes; node-pty.kill still must close the
+        // pseudoconsole, pipes and native worker owned by this Electron process.
+        pty.kill();
+      } catch (err) {
+        logger.warn('session', `kill failed sid=${sid}`, err);
+      }
+      if (!(await exited.promise)) {
+        logger.warn('session', `pty exit timed out sid=${sid} pid=${managed.info.pid}`);
+      }
+      exited.dispose();
+    }
+
     for (const d of managed.disposables) {
       try {
         d.dispose();
@@ -762,14 +872,8 @@ export class SessionManager extends EventEmitter {
         /* ignore */
       }
     }
-    if (managed.pty) {
-      try {
-        managed.pty.kill();
-      } catch (err) {
-        logger.warn('session', `kill failed sid=${sid}`, err);
-      }
-      managed.pty = null;
-    }
+    managed.disposables = [];
+    managed.pty = null;
     if (managed.headlessTerm) {
       try {
         managed.headlessTerm.dispose();
@@ -780,7 +884,35 @@ export class SessionManager extends EventEmitter {
     }
     managed.serializeAddon = null;
     this.sessions.delete(sid);
-    this.emit('sessionDestroyed', { sessionId: sid, reason });
+    this.emit('sessionDestroyed', { scope: this.scopeOf(managed), sessionId: sid, reason });
+  }
+
+  private waitForPtyExit(pty: IPty): { promise: Promise<boolean>; dispose: () => void } {
+    let disposable: IDisposable | null = null;
+    let timer: NodeJS.Timeout | null = null;
+    let settled = false;
+    let resolvePromise: (exited: boolean) => void = () => {};
+    const promise = new Promise<boolean>((resolve) => {
+      resolvePromise = resolve;
+    });
+    const settle = (exited: boolean): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      resolvePromise(exited);
+    };
+    disposable = pty.onExit(() => settle(true));
+    timer = setTimeout(() => settle(false), this.ptyExitWaitMs);
+    return {
+      promise,
+      dispose: () => {
+        if (timer) clearTimeout(timer);
+        timer = null;
+        disposable?.dispose();
+        disposable = null;
+      },
+    };
   }
 
   // ──────────────────────────────────────────────────────────────────
@@ -841,10 +973,18 @@ export class SessionManager extends EventEmitter {
 
   private emitStateChanged(managed: ManagedSession, patch: Partial<SessionInfo>): void {
     const payload: SessionStateChangedPayload = {
+      scope: this.scopeOf(managed),
       sessionId: managed.info.id,
       patch,
     };
     this.emit('sessionStateChanged', payload);
+  }
+
+  private scopeOf(managed: ManagedSession): ProjectScope {
+    return {
+      root: managed.info.projectRoot,
+      generation: managed.info.projectGeneration,
+    };
   }
 }
 

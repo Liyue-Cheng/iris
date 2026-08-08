@@ -23,6 +23,8 @@ export type ThemeId =
   | 'light-pink'
   | 'fairyfloss';
 
+export type EditorConflictPolicy = 'ask' | 'overwrite';
+
 export interface Settings {
   version: 1;
   appearance: {
@@ -61,6 +63,16 @@ export interface Settings {
      *  the typed header (single source via the --editor-max-width CSS var).
      *  UI presets: 窄 48 / 中 58 (default) / 宽 72. Clamped to [30, 120]. */
     editorMaxWidth: number;
+    /** Save user-authored body/source changes after an idle delay. Explicit
+     *  commits, view switches, project switches and quit still flush. */
+    editorAutosave: boolean;
+    /** Idle delay for editorAutosave, clamped to [300, 10000] ms. */
+    editorAutosaveDelayMs: number;
+    /** Flush a genuinely dirty editor when focus leaves the editor body. */
+    editorSaveOnBlur: boolean;
+    /** External disk change while dirty: ask blocks writes and shows recovery
+     *  actions; overwrite preserves the historical last-writer-wins policy. */
+    editorConflictPolicy: EditorConflictPolicy;
   };
   project: {
     /** @deprecated v1.0 single-window field. v1.1 restores from openRoots;
@@ -157,11 +169,9 @@ export interface InjectionState {
 /** State of the `<iris-software>` block in one entry file.
  *  - no-entry: the file does not exist (AGENTS.md can be created).
  *  - missing : file exists but carries no block.
- *  - drifted : block was hand-edited (body no longer matches its sha) or is
- *              an unknown version.
- *  - stale   : block is an older but untouched shipped version → re-syncable.
- *  - ok       : block is the current shipped version. */
-export type SoftwareBlockStateUi = 'no-entry' | 'missing' | 'drifted' | 'stale' | 'ok';
+ *  - drifted : body differs from the built-in source or the tag has attrs.
+ *  - ok      : attribute-free block with the exact built-in body. */
+export type SoftwareBlockStateUi = 'no-entry' | 'missing' | 'drifted' | 'ok';
 
 export interface SoftwareEntryStatus {
   /** Project-root-relative path. */
@@ -169,25 +179,22 @@ export interface SoftwareEntryStatus {
   /** The standard entry Iris owns (AGENTS.md); vendor entries are false. */
   isStandard: boolean;
   state: SoftwareBlockStateUi;
-  /** version attr found in the block (informational). */
-  version?: string;
 }
 
-/** Whether `.iris/CONVENTIONS.md` is still a factory default (§5). */
-export type ConstitutionStateUi =
-  | 'missing'
-  | 'current-default'
-  | 'stale-default'
-  | 'customized';
+export type ProjectPromptStateUi = 'missing' | 'synced' | 'conflict';
+
+export interface ProjectPromptConflict {
+  path: string;
+  text: string;
+}
 
 export interface SoftwarePromptState {
-  /** App version that would be stamped on a (re)sync. */
-  appVersion: string;
-  /** Fingerprint of the current shipped software-prompt body. */
-  currentSha: string;
-  /** AGENTS.md first, then any existing vendor entries. */
   entries: SoftwareEntryStatus[];
-  constitution: { state: ConstitutionStateUi };
+  project: {
+    state: ProjectPromptStateUi;
+    text: string;
+    conflicts: ProjectPromptConflict[];
+  };
 }
 
 /** One governed prompt layer's on-disk text (null = file absent). */
@@ -198,21 +205,13 @@ export interface PromptLayerContent {
 }
 
 /**
- * Read-only view of the prompt layers an agent actually receives — the content
- * behind the freshness badges, for the settings 软件提示词 viewer. `assembled`
- * is the four `<iris-*>` segments joined exactly as the SessionStart hook emits
- * them (focus is a per-session placeholder here).
+ * Read-only prompt view for settings. Static software/project text comes from
+ * entry files; `assembled` contains only the dynamic SessionStart hook output.
  */
 export interface ContextPreview {
-  /** The `<iris-software>` block as the hook re-emits it; onDisk=false → the
-   *  factory block shown as a preview (not yet injected into AGENTS.md). */
+  /** The standard entry's block; onDisk=false shows the built-in preview. */
   software: { block: string; onDisk: boolean };
   project: PromptLayerContent;
-  /** The App's built-in factory CONSTITUTION_TEMPLATE — what `init` seeds a
-   *  fresh project with. Lets the viewer show the clean default even when the
-   *  on-disk `project` has been customized (or predates the layering split). */
-  projectDefault: string;
-  user: PromptLayerContent;
   assembled: string;
 }
 
@@ -325,12 +324,21 @@ export interface IrisScanResult {
   /** False when no .iris/ directory exists. */
   hasIris: boolean;
   root: IrisWorkspace | null;
-  /**
-   * Constitution presence + declared protocol version. The app only ever
-   * PROMPTS on mismatch — upgrading the constitution is a human gesture.
-   */
-  constitution: { exists: boolean; protocol: number | null };
   scannedAt: number;
+}
+
+/** Identity of the project currently committed to one renderer window. */
+export interface ProjectScope {
+  /** Canonical absolute root used by main for all project-bound operations. */
+  root: string;
+  /** Monotonic per-window generation; changes only on a real root switch. */
+  generation: number;
+}
+
+/** Renderer boot distinguishes a requested first open from an already-live project. */
+export interface WindowBootstrapState {
+  requestedRoot: string | null;
+  activeScope: ProjectScope | null;
 }
 
 /** project.init result — what the idempotent scaffold actually did. */
@@ -343,9 +351,6 @@ export interface EntrySync {
 
 export interface ProjectInitResult {
   createdFolders: string[];
-  constitution: 'created' | 'already-exists';
-  /** Which default seeded a freshly created constitution (§5 三个版本). */
-  constitutionSeed?: 'software-default' | 'user-default';
   /** 'appended'/'updated' when AGENTS.md pre-existed; 'created' when written
    *  fresh; 'already-has-section' when its block was already current. */
   agentsMd: 'created' | 'appended' | 'updated' | 'already-has-section';
@@ -419,6 +424,7 @@ export interface SessionInfo {
    */
   terminalTitle: string | null;
   projectRoot: string;
+  projectGeneration: number;
   cols: number;
   rows: number;
   pid: number;
@@ -429,6 +435,7 @@ export interface SessionInfo {
 }
 
 export interface SessionOutputPayload {
+  scope: ProjectScope;
   sessionId: string;
   /** base64 PTY bytes (8ms aggregation window in main). */
   data: string;
@@ -445,19 +452,41 @@ export interface SessionReplaySnapshot {
 }
 
 export interface SessionStateChangedPayload {
+  scope: ProjectScope;
   sessionId: string;
   patch: Partial<SessionInfo>;
 }
 
 export interface SessionExitedPayload {
+  scope: ProjectScope;
   sessionId: string;
   exitCode: number;
   signal?: number;
 }
 
+export interface SessionDestroyedPayload {
+  scope: ProjectScope;
+  sessionId: string;
+  reason: 'user-closed' | 'project-switched' | 'app-quit';
+}
+
+export interface SessionListSnapshot {
+  scope: ProjectScope;
+  sessions: SessionInfo[];
+}
+
+/** One main-process commit result for initial open, same-root refresh, or switch. */
+export interface ProjectOpenResult {
+  scope: ProjectScope;
+  scan: IrisScanResult;
+  sessions: SessionInfo[];
+}
+
 /** Batched fs change notification pushed by main (already debounced). */
 export interface FsIrisChangedEvent {
   projectRoot: string;
+  /** Added by the window broadcast adapter; absent only inside ProjectManager. */
+  projectGeneration?: number;
   /** Coarse change kinds; M1 projections just rescan. */
   changes: Array<{ kind: 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir'; path: string }>;
 }
@@ -466,6 +495,51 @@ export interface FsIrisChangedEvent {
 export interface DocImageResult {
   dataUrl: string | null;
   error: 'invalid-path' | 'unsupported-type' | 'too-large' | 'read-failed' | null;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Document companion assets
+// ──────────────────────────────────────────────────────────────────
+
+export type AssetHealth = 'referenced' | 'orphan' | 'missing' | 'unmanaged';
+export type AssetKind = 'image' | 'attachment';
+
+export interface AssetEntry {
+  /** Project-relative disk path, or the resolved target for a missing item. */
+  path: string;
+  /** Literal Markdown URL when referenced; generated managed URL otherwise. */
+  markdownUrl: string;
+  name: string;
+  kind: AssetKind;
+  mimeType: string;
+  size: number | null;
+  referenceCount: number;
+  health: AssetHealth;
+}
+
+export interface AssetInventory {
+  docPath: string;
+  /** Project-relative companion directory, whether or not it exists yet. */
+  directoryPath: string;
+  assets: AssetEntry[];
+  counts: Record<AssetHealth, number>;
+}
+
+export interface AssetImportPayload {
+  docPath: string;
+  name: string;
+  mimeType: string;
+  bytes: Uint8Array;
+}
+
+export interface AssetImportResult {
+  path: string;
+  markdownUrl: string;
+  name: string;
+  kind: AssetKind;
+  mimeType: string;
+  size: number;
+  reused: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -501,5 +575,5 @@ export interface GitSnapshot {
 }
 
 export interface GitChangedEvent {
-  projectRoot: string | null;
+  projectScope: ProjectScope | null;
 }

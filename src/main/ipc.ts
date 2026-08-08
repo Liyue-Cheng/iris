@@ -8,13 +8,16 @@
  * `ipc` executor (instructions declare `config: { channel }`); the query
  * channels are projection reads called directly by stores/ISRs.
  */
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
+import { BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
 import { stat } from 'node:fs/promises';
-import { basename, isAbsolute, join } from 'node:path';
+import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { CHANNELS, EVENTS } from '@shared/protocol';
 import type {
+  AssetImportPayload,
+  AssetImportResult,
+  AssetInventory,
   DeepPartial,
   DocContent,
   FsIrisChangedEvent,
@@ -22,31 +25,97 @@ import type {
   GitSnapshot,
   IrisScanResult,
   PingResult,
+  ProjectOpenResult,
+  ProjectScope,
   RawTreeNode,
   RecentProject,
   SessionExitedPayload,
+  SessionDestroyedPayload,
   SessionInfo,
+  SessionListSnapshot,
   SessionOutputPayload,
   SessionStateChangedPayload,
   Settings,
   SettingsChangedEvent,
+  WindowBootstrapState,
 } from '@shared/types';
 import type { SettingsManager } from './settings-manager';
 import type { ProjectManager } from './project-manager';
 import type { GitManager } from './git-manager';
 import type { SessionManager } from './session-manager';
-import {
-  installMachineConventions,
-  machineConventionsState,
-  readUserConstitutionTemplate,
-} from './machine-layer';
 import { injectionState, installFocusScript, installHook } from './agent-injection';
-import { contextForWebContents, persistOpenRoots, requireContext } from './window-context';
-import { effectiveStyleMaps, writeProjectStyleMaps } from './style-maps-store';
-import type { StyleMaps, StyleMapsState } from '@shared/style-maps';
+import {
+  contextForWebContents,
+  persistOpenRoots,
+  requireContext,
+  type WindowContext,
+} from './window-context';
 import { logger } from './logger';
+import { enqueueProjectSwitch } from './project-switch';
 
 const execFileP = promisify(execFile);
+
+type ProjectScopedPayload = { expectedScope: ProjectScope | null };
+
+function sameScope(a: ProjectScope | null, b: ProjectScope | null): boolean {
+  return a?.root === b?.root && a?.generation === b?.generation;
+}
+
+/** Main is the authorization boundary; CPU locks are ordering, not trust. */
+function requireProjectScope(
+  ctx: WindowContext,
+  payload: ProjectScopedPayload,
+  channel: string,
+): ProjectScope {
+  if (ctx.projectSwitching) throw new Error(`[${channel}] project switch in progress`);
+  if (!sameScope(payload.expectedScope, ctx.projectScope)) {
+    throw new Error(`[${channel}] stale project scope`);
+  }
+  const scope = ctx.projectScope;
+  if (!scope || ctx.projectManager.getRoot() !== scope.root) {
+    throw new Error(`[${channel}] no committed project is open`);
+  }
+  return scope;
+}
+
+function resolveProjectItemPath(scope: ProjectScope, itemPath: string, channel: string): string {
+  if (!itemPath || isAbsolute(itemPath)) {
+    throw new Error(`[${channel}] path must be project-relative`);
+  }
+  const target = resolve(scope.root, itemPath);
+  const rel = relative(scope.root, target);
+  if (rel === '..' || rel.startsWith(`..${sep}`)) {
+    throw new Error(`[${channel}] path is outside the active project`);
+  }
+  return target;
+}
+
+function sessionsForScope(ctx: WindowContext, scope: ProjectScope): SessionInfo[] {
+  return ctx.sessionManager
+    .list()
+    .filter(
+      (session) =>
+        session.projectRoot === scope.root &&
+        session.projectGeneration === scope.generation,
+    );
+}
+
+function requireSessionInScope(
+  ctx: WindowContext,
+  sessionId: string,
+  scope: ProjectScope,
+  channel: string,
+): SessionInfo {
+  const session = ctx.sessionManager.get(sessionId);
+  if (
+    !session ||
+    session.projectRoot !== scope.root ||
+    session.projectGeneration !== scope.generation
+  ) {
+    throw new Error(`[${channel}] session is outside the active project scope`);
+  }
+  return session;
+}
 
 /** Run a git subcommand in `cwd` with a short timeout; throws on failure. */
 function execFileGit(args: string[], cwd: string): Promise<{ stdout: string }> {
@@ -81,19 +150,12 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
 
   ipcMain.handle(
     CHANNELS.PROJECT_OPEN,
-    async (event, payload: { root: string }): Promise<IrisScanResult> => {
+    (event, payload: { root: string } & ProjectScopedPayload): Promise<ProjectOpenResult> => {
       const ctx = requireContext(event);
-      const result = await ctx.projectManager.open(payload.root);
-      await ctx.gitManager.open(result.projectRoot);
-      // Bind this window to the opened project so WINDOW_BOOTSTRAP and restore
-      // persistence see the current root.
-      ctx.projectRoot = result.projectRoot;
-      // Snapshot all open windows' projects for restore on next launch. Verb
-      // side effect, so it lives here in the instruction body, not in some
-      // renderer afterthought.
-      settingsManager.recordRecentProject(result.projectRoot);
-      persistOpenRoots(settingsManager);
-      return result;
+      return enqueueProjectSwitch(ctx, payload, (scope) => {
+          settingsManager.recordRecentProject(scope.root);
+          persistOpenRoots(settingsManager);
+      });
     },
   );
 
@@ -123,31 +185,45 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     },
   );
 
-  ipcMain.handle(CHANNELS.PROJECT_SCAN, (event): Promise<IrisScanResult> =>
-    requireContext(event).projectManager.scan(),
+  ipcMain.handle(
+    CHANNELS.PROJECT_SCAN,
+    (event, payload: ProjectScopedPayload): Promise<IrisScanResult> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.PROJECT_SCAN);
+      return ctx.projectManager.scan();
+    },
   );
 
-  ipcMain.handle(CHANNELS.PROJECT_INIT, async (event) =>
-    requireContext(event).projectManager.initIris({
-      appVersion: app.getVersion(),
-      userConstitution: await readUserConstitutionTemplate(),
-    }),
-  );
+  ipcMain.handle(CHANNELS.PROJECT_INIT, async (event, payload: ProjectScopedPayload) => {
+    const ctx = requireContext(event);
+    requireProjectScope(ctx, payload, CHANNELS.PROJECT_INIT);
+    return ctx.projectManager.initIris();
+  });
 
   ipcMain.handle(
     CHANNELS.WORKSPACE_CREATE,
-    (event, payload: { parentPath: string; name: string; template: 'standard' | 'empty' }) =>
-      requireContext(event).projectManager.createWorkspace(payload),
+    (
+      event,
+      payload: {
+        parentPath: string;
+        name: string;
+        template: 'standard' | 'empty';
+      } & ProjectScopedPayload,
+    ) => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.WORKSPACE_CREATE);
+      return ctx.projectManager.createWorkspace(payload);
+    },
   );
 
   // Multi-window: which project THIS window is bound to (renderer asks at boot).
-  ipcMain.handle(CHANNELS.WINDOW_BOOTSTRAP, (event): { projectRoot: string | null } => ({
-    projectRoot: contextForWebContents(event.sender)?.projectRoot ?? null,
-  }));
-
-  ipcMain.handle(CHANNELS.MACHINE_CONVENTIONS_STATE, () => machineConventionsState());
-
-  ipcMain.handle(CHANNELS.MACHINE_INSTALL_CONVENTIONS, () => installMachineConventions());
+  ipcMain.handle(CHANNELS.WINDOW_BOOTSTRAP, (event): WindowBootstrapState => {
+    const ctx = contextForWebContents(event.sender);
+    return {
+      requestedRoot: ctx?.projectRoot ?? null,
+      activeScope: ctx?.projectScope ?? null,
+    };
+  });
 
   // ── context-injection adapter (focus-context script + CLI hooks) ────
 
@@ -161,20 +237,34 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
 
   // ── prompt governance (issue: iris软件提示词治理) ─────────────────────
 
-  ipcMain.handle(CHANNELS.SOFTWARE_PROMPT_STATE, (event) =>
-    requireContext(event).projectManager.softwarePromptState(app.getVersion()),
+  ipcMain.handle(CHANNELS.SOFTWARE_PROMPT_STATE, (event, payload: ProjectScopedPayload) => {
+    const ctx = requireContext(event);
+    requireProjectScope(ctx, payload, CHANNELS.SOFTWARE_PROMPT_STATE);
+    return ctx.projectManager.softwarePromptState();
+  });
+
+  ipcMain.handle(CHANNELS.SOFTWARE_PROMPT_PREVIEW, (event, payload: ProjectScopedPayload) => {
+    const ctx = requireContext(event);
+    requireProjectScope(ctx, payload, CHANNELS.SOFTWARE_PROMPT_PREVIEW);
+    return ctx.projectManager.contextPreview();
+  });
+
+  ipcMain.handle(
+    CHANNELS.SOFTWARE_PROMPT_SYNC_ENTRY,
+    (event, payload: { path: string } & ProjectScopedPayload) => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.SOFTWARE_PROMPT_SYNC_ENTRY);
+      return ctx.projectManager.syncSoftwareEntry(payload.path);
+    },
   );
 
-  ipcMain.handle(CHANNELS.SOFTWARE_PROMPT_PREVIEW, (event) =>
-    requireContext(event).projectManager.contextPreview(app.getVersion()),
-  );
-
-  ipcMain.handle(CHANNELS.SOFTWARE_PROMPT_SYNC_ENTRY, (event, payload: { path: string }) =>
-    requireContext(event).projectManager.syncSoftwareEntry(payload.path, app.getVersion()),
-  );
-
-  ipcMain.handle(CHANNELS.SOFTWARE_PROMPT_UPGRADE_CONSTITUTION, (event) =>
-    requireContext(event).projectManager.upgradeConstitution(app.getVersion()),
+  ipcMain.handle(
+    CHANNELS.PROJECT_PROMPT_SYNC,
+    (event, payload: { text: string } & ProjectScopedPayload) => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.PROJECT_PROMPT_SYNC);
+      return ctx.projectManager.syncProjectPrompt(payload.text);
+    },
   );
 
   ipcMain.handle(CHANNELS.SHELL_REVEAL, (event, payload: { path: string }): void => {
@@ -182,12 +272,29 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     // absolute paths (machine layer) pass through untouched.
     let target = payload.path;
     if (!isAbsolute(target)) {
-      const root = requireContext(event).projectManager.getRoot();
-      if (!root) return;
-      target = join(root, target);
+      const scope = requireProjectScope(
+        requireContext(event),
+        payload as typeof payload & ProjectScopedPayload,
+        CHANNELS.SHELL_REVEAL,
+      );
+      target = resolveProjectItemPath(scope, target, CHANNELS.SHELL_REVEAL);
     }
     shell.showItemInFolder(target);
   });
+
+  ipcMain.handle(
+    CHANNELS.SHELL_OPEN_PATH,
+    async (event, payload: { path: string } & ProjectScopedPayload): Promise<void> => {
+      const scope = requireProjectScope(
+        requireContext(event),
+        payload,
+        CHANNELS.SHELL_OPEN_PATH,
+      );
+      const target = resolveProjectItemPath(scope, payload.path, CHANNELS.SHELL_OPEN_PATH);
+      const error = await shell.openPath(target);
+      if (error) throw new Error(`[${CHANNELS.SHELL_OPEN_PATH}] ${error}`);
+    },
+  );
 
   // ── clipboard (Electron module — bypasses web Permission API) ──────
 
@@ -251,15 +358,19 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
 
   ipcMain.handle(
     CHANNELS.PROJECT_RAW_TREE,
-    (event): Promise<RawTreeNode | null> => requireContext(event).projectManager.rawTree(),
+    (event, payload: ProjectScopedPayload): Promise<RawTreeNode | null> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.PROJECT_RAW_TREE);
+      return ctx.projectManager.rawTree();
+    },
   );
 
-  // Status-doc freshness (CONVENTIONS §status: reflects: <sha>). Best-effort
+  // Status-doc freshness (software prompt: reflects: <sha>). Best-effort
   // read of the project's current HEAD; any failure (not a repo, no git on
   // PATH, no project open) degrades to null and the UI just omits the badge.
-  ipcMain.handle(CHANNELS.PROJECT_GIT_HEAD, async (event): Promise<{ head: string | null }> => {
-    const root = requireContext(event).projectManager.getRoot();
-    if (!root) return { head: null };
+  ipcMain.handle(CHANNELS.PROJECT_GIT_HEAD, async (event, payload: ProjectScopedPayload): Promise<{ head: string | null }> => {
+    const ctx = requireContext(event);
+    const root = requireProjectScope(ctx, payload, CHANNELS.PROJECT_GIT_HEAD).root;
     try {
       const { stdout } = await execFileGit(['rev-parse', 'HEAD'], root);
       const head = stdout.trim();
@@ -269,73 +380,147 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     }
   });
 
-  ipcMain.handle(CHANNELS.GIT_STATUS, (event): Promise<GitSnapshot> =>
-    requireContext(event).gitManager.status(),
+  ipcMain.handle(
+    CHANNELS.GIT_STATUS,
+    (event, payload: ProjectScopedPayload): Promise<GitSnapshot> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.GIT_STATUS);
+      return ctx.gitManager.status();
+    },
   );
-  ipcMain.handle(CHANNELS.GIT_REFRESH, (event): Promise<GitSnapshot> =>
-    requireContext(event).gitManager.status(),
+  ipcMain.handle(
+    CHANNELS.GIT_REFRESH,
+    (event, payload: ProjectScopedPayload): Promise<GitSnapshot> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.GIT_REFRESH);
+      return ctx.gitManager.status();
+    },
   );
-  ipcMain.handle(CHANNELS.GIT_STAGE, async (event, payload: { paths: string[] }): Promise<GitSnapshot> => {
-    const git = requireContext(event).gitManager;
+  ipcMain.handle(CHANNELS.GIT_STAGE, async (event, payload: { paths: string[] } & ProjectScopedPayload): Promise<GitSnapshot> => {
+    const ctx = requireContext(event);
+    requireProjectScope(ctx, payload, CHANNELS.GIT_STAGE);
+    const git = ctx.gitManager;
     await git.stage(payload.paths);
     return git.status();
   });
-  ipcMain.handle(CHANNELS.GIT_UNSTAGE, async (event, payload: { paths: string[] }): Promise<GitSnapshot> => {
-    const git = requireContext(event).gitManager;
+  ipcMain.handle(CHANNELS.GIT_UNSTAGE, async (event, payload: { paths: string[] } & ProjectScopedPayload): Promise<GitSnapshot> => {
+    const ctx = requireContext(event);
+    requireProjectScope(ctx, payload, CHANNELS.GIT_UNSTAGE);
+    const git = ctx.gitManager;
     await git.unstage(payload.paths);
     return git.status();
   });
-  ipcMain.handle(CHANNELS.GIT_COMMIT, async (event, payload: { message: string }): Promise<GitSnapshot> => {
-    const git = requireContext(event).gitManager;
+  ipcMain.handle(CHANNELS.GIT_COMMIT, async (event, payload: { message: string } & ProjectScopedPayload): Promise<GitSnapshot> => {
+    const ctx = requireContext(event);
+    requireProjectScope(ctx, payload, CHANNELS.GIT_COMMIT);
+    const git = ctx.gitManager;
     await git.commit(payload.message);
     return git.status();
   });
-  ipcMain.handle(CHANNELS.GIT_SWITCH_BRANCH, async (event, payload: { branch: string }): Promise<GitSnapshot> => {
-    const git = requireContext(event).gitManager;
+  ipcMain.handle(CHANNELS.GIT_SWITCH_BRANCH, async (event, payload: { branch: string } & ProjectScopedPayload): Promise<GitSnapshot> => {
+    const ctx = requireContext(event);
+    requireProjectScope(ctx, payload, CHANNELS.GIT_SWITCH_BRANCH);
+    const git = ctx.gitManager;
     await git.switchBranch(payload.branch);
     return git.status();
   });
 
   ipcMain.handle(
     CHANNELS.DOC_READ,
-    (event, payload: { path: string }): Promise<DocContent> =>
-      requireContext(event).projectManager.readDoc(payload.path),
+    (event, payload: { path: string } & ProjectScopedPayload): Promise<DocContent> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.DOC_READ);
+      return ctx.projectManager.readDoc(payload.path);
+    },
   );
 
   ipcMain.handle(
     CHANNELS.DOC_WRITE,
-    (event, payload: { path: string; content: string }): Promise<{ path: string }> =>
-      requireContext(event).projectManager.writeDoc(payload.path, payload.content),
+    (
+      event,
+      payload: {
+        path: string;
+        content: string;
+        expectedContent: string | null;
+      } & ProjectScopedPayload,
+    ): Promise<{ path: string }> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.DOC_WRITE);
+      return ctx.projectManager.writeDoc(payload.path, payload.content, payload.expectedContent);
+    },
   );
 
   ipcMain.handle(
     CHANNELS.DOC_CREATE,
     (
       event,
-      payload: { workspacePath: string; type: import('@shared/types').DocType; title: string },
-    ): Promise<{ path: string }> => requireContext(event).projectManager.createDoc(payload),
+      payload: {
+        workspacePath: string;
+        type: import('@shared/types').DocType;
+        title: string;
+      } & ProjectScopedPayload,
+    ): Promise<{ path: string }> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.DOC_CREATE);
+      return ctx.projectManager.createDoc(payload);
+    },
   );
 
   ipcMain.handle(
     CHANNELS.DOC_DELETE,
-    (event, payload: { path: string }): Promise<{ path: string }> =>
-      requireContext(event).projectManager.deleteDoc(payload.path),
-  );
-
-  // ── style maps (status/label badge tables) ─────────────────────────
-
-  ipcMain.handle(
-    CHANNELS.STYLES_GET,
-    (event): Promise<StyleMapsState> =>
-      effectiveStyleMaps(requireContext(event).projectManager.getRoot()),
+    (
+      event,
+      payload: { path: string } & ProjectScopedPayload,
+    ): Promise<{ path: string; assetCount: number }> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.DOC_DELETE);
+      return ctx.projectManager.deleteDoc(payload.path, (path) => shell.trashItem(path));
+    },
   );
 
   ipcMain.handle(
-    CHANNELS.STYLES_UPDATE,
-    (event, payload: { maps: StyleMaps }): Promise<StyleMapsState> => {
-      const root = requireContext(event).projectManager.getRoot();
-      if (!root) throw new Error('[styles:update] no project is open');
-      return writeProjectStyleMaps(root, payload.maps);
+    CHANNELS.ASSET_LIST,
+    (event, payload: { docPath: string } & ProjectScopedPayload): Promise<AssetInventory> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.ASSET_LIST);
+      return ctx.projectManager.listAssets(payload.docPath);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.ASSET_IMPORT,
+    (event, payload: AssetImportPayload & ProjectScopedPayload): Promise<AssetImportResult> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.ASSET_IMPORT);
+      return ctx.projectManager.importAsset(payload);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.ASSET_ADOPT,
+    (
+      event,
+      payload: { docPath: string; source: string } & ProjectScopedPayload,
+    ): Promise<AssetImportResult> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.ASSET_ADOPT);
+      return ctx.projectManager.adoptAsset(payload.docPath, payload.source);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.ASSET_TRASH,
+    (
+      event,
+      payload: { docPath: string; assetPath: string } & ProjectScopedPayload,
+    ): Promise<{ path: string }> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.ASSET_TRASH);
+      return ctx.projectManager.trashAsset(
+        payload.docPath,
+        payload.assetPath,
+        (path) => shell.trashItem(path),
+      );
     },
   );
 
@@ -351,62 +536,101 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
         agentId: string;
         cols: number;
         rows: number;
-      },
+      } & ProjectScopedPayload,
     ): SessionInfo => {
       const ctx = requireContext(event);
-      const root = ctx.projectManager.getRoot();
-      if (!root) throw new Error('[session:open] no project is open');
+      const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_OPEN);
       return ctx.sessionManager.createSession({
         docPath: payload.docPath,
         workspacePath: payload.workspacePath ?? null,
         agentId: payload.agentId,
-        projectRoot: root,
+        projectRoot: scope.root,
+        projectGeneration: scope.generation,
         cols: payload.cols,
         rows: payload.rows,
       });
     },
   );
 
-  ipcMain.handle(CHANNELS.SESSION_CLOSE, (event, payload: { sessionId: string }): void => {
-    requireContext(event).sessionManager.closeSession(payload.sessionId);
-  });
+  ipcMain.handle(
+    CHANNELS.SESSION_CLOSE,
+    (event, payload: { sessionId: string } & ProjectScopedPayload): Promise<void> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_CLOSE);
+      requireSessionInScope(ctx, payload.sessionId, scope, CHANNELS.SESSION_CLOSE);
+      return ctx.sessionManager.closeSession(payload.sessionId);
+    },
+  );
 
   ipcMain.handle(
     CHANNELS.SESSION_REANCHOR,
-    (event, payload: { sessionId: string; docPath: string | null }): SessionInfo =>
-      requireContext(event).sessionManager.reanchor(payload.sessionId, payload.docPath),
+    (
+      event,
+      payload: { sessionId: string; docPath: string | null } & ProjectScopedPayload,
+    ): SessionInfo => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_REANCHOR);
+      requireSessionInScope(ctx, payload.sessionId, scope, CHANNELS.SESSION_REANCHOR);
+      return ctx.sessionManager.reanchor(payload.sessionId, payload.docPath);
+    },
   );
 
   ipcMain.handle(
     CHANNELS.SESSION_INPUT,
-    (event, payload: { sessionId: string; data: string }) =>
-      requireContext(event).sessionManager.sendInput(payload.sessionId, payload.data),
+    (event, payload: { sessionId: string; data: string } & ProjectScopedPayload) => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_INPUT);
+      requireSessionInScope(ctx, payload.sessionId, scope, CHANNELS.SESSION_INPUT);
+      return ctx.sessionManager.sendInput(payload.sessionId, payload.data);
+    },
   );
 
   ipcMain.handle(
     CHANNELS.SESSION_RESIZE,
-    (event, payload: { sessionId: string; cols: number; rows: number }) =>
-      requireContext(event).sessionManager.resize(payload.sessionId, payload.cols, payload.rows),
+    (
+      event,
+      payload: { sessionId: string; cols: number; rows: number } & ProjectScopedPayload,
+    ) => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_RESIZE);
+      requireSessionInScope(ctx, payload.sessionId, scope, CHANNELS.SESSION_RESIZE);
+      return ctx.sessionManager.resize(payload.sessionId, payload.cols, payload.rows);
+    },
   );
 
   ipcMain.handle(
     CHANNELS.DOC_IMAGE_READ,
-    (event, payload: { docPath: string; source: string }) =>
-      requireContext(event).projectManager.readDocImage(payload.docPath, payload.source),
+    (event, payload: { docPath: string; source: string } & ProjectScopedPayload) => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.DOC_IMAGE_READ);
+      return ctx.projectManager.readDocImage(payload.docPath, payload.source);
+    },
   );
 
-  ipcMain.handle(CHANNELS.SESSION_LIST, (event): SessionInfo[] =>
-    requireContext(event).sessionManager.list(),
+  ipcMain.handle(
+    CHANNELS.SESSION_LIST,
+    (event, payload: ProjectScopedPayload): SessionListSnapshot => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_LIST);
+      return { scope, sessions: sessionsForScope(ctx, scope) };
+    },
   );
 
   ipcMain.handle(
     CHANNELS.SESSION_SCROLLBACK,
-    (event, payload: { sessionId: string; cols: number; rows: number }) =>
-      requireContext(event).sessionManager.prepareReplay(
+    (
+      event,
+      payload: { sessionId: string; cols: number; rows: number } & ProjectScopedPayload,
+    ) => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_SCROLLBACK);
+      requireSessionInScope(ctx, payload.sessionId, scope, CHANNELS.SESSION_SCROLLBACK);
+      return ctx.sessionManager.prepareReplay(
         payload.sessionId,
         payload.cols,
         payload.rows,
-      ),
+      );
+    },
   );
 
   ipcMain.handle(CHANNELS.DIALOG_PICK_FOLDER, async (event): Promise<string | null> => {
@@ -427,6 +651,7 @@ export function wireBroadcasts(
   projectManager: ProjectManager,
   gitManager: GitManager,
   sessionManager: SessionManager,
+  getProjectScope: () => ProjectScope | null,
   window: BrowserWindow,
 ): () => void {
   const send = (channel: string, payload: unknown): void => {
@@ -435,12 +660,18 @@ export function wireBroadcasts(
     }
   };
   const onSettings = (e: SettingsChangedEvent): void => send(EVENTS.SETTINGS_CHANGED, e);
-  const onIrisChanged = (e: FsIrisChangedEvent): void => send(EVENTS.FS_IRIS_CHANGED, e);
-  const onGitChanged = (): void => send(EVENTS.GIT_CHANGED, { projectRoot: projectManager.getRoot() } satisfies GitChangedEvent);
+  const onIrisChanged = (e: FsIrisChangedEvent): void => {
+    const scope = getProjectScope();
+    if (!scope || scope.root !== e.projectRoot) return;
+    send(EVENTS.FS_IRIS_CHANGED, { ...e, projectGeneration: scope.generation });
+  };
+  const onPromptChanged = (): void => send(EVENTS.PROMPT_CHANGED, undefined);
+  const onGitChanged = (): void =>
+    send(EVENTS.GIT_CHANGED, { projectScope: getProjectScope() } satisfies GitChangedEvent);
   const onOutput = (e: SessionOutputPayload): void => send(EVENTS.SESSION_OUTPUT, e);
   const onState = (e: SessionStateChangedPayload): void => send(EVENTS.SESSION_STATE_CHANGED, e);
   const onExited = (e: SessionExitedPayload): void => send(EVENTS.SESSION_EXITED, e);
-  const onDestroyed = (e: { sessionId: string }): void => send(EVENTS.SESSION_DESTROYED, e);
+  const onDestroyed = (e: SessionDestroyedPayload): void => send(EVENTS.SESSION_DESTROYED, e);
   const onMaximize = (): void => send(EVENTS.WINDOW_MAXIMIZED_CHANGED, { maximized: true });
   const onUnmaximize = (): void => send(EVENTS.WINDOW_MAXIMIZED_CHANGED, { maximized: false });
 
@@ -448,6 +679,7 @@ export function wireBroadcasts(
   window.on('unmaximize', onUnmaximize);
   settingsManager.on('settingsChanged', onSettings);
   projectManager.on('irisChanged', onIrisChanged);
+  projectManager.on('promptChanged', onPromptChanged);
   gitManager.on('changed', onGitChanged);
   sessionManager.on('sessionOutput', onOutput);
   sessionManager.on('sessionStateChanged', onState);
@@ -458,6 +690,7 @@ export function wireBroadcasts(
     window.off('unmaximize', onUnmaximize);
     settingsManager.off('settingsChanged', onSettings);
     projectManager.off('irisChanged', onIrisChanged);
+    projectManager.off('promptChanged', onPromptChanged);
     gitManager.off('changed', onGitChanged);
     sessionManager.off('sessionOutput', onOutput);
     sessionManager.off('sessionStateChanged', onState);

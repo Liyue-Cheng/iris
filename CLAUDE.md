@@ -1,12 +1,12 @@
 # CLAUDE.md
 
 > 本项目用 Iris 管理自身（M3 起 dogfood）。PM 协议（文件夹语义、focus 协议、
-> 写回作用域）由文末的 `<iris-software version="0.0.2-alpha.2" protocol="1" sha="787bcd6a3a44">
+> 写回作用域）由文末的 `<iris-software>
 This project is managed with Iris — an AI-native, document-centric PM tool.
 All PM artifacts are plain markdown files under `.iris/`, in typed folders.
 The rules below are Iris's invariant protocol: they ship with the app and do
-not vary per project. Project-specific policy lives in `.iris/CONVENTIONS.md`;
-machine-specific facts live in `~/.iris/CONVENTIONS.md`.
+not vary per project. Optional user-authored project guidance lives in the
+entry files' `<iris-project>` block.
 
 ## Folder semantics
 
@@ -14,32 +14,71 @@ Typed folders — `status/`, `issue/`, `report/`, `misc/` — may appear at any
 depth. Any folder containing typed folders is a **workspace**; a document's
 type is decided by the nearest enclosing typed folder.
 
-- `status/` — Current state of the codebase; keep in sync with reality. Every
-  status doc carries `reflects: <git-commit-sha>` in frontmatter.
-- `issue/` — Things to do, bugs, open questions. Mark resolved via `status:`;
-  do not delete.
-- `report/` — Append-only snapshots and journals: never rewrite an existing
-  report, add new files. Frontmatter may still change.
+- `status/` — Current state of the codebase — a mirror, not a record: rewrite
+  freely, keep in sync with reality. Every status doc carries
+  `reflects: <git-commit-sha>` in frontmatter.
+- `issue/` — Things to do, bugs, open questions — the working record of a
+  problem. Treat the body as a record: prefer appending updates; do not
+  rewrite or delete existing content unprompted (frontmatter transitions and
+  checkbox flips are always fine). Mark resolved via `status:`; never delete
+  the file.
+- `report/` — Dated deliverables: analyses, reviews, summaries. Edit freely
+  while a report is fresh; once reality has moved on, prefer a new dated
+  report over reshaping an old one.
 - `misc/` — Human scratch space. Do not touch unless asked.
+
+## What the app parses
+
+Frontmatter keys are read literally — use exactly these (unknown keys are
+ignored, and a misspelled key silently drops the field):
+
+- `title:` — display title; falls back to the filename when absent.
+- `status:` — drives the issue/report lenses and uses the state machine below.
+- `labels:` — optional list; feeds the filter chips.
+- `reflects:` — status docs only: the git commit sha the doc reflects.
+
+A new issue starts as (a report starts with `status: Active`; a status doc
+carries `reflects:` instead of `status:`):
+
+```
+---
+title: <short title>
+status: Todo
+---
+```
+
+The stored `status:` value is also the displayed value; write canonical values
+exactly as shown unless reality requires an exceptional value.
+
+- Issues: `Todo` -> `In Progress` -> `In Review` -> `Done`, with
+  `Blocked` / `Canceled` as side states.
+- Reports: `Active` / `Backlog`.
+
+Never resolve an issue unprompted. A transition to `Done` or `Canceled`
+(and a report to `Backlog`) removes it from the active lens and may close
+attached terminal sessions; those transitions are the user's call. Advance up
+to `In Review` on your own when reality warrants.
+
+The app also collects every GFM task checkbox (`- [ ] …`) across `.iris/`
+docs into a todo panel, where the user tracks open items and checks them
+off. Anything that awaits someone's action — acceptance checks, things for
+the user to verify or decide, follow-ups — must be written as task
+checkboxes, one per discrete item, never as prose or plain bullets: a
+pending item written as prose is invisible to the panel.
 
 ## How context reaches you
 
-Iris spawns your terminal with the environment variable `FOCUS_DOC` set to the
-document the user is focused on (path relative to project root), and — for
-agents with a SessionStart hook — injects a snapshot of the relevant files
-directly, each wrapped in an `<iris-…>` tag:
+The static software and optional project prompts are read from this entry file.
+Iris also spawns terminals with `FOCUS_DOC` set to the focused document path.
+For agents with a SessionStart hook it injects only dynamic context:
 
-- `<iris-software>` — this block (Iris protocol; app-owned, versioned).
-- `<iris-project>` — `.iris/CONVENTIONS.md` (project policy).
-- `<iris-user>` — `~/.iris/CONVENTIONS.md` (machine facts, if present).
+- `<iris-workspace>` — hub-session workspace metadata when there is no focus.
 - `<iris-focus>` — a snapshot of `$FOCUS_DOC`.
 
-**The `FOCUS_DOC` env-var and reading these files from disk are a FALLBACK.**
-If you already received a file's contents via the injected `<iris-…>` blocks
-above, do not re-read it from disk — unless you have reason to believe it
-changed (the injection is a snapshot taken at session start; the file may be
-edited during the session, including by you). Agents without a hook fall back
-to reading `$FOCUS_DOC` and the referenced files themselves.
+**The session environment variables and reading the focus from disk are a
+FALLBACK.** If you already received a dynamic snapshot via an injected
+`<iris-…>` block, do not re-read it from disk unless you have reason to believe
+it changed. Agents without a hook fall back to the environment variables.
 
 ## Working rules (invariant)
 
@@ -48,9 +87,12 @@ to reading `$FOCUS_DOC` and the referenced files themselves.
    loading context is not a task.
 2. **Write-back scope.** Write results into the nearest workspace enclosing
    `$FOCUS_DOC`. Do not create new workspaces unless asked.
-3. **Stamping.** After changing anything a status doc tracks, regenerate that
-   doc and restamp `reflects:` with current `git HEAD`. After a git merge, do
-   not hand-merge status docs — regenerate and restamp.
+3. **Stamping.** Status docs do not update themselves. Before ending any
+   work that changed the codebase, list the write-back workspace's
+   `status/` docs, update those your changes falsified, and restamp their
+   `reflects:` with current `git HEAD` — the change is not done until the
+   mirror is true again. After a git merge, do not hand-merge status docs —
+   regenerate and restamp.
 4. **No unsolicited files.** Never create a new file — reports included —
    unless the user explicitly asks. Editing the focused document is always
    fine, as are frontmatter updates (e.g. `status:` transitions) on existing
@@ -60,10 +102,12 @@ to reading `$FOCUS_DOC` and the referenced files themselves.
 6. **Trust calibration.** Before relying on a status doc, compare its
    `reflects:` stamp to `git HEAD`; a large gap means treat it as a weak prior
    and verify against the code.
-7. **Off-limits.** Never modify `.iris/CONVENTIONS.md` (the human-authored
-   contract) or this `<iris-software>` block. Never write outside typed
+7. **Off-limits.** Never modify the `<iris-software>` or `<iris-project>`
+   blocks. Never write outside typed
    folders. Never touch code directories unless explicitly asked.
 
-For project-specific policy — the issue/report state-machine values and the
-markdown style to write in — read `.iris/CONVENTIONS.md`.
+Write plain CommonMark. Iris's editor serializes with fixed remark defaults;
+match them to keep diffs quiet. Follow the entry file's `<iris-project>` block
+when it contains user guidance, unless it conflicts with this software
+protocol.
 </iris-software>

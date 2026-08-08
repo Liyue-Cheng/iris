@@ -28,6 +28,7 @@ import {
 import { ProjectManager } from './project-manager';
 import { GitManager } from './git-manager';
 import { SessionManager } from './session-manager';
+import { ensureFocusScriptCurrent } from './agent-injection';
 import { registerIpcHandlers, wireBroadcasts } from './ipc';
 import {
   allContexts,
@@ -42,6 +43,7 @@ import { CHANNELS, EVENTS } from '@shared/protocol';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const isDev = !!process.env.ELECTRON_RENDERER_URL;
+const PROCESS_CRASH_CLEANUP_TIMEOUT_MS = 8000;
 
 // NO GPU intervention here on purpose. The portable multi-window corruption
 // (issue 2026-06-23-多窗口多项目) was traced to a portable-only GPU switch, NOT
@@ -123,8 +125,26 @@ function createWindowContext(win: BrowserWindow, initialRoot: string | null): Wi
   const projectManager = new ProjectManager();
   const gitManager = new GitManager();
   const sessionManager = new SessionManager(settingsManager);
-  const unwire = wireBroadcasts(settingsManager, projectManager, gitManager, sessionManager, win);
-  const ctx: WindowContext = { win, projectManager, gitManager, sessionManager, projectRoot: initialRoot, unwire };
+  let ctx: WindowContext;
+  const unwire = wireBroadcasts(
+    settingsManager,
+    projectManager,
+    gitManager,
+    sessionManager,
+    () => ctx.projectScope,
+    win,
+  );
+  ctx = {
+    win,
+    projectManager,
+    gitManager,
+    sessionManager,
+    projectRoot: initialRoot,
+    projectScope: null,
+    projectSwitching: false,
+    projectSwitchTail: Promise.resolve(),
+    unwire,
+  };
   registerContext(ctx);
   return ctx;
 }
@@ -134,6 +154,36 @@ function createWindowContext(win: BrowserWindow, initialRoot: string | null): Wi
 // last window to close would clear the restore list. Single-window closes while
 // the app keeps running DO update it.
 let isQuitting = false;
+
+const contextCleanupPromises = new Map<number, Promise<void>>();
+const pendingContextDisposals = new Set<Promise<void>>();
+
+/** Stop every backend owned by a window exactly once. The promise is shared by
+ * the close handler, the closed-event disposer and before-quit so no caller can
+ * race Electron teardown against PTY process-tree termination. */
+function shutdownWindowContext(ctx: WindowContext): Promise<void> {
+  const existing = contextCleanupPromises.get(ctx.win.id);
+  if (existing) return existing;
+  const cleanup = ctx.projectSwitchTail.catch(() => undefined).then(async () => {
+    const results = await Promise.allSettled([
+      ctx.sessionManager.shutdown(),
+      ctx.projectManager.close(),
+      ctx.gitManager.close(),
+    ]);
+    const names = ['sessions', 'project watcher', 'git watcher'];
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        logger.warn(
+          'window',
+          `cleanup failed id=${ctx.win.id} backend=${names[index]}`,
+          result.reason,
+        );
+      }
+    });
+  });
+  contextCleanupPromises.set(ctx.win.id, cleanup);
+  return cleanup;
+}
 
 /** Tear down a window's context: detach broadcasts, kill its PTYs, close its
  *  watcher. Each window is independent, so this never touches other windows. */
@@ -145,9 +195,12 @@ function disposeWindowContext(id: number): void {
   } catch {
     /* ignore */
   }
-  ctx.sessionManager.shutdown();
-  void ctx.projectManager.close();
-  void ctx.gitManager.close();
+  const cleanup = shutdownWindowContext(ctx);
+  pendingContextDisposals.add(cleanup);
+  void cleanup.finally(() => {
+    pendingContextDisposals.delete(cleanup);
+    contextCleanupPromises.delete(id);
+  });
   if (!isQuitting) persistOpenRoots(settingsManager);
 }
 
@@ -155,11 +208,11 @@ function disposeWindowContext(id: number): void {
 // APP_FLUSH_BEFORE_QUIT and awaits its resolver; that window's renderer invokes
 // APP_FLUSH_DONE once its editor flush settles. Keyed by window id so two
 // windows closing at once don't resolve each other's handshake.
-const flushResolvers = new Map<number, () => void>();
-ipcMain.handle(CHANNELS.APP_FLUSH_DONE, (event) => {
+const flushResolvers = new Map<number, (ok: boolean) => void>();
+ipcMain.handle(CHANNELS.APP_FLUSH_DONE, (event, payload?: { ok?: boolean }) => {
   const id = BrowserWindow.fromWebContents(event.sender)?.id;
   if (id === undefined) return;
-  flushResolvers.get(id)?.();
+  flushResolvers.get(id)?.(payload?.ok !== false);
 });
 
 /**
@@ -292,43 +345,68 @@ function createWindow(initialRoot: string | null): BrowserWindow {
   // The flush defers the real close once; on re-entry `flushed` is true and we
   // fall through to the confirm dialog.
   let flushed = false;
+  let backendsReadyToClose = false;
+  let backendCleanupStarted = false;
   win.on('close', (e) => {
     if (!flushed && !win.webContents.isDestroyed()) {
       e.preventDefault();
       flushed = true;
-      const done = new Promise<void>((resolve) => {
+      const done = new Promise<boolean>((resolve) => {
         flushResolvers.set(win.id, resolve);
       });
       win.webContents.send(EVENTS.APP_FLUSH_BEFORE_QUIT);
-      const timeout = new Promise<void>((resolve) => setTimeout(resolve, 1500));
-      void Promise.race([done, timeout]).then(() => {
+      // doc.save itself has a 10s execution timeout. Give it room to settle,
+      // but never interpret a silent or wedged renderer as permission to
+      // discard a draft: timeout cancels this close attempt.
+      const timeout = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 11_000));
+      void Promise.race([done, timeout]).then((ok) => {
         flushResolvers.delete(win.id);
+        if (!ok) {
+          flushed = false;
+          return;
+        }
         if (!win.isDestroyed()) win.close();
       });
       return;
     }
 
+    if (backendsReadyToClose) return;
+    if (backendCleanupStarted) {
+      e.preventDefault();
+      return;
+    }
+
     // confirmOnQuit: closing the window with live sessions kills agent work
     // mid-flight — ask first (Marina behavior.confirmOnQuit).
-    if (!settingsManager.get().behavior.confirmOnQuit) return;
-    // This window's own sessions only — closing one window must not count
-    // another window's live agents.
-    const live = ctx.sessionManager.list().filter((s) => s.state !== 'exited').length;
-    if (live === 0) return;
-    const choice = dialog.showMessageBoxSync(win, {
-      type: 'warning',
-      buttons: ['退出', '取消'],
-      defaultId: 1,
-      cancelId: 1,
-      title: 'Iris',
-      message: `仍有 ${live} 个会话在运行`,
-      detail: '退出会终止所有会话（包括正在工作的 agent）。',
-    });
-    // Cancel: re-arm the flush so a later close attempt flushes fresh edits.
-    if (choice === 1) {
-      e.preventDefault();
-      flushed = false;
+    if (settingsManager.get().behavior.confirmOnQuit) {
+      // This window's own sessions only — closing one window must not count
+      // another window's live agents.
+      const live = ctx.sessionManager.list().filter((s) => s.state !== 'exited').length;
+      if (live > 0) {
+        const choice = dialog.showMessageBoxSync(win, {
+          type: 'warning',
+          buttons: ['退出', '取消'],
+          defaultId: 1,
+          cancelId: 1,
+          title: 'Iris',
+          message: `仍有 ${live} 个会话在运行`,
+          detail: '退出会终止所有会话（包括正在工作的 agent）。',
+        });
+        // Cancel: re-arm the flush so a later close attempt flushes fresh edits.
+        if (choice === 1) {
+          e.preventDefault();
+          flushed = false;
+          return;
+        }
+      }
     }
+
+    e.preventDefault();
+    backendCleanupStarted = true;
+    void shutdownWindowContext(ctx).finally(() => {
+      backendsReadyToClose = true;
+      if (!win.isDestroyed()) win.close();
+    });
   });
 
   if (isDev && process.env.ELECTRON_RENDERER_URL) {
@@ -357,6 +435,18 @@ function createWindow(initialRoot: string | null): BrowserWindow {
 app.whenReady().then(async () => {
   const source = await settingsManager.initialize();
   logger.info('main', `settings loaded from ${source} (${settingsFilePath()})`);
+
+  // The generated hook payload is app-owned and all CLI configs point to its
+  // stable machine path. Refresh it before any window can spawn a terminal;
+  // otherwise a previous Iris version can silently turn a valid hook into an
+  // empty injection. A write failure is surfaced in logs/settings state but
+  // must not prevent the application itself from opening.
+  try {
+    const result = await ensureFocusScriptCurrent();
+    logger.info('agent', `focus-context script sync: ${result.action} (${result.path})`);
+  } catch (err) {
+    logger.error('agent', 'focus-context script auto-sync failed', err);
+  }
 
   registerIpcHandlers(settingsManager);
 
@@ -403,17 +493,28 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
-app.on('before-quit', () => {
+let quitCleanupComplete = false;
+let quitCleanupPromise: Promise<void> | null = null;
+app.on('before-quit', (event) => {
   // Snapshot the open windows for restore BEFORE tearing them down, then stop
   // the per-window teardown from rewriting openRoots as windows close.
   persistOpenRoots(settingsManager);
   isQuitting = true;
-  for (const ctx of allContexts()) {
-    ctx.sessionManager.shutdown();
-    void ctx.projectManager.close();
-    void ctx.gitManager.close();
-  }
-  void settingsManager.flush();
+  if (quitCleanupComplete) return;
+
+  event.preventDefault();
+  if (quitCleanupPromise) return;
+  quitCleanupPromise = Promise.all([
+    ...allContexts().map((ctx) => shutdownWindowContext(ctx)),
+    ...pendingContextDisposals,
+    settingsManager.flush(),
+  ])
+    .then(() => undefined)
+    .catch((err) => logger.warn('main', 'quit cleanup failed', err))
+    .finally(() => {
+      quitCleanupComplete = true;
+      app.quit();
+    });
 });
 
 // Crash safety. node-pty children (on Windows: the ConPTY conhost + the agent
@@ -421,16 +522,21 @@ app.on('before-quit', () => {
 // "后端进程没结束，任务管理器全杀才恢复" symptom). before-quit covers the
 // graceful path; these cover the crashes: kill every PTY before the process
 // goes down.
+let crashCleanupStarted = false;
 process.on('uncaughtException', (err) => {
-  logger.error('main', 'uncaughtException — killing all sessions before exit', err);
-  for (const ctx of allContexts()) {
-    try {
-      ctx.sessionManager.shutdown();
-    } catch {
-      /* best effort — we are already going down */
-    }
+  if (crashCleanupStarted) return;
+  crashCleanupStarted = true;
+  try {
+    logger.error('main', 'uncaughtException — killing all sessions before exit', err);
+  } catch {
+    // A broken stdout/stderr can be the original exception. Cleanup must still
+    // run even when reporting that exception writes to the same broken pipe.
   }
-  process.exit(1);
+  const hardExit = setTimeout(() => process.exit(1), PROCESS_CRASH_CLEANUP_TIMEOUT_MS);
+  void Promise.allSettled(allContexts().map((ctx) => shutdownWindowContext(ctx))).finally(() => {
+    clearTimeout(hardExit);
+    process.exit(1);
+  });
 });
 process.on('unhandledRejection', (reason) => {
   logger.error(

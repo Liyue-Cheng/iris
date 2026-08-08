@@ -9,8 +9,8 @@
 
 export const CHANNELS = {
   APP_PING: 'app:ping',
-  /** Renderer → main ack that the close-time editor flush finished (B3).
-   *  Main awaits this (with a timeout) before destroying the window. */
+  /** Renderer → main result of the close-time editor flush. `{ ok: false }`
+   *  cancels close when a conflict or write failure still owns the draft. */
   APP_FLUSH_DONE: 'app:flush-done',
   SETTINGS_GET: 'settings:get',
   SETTINGS_UPDATE: 'settings:update',
@@ -20,13 +20,10 @@ export const CHANNELS = {
   PROJECT_RECENT_LIST: 'project:recent-list',
   /** Verb: forget one entry from the welcome page's MRU list. */
   PROJECT_RECENT_REMOVE: 'project:recent-remove',
-  /** Verb: idempotent protocol scaffold (folders + constitution + AGENTS.md). */
+  /** Verb: idempotent protocol scaffold (folders + AGENTS.md). */
   PROJECT_INIT: 'project:init',
   /** Verb: create a sub-workspace (human gesture only). */
   WORKSPACE_CREATE: 'workspace:create',
-  /** Machine layer (~/.iris/CONVENTIONS.md): install template / state query. */
-  MACHINE_INSTALL_CONVENTIONS: 'machine:install-conventions',
-  MACHINE_CONVENTIONS_STATE: 'machine:conventions-state',
   /** Context-injection adapter layer (round-3 A 条): focus-context script in
    *  ~/.iris/ + SessionStart hooks in the user's agent CLI configs. State is
    *  a query; the two installs are verbs gated behind explicit confirmation
@@ -34,18 +31,17 @@ export const CHANNELS = {
   AGENT_INJECTION_STATE: 'agent:injection-state',
   AGENT_INSTALL_FOCUS_SCRIPT: 'agent:install-focus-script',
   AGENT_INSTALL_HOOK: 'agent:install-hook',
-  /** Prompt governance (issue: iris软件提示词治理): the `<iris-software>` block
-   *  in project-root entry files + factory-default detection for the project
-   *  constitution. State is a query; sync/upgrade are verbs gated behind an
-   *  explicit confirmation in the settings UI (.bak written before any write). */
+  /** Prompt governance for project-root entry-file blocks. */
   SOFTWARE_PROMPT_STATE: 'software-prompt:state',
   /** Read-only: the prompt layers' on-disk text + assembled injection, for the
    *  settings viewer (content behind the freshness badges). */
   SOFTWARE_PROMPT_PREVIEW: 'software-prompt:preview',
   SOFTWARE_PROMPT_SYNC_ENTRY: 'software-prompt:sync-entry',
-  SOFTWARE_PROMPT_UPGRADE_CONSTITUTION: 'software-prompt:upgrade-constitution',
+  PROJECT_PROMPT_SYNC: 'project-prompt:sync',
   /** UI helper: reveal a path in the system file manager. */
   SHELL_REVEAL: 'shell:reveal',
+  /** UI helper: open a path with its operating-system default application. */
+  SHELL_OPEN_PATH: 'shell:open-path',
   /**
    * Clipboard bridge — main-side Electron clipboard module. Marina's lesson:
    * navigator.clipboard needs web Permission API grants in the Electron
@@ -92,17 +88,19 @@ export const CHANNELS = {
    *  main process confines the path to the project and returns a data URL. */
   DOC_IMAGE_READ: 'doc:image-read',
   /** Verbs (instruction-backed): write a doc verbatim / create a typed doc /
-   *  delete a doc (human UI gesture — CONVENTIONS' "do not delete" binds the
-   *  agent's write-back, not the user). */
+   *  delete a doc (the software protocol's "do not delete" rule binds the
+   *  agent's write-back, not the user's UI gesture). */
   DOC_WRITE: 'doc:write',
   DOC_CREATE: 'doc:create',
   DOC_DELETE: 'doc:delete',
+  /** Managed companion assets for one Markdown document. List is a query;
+   *  import/trash are human editing gestures routed through the CPU. */
+  ASSET_LIST: 'asset:list',
+  ASSET_IMPORT: 'asset:import',
+  ASSET_ADOPT: 'asset:adopt',
+  ASSET_TRASH: 'asset:trash',
   /** UI helper: native folder picker (returns a path or null; no side effect). */
   DIALOG_PICK_FOLDER: 'dialog:pick-folder',
-  /** Query: effective style maps (project `.iris/styles.json` → machine → builtin). */
-  STYLES_GET: 'styles:get',
-  /** Verb (instruction-backed): write the project-level style maps. */
-  STYLES_UPDATE: 'styles:update',
   /** Session verbs (instruction-backed). */
   SESSION_OPEN: 'session:open',
   SESSION_CLOSE: 'session:close',
@@ -126,13 +124,13 @@ export const CHANNELS = {
 
 export const EVENTS = {
   SETTINGS_CHANGED: 'evt:settings:changed',
-  /** Main → renderer: window is closing, flush unsaved editor work now (B3).
-   *  The renderer replies via the APP_FLUSH_DONE channel. */
+  /** Main → renderer: window is closing, flush unsaved editor work now. */
   APP_FLUSH_BEFORE_QUIT: 'evt:app:flush-before-quit',
   /** Maximize/restore state for the custom title bar's caption button. */
   WINDOW_MAXIMIZED_CHANGED: 'evt:window:maximized-changed',
   /** Batched .iris/ tree changes (chokidar, debounced in main). */
   FS_IRIS_CHANGED: 'evt:fs:iris-changed',
+  PROMPT_CHANGED: 'evt:prompt:changed',
   GIT_CHANGED: 'evt:git:changed',
   SESSION_OUTPUT: 'evt:session:output',
   SESSION_STATE_CHANGED: 'evt:session:state-changed',
