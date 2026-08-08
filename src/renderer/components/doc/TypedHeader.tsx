@@ -25,19 +25,21 @@ import {
   Eye,
   FileWarning,
   Loader2,
+  Paperclip,
   Pencil,
   Plus,
   Tag,
   TriangleAlert,
 } from 'lucide-react';
 import type { DocType } from '@shared/types';
-import { ISSUE_STATUSES, REPORT_STATUSES } from '@shared/style-maps';
-import { parseYamlFlowSeq, yamlFlowSeq } from '@shared/markdown-utils';
+import { ISSUE_STATUSES, REPORT_STATUSES } from '@shared/document-status';
+import { parseYamlFlowSeq, splitFrontmatter, yamlFlowSeq } from '@shared/markdown-utils';
 import { cn } from '@renderer/lib/utils';
 import { editorStore, type EditorSession } from '@renderer/stores/editor-store';
 import { useProject } from '@renderer/stores/project-store';
 import { useSettings } from '@renderer/stores/settings-store';
 import { collectAllLabels } from '@renderer/lib/label-utils';
+import { setDocStatus } from '@renderer/lib/issue-actions';
 import { LabelChip } from '@renderer/components/ui/label-chip';
 import { StatusBadge } from '@renderer/components/ui/status-badge';
 import { Button } from '@renderer/components/ui/button';
@@ -52,6 +54,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@renderer/components/ui/tooltip';
+import { AssetPanel } from './AssetPanel';
 
 export function typeOfPath(path: string): DocType | null {
   const segments = path.split('/');
@@ -108,10 +111,12 @@ function FieldInput({
  */
 function StatusEditor({
   type,
+  path,
   value,
   disabled,
 }: {
   type: DocType | null;
+  path: string;
   value: string;
   disabled: boolean;
 }): JSX.Element {
@@ -122,7 +127,7 @@ function StatusEditor({
   const set = (v: string): void => {
     const trimmed = v.trim();
     if (trimmed !== '' && trimmed !== value) {
-      void editorStore.setFrontmatterField('status', trimmed);
+      void setDocStatus(path, trimmed);
     }
     setDraft('');
     setOpen(false);
@@ -236,17 +241,23 @@ function LabelsEditor({ disabled }: { disabled: boolean }): JSX.Element {
 }
 
 export function TypedHeader({ session }: { session: EditorSession }): JSX.Element {
+  const [assetsOpen, setAssetsOpen] = useState(false);
   const type = typeOfPath(session.path);
   const title = editorStore.getFrontmatterField('title') ?? '';
   const status = editorStore.getFrontmatterField('status') ?? '';
   // A structurally broken frontmatter block is shown, never auto-edited.
-  const fmEditable = !looksBroken(session.fmBlock);
+  const visibleFmBlock =
+    session.mode === 'source' ? splitFrontmatter(session.sourceText).fmBlock : session.fmBlock;
+  const fmEditable = !looksBroken(visibleFmBlock);
 
   // px-2.5 = the body's reserved 10px scrollbar gutter; the inner column
   // mirrors the body's reading column via the shared --editor-max-width var
   // (mx-auto centered / mr-auto left-hugged per the setting). Title left +
   // controls right then track the body text.
-  const bodyAlign = useSettings()?.behavior.editorBodyAlign ?? 'center';
+  const settings = useSettings();
+  const bodyAlign = settings?.behavior.editorBodyAlign ?? 'center';
+  const showConflict =
+    session.conflict !== null && (settings?.behavior.editorConflictPolicy ?? 'ask') === 'ask';
   const column = cn(
     'max-w-[var(--editor-max-width,48rem)] px-6',
     bodyAlign === 'left' ? 'mr-auto' : 'mx-auto',
@@ -275,7 +286,7 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
             <TooltipContent>{session.path}</TooltipContent>
           </Tooltip>
 
-          <StatusEditor type={type} value={status} disabled={!fmEditable} />
+          <StatusEditor type={type} path={session.path} value={status} disabled={!fmEditable} />
 
           {!fmEditable && (
             <span className="flex shrink-0 items-center gap-1 rounded bg-destructive/15 px-1.5 py-0.5 text-xs text-destructive">
@@ -284,7 +295,7 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
             </span>
           )}
 
-          {session.externalConflict && (
+          {showConflict && (
             <Tooltip>
               <TooltipTrigger asChild>
                 <span className="flex shrink-0 items-center gap-1 rounded bg-[var(--rp-gold)]/20 px-1.5 py-0.5 text-xs text-[var(--rp-gold)]">
@@ -293,7 +304,7 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
                 </span>
               </TooltipTrigger>
               <TooltipContent>
-                该文件在你编辑期间被外部修改。继续保存将覆盖外部版本。
+                该文件在你编辑期间被外部修改，保存已暂停等待处理。
               </TooltipContent>
             </Tooltip>
           )}
@@ -325,6 +336,24 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
                 variant="ghost"
                 size="icon"
                 className="h-6 w-6 shrink-0"
+                onClick={() => {
+                  void editorStore
+                    .save('before-external-action')
+                    .finally(() => setAssetsOpen(true));
+                }}
+              >
+                <Paperclip className="!size-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>文档资产</TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 shrink-0"
                 onClick={() => editorStore.toggleMode()}
               >
                 {session.mode === 'wysiwyg' ? (
@@ -347,6 +376,7 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
           </div>
         )}
       </div>
+      <AssetPanel docPath={session.path} open={assetsOpen} onOpenChange={setAssetsOpen} />
     </div>
   );
 }

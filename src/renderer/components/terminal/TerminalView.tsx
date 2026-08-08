@@ -32,9 +32,9 @@
  * 150ms trailing debounce → fit(); the PTY only hears about dims ≥ 20×5
  * via term.onResize; a pending debounced fit is flushed before any
  * keystroke so the PTY never processes input at stale dims. Real dims
- * are written back to the store so the next session spawns at the right
- * size instead of 120×30-then-resize (ConPTY shreds early progress-bar
- * lines on that reflow).
+ * are written back to the matching project/layout bucket so the next session
+ * in that region spawns at the right size instead of 120×30-then-resize
+ * (ConPTY shreds early progress-bar lines on that reflow).
  */
 import { useCallback, useEffect, useRef, useState, type WheelEvent as ReactWheelEvent } from 'react';
 import { Terminal } from '@xterm/xterm';
@@ -45,7 +45,12 @@ import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 import { pipeline } from '@renderer/cpu';
 import { CHANNELS, EVENTS } from '@shared/protocol';
-import type { DocContent, SessionOutputPayload, SessionReplaySnapshot } from '@shared/types';
+import type {
+  DocContent,
+  ProjectScope,
+  SessionOutputPayload,
+  SessionReplaySnapshot,
+} from '@shared/types';
 import { composeDocPasteBlock, getDocDragPath, isDocDrag } from '@renderer/lib/doc-drag';
 import { matchKeybinding } from '@shared/terminal-keybindings';
 import { attachImeCompositionEndCleaner } from '@shared/ime-textarea-workaround';
@@ -54,7 +59,12 @@ import { readClipboardText, writeClipboardText } from '@renderer/lib/clipboard';
 import { confirmDialog } from '@renderer/components/ui/confirm-dialog';
 import { getXtermTheme, isLightTheme, LIGHT_THEME_MIN_CONTRAST } from '@renderer/theme/xterm-themes';
 import { getSettings, useSettings } from '@renderer/stores/settings-store';
-import { setLastTerminalDims } from '@renderer/stores/session-store';
+import {
+  sessionStore,
+  setLastTerminalDims,
+  terminalLayoutScope,
+} from '@renderer/stores/session-store';
+import { sameProjectScope } from '@renderer/stores/project-scope-state';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -95,6 +105,16 @@ const RESIZE_DEBOUNCE_MS = 150;
 const REPLAY_CHUNK_BYTES = 16 * 1024;
 const LARGE_PASTE_BYTES = 1024 * 1024;
 const REPLAY_FAILSAFE_MS = 5000;
+
+/**
+ * Route both detected URLs and OSC 8 hyperlinks through Electron's
+ * setWindowOpenHandler. The web-links addon's default handler opens an empty
+ * window first and assigns its URL afterwards; our deny-by-default handler
+ * rejects that empty window before the assignment can happen.
+ */
+function openTerminalLink(_event: MouseEvent, uri: string): void {
+  window.open(uri, '_blank', 'noopener,noreferrer');
+}
 
 export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -253,9 +273,12 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       // is sufficient.
       const quoted = paths.map((p) => (/\s/.test(p) ? `"${p}"` : p)).join(' ');
       try {
+        const scope = scopeForSession(sessionId);
+        if (!scope) return;
         await window.api.invoke(CHANNELS.SESSION_INPUT, {
           sessionId,
           data: encodeStringToBase64(quoted),
+          expectedScope: scope,
         });
       } catch (err) {
         console.warn('[TerminalView] file drop send-input failed', err);
@@ -270,9 +293,14 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
   const handleDocDrop = useCallback(
     async (docPath: string) => {
       try {
-        const content = await window.api.invoke<{ path: string }, DocContent>(
+        const scope = scopeForSession(sessionId);
+        if (!scope) return;
+        const content = await window.api.invoke<
+          { path: string; expectedScope: ProjectScope },
+          DocContent
+        >(
           CHANNELS.DOC_READ,
-          { path: docPath },
+          { path: docPath, expectedScope: scope },
         );
         await pasteText(composeDocPasteBlock(content));
       } catch (err) {
@@ -280,7 +308,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
         termRef.current?.focus();
       }
     },
-    [pasteText],
+    [pasteText, sessionId],
   );
 
   const handleClear = useCallback(() => {
@@ -379,11 +407,17 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    const sessionScope = scopeForSession(sessionId);
+    if (!sessionScope) return;
 
     const s = getSettings();
     const themeId = s?.appearance.theme;
     const term = new Terminal({
       scrollback: 5000, // must match main's headless mirror
+      // Codex clears inside DEC 2026 synchronized frames. Scrolling erased
+      // rows into history avoids xterm's partial-region scroll and jump-to-top
+      // failure mode. Keep this identical to SessionManager's headless xterm.
+      scrollOnEraseInDisplay: true,
       fontFamily:
         s?.appearance.terminalFontFamily ??
         "'Cascadia Mono', 'JetBrains Mono', 'Consolas', monospace",
@@ -398,6 +432,10 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       // setting width enables the overview ruler — its always-painted 1px
       // outline is neutralized via theme.overviewRulerBorder = background.
       scrollbar: { width: 10 },
+      // OSC 8 hyperlinks use xterm's built-in provider. Keep them on the same
+      // external-opening path as plain URLs instead of xterm's broken
+      // open-empty-window-then-navigate fallback.
+      linkHandler: { activate: openTerminalLink },
       allowProposedApi: true,
       ...(window.api.windowsBuild
         ? { windowsPty: { backend: 'conpty' as const, buildNumber: window.api.windowsBuild } }
@@ -456,7 +494,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
 
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon());
+    term.loadAddon(new WebLinksAddon(openTerminalLink));
 
     // SearchAddon (Ctrl+F). onDidChangeResults feeds the "x / N" hit counter;
     // registerDecoration (match highlight + overview-ruler markers) needs
@@ -566,9 +604,17 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     // noise — never told to the PTY.
     const resizeDisposable = term.onResize(({ cols, rows }) => {
       if (cols < MIN_COLS || rows < MIN_ROWS) return;
-      setLastTerminalDims({ cols, rows });
+      const session = sessionStore.get().sessions.find((candidate) => candidate.id === sessionId);
+      if (session) {
+        setLastTerminalDims(session.projectRoot, terminalLayoutScope(session), { cols, rows });
+      }
       if (replayInProgress) return;
-      void window.api.invoke(CHANNELS.SESSION_RESIZE, { sessionId, cols, rows });
+      void window.api.invoke(CHANNELS.SESSION_RESIZE, {
+        sessionId,
+        cols,
+        rows,
+        expectedScope: sessionScope,
+      });
     });
 
     const safeFit = (allowDuringReplay = false): void => {
@@ -629,6 +675,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     // 1) subscribe FIRST (hold until replay lands)
     const unsubscribe = window.api.on<SessionOutputPayload>(EVENTS.SESSION_OUTPUT, (payload) => {
       if (payload.sessionId !== sessionId) return;
+      if (!sameProjectScope(payload.scope, sessionScope)) return;
       if (!replayDone) {
         holdQueue.push(payload);
         return;
@@ -649,6 +696,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       void window.api.invoke(CHANNELS.SESSION_INPUT, {
         sessionId,
         data: encodeStringToBase64(data),
+        expectedScope: sessionScope,
       });
     });
 
@@ -695,12 +743,18 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       try {
         const requestReplay = async (): Promise<SessionReplaySnapshot> => {
           const scrollbackPromise = window.api.invoke<
-            { sessionId: string; cols: number; rows: number },
+            {
+              sessionId: string;
+              cols: number;
+              rows: number;
+              expectedScope: ProjectScope;
+            },
             SessionReplaySnapshot
           >(CHANNELS.SESSION_SCROLLBACK, {
             sessionId,
             cols: term.cols,
             rows: term.rows,
+            expectedScope: sessionScope,
           });
           let scrollbackTimer: ReturnType<typeof setTimeout> | null = null;
           return Promise.race([
@@ -997,4 +1051,10 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       )}
     </div>
   );
+}
+function scopeForSession(sessionId: string): ProjectScope | null {
+  const session = sessionStore.get().sessions.find((candidate) => candidate.id === sessionId);
+  return session
+    ? { root: session.projectRoot, generation: session.projectGeneration }
+    : null;
 }

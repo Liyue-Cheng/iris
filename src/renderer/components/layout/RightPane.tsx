@@ -76,7 +76,9 @@ export function RightPane(): JSX.Element {
   };
 
   const visibleSessions =
-    anchorKey === null ? [] : sessions.filter((s) => sessionAnchorKey(s) === anchorKey);
+    !projectReady || anchorKey === null
+      ? []
+      : sessions.filter((s) => sessionAnchorKey(s) === anchorKey);
   // Never show a terminal whose session is outside the current anchor; if
   // the staged id points elsewhere but this anchor HAS sessions, fall back
   // to the newest one (display-level only — no state mutation in render).
@@ -240,7 +242,7 @@ export function RightPane(): JSX.Element {
               </p>
               <p className="mt-1 max-w-64 text-xs text-muted-foreground">
                 {isHub
-                  ? '不注入 FOCUS_DOC —— 无聚焦的兜底会话'
+                  ? '注入当前 workspace 上下文，不绑定单篇文档'
                   : '终端将注入 FOCUS_DOC 指向这篇文档'}
               </p>
             </div>

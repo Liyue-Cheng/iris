@@ -17,7 +17,7 @@ import { editorStore, readDocFromDisk } from '@renderer/stores/editor-store';
 /** @returns false when the edit was refused (stale line) — not an error. */
 export async function checkTodo(docPath: string, todo: DocTodo): Promise<boolean> {
   if (editorStore.get()?.path === docPath) {
-    await editorStore.flushBeforeSwitch();
+    if (!(await editorStore.flushBeforeSwitch('before-external-action'))) return false;
   }
   const content = await readDocFromDisk(docPath);
   // Split keeping each line's EOL so the re-join is byte-exact.
@@ -31,6 +31,10 @@ export async function checkTodo(docPath: string, todo: DocTodo): Promise<boolean
   }
   // First '[ ]' in the line is the checkbox (it precedes the task text).
   lines[todo.line] = line.replace('[ ]', '[x]');
-  await pipeline.dispatch('doc.save', { path: docPath, content: lines.join('') });
+  await pipeline.dispatch('doc.save', {
+    path: docPath,
+    content: lines.join(''),
+    expectedContent: content.raw,
+  });
   return true;
 }

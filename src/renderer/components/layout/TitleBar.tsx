@@ -4,7 +4,7 @@
  * caption buttons; window verbs go through the window:* UI-helper channels.
  */
 import { useEffect, useState } from 'react';
-import { Moon, Sun, MoonStar, Palette, Activity, Settings2, Minus, Square, Copy, X, Cog } from 'lucide-react';
+import { Moon, Sun, MoonStar, Palette, Activity, Minus, Square, Copy, X, Cog } from 'lucide-react';
 import type { DeepPartial, PingResult, Settings, ThemeId } from '@shared/types';
 import { CHANNELS, EVENTS } from '@shared/protocol';
 import { cn } from '@renderer/lib/utils';
@@ -17,7 +17,6 @@ import { Button } from '@renderer/components/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
@@ -53,65 +52,6 @@ function ProjectCrumb(): JSX.Element | null {
     <span className="truncate text-xs text-muted-foreground" title={scan.projectRoot}>
       — {scan.projectRoot}
     </span>
-  );
-}
-
-/**
- * Machine-layer menu (~/.iris/CONVENTIONS.md, 附录 C): install the template
- * once, locate it for hand-editing afterwards. The app writes the template
- * and never reads the file again — it's the agent's, not the App's.
- */
-function MachineLayerMenu(): JSX.Element {
-  const [state, setState] = useState<{ exists: boolean; path: string } | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
-
-  const refresh = async (): Promise<void> => {
-    const s = await window.api.invoke<undefined, { exists: boolean; path: string }>(
-      CHANNELS.MACHINE_CONVENTIONS_STATE,
-    );
-    setState(s);
-  };
-
-  const install = async (): Promise<void> => {
-    try {
-      const r = (await pipeline.dispatch('machine.install-conventions', {})) as { path: string };
-      setMessage(`模板已写入 ${r.path}（请按本机实情填空）`);
-      await refresh();
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  const reveal = (): void => {
-    if (state?.path) void window.api.invoke(CHANNELS.SHELL_REVEAL, { path: state.path });
-  };
-
-  return (
-    <DropdownMenu onOpenChange={(open) => open && void refresh()}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon">
-              <Settings2 />
-            </Button>
-          </DropdownMenuTrigger>
-        </TooltipTrigger>
-        <TooltipContent>机器层（~/.iris/）</TooltipContent>
-      </Tooltip>
-      <DropdownMenuContent align="end" className="max-w-72">
-        <div className="px-2 py-1.5 text-xs text-muted-foreground">
-          机器层宪法：本机事实清单（代理、加密软件、资源限制），agent 读、不进 git。
-        </div>
-        {state?.exists ? (
-          <DropdownMenuItem onClick={reveal}>在资源管理器中定位（手工编辑）</DropdownMenuItem>
-        ) : (
-          <DropdownMenuItem onClick={() => void install()}>
-            安装 ~/.iris/CONVENTIONS.md 模板
-          </DropdownMenuItem>
-        )}
-        {message && <div className="max-w-64 px-2 py-1.5 text-[11px] text-muted-foreground">{message}</div>}
-      </DropdownMenuContent>
-    </DropdownMenu>
   );
 }
 
@@ -237,8 +177,6 @@ export function TitleBar(): JSX.Element {
             </DropdownMenuRadioGroup>
           </DropdownMenuContent>
         </DropdownMenu>
-
-        <MachineLayerMenu />
 
         <Tooltip>
           <TooltipTrigger asChild>

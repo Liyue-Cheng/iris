@@ -1,5 +1,6 @@
 import type { DocImageResult } from '@shared/types';
 import { CHANNELS } from '@shared/protocol';
+import { projectScopeState, sameProjectScope } from '@renderer/stores/project-scope-state';
 
 const DIRECT_IMAGE_PROTOCOL = /^(?:data:image\/(?:png|jpeg|gif|webp|avif);|blob:|https:)/i;
 const BLOCKED_PROTOCOL = /^(?:[a-z][a-z\d+.-]*:|[/\\])/i;
@@ -10,10 +11,13 @@ export async function resolveMarkdownImage(docPath: string, source: string): Pro
   if (!value || BLOCKED_PROTOCOL.test(value)) return failedImageUrl();
 
   try {
+    const scope = projectScopeState.get();
+    if (!scope) return failedImageUrl();
     const result = await window.api.invoke<
-      { docPath: string; source: string },
+      { docPath: string; source: string; expectedScope: typeof scope },
       DocImageResult
-    >(CHANNELS.DOC_IMAGE_READ, { docPath, source: value });
+    >(CHANNELS.DOC_IMAGE_READ, { docPath, source: value, expectedScope: scope });
+    if (!sameProjectScope(scope, projectScopeState.get())) return failedImageUrl();
     return result.dataUrl ?? failedImageUrl();
   } catch {
     return failedImageUrl();

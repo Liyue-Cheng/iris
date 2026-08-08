@@ -6,14 +6,38 @@
 import { CHANNELS } from '@shared/protocol';
 import { pipeline } from '@renderer/cpu';
 import { projectStore } from '@renderer/stores/project-store';
+import { sessionStore } from '@renderer/stores/session-store';
+import { editorStore } from '@renderer/stores/editor-store';
+import { alertDialog, confirmDialog } from '@renderer/components/ui/confirm-dialog';
+import { gitStore } from '@renderer/stores/git-store';
 
 export async function openProject(root: string): Promise<void> {
+  const currentRoot = projectStore.get().scan?.projectRoot ?? null;
+  const switchingRoot = currentRoot !== null && currentRoot !== root;
+  if (switchingRoot && sessionStore.get().sessions.length > 0) {
+    const sessions = sessionStore.get().sessions;
+    const live = sessions.filter((session) => session.state !== 'exited').length;
+    const confirmed = await confirmDialog({
+      title: '切换项目',
+      message:
+        `切换会关闭当前项目的 ${sessions.length} 个终端会话` +
+        (live > 0 ? `，其中 ${live} 个仍在运行。` : '。'),
+      confirmText: '关闭并切换',
+      tone: 'destructive',
+    });
+    if (!confirmed) return;
+  }
+
   projectStore.markOpening();
+  gitStore.reset();
   try {
+    await editorStore.flushBeforeProjectSwitch();
     await pipeline.dispatch('project.open', { root });
     // store update happens in the instruction's commit
   } catch (err) {
-    projectStore.handleOpenFailed(err instanceof Error ? err.message : String(err));
+    const message = err instanceof Error ? err.message : String(err);
+    projectStore.handleOpenFailed(message);
+    void alertDialog({ title: '项目切换失败', message });
   }
 }
 
@@ -29,8 +53,5 @@ export async function pickAndOpenProject(): Promise<void> {
  * Pass a root to skip the picker (e.g. an in-tree "open in new window" gesture).
  */
 export async function openProjectInNewWindow(root?: string): Promise<void> {
-  await window.api.invoke<{ root?: string }, { opened: boolean }>(
-    CHANNELS.WINDOW_OPEN_PROJECT,
-    root ? { root } : undefined,
-  );
+  await pipeline.dispatch('window.open-project', root ? { root } : {});
 }

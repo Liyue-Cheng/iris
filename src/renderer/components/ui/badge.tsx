@@ -12,8 +12,15 @@
  * structure/spacing is Tailwind. gray resolves to the muted tone.
  */
 import { ChevronDown, X } from 'lucide-react';
-import type { BadgeColor, BadgeTemplate } from '@shared/style-maps';
 import { cn } from '@renderer/lib/utils';
+
+export type BadgeVariant = 'solid' | 'soft' | 'outline' | 'dot';
+export type BadgeColor = 'gray' | 'love' | 'gold' | 'rose' | 'pine' | 'foam' | 'iris';
+
+export interface BadgeTemplate {
+  variant: BadgeVariant;
+  color: BadgeColor;
+}
 
 export function colorVar(color: BadgeColor): string {
   return color === 'gray' ? 'var(--rp-muted)' : `var(--rp-${color})`;

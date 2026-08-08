@@ -9,17 +9,24 @@
  * absurd). This store carries lifecycle + state only.
  */
 import { useSyncExternalStore } from 'react';
-import type { SessionInfo, SessionState } from '@shared/types';
+import type {
+  ProjectScope,
+  SessionInfo,
+  SessionListSnapshot,
+  SessionState,
+} from '@shared/types';
 import { CHANNELS } from '@shared/protocol';
+import { projectScopeState, sameProjectScope } from './project-scope-state';
 
 export interface SessionStoreState {
+  scope: ProjectScope | null;
   /** insertion-ordered */
   sessions: SessionInfo[];
   /** Session shown in the right pane (null = none). */
   activeSessionId: string | null;
 }
 
-let state: SessionStoreState = { sessions: [], activeSessionId: null };
+let state: SessionStoreState = { scope: null, sessions: [], activeSessionId: null };
 const subscribers = new Set<() => void>();
 
 function emit(): void {
@@ -37,7 +44,16 @@ export const sessionStore = {
   },
 
   handleCreated(info: SessionInfo): void {
+    const scope = projectScopeState.get();
+    if (
+      !scope ||
+      info.projectRoot !== scope.root ||
+      info.projectGeneration !== scope.generation
+    ) {
+      return;
+    }
     setState({
+      scope,
       sessions: [...state.sessions.filter((s) => s.id !== info.id), info],
       activeSessionId: info.id, // a fresh session takes the stage
     });
@@ -98,8 +114,22 @@ export const sessionStore = {
 
   /** Replace the whole projection with a fresh main-process snapshot
    *  (boot hydration, project open, desync self-heal). */
-  reset(sessions: SessionInfo[] = []): void {
-    setState({ sessions, activeSessionId: sessions[sessions.length - 1]?.id ?? null });
+  reset(
+    sessions: SessionInfo[] = [],
+    scope: ProjectScope | null = projectScopeState.get(),
+  ): void {
+    const filtered = scope
+      ? sessions.filter(
+          (session) =>
+            session.projectRoot === scope.root &&
+            session.projectGeneration === scope.generation,
+        )
+      : [];
+    setState({
+      scope,
+      sessions: filtered,
+      activeSessionId: filtered[filtered.length - 1]?.id ?? null,
+    });
   },
 
   has(sessionId: string): boolean {
@@ -143,28 +173,82 @@ function bestUnderAnchor(anchorKey: string): SessionInfo | null {
  * replays from main's headless mirror on mount.
  */
 export async function hydrateSessions(): Promise<void> {
+  const scope = projectScopeState.get();
+  if (!scope) {
+    sessionStore.reset([], null);
+    return;
+  }
   try {
-    const sessions = await window.api.invoke<undefined, SessionInfo[]>(CHANNELS.SESSION_LIST);
-    sessionStore.reset(sessions);
+    const snapshot = await window.api.invoke<
+      { expectedScope: ProjectScope },
+      SessionListSnapshot
+    >(CHANNELS.SESSION_LIST, { expectedScope: scope });
+    if (!sameProjectScope(scope, projectScopeState.get())) return;
+    if (!sameProjectScope(snapshot.scope, scope)) return;
+    sessionStore.reset(snapshot.sessions, snapshot.scope);
   } catch (err) {
     console.warn('[session-store] hydrate from main failed', err);
   }
 }
 
-/**
- * Last real terminal dims measured by TerminalView's fit(). New sessions
- * spawn with these instead of a placeholder, so ConPTY never sees a
- * spawn-then-resize (banner repaint / progress-bar reflow junk — Marina
- * 用户勘误 #2). Module-level, not store state: nothing re-renders on it.
- */
-let lastTerminalDims: { cols: number; rows: number } = { cols: 120, rows: 30 };
-
-export function setLastTerminalDims(dims: { cols: number; rows: number }): void {
-  lastTerminalDims = dims;
+export interface TerminalDims {
+  cols: number;
+  rows: number;
 }
 
-export function getLastTerminalDims(): { cols: number; rows: number } {
-  return lastTerminalDims;
+/** Geometry buckets with materially different available widths. */
+export type TerminalLayoutScope =
+  | { kind: 'root-hub' }
+  | { kind: 'workspace-hub'; workspacePath: string }
+  | { kind: 'doc-right-pane' };
+
+const DEFAULT_TERMINAL_DIMS: TerminalDims = { cols: 120, rows: 30 };
+
+/**
+ * Last real terminal dims measured by TerminalView's fit(). The module is
+ * instantiated once per renderer window, while the nested maps additionally
+ * isolate projects and layout regions. Nothing here is reactive: measurements
+ * should not cause a render.
+ */
+const lastTerminalDimsByProject = new Map<string, Map<string, TerminalDims>>();
+
+function terminalLayoutScopeKey(scope: TerminalLayoutScope): string {
+  return scope.kind === 'workspace-hub' ? `${scope.kind}:${scope.workspacePath}` : scope.kind;
+}
+
+/** Derive the geometry bucket from the session's immutable anchor. */
+export function terminalLayoutScope(
+  session: Pick<SessionInfo, 'docPath' | 'workspacePath'>,
+): TerminalLayoutScope {
+  if (session.docPath !== null) return { kind: 'doc-right-pane' };
+  if (session.workspacePath && session.workspacePath !== '.iris') {
+    return { kind: 'workspace-hub', workspacePath: session.workspacePath };
+  }
+  return { kind: 'root-hub' };
+}
+
+export function setLastTerminalDims(
+  projectRoot: string,
+  scope: TerminalLayoutScope,
+  dims: TerminalDims,
+): void {
+  let projectDims = lastTerminalDimsByProject.get(projectRoot);
+  if (!projectDims) {
+    projectDims = new Map();
+    lastTerminalDimsByProject.set(projectRoot, projectDims);
+  }
+  projectDims.set(terminalLayoutScopeKey(scope), dims);
+}
+
+export function getLastTerminalDims(
+  projectRoot: string | null | undefined,
+  scope: TerminalLayoutScope,
+): TerminalDims {
+  if (!projectRoot) return DEFAULT_TERMINAL_DIMS;
+  return (
+    lastTerminalDimsByProject.get(projectRoot)?.get(terminalLayoutScopeKey(scope)) ??
+    DEFAULT_TERMINAL_DIMS
+  );
 }
 
 export function useSessions(): SessionStoreState {

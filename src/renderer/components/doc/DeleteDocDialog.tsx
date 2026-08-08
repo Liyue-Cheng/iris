@@ -1,13 +1,13 @@
 /**
- * Delete-file dialog (round-3 I 条). Deletion is irreversible, so it always
- * confirms — and when terminals are anchored on the doc it offers the two
+ * Delete-file dialog (round-3 I 条). The document and its companion assets
+ * move to the system trash together; when terminals are anchored it offers
  * agreed branches: close those sessions, or re-anchor them to the project
  * root (Marina's anchoring model — the path edits the doc, the PTY lives on).
  *
- * Note the constitution's "issues are not deleted, flip status" rule binds
- * the AGENT's write-back behavior; this is the human's UI gesture.
+ * The software protocol's "issues are not deleted, flip status" rule binds
+ * the agent's write-back behavior; this is the human's UI gesture.
  */
-import { useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { Trash2 } from 'lucide-react';
 import { pipeline } from '@renderer/cpu';
 import { useSessions } from '@renderer/stores/session-store';
@@ -19,6 +19,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/components/ui/dialog';
+import { listAssets } from '@renderer/lib/asset-actions';
 
 interface DeleteTarget {
   docPath: string;
@@ -50,6 +51,23 @@ export function DeleteDocDialog(): JSX.Element | null {
   const { sessions } = useSessions();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [assetCount, setAssetCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!t) return;
+    let current = true;
+    setAssetCount(null);
+    void listAssets(t.docPath)
+      .then((inventory) => {
+        if (current) setAssetCount(inventory.counts.referenced + inventory.counts.orphan);
+      })
+      .catch((err) => {
+        if (current) setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      current = false;
+    };
+  }, [t]);
 
   if (!t) return null;
 
@@ -59,6 +77,7 @@ export function DeleteDocDialog(): JSX.Element | null {
     target = null;
     setBusy(false);
     setError(null);
+    setAssetCount(null);
     subs.forEach((cb) => cb());
   };
 
@@ -96,8 +115,13 @@ export function DeleteDocDialog(): JSX.Element | null {
         </DialogHeader>
 
         <p className="text-sm text-muted-foreground">
-          将从磁盘删除 <code className="rounded bg-muted px-1 text-xs">{t.docPath}</code>
-          ，此操作不可逆。
+          将把 <code className="rounded bg-muted px-1 text-xs">{t.docPath}</code>
+          {assetCount === null
+            ? ' 及其受管资产'
+            : assetCount > 0
+              ? ` 及 companion 目录中的 ${assetCount} 个资产`
+              : ''}
+          移入系统回收站。
         </p>
 
         {anchored.length > 0 && (
@@ -118,7 +142,7 @@ export function DeleteDocDialog(): JSX.Element | null {
             <Button
               variant="destructive"
               className="w-full"
-              disabled={busy}
+              disabled={busy || assetCount === null}
               onClick={() => void run('close-sessions')}
             >
               关闭这些终端并删除
@@ -126,7 +150,7 @@ export function DeleteDocDialog(): JSX.Element | null {
             <Button
               variant="secondary"
               className="w-full"
-              disabled={busy}
+              disabled={busy || assetCount === null}
               title="会话保留，锚点改为项目根"
               onClick={() => void run('reanchor-root')}
             >
@@ -141,7 +165,11 @@ export function DeleteDocDialog(): JSX.Element | null {
             <Button variant="ghost" onClick={close} disabled={busy}>
               取消
             </Button>
-            <Button variant="destructive" disabled={busy} onClick={() => void run('close-sessions')}>
+            <Button
+              variant="destructive"
+              disabled={busy || assetCount === null}
+              onClick={() => void run('close-sessions')}
+            >
               删除
             </Button>
           </DialogFooter>

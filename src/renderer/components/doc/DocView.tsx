@@ -6,9 +6,11 @@
  * and immediate persist on header field edits.
  */
 import { useEffect } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, TriangleAlert } from 'lucide-react';
 import { useEditorSession, editorStore } from '@renderer/stores/editor-store';
 import { useProject } from '@renderer/stores/project-store';
+import { useSettings } from '@renderer/stores/settings-store';
+import { Button } from '@renderer/components/ui/button';
 import { TypedHeader } from './TypedHeader';
 import { CrepeEditor } from './CrepeEditor';
 import { SourceEditor } from './SourceEditor';
@@ -16,6 +18,7 @@ import { SourceEditor } from './SourceEditor';
 export function DocView(): JSX.Element {
   const session = useEditorSession();
   const { selectedPath, docLoading, docError } = useProject();
+  const conflictPolicy = useSettings()?.behavior.editorConflictPolicy ?? 'ask';
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
@@ -24,14 +27,9 @@ export function DocView(): JSX.Element {
         void editorStore.save();
       }
     };
-    const onBlur = (): void => {
-      void editorStore.save();
-    };
     window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('blur', onBlur);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('blur', onBlur);
     };
   }, []);
 
@@ -62,12 +60,37 @@ export function DocView(): JSX.Element {
   return (
     <div className="flex h-full flex-col">
       <TypedHeader session={session} />
+      {session.conflict && conflictPolicy === 'ask' && (
+        <div className="flex shrink-0 items-center gap-2 border-y border-[var(--rp-gold)]/35 bg-[var(--rp-gold)]/10 px-4 py-2 text-xs">
+          <TriangleAlert className="size-4 shrink-0 text-[var(--rp-gold)]" />
+          <span className="min-w-0 flex-1">
+            磁盘版本已变化，自动保存已暂停。选择保留本地草稿或重新载入外部版本。
+          </span>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 shrink-0"
+            onClick={() => editorStore.reloadConflict()}
+          >
+            载入外部版本
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            className="h-7 shrink-0"
+            disabled={session.saving}
+            onClick={() => void editorStore.overwriteConflict()}
+          >
+            保留本地并覆盖
+          </Button>
+        </div>
+      )}
       <div
         className="min-h-0 flex-1"
         onBlur={(event) => {
           const next = event.relatedTarget;
           if (!(next instanceof Node) || !event.currentTarget.contains(next)) {
-            void editorStore.save();
+            editorStore.handleEditorBlur();
           }
         }}
       >

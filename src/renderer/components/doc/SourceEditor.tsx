@@ -9,6 +9,7 @@ import { EditorState } from '@codemirror/state';
 import { markdown } from '@codemirror/lang-markdown';
 import { rosePineCodeMirror } from '@renderer/styles/codemirror-theme';
 import { editorStore } from '@renderer/stores/editor-store';
+import { attachScrollMemory } from '@renderer/lib/scroll-memory';
 
 export function SourceEditor({
   path,
@@ -42,14 +43,20 @@ export function SourceEditor({
           }),
           EditorView.updateListener.of((update) => {
             if (update.docChanged) {
-              editorStore.setSourceText(update.state.doc.toString());
+              editorStore.setSourceText(path, generation, update.state.doc.toString());
             }
           }),
         ],
       }),
     });
+    const scrollMemory = attachScrollMemory({
+      key: `source:${path}`,
+      scroller: view.scrollDOM,
+      focusRoot: host,
+    });
 
     return () => {
+      scrollMemory.stop();
       view.destroy();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -6,8 +6,12 @@
  */
 import type { InstructionDefinition } from 'front-cpu';
 import { CHANNELS } from '@shared/protocol';
+import { projectScopeRead } from './project-resources';
 
-const repositoryResource = (): string[] => ['git:repository'];
+const repositoryResource = (): Array<string | { id: string; mode: 'read' }> => [
+  projectScopeRead(),
+  'git:repository',
+];
 
 export const gitISA: Record<string, InstructionDefinition> = {
   'git.stage': {
@@ -15,12 +19,12 @@ export const gitISA: Record<string, InstructionDefinition> = {
       description: 'Stage one or more repository paths',
       category: 'task',
       resourceIdentifier: repositoryResource,
-      schedulingStrategy: 'serial',
+      schedulingStrategy: 'read-write',
       priority: 5,
       timeout: 10000,
     },
     executor: 'ipc',
-    config: { channel: CHANNELS.GIT_STAGE },
+    config: { channel: CHANNELS.GIT_STAGE, projectScoped: true },
   },
 
   'git.unstage': {
@@ -28,12 +32,12 @@ export const gitISA: Record<string, InstructionDefinition> = {
       description: 'Unstage one or more repository paths',
       category: 'task',
       resourceIdentifier: repositoryResource,
-      schedulingStrategy: 'serial',
+      schedulingStrategy: 'read-write',
       priority: 5,
       timeout: 10000,
     },
     executor: 'ipc',
-    config: { channel: CHANNELS.GIT_UNSTAGE },
+    config: { channel: CHANNELS.GIT_UNSTAGE, projectScoped: true },
   },
 
   'git.commit': {
@@ -41,12 +45,12 @@ export const gitISA: Record<string, InstructionDefinition> = {
       description: 'Commit the staged repository changes with the native Git configuration',
       category: 'task',
       resourceIdentifier: repositoryResource,
-      schedulingStrategy: 'serial',
+      schedulingStrategy: 'read-write',
       priority: 5,
       timeout: 15000,
     },
     executor: 'ipc',
-    config: { channel: CHANNELS.GIT_COMMIT },
+    config: { channel: CHANNELS.GIT_COMMIT, projectScoped: true },
   },
 
   'git.switch-branch': {
@@ -54,11 +58,11 @@ export const gitISA: Record<string, InstructionDefinition> = {
       description: 'Switch to a local Git branch',
       category: 'task',
       resourceIdentifier: repositoryResource,
-      schedulingStrategy: 'serial',
+      schedulingStrategy: 'read-write',
       priority: 5,
       timeout: 10000,
     },
     executor: 'ipc',
-    config: { channel: CHANNELS.GIT_SWITCH_BRANCH },
+    config: { channel: CHANNELS.GIT_SWITCH_BRANCH, projectScoped: true },
   },
 };

@@ -1,7 +1,7 @@
 /**
  * Status panel — "当前真相". Beyond a plain list it surfaces each status doc's
- * freshness: CONVENTIONS stamps `reflects: <sha>`; we compare it to the live
- * git HEAD so a stale snapshot is obvious at a glance (trust calibration, §8).
+ * freshness: the software protocol requires `reflects: <sha>`; we compare it
+ * to live git HEAD so a stale snapshot is obvious at a glance.
  * HEAD is a best-effort read (project:git-head) — when git is unavailable the
  * freshness column simply goes quiet.
  */
@@ -14,6 +14,7 @@ import { collectDocs, docDate } from '@renderer/lib/collect-docs';
 import { docDisplayTitle } from '@renderer/lib/doc-utils';
 import { setDocDragData } from '@renderer/lib/doc-drag';
 import { projectStore } from '@renderer/stores/project-store';
+import { sameProjectScope } from '@renderer/stores/project-scope-state';
 import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DocContextMenu } from '@renderer/components/doc/DocContextMenu';
 import { Button } from '@renderer/components/ui/button';
@@ -71,14 +72,21 @@ export function StatusList({
   workspacePath: string | null;
 }): JSX.Element {
   const [head, setHead] = useState<string | null>(null);
+  const scope = projectStore.get().scope;
 
   useEffect(() => {
     let live = true;
     const fetchHead = (): void => {
+      if (!scope) return;
       window.api
-        .invoke<undefined, { head: string | null }>(CHANNELS.PROJECT_GIT_HEAD)
+        .invoke<{ expectedScope: typeof scope }, { head: string | null }>(
+          CHANNELS.PROJECT_GIT_HEAD,
+          { expectedScope: scope },
+        )
         .then((r) => {
-          if (live) setHead(r?.head ?? null);
+          if (live && sameProjectScope(scope, projectStore.get().scope)) {
+            setHead(r?.head ?? null);
+          }
         })
         .catch(() => {
           /* not a repo / git missing — leave head null */
@@ -91,7 +99,7 @@ export function StatusList({
       live = false;
       window.removeEventListener('focus', fetchHead);
     };
-  }, []);
+  }, [scope]);
 
   const rows = collectDocs(root, 'status', workspacePath);
   rows.sort(

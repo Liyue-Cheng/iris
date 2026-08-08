@@ -13,6 +13,7 @@
 import { EVENTS } from '@shared/protocol';
 import type {
   FsIrisChangedEvent,
+  SessionDestroyedPayload,
   SessionExitedPayload,
   SessionStateChangedPayload,
 } from '@shared/types';
@@ -20,13 +21,14 @@ import { pipeline } from './index';
 import { projectStore } from '@renderer/stores/project-store';
 import { editorStore, readDocFromDisk } from '@renderer/stores/editor-store';
 import { hydrateSessions, sessionStore } from '@renderer/stores/session-store';
-import { stylesStore } from '@renderer/stores/styles-store';
+import { projectScopeState, sameProjectScope } from '@renderer/stores/project-scope-state';
 
 export function wireInterrupts(): void {
   // Session lifecycle events → interrupts → projection ISR. (Output bytes
   // bypass this path entirely — they stream straight to the terminal view;
   // routing 60 batches/s through the interrupt controller buys nothing.)
   window.api.on<SessionStateChangedPayload>(EVENTS.SESSION_STATE_CHANGED, (event) => {
+    if (!sameProjectScope(event.scope, projectScopeState.get())) return;
     pipeline.interrupts.raise({
       type: 'session.state-changed',
       source: 'session-manager',
@@ -34,9 +36,11 @@ export function wireInterrupts(): void {
     });
   });
   window.api.on<SessionExitedPayload>(EVENTS.SESSION_EXITED, (event) => {
+    if (!sameProjectScope(event.scope, projectScopeState.get())) return;
     pipeline.interrupts.raise({ type: 'session.exited', source: 'session-manager', data: event });
   });
-  window.api.on<{ sessionId: string }>(EVENTS.SESSION_DESTROYED, (event) => {
+  window.api.on<SessionDestroyedPayload>(EVENTS.SESSION_DESTROYED, (event) => {
+    if (!sameProjectScope(event.scope, projectScopeState.get())) return;
     pipeline.interrupts.raise({
       type: 'session.destroyed',
       source: 'session-manager',
@@ -60,7 +64,7 @@ export function wireInterrupts(): void {
         }
         sessionStore.handlePatch(sessionId, patch);
       } else if (event.type === 'session.destroyed') {
-        const { sessionId } = event.data as { sessionId: string };
+        const { sessionId } = event.data as SessionDestroyedPayload;
         // Unknown id on destroy is the same desync evidence; the fresh
         // list won't contain the destroyed session anyway.
         if (!sessionStore.has(sessionId)) {
@@ -74,6 +78,14 @@ export function wireInterrupts(): void {
     },
   });
   window.api.on<FsIrisChangedEvent>(EVENTS.FS_IRIS_CHANGED, (event) => {
+    const scope = projectScopeState.get();
+    if (
+      !scope ||
+      event.projectRoot !== scope.root ||
+      event.projectGeneration !== scope.generation
+    ) {
+      return;
+    }
     pipeline.interrupts.raise({
       type: 'fs.iris.changed',
       source: 'file-watcher',
@@ -88,10 +100,6 @@ export function wireInterrupts(): void {
       const data = event.data as FsIrisChangedEvent;
       // Tree projection: rescans are cheap and idempotent — no dedup needed.
       void projectStore.refreshFromFs(data);
-      // Style tables live in .iris/styles.json — same watcher, own store.
-      if (data.changes.some((c) => c.path === '.iris/styles.json')) {
-        void stylesStore.refresh();
-      }
       // Editor projection: dedup + conflict policy live inside the store
       // (state compare against lastWritten — deterministic, no heuristics).
       const open = editorStore.get();

@@ -27,6 +27,9 @@ import { mountCrepeSerially, type CrepeLifecycle } from '@renderer/lib/crepe-lif
 import { useSettings } from '@renderer/stores/settings-store';
 import { markImageLoadFailure, resolveMarkdownImage } from '@renderer/lib/markdown-media';
 import { renderMermaidPreview } from '@renderer/lib/mermaid-preview';
+import { importAsset } from '@renderer/lib/asset-actions';
+import { attachScrollMemory, type ScrollMemoryHandle } from '@renderer/lib/scroll-memory';
+import { stableCodeBlockView } from '@renderer/lib/stable-code-block';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -59,6 +62,8 @@ export function CrepeEditor({
     if (!el) return;
 
     let stopped = false;
+    let hydrationFrame: number | null = null;
+    let scrollMemory: ScrollMemoryHandle | null = null;
     const crepe = new Crepe({
       root: el,
       defaultValue: body,
@@ -75,21 +80,28 @@ export function CrepeEditor({
         [Crepe.Feature.CodeMirror]: {
           languages,
           extensions: [rosePineCodeMirror],
+          copyText: '复制',
           renderPreview: renderMermaidPreview,
           previewOnlyByDefault: true,
           previewLabel: '预览',
           previewLoading: '渲染中…',
         },
         [Crepe.Feature.ImageBlock]: {
+          onUpload: async (file) => (await importAsset(path, file)).markdownUrl,
           proxyDomURL: (source) => resolveMarkdownImage(path, source),
           onImageLoadError: markImageLoadFailure,
+          inlineUploadButton: '上传',
+          blockUploadButton: '上传图片',
+          inlineUploadPlaceholderText: '或粘贴链接',
+          blockUploadPlaceholderText: '或粘贴链接',
         },
       },
     });
+    crepe.editor.use(stableCodeBlockView);
 
     crepe.on((listener) => {
       listener.markdownUpdated((_ctx, md) => {
-        if (!stopped) editorStore.setBody(md);
+        if (!stopped) editorStore.setBodyFromEditor(path, generation, md);
       });
     });
 
@@ -99,12 +111,33 @@ export function CrepeEditor({
       label: `wysiwyg:${path}`,
       onCreated: () => {
         if (stopped) return;
-        editorStore.setBodyBaseline(crepe.getMarkdown());
+        scrollMemory = attachScrollMemory({
+          key: `wysiwyg:${path}`,
+          scroller: el,
+          focusRoot: el,
+        });
+        // Crepe plugins may normalize the initial document for a frame after
+        // create() resolves. Keep those transactions inside hydration, then
+        // establish one stable serialization baseline.
+        let frames = 2;
+        const settle = (): void => {
+          if (stopped) return;
+          if (frames > 0) {
+            frames -= 1;
+            hydrationFrame = requestAnimationFrame(settle);
+            return;
+          }
+          hydrationFrame = null;
+          editorStore.finishBodyHydration(path, generation, crepe.getMarkdown());
+        };
+        hydrationFrame = requestAnimationFrame(settle);
       },
     });
 
     return () => {
       stopped = true;
+      if (hydrationFrame !== null) cancelAnimationFrame(hydrationFrame);
+      scrollMemory?.stop();
       lifecycle.stop();
     };
     // Remount only on a different doc, an explicit generation bump, or a

@@ -8,17 +8,25 @@
  * backend.
  */
 import type { ExecutorFn } from 'front-cpu';
+import { projectScopeState } from '@renderer/stores/project-scope-state';
 
 export interface IpcExecutorConfig {
   channel: string;
+  /** Attach the committed window project identity for main-side validation. */
+  projectScoped?: boolean;
 }
 
 export const ipcExecutor: ExecutorFn = (config, payload) => {
-  const { channel } = config as IpcExecutorConfig;
+  const { channel, projectScoped } = config as IpcExecutorConfig;
   if (typeof channel !== 'string' || !channel) {
     return Promise.reject(
       new Error(`[ipcExecutor] instruction config must declare a non-empty channel`),
     );
   }
-  return window.api.invoke(channel, payload);
+  if (!projectScoped) return window.api.invoke(channel, payload);
+  const body = payload && typeof payload === 'object' ? payload : {};
+  return window.api.invoke(channel, {
+    ...body,
+    expectedScope: projectScopeState.get(),
+  });
 };

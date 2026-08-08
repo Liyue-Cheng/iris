@@ -16,10 +16,13 @@ const RESOLVED_STATUSES = new Set([
   'wontfix',
 ]);
 
+export function isResolvedIssueStatus(status: string | null): boolean {
+  return status !== null && RESOLVED_STATUSES.has(status.trim().toLowerCase());
+}
+
 /** Active = not clearly resolved. Unknown/missing/deviant values stay visible. */
 export function isActiveIssue(doc: IrisDoc): boolean {
-  if (doc.status === null) return true;
-  return !RESOLVED_STATUSES.has(doc.status.trim().toLowerCase());
+  return !isResolvedIssueStatus(doc.status);
 }
 
 export function docDisplayTitle(doc: IrisDoc): string {

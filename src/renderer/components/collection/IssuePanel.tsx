@@ -16,12 +16,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, CheckSquare, FileWarning, Plus, Search, Square, X } from 'lucide-react';
 import type { IrisWorkspace } from '@shared/types';
-import { ISSUE_STATUSES } from '@shared/style-maps';
+import { ISSUE_STATUSES } from '@shared/document-status';
 import { cn } from '@renderer/lib/utils';
 import { collectDocs, docDate, type CollectedDoc } from '@renderer/lib/collect-docs';
 import { docDisplayTitle, isActiveIssue } from '@renderer/lib/doc-utils';
 import { setDocDragData } from '@renderer/lib/doc-drag';
-import { setDocStatus } from '@renderer/lib/issue-actions';
+import { setDocsStatus, setDocStatus } from '@renderer/lib/issue-actions';
 import { useViewPref } from '@renderer/lib/view-prefs';
 import { LabelChip } from '@renderer/components/ui/label-chip';
 import { StatusBadge } from '@renderer/components/ui/status-badge';
@@ -268,8 +268,8 @@ export function IssuePanel({
     }
   };
 
-  const applyBulk = async (fn: (path: string) => Promise<void>): Promise<void> => {
-    await Promise.allSettled([...selected].map((p) => fn(p)));
+  const applyBulkStatus = async (status: string): Promise<void> => {
+    await setDocsStatus([...selected], status);
     setSelected(new Set());
   };
 
@@ -463,7 +463,7 @@ export function IssuePanel({
               {ISSUE_STATUSES.map((s) => (
                 <DropdownMenuItem
                   key={s}
-                  onClick={() => void applyBulk((p) => setDocStatus(p, s))}
+                  onClick={() => void applyBulkStatus(s)}
                 >
                   <StatusBadge value={s} />
                 </DropdownMenuItem>

@@ -1,12 +1,9 @@
 /**
- * One label chip — renders the label string per its assigned template from
- * the configurable label → template table (round-3: same template system as
- * status; an unmapped label gets the gray default). Defaults lean to the
- * `dot` variant (the classic label look), but any template the user assigns
- * applies — labels and statuses share one designed component.
+ * One label chip. Labels are a soft vocabulary, so their dot color is derived
+ * from the label text and stays stable without persisted configuration.
  */
 import { Badge } from '@renderer/components/ui/badge';
-import { templateFor, useStyleMaps } from '@renderer/stores/styles-store';
+import { labelColor } from '@renderer/lib/label-utils';
 
 export function LabelChip({
   label,
@@ -19,10 +16,9 @@ export function LabelChip({
   onRemove?: (() => void) | undefined;
   className?: string | undefined;
 }): JSX.Element {
-  const { maps } = useStyleMaps();
   const badge = (
     <Badge
-      template={templateFor(maps, 'label', label)}
+      template={{ variant: 'dot', color: labelColor(label) }}
       text={label}
       size="sm"
       onRemove={onRemove}

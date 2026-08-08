@@ -20,12 +20,9 @@ import {
 export function InitDialog({
   open,
   onClose,
-  missingConstitutionOnly,
 }: {
   open: boolean;
   onClose: () => void;
-  /** True when .iris/ exists but the constitution is missing (repair mode). */
-  missingConstitutionOnly: boolean;
 }): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,16 +51,13 @@ export function InitDialog({
     <Dialog open={open} onOpenChange={(o) => !o && close()}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>{missingConstitutionOnly ? '补全 Iris 协议' : '初始化 Iris 协议'}</DialogTitle>
+          <DialogTitle>初始化 Iris 协议</DialogTitle>
           <DialogDescription asChild>
             <div className="space-y-2 text-left">
               <p>将在当前项目执行（已存在的部分自动跳过）：</p>
               <ul className="list-disc space-y-1 pl-5 text-xs">
                 <li>
                   创建 <code>.iris/</code> 下的四个类型文件夹（status / issue / report / misc）
-                </li>
-                <li>
-                  写入 <code>.iris/CONVENTIONS.md</code> 宪法模板（写入后归你所有，应用只读不改）
                 </li>
                 <li>
                   在项目根 <code>AGENTS.md</code> 追加 Iris 引导段（无则创建；带标记，重复运行不重复追加）
@@ -84,17 +78,19 @@ export function InitDialog({
               新建文件夹：{done.createdFolders.length > 0 ? done.createdFolders.join('、') : '无（已齐）'}
             </p>
             <p>
-              宪法：{done.constitution === 'created' ? '已写入模板' : '已存在，未动'}；AGENTS.md：
+              AGENTS.md：
               {done.agentsMd === 'created'
                 ? '已创建'
                 : done.agentsMd === 'appended'
                   ? '已追加引导段'
-                  : '已有引导段，未动'}
+                  : done.agentsMd === 'updated'
+                    ? '已恢复软件块'
+                    : '已有引导段，未动'}
             </p>
             {done.foreignEntries.length > 0 && (
               <p className="mt-1 text-[var(--rp-gold)]">
-                检测到其它 agent 入口：{done.foreignEntries.join('、')}（未改动）。Iris 只维护标准入口{' '}
-                <code>AGENTS.md</code>，建议把项目级引导集中到它。
+                已维护现存 agent 入口：{done.foreignEntries.join('、')}。Iris 不会创建缺失的
+                vendor 入口文件。
               </p>
             )}
           </div>

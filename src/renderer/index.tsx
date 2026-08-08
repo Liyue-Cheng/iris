@@ -8,6 +8,8 @@ import { editorStore } from './stores/editor-store';
 import { wireInterrupts } from './cpu/interrupts';
 import { openProject } from './lib/project-actions';
 import { CHANNELS, EVENTS } from '@shared/protocol';
+import type { WindowBootstrapState } from '@shared/types';
+import { projectStore } from './stores/project-store';
 
 async function bootstrap(): Promise<void> {
   // Dev-only: the front-cpu instruction console (separate debug entry, zero
@@ -23,17 +25,23 @@ async function bootstrap(): Promise<void> {
   await initSettingsStore();
   wireInterrupts();
 
-  // B3: on window close, main asks us to flush unsaved editor work (the
-  // normal doc.save instruction), then we ack so main can finish closing.
+  // A conflict or write failure rejects the close handshake and leaves the
+  // document mounted for recovery.
   window.api.on(EVENTS.APP_FLUSH_BEFORE_QUIT, () => {
     void editorStore
-      .save()
-      .finally(() => void window.api.invoke(CHANNELS.APP_FLUSH_DONE));
+      .flushBeforeSwitch('before-quit')
+      .then((ok) => window.api.invoke(CHANNELS.APP_FLUSH_DONE, { ok }))
+      .catch(() => window.api.invoke(CHANNELS.APP_FLUSH_DONE, { ok: false }));
   });
-  // Session projection is event-fed; a renderer reload starts it empty
-  // while the PTY pool lives on in main. Hydrate before first paint so
-  // surviving sessions are visible (and closeable) immediately.
-  await hydrateSessions();
+  const bootstrapState = await window.api.invoke<undefined, WindowBootstrapState>(
+    CHANNELS.WINDOW_BOOTSTRAP,
+  );
+  if (bootstrapState.activeScope) {
+    await projectStore.restoreActive(bootstrapState.activeScope);
+    // Session projection is event-fed; reloads recover the still-live pool
+    // without replaying project.open and restarting project backends.
+    await hydrateSessions();
+  }
 
   const container = document.getElementById('root');
   if (!container) throw new Error('#root not found');
@@ -46,10 +54,9 @@ async function bootstrap(): Promise<void> {
   // Open the project THIS window is bound to (main is the authority on the
   // window→project binding; multi-window, each window gets its own root).
   // Failures surface in-app.
-  const { projectRoot } = await window.api.invoke<undefined, { projectRoot: string | null }>(
-    CHANNELS.WINDOW_BOOTSTRAP,
-  );
-  if (projectRoot) void openProject(projectRoot);
+  if (!bootstrapState.activeScope && bootstrapState.requestedRoot) {
+    void openProject(bootstrapState.requestedRoot);
+  }
 }
 
 void bootstrap();

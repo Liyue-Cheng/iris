@@ -39,6 +39,655 @@
   }
 }
 
+@keyframes iris-pixel-rain {
+  from {
+    transform: translate3d(-10px, -32px, 0);
+  }
+
+  to {
+    transform: translate3d(18px, 48px, 0);
+  }
+}
+
+@keyframes iris-pixel-blink {
+  0%,
+  44% {
+    opacity: 1;
+  }
+
+  45%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes iris-pixel-float {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) rotate(-8deg);
+  }
+
+  50% {
+    transform: translate3d(4px, -10px, 0) rotate(-3deg);
+  }
+}
+
+@keyframes iris-pixel-steam {
+  0% {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  45% {
+    opacity: 0.75;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateY(-18px);
+  }
+}
+
+@keyframes iris-pixel-screen {
+  0%,
+  70%,
+  100% {
+    background: var(--pixel-gold);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--pixel-gold) 24%, transparent);
+  }
+
+  75%,
+  95% {
+    background: var(--pixel-mint);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--pixel-mint) 22%, transparent);
+  }
+}
+
+.iris-pixel-scene {
+  --pixel-ink: #11101b;
+  --pixel-sky: #17182f;
+  --pixel-wall: color-mix(in srgb, var(--card) 62%, #31314c);
+  --pixel-wall-dark: color-mix(in srgb, var(--background) 72%, #19192d);
+  --pixel-frame: color-mix(in srgb, var(--foreground) 22%, #242239);
+  --pixel-wood: #704f58;
+  --pixel-wood-light: #a36a67;
+  --pixel-gold: #f2bc67;
+  --pixel-rose: #df7190;
+  --pixel-mint: #79c7ad;
+  --pixel-blue: #6eaec3;
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 11;
+  min-height: 330px;
+  max-height: 500px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 6px;
+  background: var(--pixel-wall-dark);
+  box-shadow: 0 24px 70px color-mix(in srgb, var(--pixel-ink) 34%, transparent);
+  image-rendering: pixelated;
+  isolation: isolate;
+}
+
+.iris-pixel-scene::after {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  content: '';
+  pointer-events: none;
+  opacity: 0.17;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 3px,
+    color-mix(in srgb, var(--pixel-ink) 40%, transparent) 4px
+  );
+}
+
+.iris-pixel-backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--pixel-wall);
+  transition: transform 500ms steps(5);
+}
+
+.iris-pixel-scene:hover .iris-pixel-backdrop {
+  transform: translate3d(-3px, -2px, 0) scale(1.012);
+}
+
+.iris-pixel-window {
+  position: absolute;
+  top: 10%;
+  right: 8%;
+  width: 46%;
+  height: 47%;
+  overflow: hidden;
+  border: 8px solid var(--pixel-frame);
+  background: var(--pixel-sky);
+  box-shadow: 7px 7px 0 color-mix(in srgb, var(--pixel-ink) 45%, transparent);
+}
+
+.iris-pixel-window::before {
+  position: absolute;
+  right: 9%;
+  bottom: 10%;
+  width: 22%;
+  height: 8%;
+  content: '';
+  background: var(--pixel-gold);
+  box-shadow: -58px -23px 0 color-mix(in srgb, var(--pixel-gold) 75%, var(--pixel-rose));
+  opacity: 0.72;
+}
+
+.iris-pixel-window-bar {
+  position: absolute;
+  z-index: 5;
+  background: var(--pixel-frame);
+}
+
+.iris-pixel-window-bar-x {
+  top: calc(50% - 3px);
+  left: 0;
+  width: 100%;
+  height: 6px;
+}
+
+.iris-pixel-window-bar-y {
+  top: 0;
+  left: calc(55% - 3px);
+  width: 6px;
+  height: 100%;
+}
+
+.iris-pixel-moon {
+  position: absolute;
+  z-index: 2;
+  top: 16%;
+  right: 17%;
+  width: 24px;
+  height: 24px;
+  background: var(--pixel-gold);
+  box-shadow: -7px 5px 0 var(--pixel-sky);
+}
+
+.iris-pixel-star {
+  position: absolute;
+  z-index: 3;
+  width: 4px;
+  height: 4px;
+  background: #f3dca7;
+  animation: iris-pixel-blink 2.8s steps(2, end) infinite;
+}
+
+.iris-pixel-star-one {
+  top: 17%;
+  right: 47%;
+}
+
+.iris-pixel-star-two {
+  top: 30%;
+  right: 27%;
+  animation-delay: -1.4s;
+}
+
+.iris-pixel-star-three {
+  top: 21%;
+  right: 12%;
+  animation-delay: -0.7s;
+}
+
+.iris-pixel-rain {
+  position: absolute;
+  top: -20%;
+  width: 2px;
+  height: 14px;
+  background: color-mix(in srgb, var(--pixel-blue) 72%, transparent);
+  animation: iris-pixel-rain 1.35s steps(5, end) infinite;
+}
+
+.iris-pixel-building {
+  position: absolute;
+  bottom: 0;
+  background: color-mix(in srgb, var(--pixel-sky) 55%, #0c0d1d);
+}
+
+.iris-pixel-building-one {
+  left: 0;
+  width: 26%;
+  height: 38%;
+}
+
+.iris-pixel-building-two {
+  left: 31%;
+  width: 19%;
+  height: 25%;
+}
+
+.iris-pixel-building-three {
+  right: 0;
+  width: 33%;
+  height: 34%;
+}
+
+.iris-pixel-shelf {
+  position: absolute;
+  top: 15%;
+  left: 7%;
+  width: 28%;
+  height: 13%;
+  border-bottom: 8px solid var(--pixel-wood);
+  box-shadow: 0 6px 0 color-mix(in srgb, var(--pixel-ink) 26%, transparent);
+}
+
+.iris-pixel-book,
+.iris-pixel-box {
+  position: absolute;
+  bottom: 8px;
+}
+
+.iris-pixel-book-one {
+  left: 8%;
+  width: 12px;
+  height: 29px;
+  background: var(--pixel-rose);
+}
+
+.iris-pixel-book-two {
+  left: 22%;
+  width: 15px;
+  height: 37px;
+  background: var(--pixel-blue);
+}
+
+.iris-pixel-book-three {
+  left: 39%;
+  width: 10px;
+  height: 24px;
+  background: var(--pixel-gold);
+}
+
+.iris-pixel-box {
+  right: 5%;
+  width: 35%;
+  height: 22px;
+  background: var(--pixel-frame);
+  box-shadow: inset 0 4px 0 color-mix(in srgb, var(--pixel-blue) 35%, transparent);
+}
+
+.iris-pixel-plant {
+  position: absolute;
+  top: 31%;
+  left: 12%;
+  width: 80px;
+  height: 90px;
+}
+
+.iris-pixel-leaf,
+.iris-pixel-pot {
+  position: absolute;
+}
+
+.iris-pixel-leaf {
+  width: 17px;
+  height: 34px;
+  background: var(--pixel-mint);
+}
+
+.iris-pixel-leaf-one {
+  bottom: 24px;
+  left: 31px;
+}
+
+.iris-pixel-leaf-two {
+  bottom: 20px;
+  left: 14px;
+  transform: rotate(-42deg);
+}
+
+.iris-pixel-leaf-three {
+  right: 13px;
+  bottom: 22px;
+  transform: rotate(43deg);
+}
+
+.iris-pixel-pot {
+  bottom: 0;
+  left: 22px;
+  width: 39px;
+  height: 27px;
+  background: var(--pixel-rose);
+  clip-path: polygon(0 0, 100% 0, 84% 100%, 16% 100%);
+}
+
+.iris-pixel-light-cone {
+  position: absolute;
+  z-index: 2;
+  left: 16%;
+  bottom: 19%;
+  width: 42%;
+  height: 52%;
+  opacity: 0.1;
+  background: var(--pixel-gold);
+  clip-path: polygon(8% 0, 25% 0, 100% 100%, 0 100%);
+}
+
+.iris-pixel-desk {
+  position: absolute;
+  z-index: 7;
+  right: 4%;
+  bottom: 11%;
+  width: 84%;
+  height: 18%;
+  background: var(--pixel-wood);
+  box-shadow: inset 0 9px 0 var(--pixel-wood-light), 0 8px 0 var(--pixel-ink);
+}
+
+.iris-pixel-desk-edge,
+.iris-pixel-desk-leg {
+  position: absolute;
+  background: color-mix(in srgb, var(--pixel-wood) 72%, var(--pixel-ink));
+}
+
+.iris-pixel-desk-edge {
+  right: 0;
+  bottom: 14%;
+  width: 100%;
+  height: 8px;
+}
+
+.iris-pixel-desk-leg {
+  top: 100%;
+  width: 10%;
+  height: 72%;
+}
+
+.iris-pixel-desk-leg-left {
+  left: 8%;
+}
+
+.iris-pixel-desk-leg-right {
+  right: 8%;
+}
+
+.iris-pixel-lamp {
+  position: absolute;
+  z-index: 9;
+  bottom: 28%;
+  left: 10%;
+  width: 26%;
+  height: 41%;
+}
+
+.iris-pixel-lamp-shade,
+.iris-pixel-lamp-neck,
+.iris-pixel-lamp-base {
+  position: absolute;
+}
+
+.iris-pixel-lamp-shade {
+  top: 0;
+  left: 0;
+  width: 47%;
+  height: 20%;
+  background: var(--pixel-gold);
+  clip-path: polygon(18% 0, 82% 0, 100% 100%, 0 100%);
+  box-shadow: 0 5px 0 var(--pixel-ink);
+}
+
+.iris-pixel-lamp-neck {
+  top: 17%;
+  left: 30%;
+  width: 7px;
+  height: 71%;
+  background: var(--pixel-frame);
+  transform: rotate(-19deg);
+  transform-origin: top;
+}
+
+.iris-pixel-lamp-base {
+  bottom: -1px;
+  left: 20%;
+  width: 48%;
+  height: 10px;
+  background: var(--pixel-frame);
+  box-shadow: 4px 4px 0 var(--pixel-ink);
+}
+
+.iris-pixel-monitor {
+  position: absolute;
+  z-index: 10;
+  right: 20%;
+  bottom: 28%;
+  width: 43%;
+  height: 45%;
+}
+
+.iris-pixel-screen {
+  position: absolute;
+  top: 0;
+  width: 100%;
+  height: 72%;
+  overflow: hidden;
+  border: 9px solid var(--pixel-ink);
+  background: #20223c;
+  box-shadow: 7px 7px 0 color-mix(in srgb, var(--pixel-ink) 48%, transparent);
+}
+
+.iris-pixel-screen::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 13px;
+  content: '';
+  background: #313455;
+}
+
+.iris-pixel-screen-dot {
+  position: absolute;
+  top: 5px;
+  z-index: 2;
+  width: 4px;
+  height: 4px;
+}
+
+.iris-pixel-screen-dot-one {
+  left: 7px;
+  background: var(--pixel-rose);
+}
+
+.iris-pixel-screen-dot-two {
+  left: 15px;
+  background: var(--pixel-gold);
+}
+
+.iris-pixel-screen-dot-three {
+  left: 23px;
+  background: var(--pixel-mint);
+}
+
+.iris-pixel-screen-rule {
+  position: absolute;
+  left: 14%;
+  height: 5px;
+  background: color-mix(in srgb, var(--primary) 74%, #ffffff);
+}
+
+.iris-pixel-screen-rule-one {
+  top: 29%;
+  width: 52%;
+}
+
+.iris-pixel-screen-rule-two {
+  top: 43%;
+  width: 68%;
+  background: var(--pixel-blue);
+}
+
+.iris-pixel-screen-rule-three {
+  top: 58%;
+  width: 43%;
+  background: var(--pixel-rose);
+}
+
+.iris-pixel-screen-check {
+  position: absolute;
+  right: 13%;
+  bottom: 14%;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  color: var(--pixel-ink);
+  background: var(--pixel-gold);
+  font-family: monospace;
+  font-size: 17px;
+  font-weight: 900;
+  line-height: 1;
+  animation: iris-pixel-screen 5.6s steps(2, end) infinite;
+}
+
+.iris-pixel-screen-cursor {
+  position: absolute;
+  bottom: 15%;
+  left: 14%;
+  width: 6px;
+  height: 16px;
+  background: var(--pixel-gold);
+  animation: iris-pixel-blink 1.1s steps(1, end) infinite;
+}
+
+.iris-pixel-monitor-light {
+  position: absolute;
+  top: 64%;
+  right: 7%;
+  width: 5px;
+  height: 5px;
+  background: var(--pixel-mint);
+}
+
+.iris-pixel-monitor-neck {
+  position: absolute;
+  bottom: 9%;
+  left: 46%;
+  width: 11%;
+  height: 20%;
+  background: var(--pixel-frame);
+}
+
+.iris-pixel-monitor-base {
+  position: absolute;
+  right: 28%;
+  bottom: 4%;
+  width: 46%;
+  height: 7%;
+  background: var(--pixel-frame);
+  box-shadow: 4px 4px 0 var(--pixel-ink);
+}
+
+.iris-pixel-pages {
+  position: absolute;
+  z-index: 11;
+  right: 5%;
+  bottom: 30%;
+  width: 23%;
+  height: 11%;
+}
+
+.iris-pixel-page {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 68%;
+  background: #e8d9c3;
+}
+
+.iris-pixel-page-one {
+  transform: rotate(3deg);
+}
+
+.iris-pixel-page-two {
+  right: 6%;
+  bottom: 25%;
+  transform: rotate(-4deg);
+  background: #f3e5cf;
+}
+
+.iris-pixel-page-line {
+  position: absolute;
+  z-index: 2;
+  right: 15%;
+  width: 48%;
+  height: 3px;
+  background: #9d7e82;
+}
+
+.iris-pixel-page-line-one {
+  bottom: 56%;
+}
+
+.iris-pixel-page-line-two {
+  bottom: 41%;
+  width: 34%;
+}
+
+.iris-pixel-floating-page {
+  position: absolute;
+  z-index: 6;
+  top: 39%;
+  right: 8%;
+  width: 28px;
+  height: 37px;
+  border: 4px solid color-mix(in srgb, #eadcc8 82%, var(--pixel-blue));
+  background: #eadcc8;
+  box-shadow: inset 0 7px 0 var(--pixel-rose), 5px 5px 0 color-mix(in srgb, var(--pixel-ink) 25%, transparent);
+  animation: iris-pixel-float 5s steps(8, end) infinite;
+}
+
+.iris-pixel-cup {
+  position: absolute;
+  z-index: 12;
+  bottom: 29%;
+  left: 36%;
+  width: 34px;
+  height: 32px;
+  border-right: 7px solid var(--pixel-gold);
+  border-bottom: 7px solid var(--pixel-gold);
+  border-left: 7px solid var(--pixel-gold);
+  background: var(--pixel-wall-dark);
+  box-shadow: 8px 6px 0 var(--pixel-ink);
+}
+
+.iris-pixel-steam {
+  position: absolute;
+  z-index: 13;
+  bottom: 38%;
+  width: 4px;
+  height: 13px;
+  background: color-mix(in srgb, var(--foreground) 60%, transparent);
+  animation: iris-pixel-steam 2.6s steps(5, end) infinite;
+}
+
+.iris-pixel-steam-one {
+  left: 39%;
+}
+
+.iris-pixel-steam-two {
+  left: 42%;
+  animation-delay: -1.3s;
+}
+
+.iris-pixel-foreground {
+  position: absolute;
+  z-index: 15;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 10%;
+  background: var(--pixel-ink);
+}
+
 .iris-dialog-content[data-state='open'] {
   animation: iris-dialog-fade-in 150ms ease-out;
 }
@@ -51,6 +700,13 @@
   .iris-dialog-content[data-state='open'],
   .iris-dialog-content[data-state='closed'] {
     animation: none;
+  }
+
+  .iris-pixel-scene *,
+  .iris-pixel-scene:hover .iris-pixel-backdrop {
+    animation: none !important;
+    transition: none !important;
+    transform: none;
   }
 }
 
@@ -643,21 +1299,57 @@
  * ────────────────────────────────────────────────────────────────── */
 .crepe-host .milkdown .milkdown-code-block {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 4px;
   margin: 0.85em 0;
-  overflow: hidden;
+  overflow: visible;
+  padding: 4px 12px 8px;
 }
-/* Gutter color now lives in the shared rosePineCodeMirror extension
-   (codemirror-theme.ts), which both this block and source mode load — so
-   the old per-block .cm-gutters rule here was redundant and is gone. */
-/* Language picker + copy/hide buttons: frame theme hides them at opacity:0
-   until hover. Keep the language label gently visible (it is the block's
-   only affordance label), still lifting to full on hover. */
-.crepe-host .milkdown .milkdown-code-block .language-button {
-  opacity: 0.65;
+.crepe-host .milkdown .milkdown-code-block .cm-gutters {
+  display: none;
 }
-.crepe-host .milkdown .milkdown-code-block:hover .language-button {
+.crepe-host .milkdown .milkdown-code-block .cm-editor:not(.cm-focused) .cm-activeLine {
+  background: transparent;
+}
+.crepe-host .milkdown .milkdown-code-block .tools .language-button {
   opacity: 1;
+  color: var(--rp-muted);
+  padding: 2px 0 2px 6px;
+  gap: 0;
+  background: transparent;
+  border-radius: 0;
+  font-weight: 600;
+}
+.crepe-host .milkdown .milkdown-code-block:hover .tools .language-button {
+  color: var(--rp-text);
+}
+.crepe-host .milkdown .milkdown-code-block .tools .language-button:hover {
+  background: transparent;
+}
+.crepe-host .milkdown .milkdown-code-block .tools .language-button .expand-icon {
+  display: none;
+}
+.crepe-host .milkdown .milkdown-code-block .list-wrapper {
+  border-radius: 6px;
+}
+.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .copy-button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  opacity: 1;
+  gap: 0;
+  color: var(--rp-muted);
+  background: transparent;
+  border-radius: 0;
+  font-size: 0;
+}
+.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .copy-button:hover {
+  background: transparent;
+}
+.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .copy-button svg {
+  fill: var(--rp-muted);
+}
+.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .copy-button:hover svg {
+  fill: var(--rp-text);
 }
 
 /* ──────────────────────────────────────────────────────────────────

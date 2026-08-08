@@ -6,9 +6,11 @@
  */
 import type { InstructionDefinition } from 'front-cpu';
 import { CHANNELS } from '@shared/protocol';
-import type { IrisScanResult } from '@shared/types';
+import type { ProjectOpenResult } from '@shared/types';
 import { projectStore } from '@renderer/stores/project-store';
-import { hydrateSessions } from '@renderer/stores/session-store';
+import { sessionStore } from '@renderer/stores/session-store';
+import { sameProjectScope } from '@renderer/stores/project-scope-state';
+import { projectScopeRead, projectScopeWrite } from './project-resources';
 
 export const projectISA: Record<string, InstructionDefinition> = {
   'project.open': {
@@ -16,20 +18,30 @@ export const projectISA: Record<string, InstructionDefinition> = {
       description: 'Open a project folder, start watching .iris/, persist lastRoot',
       category: 'system',
       // One project at a time: opens serialize on the singleton resource.
-      resourceIdentifier: () => ['project'],
-      schedulingStrategy: 'serial',
+      resourceIdentifier: () => [projectScopeWrite(), 'settings:projects'],
+      schedulingStrategy: 'read-write',
       priority: 5,
-      timeout: 15000,
     },
     executor: 'ipc',
-    config: { channel: CHANNELS.PROJECT_OPEN },
-    commit: async (result: IrisScanResult) => {
+    config: { channel: CHANNELS.PROJECT_OPEN, projectScoped: true },
+    commit: async (result: ProjectOpenResult) => {
+      const idempotent = sameProjectScope(projectStore.get().scope, result.scope);
       projectStore.handleOpened(result);
-      // Re-sync the session projection from main (the reset path the old
-      // sessionStore.reset comment promised but never wired). Single-project
-      // for now, so a full snapshot replace is exactly right.
-      await hydrateSessions();
+      if (!idempotent) sessionStore.reset(result.sessions, result.scope);
     },
+  },
+
+  'window.open-project': {
+    meta: {
+      description: 'Create a new project window and bind its requested root',
+      category: 'system',
+      resourceIdentifier: () => ['window-registry', 'settings:projects'],
+      schedulingStrategy: 'serial',
+      priority: 5,
+      timeout: 10000,
+    },
+    executor: 'ipc',
+    config: { channel: CHANNELS.WINDOW_OPEN_PROJECT },
   },
 
   'project.recent-remove': {
@@ -48,15 +60,15 @@ export const projectISA: Record<string, InstructionDefinition> = {
   'project.init': {
     meta: {
       description:
-        'Idempotent protocol scaffold: typed folders + constitution + AGENTS.md guidance',
+        'Idempotent protocol scaffold: typed folders + AGENTS.md software guidance',
       category: 'system',
-      resourceIdentifier: () => ['project'],
-      schedulingStrategy: 'serial',
+      resourceIdentifier: () => [projectScopeRead(), 'project:structure'],
+      schedulingStrategy: 'read-write',
       priority: 5,
       timeout: 10000,
     },
     executor: 'ipc',
-    config: { channel: CHANNELS.PROJECT_INIT },
+    config: { channel: CHANNELS.PROJECT_INIT, projectScoped: true },
     commit: async () => {
       // The watcher may not have been armed on a missing .iris/ — refresh
       // the projection explicitly rather than trusting the fs event.
@@ -68,28 +80,18 @@ export const projectISA: Record<string, InstructionDefinition> = {
     meta: {
       description: 'Create a sub-workspace (standard four folders / empty) — human gesture only',
       category: 'system',
-      resourceIdentifier: (p: { parentPath: string }) => [`docdir:${p.parentPath}`],
-      schedulingStrategy: 'serial',
+      resourceIdentifier: (p: { parentPath: string }) => [
+        projectScopeRead(),
+        `docdir:${p.parentPath}`,
+      ],
+      schedulingStrategy: 'read-write',
       priority: 5,
       timeout: 10000,
     },
     executor: 'ipc',
-    config: { channel: CHANNELS.WORKSPACE_CREATE },
+    config: { channel: CHANNELS.WORKSPACE_CREATE, projectScoped: true },
     commit: async () => {
       await projectStore.rescan();
     },
-  },
-
-  'machine.install-conventions': {
-    meta: {
-      description: 'Write the machine-layer constitution template to ~/.iris/ (never overwrite)',
-      category: 'system',
-      resourceIdentifier: () => ['machine-conventions'],
-      schedulingStrategy: 'serial',
-      priority: 5,
-      timeout: 5000,
-    },
-    executor: 'ipc',
-    config: { channel: CHANNELS.MACHINE_INSTALL_CONVENTIONS },
   },
 };

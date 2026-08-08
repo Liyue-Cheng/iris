@@ -1,11 +1,9 @@
 /**
- * Right-click menu for a document row — the core gesture's canonical entry
- * (软件定义书 §4: 选中文档 → 右键 → 用 X 打开). One agent entry per
- * settings.agents, plus reveal-in-explorer. Wrap any row-like trigger;
- * every doc surface (lens tree, collection views, raw tree) shares this.
+ * Shared file operations for document rows across the lens tree, collection
+ * views, and raw tree. Session creation lives in the selected document's
+ * right pane instead of this context menu.
  */
 import type { ReactNode } from 'react';
-import { CHANNELS } from '@shared/protocol';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -14,10 +12,10 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@renderer/components/ui/context-menu';
-import { useSettings } from '@renderer/stores/settings-store';
 import { editorStore } from '@renderer/stores/editor-store';
-import { openSession } from '@renderer/lib/session-actions';
+import { writeClipboardText } from '@renderer/lib/clipboard';
 import { openDeleteDialog } from '@renderer/components/doc/DeleteDocDialog';
+import { pipeline } from '@renderer/cpu';
 
 export function DocContextMenu({
   docPath,
@@ -29,25 +27,32 @@ export function DocContextMenu({
   docName: string;
   children: ReactNode;
 }): JSX.Element {
-  const settings = useSettings();
-  const agents = settings?.agents ?? [];
-
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuLabel className="max-w-56 truncate">{docName}</ContextMenuLabel>
-        {agents.map((a) => (
-          <ContextMenuItem key={a.id} onClick={() => void openSession(docPath, a.id)}>
-            用 {a.label} 打开
-          </ContextMenuItem>
-        ))}
-        <ContextMenuSeparator />
+        <ContextMenuItem onClick={() => void writeClipboardText(docPath)}>
+          复制路径
+        </ContextMenuItem>
         <ContextMenuItem
           onClick={() =>
             void editorStore
-              .flushBeforeSwitch()
-              .then(() => window.api.invoke(CHANNELS.SHELL_REVEAL, { path: docPath }))
+              .flushBeforeSwitch('before-external-action')
+              .then((ready) =>
+                ready ? pipeline.dispatch('shell.open-project-item', { path: docPath }) : undefined,
+              )
+          }
+        >
+          用默认程序打开
+        </ContextMenuItem>
+        <ContextMenuItem
+          onClick={() =>
+            void editorStore
+              .flushBeforeSwitch('before-external-action')
+              .then((ready) =>
+                ready ? pipeline.dispatch('shell.reveal-project-item', { path: docPath }) : undefined,
+              )
           }
         >
           在资源管理器中显示

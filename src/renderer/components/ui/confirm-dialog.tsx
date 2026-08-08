@@ -80,6 +80,85 @@ function useCurrent(): ConfirmRequest | null {
   );
 }
 
+// ── Alert dialog (single "OK" button, for errors / notices) ─────────────
+
+interface AlertRequest {
+  title: string;
+  message: string;
+  buttonText: string;
+  tone: 'default' | 'destructive';
+  resolve: () => void;
+}
+
+let alertCurrent: AlertRequest | null = null;
+const alertSubs = new Set<() => void>();
+function alertEmit(): void { alertSubs.forEach((cb) => cb()); }
+
+export interface AlertOptions {
+  title: string;
+  message: string;
+  buttonText?: string;
+  tone?: 'default' | 'destructive';
+}
+
+export function alertDialog(opts: AlertOptions): Promise<void> {
+  if (alertCurrent) {
+    const prev = alertCurrent;
+    alertCurrent = null;
+    prev.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    alertCurrent = {
+      title: opts.title,
+      message: opts.message,
+      buttonText: opts.buttonText ?? '确定',
+      tone: opts.tone ?? 'destructive',
+      resolve,
+    };
+    alertEmit();
+  });
+}
+
+function useAlertCurrent(): AlertRequest | null {
+  return useSyncExternalStore(
+    (cb) => { alertSubs.add(cb); return () => { alertSubs.delete(cb); }; },
+    () => alertCurrent,
+  );
+}
+
+export function AlertDialog(): JSX.Element | null {
+  const req = useAlertCurrent();
+  if (!req) return null;
+
+  const settle = (): void => {
+    const resolve = req.resolve;
+    alertCurrent = null;
+    alertEmit();
+    resolve();
+  };
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && settle()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{req.title}</DialogTitle>
+        </DialogHeader>
+        <p className="max-h-[50vh] overflow-y-auto whitespace-pre-wrap break-words text-sm text-muted-foreground">
+          {req.message}
+        </p>
+        <DialogFooter>
+          <Button
+            variant={req.tone === 'destructive' ? 'destructive' : 'default'}
+            onClick={() => settle()}
+          >
+            {req.buttonText}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function ConfirmDialog(): JSX.Element | null {
   const req = useCurrent();
   if (!req) return null;

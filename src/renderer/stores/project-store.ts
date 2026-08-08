@@ -11,12 +11,14 @@ import type {
   DocType,
   FsIrisChangedEvent,
   IrisScanResult,
+  ProjectOpenResult,
+  ProjectScope,
   RawTreeNode,
 } from '@shared/types';
 import { CHANNELS } from '@shared/protocol';
 import { editorStore } from './editor-store';
 import { sessionStore } from './session-store';
-import { stylesStore } from './styles-store';
+import { projectScopeState, sameProjectScope } from './project-scope-state';
 
 export type ProjectPhase = 'idle' | 'opening' | 'ready' | 'error';
 
@@ -36,6 +38,7 @@ export interface ProjectState {
   phase: ProjectPhase;
   /** Human-readable open failure (lastRoot vanished, not a directory…). */
   error: string | null;
+  scope: ProjectScope | null;
   scan: IrisScanResult | null;
   rawMode: boolean;
   rawTree: RawTreeNode | null;
@@ -48,6 +51,7 @@ export interface ProjectState {
 let state: ProjectState = {
   phase: 'idle',
   error: null,
+  scope: null,
   scan: null,
   rawMode: false,
   rawTree: null,
@@ -69,13 +73,11 @@ function setState(patch: Partial<ProjectState>): void {
 let scanInFlight = false;
 let scanDirty = false;
 
-/** Persist the current editor's pending edits without blocking a view switch
- *  (P3). save() composes the current session's bytes synchronously before its
- *  first await, so calling this immediately before replacing the session
- *  captures the OLD doc; its post-write re-baseline is path-guarded and won't
- *  touch the new session. A clean session makes save() a no-op. */
-function flushInBackground(): void {
-  void editorStore.flushBeforeSwitch();
+/** A view change may discard the only mounted draft, so it waits for the
+ * unified save decision. Conflict-policy "ask" and write failures keep the
+ * current view in place. */
+async function canLeaveEditor(): Promise<boolean> {
+  return editorStore.flushBeforeSwitch('view-switch');
 }
 
 export const projectStore = {
@@ -84,31 +86,68 @@ export const projectStore = {
   },
 
   markOpening(): void {
+    projectScopeState.setSwitching(true);
     setState({ phase: 'opening', error: null });
   },
 
   /** Commit hook of project.open. */
-  handleOpened(scan: IrisScanResult): void {
+  handleOpened(result: ProjectOpenResult): void {
+    const { scan, scope } = result;
+    const idempotent = sameProjectScope(scope, state.scope);
+    if (idempotent) {
+      projectScopeState.set(scope);
+      projectScopeState.setSwitching(false);
+      setState({ phase: 'ready', error: null, scope, scan });
+      return;
+    }
     editorStore.closeSession();
+    projectScopeState.set(scope);
+    projectScopeState.setSwitching(false);
     setState({
       phase: 'ready',
       error: null,
+      scope,
       scan,
       rawTree: null,
       selectedPath: null,
       docError: null,
     });
     if (state.rawMode) void this.refreshRawTree();
-    void stylesStore.refresh();
   },
 
   handleOpenFailed(message: string): void {
-    setState({ phase: 'error', error: message });
+    projectScopeState.setSwitching(false);
+    setState({ phase: state.scan ? 'ready' : 'error', error: message });
+  },
+
+  /** Renderer reload: main already owns the project, so hydrate by query
+   *  instead of replaying the external project.open verb. */
+  async restoreActive(scope: ProjectScope): Promise<void> {
+    projectScopeState.set(scope);
+    setState({ phase: 'opening', error: null, scope });
+    try {
+      const scan = await window.api.invoke<
+        { expectedScope: ProjectScope },
+        IrisScanResult
+      >(CHANNELS.PROJECT_SCAN, { expectedScope: scope });
+      if (!sameProjectScope(scope, projectScopeState.get())) return;
+      this.handleOpened({ scope, scan, sessions: [] });
+    } catch (err) {
+      this.handleOpenFailed(err instanceof Error ? err.message : String(err));
+    }
   },
 
   /** ISR entry: a batch of .iris/ changes landed — re-project. */
   async refreshFromFs(event: FsIrisChangedEvent): Promise<void> {
     if (state.phase !== 'ready') return;
+    const scope = state.scope;
+    if (
+      !scope ||
+      event.projectRoot !== scope.root ||
+      event.projectGeneration !== scope.generation
+    ) {
+      return;
+    }
     if (scanInFlight) {
       scanDirty = true;
       return;
@@ -117,7 +156,11 @@ export const projectStore = {
     try {
       do {
         scanDirty = false;
-        const scan = await window.api.invoke<undefined, IrisScanResult>(CHANNELS.PROJECT_SCAN);
+        const scan = await window.api.invoke<
+          { expectedScope: ProjectScope },
+          IrisScanResult
+        >(CHANNELS.PROJECT_SCAN, { expectedScope: scope });
+        if (!sameProjectScope(scope, projectScopeState.get())) return;
         setState({ scan });
         if (state.rawMode) await this.refreshRawTree();
       } while (scanDirty);
@@ -138,22 +181,22 @@ export const projectStore = {
   },
 
   /** Open a type-level collection view (issue panel etc.). */
-  openCollection(type: DocType, workspacePath: string | null): void {
-    flushInBackground();
+  async openCollection(type: DocType, workspacePath: string | null): Promise<void> {
+    if (!(await canLeaveEditor())) return;
     setState({ view: { kind: 'collection', type, workspacePath } });
   },
 
   /** Open the todo panel (unchecked tasks across active issues). */
-  openTodos(workspacePath: string | null): void {
-    flushInBackground();
+  async openTodos(workspacePath: string | null): Promise<void> {
+    if (!(await canLeaveEditor())) return;
     setState({ view: { kind: 'todos', workspacePath } });
   },
 
   /** The special root node (E-4): middle shows the project README (or a
    *  placeholder), right shows the project-root sessions (terminal-only view,
    *  so focus goes to the terminal). */
-  selectRoot(): void {
-    flushInBackground();
+  async selectRoot(): Promise<void> {
+    if (!(await canLeaveEditor())) return;
     editorStore.closeSession();
     setState({ selectedPath: null, view: { kind: 'root' }, docError: null });
     sessionStore.syncToRoot();
@@ -162,8 +205,8 @@ export const projectStore = {
   /** A sub-workspace hub (terminal parity with the root node): like
    *  selectRoot, the middle pane yields to a full-width terminal and the
    *  right pane stages this workspace's hub sessions. */
-  selectWorkspace(path: string): void {
-    flushInBackground();
+  async selectWorkspace(path: string): Promise<void> {
+    if (!(await canLeaveEditor())) return;
     editorStore.closeSession();
     setState({ selectedPath: null, view: { kind: 'workspace', path }, docError: null });
     sessionStore.syncToWorkspace(path);
@@ -172,8 +215,14 @@ export const projectStore = {
   /** Explicit re-projection (used by init/workspace commits). */
   async rescan(): Promise<void> {
     if (state.phase !== 'ready') return;
+    const scope = state.scope;
+    if (!scope) return;
     try {
-      const scan = await window.api.invoke<undefined, IrisScanResult>(CHANNELS.PROJECT_SCAN);
+      const scan = await window.api.invoke<
+        { expectedScope: ProjectScope },
+        IrisScanResult
+      >(CHANNELS.PROJECT_SCAN, { expectedScope: scope });
+      if (!sameProjectScope(scope, projectScopeState.get())) return;
       setState({ scan });
       if (state.rawMode) await this.refreshRawTree();
     } catch (err) {
@@ -193,24 +242,23 @@ export const projectStore = {
     if (state.view.kind === 'doc' && state.selectedPath === path && state.docError === null) {
       return;
     }
-    // P3: don't block the switch on a disk round-trip. The previous doc's
-    // pending edits flush in the background — doc.save is serial per doc:path
-    // and the editor's echo-dedup (disk === lastWritten) absorbs our own write,
-    // so the UI/focus swap happens at once instead of after the save IPC.
-    flushInBackground();
+    if (!(await canLeaveEditor())) return;
     setState({ selectedPath: path, docLoading: true, docError: null, view: { kind: 'doc' } });
     sessionStore.syncToDoc(path);
+    const scope = state.scope;
+    if (!scope) return;
     try {
-      const content = await window.api.invoke<{ path: string }, DocContent>(CHANNELS.DOC_READ, {
-        path,
-      });
+      const content = await window.api.invoke<
+        { path: string; expectedScope: ProjectScope },
+        DocContent
+      >(CHANNELS.DOC_READ, { path, expectedScope: scope });
       // Ignore stale responses after a quick re-selection.
-      if (state.selectedPath === path) {
+      if (state.selectedPath === path && sameProjectScope(scope, state.scope)) {
         editorStore.openSession(content);
         setState({ docLoading: false });
       }
     } catch (err) {
-      if (state.selectedPath === path) {
+      if (state.selectedPath === path && sameProjectScope(scope, state.scope)) {
         editorStore.closeSession();
         setState({
           docLoading: false,
@@ -229,10 +277,17 @@ export const projectStore = {
   },
 
   async refreshRawTree(): Promise<void> {
+    const scope = state.scope;
+    if (!scope) return;
     try {
-      const rawTree = await window.api.invoke<undefined, RawTreeNode | null>(
+      const rawTree = await window.api.invoke<
+        { expectedScope: ProjectScope },
+        RawTreeNode | null
+      >(
         CHANNELS.PROJECT_RAW_TREE,
+        { expectedScope: scope },
       );
+      if (!sameProjectScope(scope, projectScopeState.get())) return;
       setState({ rawTree });
     } catch (err) {
       console.warn('[project-store] raw tree failed', err);

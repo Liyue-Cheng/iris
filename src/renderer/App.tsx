@@ -3,28 +3,41 @@ import { TitleBar } from '@renderer/components/layout/TitleBar';
 import { ThreePane } from '@renderer/components/layout/ThreePane';
 import { CreateDocDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DeleteDocDialog } from '@renderer/components/doc/DeleteDocDialog';
-import { ConfirmDialog } from '@renderer/components/ui/confirm-dialog';
+import { AlertDialog, ConfirmDialog } from '@renderer/components/ui/confirm-dialog';
 import { SettingsView, useSettingsViewOpen } from '@renderer/components/settings/SettingsView';
 import { WelcomeView } from '@renderer/components/project/WelcomeView';
 import { useProject } from '@renderer/stores/project-store';
+import { Loader2 } from 'lucide-react';
 
 export function App(): JSX.Element {
   // Settings is a view, not a modal (Marina CP-4 decision): it replaces the
   // three-pane body; TitleBar stays for the drag region and window controls.
   const settingsOpen = useSettingsViewOpen();
-  const { scan } = useProject();
+  const { phase, scan } = useProject();
 
   return (
-    <TooltipProvider delayDuration={400}>
+    <TooltipProvider delayDuration={400} skipDelayDuration={0} disableHoverableContent>
       <div className="flex h-full flex-col">
         <TitleBar />
         <div className="min-h-0 flex-1">
-          {settingsOpen ? <SettingsView /> : scan ? <ThreePane /> : <WelcomeView />}
+          {settingsOpen ? (
+            <SettingsView />
+          ) : phase === 'opening' ? (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              正在切换项目…
+            </div>
+          ) : scan ? (
+            <ThreePane />
+          ) : (
+            <WelcomeView />
+          )}
         </div>
       </div>
       <CreateDocDialog />
       <DeleteDocDialog />
       <ConfirmDialog />
+      <AlertDialog />
     </TooltipProvider>
   );
 }

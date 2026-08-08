@@ -8,25 +8,26 @@
  * - No optimistic config (local disk has no latency to hide) and no cancel
  *   tags: front-cpu cancellation is cooperative — a "cancelled" write may
  *   still hit the disk, which is dirty semantics. We simply never cancel.
- * - The renderer composes the EXACT bytes (editor is the source of truth,
- *   updated before dispatch) — that's what makes the echo-dedup state
- *   compare race-free.
+ * - Saves carry the renderer's exact baseline for a main-process
+ *   compare-and-swap. `expectedContent: null` is reserved for an explicit
+ *   overwrite decision.
  */
 import type { InstructionDefinition } from 'front-cpu';
 import { CHANNELS } from '@shared/protocol';
+import { projectScopeRead } from './project-resources';
 
 export const docISA: Record<string, InstructionDefinition> = {
   'doc.save': {
     meta: {
-      description: 'Write a document verbatim (atomic tmp+rename in main)',
+      description: 'Compare-and-swap a document (atomic tmp+rename in main)',
       category: 'task',
-      resourceIdentifier: (p: { path: string }) => [`doc:${p.path}`],
-      schedulingStrategy: 'serial',
+      resourceIdentifier: (p: { path: string }) => [projectScopeRead(), `doc:${p.path}`],
+      schedulingStrategy: 'read-write',
       priority: 5,
       timeout: 10000,
     },
     executor: 'ipc',
-    config: { channel: CHANNELS.DOC_WRITE },
+    config: { channel: CHANNELS.DOC_WRITE, projectScoped: true },
   },
 
   'doc.delete': {
@@ -35,13 +36,13 @@ export const docISA: Record<string, InstructionDefinition> = {
       category: 'task',
       // Same resource as doc.save: a queued save of this doc must not race
       // the unlink.
-      resourceIdentifier: (p: { path: string }) => [`doc:${p.path}`],
-      schedulingStrategy: 'serial',
+      resourceIdentifier: (p: { path: string }) => [projectScopeRead(), `doc:${p.path}`],
+      schedulingStrategy: 'read-write',
       priority: 5,
       timeout: 10000,
     },
     executor: 'ipc',
-    config: { channel: CHANNELS.DOC_DELETE },
+    config: { channel: CHANNELS.DOC_DELETE, projectScoped: true },
   },
 
   'doc.create': {
@@ -50,13 +51,14 @@ export const docISA: Record<string, InstructionDefinition> = {
       category: 'task',
       // Serialize per target folder so two quick creates probe names in order.
       resourceIdentifier: (p: { workspacePath: string; type: string }) => [
+        projectScopeRead(),
         `docdir:${p.workspacePath}/${p.type}`,
       ],
-      schedulingStrategy: 'serial',
+      schedulingStrategy: 'read-write',
       priority: 5,
       timeout: 10000,
     },
     executor: 'ipc',
-    config: { channel: CHANNELS.DOC_CREATE },
+    config: { channel: CHANNELS.DOC_CREATE, projectScoped: true },
   },
 };

@@ -11,6 +11,7 @@ import type { InstructionDefinition } from 'front-cpu';
 import { CHANNELS } from '@shared/protocol';
 import type { SessionInfo } from '@shared/types';
 import { sessionStore } from '@renderer/stores/session-store';
+import { projectScopeRead } from './project-resources';
 
 export const sessionISA: Record<string, InstructionDefinition> = {
   'session.open': {
@@ -18,12 +19,13 @@ export const sessionISA: Record<string, InstructionDefinition> = {
       description: 'Spawn an agent session (PTY at project root, FOCUS_DOC injected, bare launch)',
       category: 'system',
       // Spawns don't conflict with each other or anything else.
-      resourceIdentifier: () => [],
+      resourceIdentifier: () => [projectScopeRead()],
+      schedulingStrategy: 'read-write',
       priority: 5,
       timeout: 15000,
     },
     executor: 'ipc',
-    config: { channel: CHANNELS.SESSION_OPEN },
+    config: { channel: CHANNELS.SESSION_OPEN, projectScoped: true },
     commit: async (result: SessionInfo) => {
       sessionStore.handleCreated(result);
     },
@@ -33,13 +35,16 @@ export const sessionISA: Record<string, InstructionDefinition> = {
     meta: {
       description: 'Re-anchor a live session to another doc / the project root',
       category: 'system',
-      resourceIdentifier: (p: { sessionId: string }) => [`session:${p.sessionId}`],
-      schedulingStrategy: 'serial',
+      resourceIdentifier: (p: { sessionId: string }) => [
+        projectScopeRead(),
+        `session:${p.sessionId}`,
+      ],
+      schedulingStrategy: 'read-write',
       priority: 5,
       timeout: 5000,
     },
     executor: 'ipc',
-    config: { channel: CHANNELS.SESSION_REANCHOR },
+    config: { channel: CHANNELS.SESSION_REANCHOR, projectScoped: true },
     commit: async (result: SessionInfo) => {
       // The state-changed broadcast carries the same patch; applying the
       // authoritative result here just removes the visible lag.
@@ -51,13 +56,16 @@ export const sessionISA: Record<string, InstructionDefinition> = {
     meta: {
       description: 'Close and destroy a session (scrollback is discarded)',
       category: 'system',
-      resourceIdentifier: (p: { sessionId: string }) => [`session:${p.sessionId}`],
-      schedulingStrategy: 'serial',
+      resourceIdentifier: (p: { sessionId: string }) => [
+        projectScopeRead(),
+        `session:${p.sessionId}`,
+      ],
+      schedulingStrategy: 'read-write',
       priority: 5,
       timeout: 5000,
     },
     executor: 'ipc',
-    config: { channel: CHANNELS.SESSION_CLOSE },
+    config: { channel: CHANNELS.SESSION_CLOSE, projectScoped: true },
     commit: async (_result: unknown, payload: { sessionId: string }) => {
       sessionStore.handleDestroyed(payload.sessionId);
     },

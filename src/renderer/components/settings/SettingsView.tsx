@@ -27,46 +27,29 @@ import {
   ScrollText,
   SquareTerminal,
   Sun,
-  SwatchBook,
   Trash2,
   Wrench,
   X,
 } from 'lucide-react';
 import type {
   AgentConfig,
-  ConstitutionStateUi,
   ContextPreview,
   DeepPartial,
   HookCliInfo,
   InjectionState,
+  ProjectPromptStateUi,
   Settings,
   SoftwareBlockStateUi,
   SoftwarePromptState,
   ThemeId,
 } from '@shared/types';
-import { CHANNELS } from '@shared/protocol';
-import {
-  BADGE_TEMPLATES,
-  DEFAULT_TEMPLATE_ID,
-  ISSUE_STATUSES,
-  REPORT_STATUSES,
-  templateById,
-} from '@shared/style-maps';
+import { CHANNELS, EVENTS } from '@shared/protocol';
 import { pipeline } from '@renderer/cpu';
 import { useSettings } from '@renderer/stores/settings-store';
-import { useStyleMaps } from '@renderer/stores/styles-store';
-import { useProject } from '@renderer/stores/project-store';
+import { projectStore, useProject } from '@renderer/stores/project-store';
 import { editorStore } from '@renderer/stores/editor-store';
-import { Badge } from '@renderer/components/ui/badge';
-import { collectAllLabels } from '@renderer/lib/label-utils';
 import { Button } from '@renderer/components/ui/button';
 import { Input } from '@renderer/components/ui/input';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@renderer/components/ui/dropdown-menu';
 import { cn } from '@renderer/lib/utils';
 
 // ──────────────────────────────────────────────────────────────────
@@ -77,10 +60,13 @@ let open = false;
 const subs = new Set<() => void>();
 
 export function openSettingsView(): void {
-  // B4: opening settings unmounts the editor — flush pending edits first.
-  void editorStore.flushBeforeSwitch();
-  open = true;
-  subs.forEach((cb) => cb());
+  // Opening settings unmounts the editor. A conflict or write failure keeps
+  // the current document visible so its draft can be resolved.
+  void editorStore.flushBeforeSwitch('view-switch').then((ready) => {
+    if (!ready) return;
+    open = true;
+    subs.forEach((cb) => cb());
+  });
 }
 
 export function closeSettingsView(): void {
@@ -106,7 +92,6 @@ export function useSettingsViewOpen(): boolean {
 
 type CategoryId =
   | 'appearance'
-  | 'styles'
   | 'terminal'
   | 'agents'
   | 'prompts'
@@ -115,7 +100,6 @@ type CategoryId =
 
 const CATEGORIES: Array<{ id: CategoryId; icon: typeof Palette; label: string }> = [
   { id: 'appearance', icon: Palette, label: '外观' },
-  { id: 'styles', icon: SwatchBook, label: '样式' },
   { id: 'terminal', icon: SquareTerminal, label: '终端' },
   { id: 'agents', icon: Bot, label: 'Agents' },
   { id: 'prompts', icon: ScrollText, label: '软件提示词' },
@@ -173,26 +157,26 @@ export function SettingsView(): JSX.Element {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <nav className="w-44 shrink-0 space-y-0.5 overflow-y-auto border-r border-subtle p-2" aria-label="设置分类">
+        <nav className="w-48 shrink-0 space-y-1 overflow-y-auto border-r border-subtle p-3" aria-label="设置分类">
           {CATEGORIES.map((c) => (
             <button
               key={c.id}
               type="button"
               onClick={() => setActive(c.id)}
               className={cn(
-                'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px]',
+                'flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[13px] transition-colors',
                 active === c.id
-                  ? 'bg-accent text-accent-foreground'
+                  ? 'bg-accent font-medium text-accent-foreground'
                   : 'text-muted-foreground hover:bg-muted hover:text-foreground',
               )}
             >
-              <c.icon className="h-3.5 w-3.5" />
+              <c.icon className="h-4 w-4 shrink-0" />
               {c.label}
             </button>
           ))}
         </nav>
 
-        <main className="min-w-0 flex-1 overflow-y-auto px-6 py-5">
+        <main className="min-w-0 flex-1 overflow-y-auto px-8 py-6">
           <div className="max-w-2xl">
             <CategoryPanel categoryId={active} setError={setErrorMsg} />
           </div>
@@ -212,8 +196,6 @@ function CategoryPanel({
   switch (categoryId) {
     case 'appearance':
       return <AppearancePanel setError={setError} />;
-    case 'styles':
-      return <StylesPanel setError={setError} />;
     case 'terminal':
       return <TerminalPanel setError={setError} />;
     case 'agents':
@@ -242,7 +224,7 @@ function SettingRow({
   children: ReactNode;
 }): JSX.Element {
   return (
-    <div className="flex items-start gap-6 border-b border-subtle py-3.5 last:border-b-0">
+    <div className="flex items-start gap-6 px-4 py-4">
       <div className="w-52 shrink-0">
         <div className="text-[13px]">{label}</div>
         {hint && <div className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{hint}</div>}
@@ -252,8 +234,21 @@ function SettingRow({
   );
 }
 
-function PanelTitle({ children }: { children: ReactNode }): JSX.Element {
-  return <h2 className="mb-1 text-base font-semibold">{children}</h2>;
+function PanelTitle({
+  children,
+  description,
+}: {
+  children: ReactNode;
+  description?: string;
+}): JSX.Element {
+  return (
+    <div className="mb-5">
+      <h2 className="text-lg font-semibold">{children}</h2>
+      {description && (
+        <p className="mt-1 text-[13px] text-muted-foreground">{description}</p>
+      )}
+    </div>
+  );
 }
 
 /** Dummy marker for sections other agents will fill in. */
@@ -261,6 +256,26 @@ function Placeholder({ children }: { children: ReactNode }): JSX.Element {
   return (
     <div className="rounded-md border border-subtle px-3 py-2.5 text-xs text-muted-foreground">
       {children}
+    </div>
+  );
+}
+
+/** Card container for a group of SettingRow items. */
+function SettingGroup({
+  title,
+  children,
+}: {
+  title?: string;
+  children: ReactNode;
+}): JSX.Element {
+  return (
+    <div className="mb-5">
+      {title && (
+        <h3 className="mb-2 text-[13px] font-medium text-muted-foreground">{title}</h3>
+      )}
+      <div className="divide-y divide-subtle overflow-hidden rounded-lg border bg-card/50">
+        {children}
+      </div>
     </div>
   );
 }
@@ -428,282 +443,165 @@ const THEMES: Array<{ id: ThemeId; label: string; icon: typeof Moon; tone: strin
   { id: 'catppuccin-latte', label: 'Catppuccin Latte', icon: Sun, tone: '浅色' },
 ];
 
+// Hardcoded hex values for inactive-theme color previews (CSS vars only resolve
+// for the active theme). Sourced from global.css [data-theme] blocks.
+// Order: [base, surface, accent, info, secondary-accent]
+const THEME_COLORS: Record<ThemeId, [string, string, string, string, string]> = {
+  'rose-pine':        ['#191724', '#1f1d2e', '#c4a7e7', '#9ccfd8', '#ebbcba'],
+  'rose-pine-dawn':   ['#faf4ed', '#fffaf3', '#907aa9', '#56949f', '#d7827e'],
+  'rose-pine-moon':   ['#232136', '#2a273f', '#c4a7e7', '#9ccfd8', '#ea9a97'],
+  'cutie':            ['#fff8fb', '#ffeef4', '#c558a0', '#b89cd9', '#ff7aa8'],
+  'light-pink':       ['#f5f5f5', '#f5f0f3', '#ff7ab3', '#1f6e89', '#9466aa'],
+  'fairyfloss':       ['#5a5475', '#464258', '#c5a3ff', '#9673d3', '#ffb8d1'],
+  'business':         ['#1d2733', '#232e3c', '#81a1c1', '#88c0d0', '#d08770'],
+  'ubuntu':           ['#300a24', '#3d1130', '#dd4814', '#34e2e2', '#ad7fa8'],
+  'windows-terminal': ['#0c0c0c', '#1e1e1e', '#3b78ff', '#61d6d6', '#b4009e'],
+  'one-dark-pro':     ['#282c34', '#21252b', '#c678dd', '#56b6c2', '#d19a66'],
+  'dracula':          ['#282a36', '#1e1f29', '#bd93f9', '#8be9fd', '#ffb86c'],
+  'tokyo-night':      ['#1a1b26', '#16161e', '#bb9af7', '#7dcfff', '#ff9e64'],
+  'tokyo-night-day':  ['#e1e2e7', '#d0d5e3', '#9854f1', '#007197', '#b15c00'],
+  'catppuccin-mocha': ['#1e1e2e', '#181825', '#cba6f7', '#94e2d5', '#fab387'],
+  'catppuccin-latte': ['#eff1f5', '#e6e9ef', '#8839ef', '#179299', '#fe640b'],
+};
+
 function AppearancePanel({ setError }: { setError: (m: string | null) => void }): JSX.Element {
   const settings = useSettings();
   const theme = settings?.appearance.theme ?? 'rose-pine';
 
   return (
     <section>
-      <PanelTitle>外观</PanelTitle>
+      <PanelTitle description="主题配色、字体、编辑器视觉偏好">外观</PanelTitle>
 
-      <SettingRow label="主题" hint="立即生效；终端配色同步切换">
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          {THEMES.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => void updateSettings({ appearance: { theme: t.id } }, setError)}
-              className={cn(
-                'flex min-w-0 flex-col items-start gap-1 rounded-md border px-3 py-2 text-left',
-                theme === t.id ? 'border-primary bg-accent' : 'hover:bg-muted',
-              )}
-            >
-              <span className="flex items-center gap-1.5 text-[13px]">
-                <t.icon className="h-3.5 w-3.5" />
-                {t.label}
-              </span>
-              <span className="text-[11px] text-muted-foreground">{t.tone}</span>
-            </button>
-          ))}
-        </div>
-      </SettingRow>
-
-      <SettingRow label="UI 字体" hint="侧栏 / 按钮 / 正文等界面区域；font-family 串">
-        <CommitInput
-          value={settings?.appearance.uiFontFamily ?? ''}
-          placeholder="'LXGW WenKai', system-ui, sans-serif"
-          onCommit={(v) => void updateSettings({ appearance: { uiFontFamily: v } }, setError)}
-        />
-      </SettingRow>
-
-      <SettingRow label="界面缩放" hint="整窗缩放（原生 Chromium zoom），1.0 为 100%">
-        <NumberCommitInput
-          value={settings?.appearance.uiZoom ?? 1.0}
-          min={0.75}
-          max={1.5}
-          step={0.05}
-          onCommit={(v) => void updateSettings({ appearance: { uiZoom: v } }, setError)}
-        />
-      </SettingRow>
-
-      <SettingRow
-        label="编辑器块编辑（BlockEdit）"
-        hint="悬停块左侧的 ＋/拖拽手柄与斜杠菜单（/ 唤起）；关闭即整体禁用"
-      >
-        <ToggleSwitch
-          checked={settings?.behavior.editorBlockEdit ?? false}
-          onChange={(v) => void updateSettings({ behavior: { editorBlockEdit: v } }, setError)}
-        />
-      </SettingRow>
-
-      <SettingRow label="正文对齐" hint="正文阅读列居中或靠左；标题与右侧控件随列对齐">
-        <Segmented
-          value={settings?.behavior.editorBodyAlign ?? 'center'}
-          options={[
-            { value: 'center', label: '居中' },
-            { value: 'left', label: '靠左' },
-          ]}
-          onChange={(v) => void updateSettings({ behavior: { editorBodyAlign: v } }, setError)}
-        />
-      </SettingRow>
-
-      <SettingRow label="正文列宽" hint="正文阅读列的最大宽度；标题表头随列同宽">
-        <Segmented
-          value={String(settings?.behavior.editorMaxWidth ?? 58)}
-          options={[
-            { value: '48', label: '窄' },
-            { value: '58', label: '中' },
-            { value: '72', label: '宽' },
-          ]}
-          onChange={(v) =>
-            void updateSettings({ behavior: { editorMaxWidth: Number(v) } }, setError)
-          }
-        />
-      </SettingRow>
-    </section>
-  );
-}
-
-// ──────────────────────────────────────────────────────────────────
-// 样式 — 两张同构的可配置表：状态 → 徽章样式、标签 → 徽章样式。
-// 项目级配置（.iris/styles.json，初始化时由机器默认播种）；字面精确匹配，
-// 未配置的值落灰色默认（键是硬的，值是软的）。
-// ──────────────────────────────────────────────────────────────────
-
-/**
- * Template picker — a dropdown gallery of the preset templates, each shown
- * as a live preview rendered with the row's own string (round-3: 预设模板，
- * 把匹配字符串填进模板). The trigger shows the current template's preview.
- */
-function TemplatePicker({
-  sampleText,
-  value,
-  onPick,
-}: {
-  sampleText: string;
-  value: string;
-  onPick: (templateId: string) => void;
-}): JSX.Element {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          title="选择显示模板"
-          className="flex items-center gap-1 rounded-sm px-1 py-0.5 hover:bg-muted/60"
-        >
-          <Badge template={templateById(value)} text={sampleText} />
-          <ChevronDown className="h-3 w-3 text-muted-foreground/60" />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="grid max-h-72 grid-cols-2 gap-0.5 overflow-y-auto">
-        {BADGE_TEMPLATES.map((t) => (
-          <DropdownMenuItem key={t.id} onClick={() => onPick(t.id)} className="justify-start">
-            <Badge template={t} text={sampleText} />
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-function StyleMapTable({
-  title,
-  hint,
-  entries,
-  suggestions,
-  onChange,
-}: {
-  title: string;
-  hint: string;
-  entries: Record<string, string>;
-  /** Quick-add candidates not yet in the table (canonical states / in-use labels). */
-  suggestions: string[];
-  onChange: (next: Record<string, string>) => void;
-}): JSX.Element {
-  const [draft, setDraft] = useState('');
-  const keys = Object.keys(entries);
-  const candidates = suggestions.filter((s) => !(s in entries));
-
-  const add = (key: string): void => {
-    const k = key.trim();
-    if (k !== '' && !(k in entries)) onChange({ ...entries, [k]: DEFAULT_TEMPLATE_ID });
-    setDraft('');
-  };
-
-  return (
-    <div className="mb-6">
-      <h3 className="text-[13px] font-medium">{title}</h3>
-      <p className="mb-2 mt-0.5 text-[11px] text-muted-foreground">{hint}</p>
-      <div className="overflow-hidden rounded-md border">
-        <table className="w-full text-[13px]">
-          <tbody>
-            {keys.map((k) => (
-              <tr key={k} className="border-b border-subtle last:border-b-0">
-                <td className="px-3 py-1.5 font-mono text-xs text-muted-foreground">{k}</td>
-                <td className="w-56 px-3 py-1.5">
-                  <TemplatePicker
-                    sampleText={k}
-                    value={entries[k] ?? DEFAULT_TEMPLATE_ID}
-                    onPick={(id) => onChange({ ...entries, [k]: id })}
-                  />
-                </td>
-                <td className="w-8 px-2 py-1.5">
-                  <button
-                    type="button"
-                    title="移除映射（该值降级为灰色默认）"
-                    onClick={() => {
-                      const next = { ...entries };
-                      delete next[k];
-                      onChange(next);
-                    }}
-                    className="rounded-sm p-1 text-muted-foreground/60 hover:bg-muted hover:text-destructive"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </td>
-              </tr>
+      <SettingGroup title="主题">
+        <SettingRow label="主题" hint="立即生效；终端配色同步切换">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {THEMES.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => void updateSettings({ appearance: { theme: t.id } }, setError)}
+                className={cn(
+                  'flex min-w-0 flex-col items-start gap-2 rounded-lg border px-3 py-2.5 text-left transition-colors',
+                  theme === t.id
+                    ? 'border-primary bg-accent ring-1 ring-primary/30'
+                    : 'hover:bg-muted',
+                )}
+              >
+                <span className="flex items-center gap-1">
+                  {THEME_COLORS[t.id].map((color, i) => (
+                    <span
+                      key={i}
+                      className="h-3 w-3 rounded-full border border-foreground/10"
+                      style={{ backgroundColor: color }}
+                    />
+                  ))}
+                </span>
+                <span className="flex items-center gap-1.5 text-[13px]">
+                  <t.icon className="h-3.5 w-3.5 text-muted-foreground" />
+                  {t.label}
+                </span>
+                <span className="text-[11px] text-muted-foreground">{t.tone}</span>
+              </button>
             ))}
-            {keys.length === 0 && (
-              <tr>
-                <td className="px-3 py-3 text-center text-xs text-muted-foreground">
-                  空表 — 所有值都渲染灰色默认
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <Input
-          value={draft}
-          placeholder="新增字符串，回车添加"
-          className="h-7 w-48 text-xs"
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') add(draft);
-            if (e.key === 'Escape') {
-              setDraft('');
-              e.stopPropagation();
+          </div>
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup title="字体与缩放">
+        <SettingRow label="UI 字体" hint="侧栏 / 按钮 / 正文等界面区域；font-family 串">
+          <CommitInput
+            value={settings?.appearance.uiFontFamily ?? ''}
+            placeholder="'LXGW WenKai', system-ui, sans-serif"
+            onCommit={(v) => void updateSettings({ appearance: { uiFontFamily: v } }, setError)}
+          />
+        </SettingRow>
+
+        <SettingRow label="界面缩放" hint="整窗缩放（原生 Chromium zoom），1.0 为 100%">
+          <NumberCommitInput
+            value={settings?.appearance.uiZoom ?? 1.0}
+            min={0.75}
+            max={1.5}
+            step={0.05}
+            onCommit={(v) => void updateSettings({ appearance: { uiZoom: v } }, setError)}
+          />
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup title="编辑器">
+        <SettingRow label="自动保存" hint="正文停止输入后保存；切换文档、切换视图和退出时始终刷新草稿">
+          <ToggleSwitch
+            checked={settings?.behavior.editorAutosave ?? true}
+            onChange={(v) => void updateSettings({ behavior: { editorAutosave: v } }, setError)}
+          />
+        </SettingRow>
+
+        <SettingRow label="自动保存延迟（毫秒）" hint="仅用于正文和源码输入，范围 300–10000">
+          <NumberCommitInput
+            value={settings?.behavior.editorAutosaveDelayMs ?? 1500}
+            min={300}
+            max={10000}
+            step={100}
+            onCommit={(v) =>
+              void updateSettings({ behavior: { editorAutosaveDelayMs: v } }, setError)
             }
-          }}
-        />
-        {candidates.map((s) => (
-          <button
-            key={s}
-            type="button"
-            title={`添加 ${s}`}
-            onClick={() => add(s)}
-            className="rounded border border-subtle px-1.5 py-0.5 text-[11px] text-muted-foreground hover:border-border hover:text-foreground"
-          >
-            + {s}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
+          />
+        </SettingRow>
 
-function StylesPanel({ setError }: { setError: (m: string | null) => void }): JSX.Element {
-  const { maps, source } = useStyleMaps();
-  const { phase, scan } = useProject();
-  const projectOpen = phase === 'ready' && (scan?.hasIris ?? false);
+        <SettingRow label="离开编辑器时保存" hint="焦点移到 Git、终端或其他面板时刷新真正发生过的编辑">
+          <ToggleSwitch
+            checked={settings?.behavior.editorSaveOnBlur ?? true}
+            onChange={(v) => void updateSettings({ behavior: { editorSaveOnBlur: v } }, setError)}
+          />
+        </SettingRow>
 
-  const write = async (partial: Partial<typeof maps>): Promise<void> => {
-    setError(null);
-    try {
-      await pipeline.dispatch('styles.update', { maps: { ...maps, ...partial } });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
+        <SettingRow label="外部修改冲突" hint="提示处理会暂停自动保存；静默覆盖保持最后写入者优先">
+          <Segmented
+            value={settings?.behavior.editorConflictPolicy ?? 'ask'}
+            options={[
+              { value: 'ask', label: '提示处理' },
+              { value: 'overwrite', label: '静默覆盖' },
+            ]}
+            onChange={(v) =>
+              void updateSettings({ behavior: { editorConflictPolicy: v } }, setError)
+            }
+          />
+        </SettingRow>
 
-  if (!projectOpen) {
-    return (
-      <section>
-        <PanelTitle>样式</PanelTitle>
-        <Placeholder>
-          样式表是项目级配置（.iris/styles.json）。打开一个带 .iris/ 的项目后在这里编辑；
-          初始化项目时会以机器级默认（~/.iris/styles.json）作为起点。
-        </Placeholder>
-      </section>
-    );
-  }
+        <SettingRow
+          label="编辑器块编辑（BlockEdit）"
+          hint="悬停块左侧的 ＋/拖拽手柄与斜杠菜单（/ 唤起）；关闭即整体禁用"
+        >
+          <ToggleSwitch
+            checked={settings?.behavior.editorBlockEdit ?? false}
+            onChange={(v) => void updateSettings({ behavior: { editorBlockEdit: v } }, setError)}
+          />
+        </SettingRow>
 
-  return (
-    <section>
-      <PanelTitle>样式</PanelTitle>
-      <p className="mb-4 text-xs text-muted-foreground">
-        写入 <code className="font-mono">.iris/styles.json</code>（当前生效层：
-        {source === 'project' ? '项目级' : source === 'machine' ? '机器级默认' : '内置默认'}
-        ）。匹配按字面精确比对，未配置的值渲染灰色默认徽章。
-      </p>
+        <SettingRow label="正文对齐" hint="正文阅读列居中或靠左；标题与右侧控件随列对齐">
+          <Segmented
+            value={settings?.behavior.editorBodyAlign ?? 'center'}
+            options={[
+              { value: 'center', label: '居中' },
+              { value: 'left', label: '靠左' },
+            ]}
+            onChange={(v) => void updateSettings({ behavior: { editorBodyAlign: v } }, setError)}
+          />
+        </SettingRow>
 
-      <StyleMapTable
-        title="状态 → 模板"
-        hint="把状态字符串指到一个预设模板（实心 / 柔光 / 描边 / 圆点 × 七色）；issue 六态与 report 两态共用一张表，自由状态字符串也可加入"
-        entries={maps.status}
-        suggestions={[...ISSUE_STATUSES, ...REPORT_STATUSES]}
-        onChange={(next) => void write({ status: next })}
-      />
-
-      <StyleMapTable
-        title="标签 → 模板"
-        hint="把标签字符串指到一个预设模板；未配置的标签落灰色默认"
-        entries={maps.label}
-        suggestions={scan?.root ? collectAllLabels(scan.root) : []}
-        onChange={(next) => void write({ label: next })}
-      />
+        <SettingRow label="正文列宽" hint="正文阅读列的最大宽度；标题表头随列同宽">
+          <Segmented
+            value={String(settings?.behavior.editorMaxWidth ?? 58)}
+            options={[
+              { value: '48', label: '窄' },
+              { value: '58', label: '中' },
+              { value: '72', label: '宽' },
+            ]}
+            onChange={(v) =>
+              void updateSettings({ behavior: { editorMaxWidth: Number(v) } }, setError)
+            }
+          />
+        </SettingRow>
+      </SettingGroup>
     </section>
   );
 }
@@ -717,76 +615,80 @@ function TerminalPanel({ setError }: { setError: (m: string | null) => void }): 
 
   return (
     <section>
-      <PanelTitle>终端</PanelTitle>
+      <PanelTitle description="终端字体、渲染与交互行为">终端</PanelTitle>
 
-      <SettingRow label="终端字体" hint="等宽字体优先；font-family 串">
-        <CommitInput
-          value={settings?.appearance.terminalFontFamily ?? ''}
-          placeholder="'Cascadia Mono', Consolas, monospace"
-          onCommit={(v) =>
-            void updateSettings({ appearance: { terminalFontFamily: v } }, setError)
-          }
-        />
-      </SettingRow>
+      <SettingGroup title="字体">
+        <SettingRow label="终端字体" hint="等宽字体优先；font-family 串">
+          <CommitInput
+            value={settings?.appearance.terminalFontFamily ?? ''}
+            placeholder="'Cascadia Mono', Consolas, monospace"
+            onCommit={(v) =>
+              void updateSettings({ appearance: { terminalFontFamily: v } }, setError)
+            }
+          />
+        </SettingRow>
 
-      <SettingRow label="终端字号">
-        <NumberCommitInput
-          value={settings?.appearance.terminalFontSize ?? 13}
-          min={8}
-          max={24}
-          step={1}
-          onCommit={(v) => void updateSettings({ appearance: { terminalFontSize: v } }, setError)}
-        />
-      </SettingRow>
+        <SettingRow label="终端字号">
+          <NumberCommitInput
+            value={settings?.appearance.terminalFontSize ?? 13}
+            min={8}
+            max={24}
+            step={1}
+            onCommit={(v) => void updateSettings({ appearance: { terminalFontSize: v } }, setError)}
+          />
+        </SettingRow>
 
-      <SettingRow label="终端行高" hint="行高倍数，默认 1.2">
-        <NumberCommitInput
-          value={settings?.appearance.terminalLineHeight ?? 1.2}
-          min={1.0}
-          max={2.0}
-          step={0.1}
-          onCommit={(v) =>
-            void updateSettings({ appearance: { terminalLineHeight: v } }, setError)
-          }
-        />
-      </SettingRow>
+        <SettingRow label="终端行高" hint="行高倍数，默认 1.2">
+          <NumberCommitInput
+            value={settings?.appearance.terminalLineHeight ?? 1.2}
+            min={1.0}
+            max={2.0}
+            step={0.1}
+            onCommit={(v) =>
+              void updateSettings({ appearance: { terminalLineHeight: v } }, setError)
+            }
+          />
+        </SettingRow>
+      </SettingGroup>
 
-      <SettingRow label="划选即复制" hint="选中终端文本自动写入剪贴板">
-        <ToggleSwitch
-          checked={settings?.behavior.selectOnCopy ?? true}
-          onChange={(v) => void updateSettings({ behavior: { selectOnCopy: v } }, setError)}
-        />
-      </SettingRow>
+      <SettingGroup title="行为">
+        <SettingRow label="划选即复制" hint="选中终端文本自动写入剪贴板">
+          <ToggleSwitch
+            checked={settings?.behavior.selectOnCopy ?? true}
+            onChange={(v) => void updateSettings({ behavior: { selectOnCopy: v } }, setError)}
+          />
+        </SettingRow>
 
-      <SettingRow label="终端右键" hint="菜单：复制/粘贴/清屏；直接粘贴：右键即粘贴（配合划选即复制）">
-        <Segmented
-          value={settings?.behavior.terminalRightClick ?? 'menu'}
-          options={[
-            { value: 'menu', label: '菜单' },
-            { value: 'paste', label: '直接粘贴' },
-          ]}
-          onChange={(v) =>
-            void updateSettings({ behavior: { terminalRightClick: v } }, setError)
-          }
-        />
-      </SettingRow>
+        <SettingRow label="终端右键" hint="菜单：复制/粘贴/清屏；直接粘贴：右键即粘贴（配合划选即复制）">
+          <Segmented
+            value={settings?.behavior.terminalRightClick ?? 'menu'}
+            options={[
+              { value: 'menu', label: '菜单' },
+              { value: 'paste', label: '直接粘贴' },
+            ]}
+            onChange={(v) =>
+              void updateSettings({ behavior: { terminalRightClick: v } }, setError)
+            }
+          />
+        </SettingRow>
 
-      <SettingRow
-        label="终端渲染器"
-        hint="auto 优先 WebGL、失败回退 DOM；显式 DOM 是兼容性逃生舱。切换会话后生效"
-      >
-        <Segmented
-          value={settings?.advanced.terminalRenderer ?? 'auto'}
-          options={[
-            { value: 'auto', label: 'auto' },
-            { value: 'webgl', label: 'WebGL' },
-            { value: 'dom', label: 'DOM' },
-          ]}
-          onChange={(v) =>
-            void updateSettings({ advanced: { terminalRenderer: v } }, setError)
-          }
-        />
-      </SettingRow>
+        <SettingRow
+          label="终端渲染器"
+          hint="auto 优先 WebGL、失败回退 DOM；显式 DOM 是兼容性逃生舱。切换会话后生效"
+        >
+          <Segmented
+            value={settings?.advanced.terminalRenderer ?? 'auto'}
+            options={[
+              { value: 'auto', label: 'auto' },
+              { value: 'webgl', label: 'WebGL' },
+              { value: 'dom', label: 'DOM' },
+            ]}
+            onChange={(v) =>
+              void updateSettings({ advanced: { terminalRenderer: v } }, setError)
+            }
+          />
+        </SettingRow>
+      </SettingGroup>
     </section>
   );
 }
@@ -860,18 +762,6 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
     writeAgents(agents.map((a) => (a.id === id ? { ...a, ...patch } : a)));
   };
 
-  const installScript = async (): Promise<void> => {
-    setBusy(true);
-    try {
-      await pipeline.dispatch('agent.install-focus-script', {});
-      await refreshInj();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const installCliHook = async (cliId: string): Promise<void> => {
     setBusy(true);
     setConfirmCli(null);
@@ -893,13 +783,13 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
 
   return (
     <section>
-      <PanelTitle>Agents</PanelTitle>
+      <PanelTitle description="右键菜单「用 X 打开」的 agent 列表与上下文注入配置">Agents</PanelTitle>
       <p className="mb-3 text-xs text-muted-foreground">
         右键菜单「用 X 打开」的候选列表。command 为空表示纯终端；注入通道只是标注——hook
         在下方的注入区配置，flag 直接写在命令里。
       </p>
 
-      <div className="overflow-hidden rounded-md border">
+      <div className="overflow-hidden rounded-lg border">
         <table className="w-full text-[13px]">
           <thead className="bg-muted/50 text-left text-xs uppercase tracking-wider text-muted-foreground">
             <tr>
@@ -986,18 +876,21 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
         </div>
       )}
 
-      <h3 className="mb-1 mt-8 text-base font-semibold">上下文注入</h3>
-      <p className="mb-3 text-xs text-muted-foreground">
-        零轮次注入：终端打开时 agent 的 SessionStart hook 调用 focus-context 脚本，把
-        FOCUS_DOC 指向的文档（元数据 + 全文快照，超 32 KiB 退化为指针）直接放进上下文——agent
-        依然静止等待指令，打开 ≠ 开跑。hook 配置住在你自己的 agent 配置文件里，Iris
-        只检测、建议、经你确认后代写。
-      </p>
+      <div className="mb-5 mt-8">
+        <h3 className="text-base font-semibold">上下文注入</h3>
+        <p className="mt-1 text-[13px] text-muted-foreground">
+          零轮次注入：终端打开时 agent 的 SessionStart hook 调用 focus-context 脚本，把
+          FOCUS_DOC 指向的文档，或 IRIS_WORKSPACE_PATH 指向的 hub workspace，直接放进上下文——agent
+          依然静止等待指令，打开 ≠ 开跑。Iris 自动维护生成脚本；hook 配置住在你自己的 agent
+          配置文件里，只在你确认后代写。
+        </p>
+      </div>
 
-      <SettingRow
-        label="focus-context 脚本"
-        hint={inj ? inj.script.path : '~/.iris/focus-context.ps1'}
-      >
+      <SettingGroup>
+        <SettingRow
+          label="focus-context 脚本"
+          hint={inj ? inj.script.path : '~/.iris/focus-context.ps1'}
+        >
         <div className="flex items-center gap-2">
           <span
             className={cn(
@@ -1010,16 +903,12 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
             {inj?.script.state === 'current'
               ? '最新'
               : inj?.script.state === 'stale'
-                ? '旧版 · 可更新'
-                : '未安装'}
+                ? '旧版 · 自动同步失败'
+                : '缺失 · 自动同步失败'}
           </span>
-          <Button size="sm" variant="secondary" disabled={busy} onClick={() => void installScript()}>
-            {inj?.script.state === 'current'
-              ? '重新安装'
-              : inj?.script.state === 'stale'
-                ? '更新脚本'
-                : '安装脚本'}
-          </Button>
+          <span className="text-xs text-muted-foreground">
+            {inj?.script.state === 'current' ? '由 Iris 自动维护' : '自动同步失败，请查看日志'}
+          </span>
         </div>
       </SettingRow>
 
@@ -1039,7 +928,7 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
               (confirmCli === cli.id ? (
                 <>
                   <span className="text-xs text-muted-foreground">
-                    将{cli.state === 'stale' ? '更新' : '写入'}你的 {cli.label} 配置（先备份 .bak）：
+                    将{cli.state === 'stale' ? '更新' : '写入'}你的 {cli.label} 配置：
                   </span>
                   <Button
                     size="sm"
@@ -1070,6 +959,7 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
           </div>
         </SettingRow>
       ))}
+      </SettingGroup>
 
       <p className="mt-3 text-xs text-muted-foreground/70">
         没有 hook 的 CLI 用启动 flag（上方 aider / goose 预设即模板）；两者皆无的 agent
@@ -1081,24 +971,22 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
 
 // ──────────────────────────────────────────────────────────────────
 // 软件提示词 — 分层注入治理（issue: iris软件提示词治理）。
-// 软件层 = AGENTS.md / vendor 入口里的 <iris-software> 托管块（App 拥有、随版本
-// 走、可追踪）；项目层 = .iris/CONVENTIONS.md（出厂默认可升级，自定义则不动）。
-// 一切写入经此处确认、写前留 .bak。
+// 软件层 = AGENTS.md / vendor 入口里的 <iris-software> 托管块（App 拥有）；
+// 项目层 = 同一批入口里的 <iris-project> 锁相块（磁盘拥有，用户按需自定义）。
+// 一切写入经此处确认。
 // ──────────────────────────────────────────────────────────────────
 
 const SW_STATE_META: Record<SoftwareBlockStateUi, { label: string; cls: string }> = {
   ok: { label: '最新', cls: 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]' },
-  stale: { label: '旧版 · 可同步', cls: 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]' },
   drifted: { label: '被改动', cls: 'bg-[var(--rp-love)]/20 text-[var(--rp-love)]' },
   missing: { label: '无标签块', cls: 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]' },
   'no-entry': { label: '文件不存在', cls: 'bg-muted text-muted-foreground' },
 };
 
-const CONS_STATE_META: Record<ConstitutionStateUi, { label: string; cls: string }> = {
-  'current-default': { label: '出厂默认 · 最新', cls: 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]' },
-  'stale-default': { label: '出厂默认 · 可升级', cls: 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]' },
-  customized: { label: '已自定义', cls: 'bg-[var(--rp-iris)]/20 text-[var(--rp-iris)]' },
-  missing: { label: '缺失', cls: 'bg-muted text-muted-foreground' },
+const PROJECT_STATE_META: Record<ProjectPromptStateUi, { label: string; cls: string }> = {
+  synced: { label: '已同步', cls: 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]' },
+  conflict: { label: '入口冲突', cls: 'bg-[var(--rp-love)]/20 text-[var(--rp-love)]' },
+  missing: { label: '未设置', cls: 'bg-muted text-muted-foreground' },
 };
 
 /**
@@ -1150,27 +1038,42 @@ function PromptViewer({
 }
 
 function PromptsPanel({ setError }: { setError: (m: string | null) => void }): JSX.Element {
-  const { phase, scan } = useProject();
+  const { phase, scan, scope } = useProject();
   const projectOpen = phase === 'ready' && (scan?.hasIris ?? false);
   const [state, setState] = useState<SoftwarePromptState | null>(null);
   const [preview, setPreview] = useState<ContextPreview | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<string | null>(null);
+  const [projectDraft, setProjectDraft] = useState('');
 
   const refresh = async (): Promise<void> => {
+    if (!scope) return;
     try {
       const [s, p] = await Promise.all([
-        window.api.invoke<undefined, SoftwarePromptState>(CHANNELS.SOFTWARE_PROMPT_STATE),
-        window.api.invoke<undefined, ContextPreview>(CHANNELS.SOFTWARE_PROMPT_PREVIEW),
+        window.api.invoke<{ expectedScope: typeof scope }, SoftwarePromptState>(
+          CHANNELS.SOFTWARE_PROMPT_STATE,
+          { expectedScope: scope },
+        ),
+        window.api.invoke<{ expectedScope: typeof scope }, ContextPreview>(
+          CHANNELS.SOFTWARE_PROMPT_PREVIEW,
+          { expectedScope: scope },
+        ),
       ]);
+      if (scope.generation !== projectStore.get().scope?.generation) return;
       setState(s);
       setPreview(p);
+      if (s.project.state !== 'conflict') setProjectDraft(s.project.text);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
   useEffect(() => {
     if (projectOpen) void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectOpen, scope]);
+  useEffect(() => {
+    if (!projectOpen) return;
+    return window.api.on(EVENTS.PROMPT_CHANGED, () => void refresh());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectOpen]);
 
@@ -1191,10 +1094,10 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
   if (!projectOpen) {
     return (
       <section>
-        <PanelTitle>软件提示词</PanelTitle>
+        <PanelTitle description="软件层与项目层提示词治理">软件提示词</PanelTitle>
         <Placeholder>
-          打开一个带 <code className="font-mono">.iris/</code> 的项目后，在这里查看三层提示词的
-          实际正文、agent 启动时收到的完整注入，以及注入到 AGENTS.md / vendor 入口的{' '}
+          打开一个带 <code className="font-mono">.iris/</code> 的项目后，在这里查看软件与项目提示词、
+          hook 动态上下文，以及注入到 AGENTS.md / vendor 入口的{' '}
           <code className="font-mono">&lt;iris-software&gt;</code> 托管块状态。
         </Placeholder>
       </section>
@@ -1203,18 +1106,15 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
 
   return (
     <section>
-      <PanelTitle>软件提示词</PanelTitle>
+      <PanelTitle description="软件层与项目层提示词治理">软件提示词</PanelTitle>
       <p className="mb-4 text-xs text-muted-foreground">
-        这里能<b>看见</b>三层提示词的实际正文，并治理软件层注入。<b>软件层</b>是 App 拥有、
-        随版本走的 <code className="font-mono">&lt;iris-software&gt;</code>{' '}
-        托管块（标签内 = Iris 管辖、可追踪；标签外是你的，永不触碰）；<b>项目层</b>是{' '}
-        <code className="font-mono">.iris/CONVENTIONS.md</code>；<b>用户层</b>是{' '}
-        <code className="font-mono">~/.iris/CONVENTIONS.md</code>。一切写入都先备份{' '}
-        <code className="font-mono">.bak</code>。当前版本{' '}
-        <code className="font-mono">{state?.appVersion ?? '…'}</code>。
+        这里能<b>看见</b>软件与项目提示词的实际正文，并治理软件层注入。<b>软件层</b>是 App 拥有、
+        内置的 <code className="font-mono">&lt;iris-software&gt;</code>{' '}
+        托管块（盘上不同即告警，由你确认恢复）；<b>可选项目提示词</b>是同一入口中的{' '}
+        <code className="font-mono">&lt;iris-project&gt;</code> 锁相块，盘上内容是真相之源。
       </p>
 
-      <h3 className="mb-1 text-[13px] font-medium">软件层 · 入口文件</h3>
+      <SettingGroup title="软件层 · 入口文件">
       {(state?.entries ?? []).map((e) => {
         const needsWrite = e.state !== 'ok';
         const cid = `entry:${e.path}`;
@@ -1223,8 +1123,7 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
             key={e.path}
             label={e.path}
             hint={
-              (e.isStandard ? '标准入口（Iris 拥有）' : 'vendor 入口（存在才维护）') +
-              (e.version ? ` · 块版本 ${e.version}` : '')
+              (e.isStandard ? '标准入口（Iris 拥有）' : 'vendor 入口（存在才维护）')
             }
           >
             <div className="flex flex-wrap items-center gap-2">
@@ -1235,7 +1134,7 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
                 (confirm === cid ? (
                   <>
                     <span className="text-xs text-muted-foreground">
-                      将写入 {e.path}（先备份 .bak）：
+                      将写入 {e.path}：
                     </span>
                     <Button
                       size="sm"
@@ -1262,6 +1161,7 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
           </SettingRow>
         );
       })}
+      </SettingGroup>
       <PromptViewer
         title="查看软件层正文（<iris-software> 托管块）"
         body={preview?.software.block ?? null}
@@ -1272,83 +1172,63 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
         }
       />
 
-      <h3 className="mb-1 mt-8 text-[13px] font-medium">项目层 · 宪法</h3>
-      <SettingRow
-        label=".iris/CONVENTIONS.md"
-        hint="仅当仍是出厂默认时可一键升级；自定义过的不会被碰"
-      >
-        <div className="flex flex-wrap items-center gap-2">
+      <SettingGroup title="项目层 · 可选提示词">
+        <SettingRow label="<iris-project>" hint="AGENTS.md 与现有 vendor 入口保持相同正文">
           <span
             className={cn(
               'rounded px-1.5 py-0.5 text-xs',
-              CONS_STATE_META[state?.constitution.state ?? 'missing'].cls,
+              PROJECT_STATE_META[state?.project.state ?? 'missing'].cls,
             )}
           >
-            {CONS_STATE_META[state?.constitution.state ?? 'missing'].label}
+            {PROJECT_STATE_META[state?.project.state ?? 'missing'].label}
           </span>
-          {state?.constitution.state === 'stale-default' &&
-            (confirm === 'constitution' ? (
-              <>
-                <span className="text-xs text-muted-foreground">升级到新默认（先备份 .bak）：</span>
-                <Button
-                  size="sm"
-                  disabled={busy}
-                  onClick={() => void run('software-prompt.upgrade-constitution', {})}
-                >
-                  确认升级
+        </SettingRow>
+      </SettingGroup>
+      {state?.project.state === 'conflict' && (
+        <div className="mt-3 space-y-3 rounded-md border border-[var(--rp-love)]/40 bg-[var(--rp-love)]/5 p-3">
+          <p className="text-xs text-[var(--rp-love)]">
+            多个入口包含不同正文，Iris 未覆盖任何文件。选择一个版本载入编辑框，再保存以解决冲突。
+          </p>
+          {state.project.conflicts.map((item) => (
+            <div key={item.path}>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <code className="text-xs">{item.path}</code>
+                <Button size="sm" variant="secondary" onClick={() => setProjectDraft(item.text)}>
+                  采用此版本
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => setConfirm(null)}>
-                  取消
-                </Button>
-              </>
-            ) : (
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={busy}
-                onClick={() => setConfirm('constitution')}
-              >
-                升级到新默认…
-              </Button>
-            ))}
-          {state?.constitution.state === 'customized' && (
-            <span className="text-xs text-muted-foreground">已自定义——不提示自动升级。</span>
-          )}
+              </div>
+              <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded border border-subtle bg-muted/30 px-2 py-1.5 font-mono text-[11px]">
+                {item.text}
+              </pre>
+            </div>
+          ))}
         </div>
-      </SettingRow>
-      <PromptViewer
-        title="查看本项目正文（.iris/CONVENTIONS.md）"
-        body={preview?.project.text ?? null}
-        empty="尚无 .iris/CONVENTIONS.md（init 项目后由出厂默认种入）。"
+      )}
+      <textarea
+        value={projectDraft}
+        onChange={(event) => setProjectDraft(event.target.value)}
+        placeholder="留空表示不设置项目提示词"
+        className="mt-3 min-h-48 w-full resize-y rounded-md border border-subtle bg-background px-3 py-2 font-mono text-xs leading-relaxed outline-none focus:border-[var(--rp-iris)]"
       />
-      <PromptViewer
-        title="查看出厂默认项目模板（App 内置，init 时种入）"
-        body={preview?.projectDefault ?? null}
-        note="这是干净的默认项目策略——仅状态机取值与 md 风格，不含已归软件层的文件夹语义。盘上宪法已自定义时，可对照它判断要不要瘦身。"
-      />
+      <div className="mt-2 flex justify-end">
+        <Button
+          size="sm"
+          disabled={busy || (state?.project.state !== 'conflict' && projectDraft === state?.project.text)}
+          onClick={() => void run('project-prompt.sync', { text: projectDraft })}
+        >
+          保存并同步
+        </Button>
+      </div>
 
-      <h3 className="mb-1 mt-8 text-[13px] font-medium">用户层 · 机器事实</h3>
-      <SettingRow
-        label="~/.iris/CONVENTIONS.md"
-        hint="本机私有，不进 git；加密软件 / 代理 / 个人偏好等"
-      >
-        <span className="text-xs text-muted-foreground">
-          {preview ? (preview.user.text !== null ? '已存在' : '本机暂无此文件') : '…'}
-        </span>
-      </SettingRow>
+      <div className="mb-5 mt-8">
+        <h3 className="text-base font-semibold">动态上下文预览 · SessionStart hook</h3>
+        <p className="mt-1 text-[13px] text-muted-foreground">
+          静态软件与项目提示词由入口文件直接提供；hook 只补充 workspace 或会话焦点。
+          <code className="font-mono">&lt;iris-focus&gt;</code> 段按会话实时填充，此处仅示形。
+        </p>
+      </div>
       <PromptViewer
-        title="查看用户层正文（~/.iris/CONVENTIONS.md）"
-        body={preview?.user.text ?? null}
-        empty="本机无 ~/.iris/CONVENTIONS.md——可在「Agents」页安装机器层模板。"
-      />
-
-      <h3 className="mb-1 mt-8 text-[13px] font-medium">合成预览 · agent 实际收到的注入</h3>
-      <p className="mb-1 text-xs text-muted-foreground">
-        有 SessionStart hook 的 agent 会话启动时收到的内容，四段各包在 <code className="font-mono">&lt;iris-*&gt;</code>{' '}
-        标签里。<code className="font-mono">&lt;iris-focus&gt;</code> 段按会话的聚焦文档实时填充，此处仅示形。
-      </p>
-      <PromptViewer
-        title="查看完整合成注入"
+        title="查看 hook 动态注入"
         body={preview?.assembled ?? null}
         defaultOpen
       />
@@ -1369,41 +1249,43 @@ function AdvancedPanel({ setError }: { setError: (m: string | null) => void }): 
 
   return (
     <section>
-      <PanelTitle>高级</PanelTitle>
+      <PanelTitle description="启动行为、会话空闲检测、退出确认">高级</PanelTitle>
 
-      <SettingRow
-        label="启动时恢复项目"
-        hint="开启后恢复上次退出时仍打开的项目窗口；关闭时进入欢迎页"
-      >
-        <ToggleSwitch
-          checked={settings?.behavior.restoreProjectsOnStartup ?? false}
-          onChange={(v) =>
-            void updateSettings({ behavior: { restoreProjectsOnStartup: v } }, setError)
-          }
-        />
-      </SettingRow>
+      <SettingGroup>
+        <SettingRow
+          label="启动时恢复项目"
+          hint="开启后恢复上次退出时仍打开的项目窗口；关闭时进入欢迎页"
+        >
+          <ToggleSwitch
+            checked={settings?.behavior.restoreProjectsOnStartup ?? false}
+            onChange={(v) =>
+              void updateSettings({ behavior: { restoreProjectsOnStartup: v } }, setError)
+            }
+          />
+        </SettingRow>
 
-      <SettingRow
-        label="会话空闲阈值（秒）"
-        hint="终端无输出超过该时长 → 状态点从 ● 工作中 变为 ◐ 等待"
-      >
-        <NumberCommitInput
-          value={settings?.advanced.activeIdleThresholdSeconds ?? 2}
-          min={0.1}
-          max={60}
-          step={0.1}
-          onCommit={(v) =>
-            void updateSettings({ advanced: { activeIdleThresholdSeconds: v } }, setError)
-          }
-        />
-      </SettingRow>
+        <SettingRow
+          label="会话空闲阈值（秒）"
+          hint="终端无输出超过该时长 → 状态点从 ● 工作中 变为 ◐ 等待"
+        >
+          <NumberCommitInput
+            value={settings?.advanced.activeIdleThresholdSeconds ?? 2}
+            min={0.1}
+            max={60}
+            step={0.1}
+            onCommit={(v) =>
+              void updateSettings({ advanced: { activeIdleThresholdSeconds: v } }, setError)
+            }
+          />
+        </SettingRow>
 
-      <SettingRow label="退出确认" hint="关闭窗口时若仍有运行中的会话（含工作中的 agent），先弹确认">
-        <ToggleSwitch
-          checked={settings?.behavior.confirmOnQuit ?? true}
-          onChange={(v) => void updateSettings({ behavior: { confirmOnQuit: v } }, setError)}
-        />
-      </SettingRow>
+        <SettingRow label="退出确认" hint="关闭窗口时若仍有运行中的会话（含工作中的 agent），先弹确认">
+          <ToggleSwitch
+            checked={settings?.behavior.confirmOnQuit ?? true}
+            onChange={(v) => void updateSettings({ behavior: { confirmOnQuit: v } }, setError)}
+          />
+        </SettingRow>
+      </SettingGroup>
     </section>
   );
 }
@@ -1417,17 +1299,30 @@ function AboutPanel(): JSX.Element {
     <section>
       <PanelTitle>关于</PanelTitle>
 
-      <SettingRow label="Iris" hint="AI 原生 · 文档中心 · 终端驱动的项目管理">
-        <Placeholder>占位 — 版本号 / 构建形态（dev · portable · installed）/ 数据目录待接 IPC。</Placeholder>
-      </SettingRow>
+      <div className="mb-6 flex items-center gap-4 rounded-lg border bg-card/50 px-5 py-5">
+        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+          <Palette className="h-7 w-7 text-primary" />
+        </div>
+        <div>
+          <h3 className="text-base font-semibold">Iris</h3>
+          <p className="mt-0.5 text-[13px] text-muted-foreground">
+            AI 原生 · 文档中心 · 终端驱动的项目管理
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground/70">
+            占位 — 版本号 / 构建形态（dev · portable · installed）/ 数据目录待接 IPC。
+          </p>
+        </div>
+      </div>
 
-      <SettingRow label="协议" hint=".iris/ 目录约定 + CONVENTIONS.md">
-        <span className="text-[13px] text-muted-foreground">protocol: 1</span>
-      </SettingRow>
+      <SettingGroup>
+        <SettingRow label="文件契约" hint=".iris/ 类型目录 + 入口提示词标签块">
+          <span className="text-[13px] text-muted-foreground">无版本元数据</span>
+        </SettingRow>
 
-      <SettingRow label="License">
-        <span className="text-[13px] text-muted-foreground">AGPL-3.0</span>
-      </SettingRow>
+        <SettingRow label="License">
+          <span className="text-[13px] text-muted-foreground">AGPL-3.0</span>
+        </SettingRow>
+      </SettingGroup>
     </section>
   );
 }

@@ -1,27 +1,34 @@
 /**
- * Left pane: lens tree (default) / raw tree (escape hatch) + project-level
- * empty states. The pane header carries the open-project and raw-toggle
- * affordances.
+ * Left pane: lens tree + project-level empty states. The pane header carries
+ * project, navigation, and status affordances.
  */
 import { useEffect, useState } from 'react';
 import {
-  FolderOpen,
-  FolderPlus,
   AppWindow,
-  ListChecks,
-  ListTree,
-  FolderTree,
-  Loader2,
-  TriangleAlert,
   ArrowDownAZ,
   Clock,
+  Folder,
+  FolderOpen,
+  FolderPlus,
+  GitBranch,
+  History,
+  ListChecks,
+  Loader2,
   Search,
   X,
-  GitBranch,
 } from 'lucide-react';
+import type { RecentProject } from '@shared/types';
+import { CHANNELS } from '@shared/protocol';
 import { collectTodos } from '@renderer/lib/collect-docs';
 import { cn } from '@renderer/lib/utils';
 import { Button } from '@renderer/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from '@renderer/components/ui/dropdown-menu';
 import {
   Tooltip,
   TooltipContent,
@@ -29,14 +36,16 @@ import {
 } from '@renderer/components/ui/tooltip';
 import { projectStore, useProject } from '@renderer/stores/project-store';
 import { lensPrefs, useLensPrefs } from '@renderer/stores/lens-prefs';
-import { pickAndOpenProject, openProjectInNewWindow } from '@renderer/lib/project-actions';
+import {
+  openProject,
+  openProjectInNewWindow,
+  pickAndOpenProject,
+} from '@renderer/lib/project-actions';
 import { LensTree } from '@renderer/components/lens/LensTree';
-import { RawTree } from '@renderer/components/lens/RawTree';
 import { InitDialog } from '@renderer/components/project/InitDialog';
 import { CreateWorkspaceDialog } from '@renderer/components/project/CreateWorkspaceDialog';
 import { SourceControlPanel } from '@renderer/components/git/SourceControlPanel';
 import { gitStore, useGit } from '@renderer/stores/git-store';
-import { PROTOCOL_VERSION } from '@shared/protocol-version';
 
 function EmptyState({ children }: { children: React.ReactNode }): JSX.Element {
   return (
@@ -47,11 +56,14 @@ function EmptyState({ children }: { children: React.ReactNode }): JSX.Element {
 }
 
 export function LeftPane(): JSX.Element {
-  const { phase, error, scan, rawMode, rawTree, view } = useProject();
+  const { phase, error, scan, view } = useProject();
   const { sort, filter, filterOpen } = useLensPrefs();
   const [initOpen, setInitOpen] = useState(false);
   const [wsOpen, setWsOpen] = useState(false);
   const [gitOpen, setGitOpen] = useState(false);
+  const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
+  const [recentLoading, setRecentLoading] = useState(false);
+  const [recentError, setRecentError] = useState<string | null>(null);
   const { snapshot: gitSnapshot, loading: gitLoading, pending: gitPending } = useGit();
 
   useEffect(() => {
@@ -65,15 +77,25 @@ export function LeftPane(): JSX.Element {
   const todoCount =
     phase === 'ready' && scan?.root ? collectTodos(scan.root, null).length : 0;
 
-  const constitutionMissing = phase === 'ready' && !!scan?.hasIris && !scan.constitution.exists;
-  const protocolMismatch =
-    phase === 'ready' &&
-    !!scan?.constitution.exists &&
-    scan.constitution.protocol !== PROTOCOL_VERSION;
   const gitCount = gitSnapshot
     ? Object.values(gitSnapshot.groups).reduce((total, resources) => total + resources.length, 0)
     : 0;
   const gitBranch = gitSnapshot?.branch ?? (gitSnapshot?.detached ? 'HEAD' : 'Git');
+
+  const refreshRecentProjects = async (): Promise<void> => {
+    setRecentLoading(true);
+    setRecentError(null);
+    try {
+      const projects = await window.api.invoke<undefined, RecentProject[]>(
+        CHANNELS.PROJECT_RECENT_LIST,
+      );
+      setRecentProjects(projects);
+    } catch (err) {
+      setRecentError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRecentLoading(false);
+    }
+  };
 
   return (
     <div className="flex h-full flex-col bg-card/50">
@@ -97,6 +119,58 @@ export function LeftPane(): JSX.Element {
             </TooltipTrigger>
             <TooltipContent>打开项目文件夹</TooltipContent>
           </Tooltip>
+
+          <DropdownMenu onOpenChange={(open) => open && void refreshRecentProjects()}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="打开最近的项目">
+                    <History className="!size-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent>打开最近的项目</TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent
+              align="start"
+              className="max-h-80 w-72 max-w-[calc(100vw-2rem)] overflow-y-auto"
+            >
+              <DropdownMenuLabel className="text-xs text-muted-foreground">
+                最近的项目
+              </DropdownMenuLabel>
+              {recentLoading ? (
+                <DropdownMenuItem disabled>
+                  <Loader2 className="animate-spin" />
+                  正在读取…
+                </DropdownMenuItem>
+              ) : recentError ? (
+                <div role="alert" className="break-words px-2 py-1.5 text-xs text-destructive">
+                  {recentError}
+                </div>
+              ) : recentProjects.length === 0 ? (
+                <DropdownMenuItem disabled>还没有最近项目</DropdownMenuItem>
+              ) : (
+                recentProjects.map((project) => (
+                  <DropdownMenuItem
+                    key={project.path}
+                    disabled={!project.exists}
+                    title={project.path}
+                    className="items-start"
+                    onClick={() => void openProject(project.path)}
+                  >
+                    <Folder className="mt-0.5" />
+                    <span className="min-w-0">
+                      <span className="block truncate">{project.name}</span>
+                      <span className="block truncate text-[11px] text-muted-foreground">
+                        {project.exists ? project.path : `${project.path}（路径不可用）`}
+                      </span>
+                    </span>
+                  </DropdownMenuItem>
+                ))
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -110,35 +184,21 @@ export function LeftPane(): JSX.Element {
             </TooltipTrigger>
             <TooltipContent>在新窗口打开项目</TooltipContent>
           </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                disabled={phase !== 'ready'}
-                className={cn(
-                  'relative h-7 w-7',
-                  gitOpen && 'bg-accent text-accent-foreground',
-                  (gitLoading || gitPending) && 'text-primary',
-                )}
-                aria-label={`Git 源代码管理：${gitBranch}`}
-                aria-busy={gitLoading || !!gitPending}
-                onClick={() => setGitOpen((open) => !open)}
-              >
-                <GitBranch className={cn('!size-4', (gitLoading || gitPending) && 'animate-pulse')} />
-                {gitCount > 0 && (
-                  <span className="absolute -right-px -top-px min-w-3 rounded-sm bg-muted px-0.5 text-[9px] leading-3 text-muted-foreground">
-                    {gitCount}
-                  </span>
-                )}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              {gitSnapshot?.branch ? `Git：${gitSnapshot.branch}（${gitCount} 个变更）` : 'Git 源代码管理'}
-            </TooltipContent>
-          </Tooltip>
           {phase === 'ready' && scan?.hasIris && (
             <>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={() => setWsOpen(true)}
+                  >
+                    <FolderPlus className="!size-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>新建工作区（人的手势）</TooltipContent>
+              </Tooltip>
               {scan.root && (
                 <>
                   <Tooltip>
@@ -206,30 +266,34 @@ export function LeftPane(): JSX.Element {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-7 w-7"
-                    onClick={() => setWsOpen(true)}
+                    disabled={phase !== 'ready'}
+                    className={cn(
+                      'relative h-7 w-7',
+                      gitOpen && 'bg-accent text-accent-foreground',
+                      (gitLoading || gitPending) && 'text-primary',
+                    )}
+                    aria-label={`Git 源代码管理：${gitBranch}`}
+                    aria-busy={gitLoading || !!gitPending}
+                    onClick={() => setGitOpen((open) => !open)}
                   >
-                    <FolderPlus className="!size-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>新建工作区（人的手势）</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    onClick={() => void projectStore.toggleRawMode()}
-                  >
-                    {rawMode ? (
-                      <ListTree className="!size-4" />
-                    ) : (
-                      <FolderTree className="!size-4" />
+                    <GitBranch
+                      className={cn(
+                        '!size-4',
+                        (gitLoading || gitPending) && 'animate-pulse',
+                      )}
+                    />
+                    {gitCount > 0 && (
+                      <span className="absolute -right-px -top-px min-w-3 rounded-sm bg-muted px-0.5 text-[9px] leading-3 text-muted-foreground">
+                        {gitCount}
+                      </span>
                     )}
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>{rawMode ? '切回透镜树' : '裸文件树（逃生舱）'}</TooltipContent>
+                <TooltipContent>
+                  {gitSnapshot?.branch
+                    ? `Git：${gitSnapshot.branch}（${gitCount} 个变更）`
+                    : 'Git 源代码管理'}
+                </TooltipContent>
               </Tooltip>
             </>
           )}
@@ -259,24 +323,6 @@ export function LeftPane(): JSX.Element {
               <X className="size-3.5" />
             </button>
           )}
-        </div>
-      )}
-
-      {constitutionMissing && (
-        <button
-          type="button"
-          onClick={() => setInitOpen(true)}
-          className="flex shrink-0 items-start gap-1.5 border-b bg-[var(--rp-gold)]/10 px-2 py-1.5 text-left text-[11px] text-[var(--rp-gold)] hover:bg-[var(--rp-gold)]/20"
-        >
-          <TriangleAlert className="mt-px h-3 w-3 shrink-0" />
-          缺少 .iris/CONVENTIONS.md —— agent 读不到宪法。点击补全。
-        </button>
-      )}
-      {protocolMismatch && (
-        <div className="flex shrink-0 items-start gap-1.5 border-b bg-[var(--rp-gold)]/10 px-2 py-1.5 text-[11px] text-[var(--rp-gold)]">
-          <TriangleAlert className="mt-px h-3 w-3 shrink-0" />
-          宪法 protocol={scan?.constitution.protocol ?? '缺失'}，本应用支持 {PROTOCOL_VERSION}。
-          宪法归你所有，应用不代改——请人工核对差异后更新。
         </div>
       )}
 
@@ -327,17 +373,7 @@ export function LeftPane(): JSX.Element {
           )}
 
           {phase === 'ready' && scan?.hasIris && scan.root && (
-            rawMode ? (
-              rawTree ? (
-                <RawTree root={rawTree} />
-              ) : (
-                <EmptyState>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                </EmptyState>
-              )
-            ) : (
-              <LensTree root={scan.root} />
-            )
+            <LensTree root={scan.root} />
           )}
         </div>
       )}
@@ -345,7 +381,6 @@ export function LeftPane(): JSX.Element {
       <InitDialog
         open={initOpen}
         onClose={() => setInitOpen(false)}
-        missingConstitutionOnly={constitutionMissing}
       />
       <CreateWorkspaceDialog open={wsOpen} onClose={() => setWsOpen(false)} />
     </div>
