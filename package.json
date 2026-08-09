@@ -17,9 +17,12 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.preload.json && tsc --noEmit -p tsconfig.web.json",
     "smoke": "node scripts/smoke-launch.mjs",
     "gen:icons": "node scripts/gen-icons.mjs",
+    "gen:lucide-icon-names": "node scripts/generate-lucide-icon-names.mjs",
+    "licenses:generate": "node scripts/generate-third-party-notices.mjs",
+    "licenses:check": "node scripts/generate-third-party-notices.mjs --check",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dist": "npm run build && node scripts/clean-release.mjs && electron-builder --win --x64"
+    "dist": "npm run build && npm run licenses:check && node scripts/clean-release.mjs && electron-builder --win --x64"
   },
   "dependencies": {
     "@xterm/addon-search": "^0.17.0-beta.256",
@@ -27,10 +30,17 @@
     "@xterm/headless": "^6.1.0-beta.256",
     "chokidar": "^5.0.0",
     "gray-matter": "^4.0.3",
-    "node-pty": "^1.1.0"
+    "i18next": "^26.3.6",
+    "node-pty": "^1.1.0",
+    "react-i18next": "^17.0.11"
   },
   "devDependencies": {
     "@codemirror/lang-markdown": "^6.5.0",
+    "@codemirror/language": "^6.12.3",
+    "@codemirror/language-data": "^6.5.2",
+    "@codemirror/state": "^6.6.0",
+    "@codemirror/view": "^6.43.1",
+    "@lezer/highlight": "^1.2.3",
     "@milkdown/crepe": "^7.21.2",
     "@milkdown/kit": "^7.21.2",
     "@radix-ui/react-context-menu": "^2.3.0",
@@ -51,10 +61,12 @@
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "codemirror": "^6.0.2",
+    "dompurify": "^3.4.13",
     "electron": "^31.0.2",
     "electron-builder": "^26.15.2",
     "electron-vite": "^2.2.0",
-    "front-cpu": "file:../dashboard/cpu-pipeline",
+    "front-cpu": "^0.3.0",
+    "jsdom": "^26.1.0",
     "lucide-react": "^1.14.0",
     "mermaid": "^11.16.1",
     "png-to-ico": "^2.1.8",
