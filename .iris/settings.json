@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "prompts": {
+    "project": ""
+  },
+  "toolbar": {
+    "actions": [
+      {
+        "icon": "play",
+        "description": "启动开发服务器",
+        "command": "npm run dev",
+        "terminal": "system"
+      },
+      {
+        "icon": "rocket",
+        "description": "编译版本",
+        "command": "npm run build",
+        "terminal": "iris"
+      }
+    ]
+  },
+  "agentContext": {
+    "entries": [
+      "AGENTS.md",
+      "CLAUDE.md"
+    ]
+  }
+}
