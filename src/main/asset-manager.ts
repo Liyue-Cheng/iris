@@ -15,6 +15,7 @@ import type {
   AssetInventory,
   AssetKind,
 } from '@shared/types';
+import { mainT } from './i18n';
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -67,7 +68,7 @@ export class AssetManager {
     try {
       raw = await fs.readFile(doc.abs, 'utf8');
     } catch (err) {
-      throw new AssetError('ReadFailed', messageFor(`cannot read ${docPath}`, err));
+      throw new AssetError('ReadFailed', messageFor(mainT('error.assetRead', { path: docPath }), err));
     }
 
     const references = collectReferences(projectRoot, docPath, raw);
@@ -104,7 +105,10 @@ export class AssetManager {
       }
     } catch (err) {
       if (!isNotFound(err)) {
-        throw new AssetError('ReadFailed', messageFor(`cannot list ${directoryPath}`, err));
+        throw new AssetError(
+          'ReadFailed',
+          messageFor(mainT('error.assetList', { path: directoryPath }), err),
+        );
       }
     }
 
@@ -170,17 +174,17 @@ export class AssetManager {
   ): Promise<AssetImportResult> {
     await this.requireDocument(projectRoot, payload.docPath);
     if (!payload.name || !payload.bytes || typeof payload.mimeType !== 'string') {
-      throw new AssetError('InvalidPayload', 'docPath, name, mimeType and bytes are required');
+      throw new AssetError('InvalidPayload', mainT('error.assetPayloadRequired'));
     }
     const bytes = Buffer.from(payload.bytes);
-    if (bytes.length === 0) throw new AssetError('InvalidPayload', 'asset is empty');
+    if (bytes.length === 0) throw new AssetError('InvalidPayload', mainT('error.assetEmpty'));
 
     const detected = detectImportedFile(payload.name, payload.mimeType, bytes);
     const limit = detected.kind === 'image' ? MAX_IMAGE_BYTES : MAX_ATTACHMENT_BYTES;
     if (bytes.length > limit) {
       throw new AssetError(
         'TooLarge',
-        `${payload.name} is ${bytes.length} bytes; limit is ${limit} bytes`,
+        mainT('error.assetTooLarge', { name: payload.name, size: bytes.length, limit }),
       );
     }
 
@@ -212,7 +216,9 @@ export class AssetManager {
       if (!(await pathExists(target))) break;
       target = '';
     }
-    if (!target) throw new AssetError('WriteFailed', `cannot allocate a unique name for ${payload.name}`);
+    if (!target) {
+      throw new AssetError('WriteFailed', mainT('error.assetUniqueName', { name: payload.name }));
+    }
 
     const temp = join(directoryAbs, `.iris-asset-${process.pid}-${Date.now()}.tmp`);
     let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
@@ -227,7 +233,10 @@ export class AssetManager {
       await handle?.close().catch(() => {});
       await fs.unlink(temp).catch(() => {});
       if (!directoryExisted) await fs.rmdir(directoryAbs).catch(() => {});
-      throw new AssetError('WriteFailed', messageFor(`cannot write ${payload.name}`, err));
+      throw new AssetError(
+        'WriteFailed',
+        messageFor(mainT('error.assetWrite', { name: payload.name }), err),
+      );
     }
 
     const path = toProjectPath(projectRoot, target);
@@ -253,23 +262,29 @@ export class AssetManager {
     await requireSafeDirectoryIfPresent(projectRoot, directoryAbs);
     const target = resolveInside(projectRoot, assetPath);
     if (dirname(target) !== directoryAbs) {
-      throw new AssetError('InvalidPayload', `${assetPath} is not owned by ${docPath}`);
+      throw new AssetError(
+        'InvalidPayload',
+        mainT('error.assetNotOwned', { assetPath, docPath }),
+      );
     }
     const inventory = await this.list(projectRoot, docPath);
     const asset = inventory.assets.find((item) => normalize(item.path) === normalize(assetPath));
     if (!asset || asset.health !== 'orphan') {
-      throw new AssetError('Referenced', `${assetPath} is still referenced or does not exist`);
+      throw new AssetError('Referenced', mainT('error.assetReferenced', { path: assetPath }));
     }
     const stat = await fs.lstat(target).catch(() => null);
     if (!stat?.isFile() || stat.isSymbolicLink()) {
-      throw new AssetError('InvalidPayload', `${assetPath} is not a regular asset file`);
+      throw new AssetError('InvalidPayload', mainT('error.assetNotRegularFile', { path: assetPath }));
     }
     try {
       await trashItem(target);
       await fs.rmdir(directoryAbs).catch(() => {});
       return { path: assetPath };
     } catch (err) {
-      throw new AssetError('WriteFailed', messageFor(`cannot trash ${assetPath}`, err));
+      throw new AssetError(
+        'WriteFailed',
+        messageFor(mainT('error.assetTrash', { path: assetPath }), err),
+      );
     }
   }
 
@@ -291,14 +306,14 @@ export class AssetManager {
       bytes = embedded.bytes;
     } else {
       const target = resolveMarkdownTarget(projectRoot, docPath, source);
-      if (!target) throw new AssetError('InvalidPayload', 'only local or data-image references can be adopted');
+      if (!target) throw new AssetError('InvalidPayload', mainT('error.assetAdoptLocalOnly'));
       const companion = resolveInside(projectRoot, companionPath(docPath));
       if (isInside(companion, target)) {
-        throw new AssetError('InvalidPayload', 'asset is already inside the companion directory');
+        throw new AssetError('InvalidPayload', mainT('error.assetAlreadyManaged'));
       }
       const stat = await fs.lstat(target).catch(() => null);
       if (!stat?.isFile() || stat.isSymbolicLink()) {
-        throw new AssetError('InvalidPayload', 'referenced asset is not a regular file');
+        throw new AssetError('InvalidPayload', mainT('error.assetReferenceNotFile'));
       }
       resolveInside(projectRoot, await fs.realpath(target));
       name = basename(target);
@@ -310,7 +325,7 @@ export class AssetManager {
     const next = rewriteMarkdownUrl(raw, source, imported.markdownUrl);
     const current = await fs.readFile(doc.abs, 'utf8');
     if (current !== raw) {
-      throw new AssetError('WriteFailed', `${docPath} changed during asset adoption`);
+      throw new AssetError('WriteFailed', mainT('error.assetDocumentChanged', { path: docPath }));
     }
     const temp = `${doc.abs}.tmp.${process.pid}.${Date.now()}`;
     try {
@@ -318,7 +333,10 @@ export class AssetManager {
       await fs.rename(temp, doc.abs);
     } catch (err) {
       await fs.unlink(temp).catch(() => {});
-      throw new AssetError('WriteFailed', messageFor(`cannot update ${docPath}`, err));
+      throw new AssetError(
+        'WriteFailed',
+        messageFor(mainT('error.assetDocumentUpdate', { path: docPath }), err),
+      );
     }
     return imported;
   }
@@ -338,15 +356,15 @@ export class AssetManager {
   ): Promise<{ abs: string }> {
     const portable = docPath.replace(/\\/g, '/');
     if (!portable.startsWith('.iris/') || !portable.toLowerCase().endsWith('.md')) {
-      throw new AssetError('InvalidPayload', `not an Iris Markdown document: ${docPath}`);
+      throw new AssetError('InvalidPayload', mainT('error.assetNotIrisDocument', { path: docPath }));
     }
     const abs = resolveInside(projectRoot, docPath);
     const stat = await fs.lstat(abs).catch(() => null);
     if (!stat?.isFile() || stat.isSymbolicLink()) {
-      throw new AssetError('InvalidPayload', `document is not a regular file: ${docPath}`);
+      throw new AssetError('InvalidPayload', mainT('error.assetDocumentNotFile', { path: docPath }));
     }
     const real = await fs.realpath(abs).catch(() => null);
-    if (!real) throw new AssetError('ReadFailed', `cannot resolve document: ${docPath}`);
+    if (!real) throw new AssetError('ReadFailed', mainT('error.assetDocumentResolve', { path: docPath }));
     resolveInside(projectRoot, real);
     return { abs };
   }
@@ -427,7 +445,7 @@ function rewriteMarkdownUrl(markdown: string, source: string, replacement: strin
   });
   const unique = [...new Map(spans.map((span) => [`${span.start}:${span.end}`, span])).values()];
   if (unique.length === 0) {
-    throw new AssetError('InvalidPayload', 'the selected URL is no longer present in the document');
+    throw new AssetError('InvalidPayload', mainT('error.assetUrlMissing'));
   }
   let next = markdown;
   for (const span of unique.sort((a, b) => b.start - a.start)) {
@@ -462,10 +480,10 @@ function detectImportedFile(name: string, declaredMime: string, bytes: Buffer): 
   const extension = extname(name).toLowerCase();
   const claimsImage = declaredMime.toLowerCase().startsWith('image/') || IMAGE_EXTENSIONS.has(extension);
   if (extension === '.svg' || declaredMime.toLowerCase() === 'image/svg+xml') {
-    throw new AssetError('UnsupportedType', 'SVG assets are disabled because they can contain active content');
+    throw new AssetError('UnsupportedType', mainT('error.assetSvgDisabled'));
   }
   if (claimsImage && !image) {
-    throw new AssetError('UnsupportedType', `${name} does not match a supported raster image signature`);
+    throw new AssetError('UnsupportedType', mainT('error.assetSignatureMismatch', { name }));
   }
   if (image) return image;
   return detectStoredFile(name);
@@ -547,7 +565,7 @@ function markdownUrlFor(docPath: string, assetPath: string): string {
 function resolveInside(root: string, relPath: string): string {
   const abs = normalize(resolve(root, relPath));
   if (abs !== root && !abs.startsWith(root + sep)) {
-    throw new AssetError('InvalidPayload', `path is outside project: ${relPath}`);
+    throw new AssetError('InvalidPayload', mainT('error.assetPathOutsideProject', { path: relPath }));
   }
   return abs;
 }
@@ -564,7 +582,7 @@ function isInside(parent: string, child: string): boolean {
 async function requireSafeDirectoryIfPresent(projectRoot: string, path: string): Promise<void> {
   const stat = await fs.lstat(path).catch(() => null);
   if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) {
-    throw new AssetError('InvalidPayload', `${path} is not a regular asset directory`);
+    throw new AssetError('InvalidPayload', mainT('error.assetDirectoryNotRegular', { path }));
   }
   if (stat) resolveInside(projectRoot, await fs.realpath(path));
 }

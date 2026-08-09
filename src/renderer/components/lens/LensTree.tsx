@@ -13,6 +13,7 @@
  * doubles as a terminal hub.
  */
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Archive,
   ChevronDown,
@@ -29,8 +30,8 @@ import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DocContextMenu } from '@renderer/components/doc/DocContextMenu';
 import {
   aggregateDocState,
+  selectedSessionIdForAnchor,
   sessionAnchorKey,
-  sessionStore,
   useSessions,
   workspaceAnchorKey,
 } from '@renderer/stores/session-store';
@@ -42,10 +43,10 @@ import { useSettings } from '@renderer/stores/settings-store';
 import { closeSession, openWorkspaceSession } from '@renderer/lib/session-actions';
 import { StatusBadge } from '@renderer/components/ui/status-badge';
 import { SessionDot } from '@renderer/components/ui/session-dot';
+import { LauncherMenuItems } from '@renderer/components/layout/RightPane';
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from '@renderer/components/ui/dropdown-menu';
@@ -57,6 +58,7 @@ import {
 } from '@renderer/components/ui/context-menu';
 import { setDocDragData } from '@renderer/lib/doc-drag';
 import { projectStore, useProject } from '@renderer/stores/project-store';
+import { compareDisplayText } from '@renderer/lib/locale';
 
 const TYPE_ORDER: DocType[] = ['status', 'issue', 'report', 'misc'];
 
@@ -83,7 +85,7 @@ function sortDocs(docs: IrisDoc[], sort: LensSort): IrisDoc[] {
   if (sort === 'mtime') {
     out.sort((a, b) => b.mtimeMs - a.mtimeMs);
   } else {
-    out.sort((a, b) => docDisplayTitle(a).localeCompare(docDisplayTitle(b), 'zh'));
+    out.sort((a, b) => compareDisplayText(docDisplayTitle(a), docDisplayTitle(b)));
   }
   return out;
 }
@@ -98,8 +100,8 @@ function matchesFilter(doc: IrisDoc, filter: string): boolean {
 }
 
 function DocRow({ doc, archived }: { doc: IrisDoc; archived: boolean }): JSX.Element {
-  const { selectedPath } = useProject();
-  const selected = selectedPath === doc.path;
+  const { view } = useProject();
+  const selected = view.kind === 'doc' && view.path === doc.path;
 
   return (
     <DocContextMenu docPath={doc.path} docName={doc.name}>
@@ -139,6 +141,7 @@ function TypeSection({
   archived: boolean;
   workspacePath: string;
 }): JSX.Element | null {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(true);
   const { sort, filter } = useLensPrefs();
   const { sessions } = useSessions();
@@ -173,7 +176,7 @@ function TypeSection({
       <div className="flex items-center gap-1 pr-1">
         <button
           type="button"
-          title={open ? '折叠' : '展开'}
+          title={open ? t('layout.collapse') : t('layout.expand')}
           onClick={() => setOpen(!open)}
           className="shrink-0 px-1 py-0.5 text-muted-foreground hover:text-foreground"
         >
@@ -185,7 +188,7 @@ function TypeSection({
         </button>
         <button
           type="button"
-          title={`打开 ${label} 集合视图`}
+          title={t('layout.openCollection', { type: label })}
           onClick={() =>
             projectStore.openCollection(type, workspacePath === '.iris' ? null : workspacePath)
           }
@@ -198,7 +201,7 @@ function TypeSection({
         {!archived && (
           <button
             type="button"
-            title={`新建 ${label} 文档`}
+            title={t('layout.newDocument', { type: label })}
             onClick={() => openCreateDialog({ workspacePath, type })}
             className="rounded-sm p-0.5 text-muted-foreground/0 hover:bg-muted hover:!text-foreground group-hover/section:text-muted-foreground"
           >
@@ -213,7 +216,7 @@ function TypeSection({
           ))}
           {visibleDocs.length === 0 && (
             <div className="px-7 py-0.5 text-xs text-muted-foreground/50">
-              {type === 'issue' && docs.length > 0 ? '无活动 issue' : '空'}
+              {type === 'issue' && docs.length > 0 ? t('layout.noActiveIssues') : t('common.empty')}
             </div>
           )}
         </div>
@@ -243,6 +246,7 @@ function NewWorkspaceSessionButton({
   workspacePath: string;
   label: string;
 }): JSX.Element {
+  const { t } = useTranslation();
   const settings = useSettings();
   const agents = settings?.agents ?? [];
   return (
@@ -250,19 +254,18 @@ function NewWorkspaceSessionButton({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          title="新建会话"
+          title={t('layout.newSession')}
           className="shrink-0 rounded-sm p-0.5 text-muted-foreground/0 hover:!text-foreground group-hover/hub:text-muted-foreground"
         >
           <Plus className="h-3.5 w-3.5" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuLabel className="max-w-52 truncate">{label}（无聚焦兜底）</DropdownMenuLabel>
-        {agents.map((a) => (
-          <DropdownMenuItem key={a.id} onClick={() => void openWorkspaceSession(workspacePath, a.id)}>
-            用 {a.label} 打开
-          </DropdownMenuItem>
-        ))}
+      <DropdownMenuContent align="end" className="max-h-80 w-64 overflow-y-auto">
+        <DropdownMenuLabel className="max-w-52 truncate">{t('layout.workspaceFallback', { name: label })}</DropdownMenuLabel>
+        <LauncherMenuItems
+          agents={agents}
+          onSelect={(agentId) => void openWorkspaceSession(workspacePath, agentId)}
+        />
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -275,7 +278,8 @@ function NewWorkspaceSessionButton({
  * stages that session in the full-width terminal. Empty → nothing.
  */
 function WorkspaceSessionList({ workspacePath }: { workspacePath: string }): JSX.Element | null {
-  const { sessions, activeSessionId } = useSessions();
+  const { t } = useTranslation();
+  const { sessions } = useSessions();
   const { view } = useProject();
   const hubKey = workspaceAnchorKey(workspacePath);
   const hubSessions = sessions.filter((s) => sessionAnchorKey(s) === hubKey);
@@ -288,17 +292,14 @@ function WorkspaceSessionList({ workspacePath }: { workspacePath: string }): JSX
   return (
     <div>
       {hubSessions.map((s) => {
-        const active = isThisHubView && activeSessionId === s.id;
+        const active = isThisHubView && selectedSessionIdForAnchor(hubKey) === s.id;
         const label = s.terminalTitle ?? s.displayName;
         return (
           <ContextMenu key={s.id}>
             <ContextMenuTrigger asChild>
               <button
                 type="button"
-                onClick={() => {
-                  selectHub(workspacePath);
-                  sessionStore.select(s.id);
-                }}
+                onClick={() => void projectStore.activateSession(s.id)}
                 className={cn(
                   'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm leading-tight',
                   active ? 'bg-accent text-accent-foreground' : 'hover:bg-muted',
@@ -319,7 +320,7 @@ function WorkspaceSessionList({ workspacePath }: { workspacePath: string }): JSX
                 className="text-destructive focus:text-destructive"
                 onClick={() => void closeSession(s.id)}
               >
-                关闭会话
+                {t('layout.closeSession')}
               </ContextMenuItem>
             </ContextMenuContent>
           </ContextMenu>
@@ -352,9 +353,10 @@ function WorkspaceSection({
   depth: number;
   parentArchived: boolean;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [sectionsOpen, setSectionsOpen] = useState(true);
   const { view } = useProject();
-  const { sessions, activeSessionId } = useSessions();
+  const { sessions } = useSessions();
   const archived = ws.archived || parentArchived;
   const isRoot = depth === 0;
   const workspacePath = isRoot ? ROOT_WS_PATH : ws.path;
@@ -365,7 +367,12 @@ function WorkspaceSection({
     : view.kind === 'workspace' && view.path === ws.path;
   const hubKey = workspaceAnchorKey(workspacePath);
   const hubSessionStaged =
-    isThisHubView && sessions.some((s) => sessionAnchorKey(s) === hubKey && s.id === activeSessionId);
+    isThisHubView &&
+    sessions.some(
+      (session) =>
+        sessionAnchorKey(session) === hubKey &&
+        session.id === selectedSessionIdForAnchor(hubKey),
+    );
   const headerSelected = isThisHubView && !hubSessionStaged;
 
   return (
@@ -380,7 +387,7 @@ function WorkspaceSection({
       >
         <button
           type="button"
-          title={sectionsOpen ? '折叠文档区' : '展开文档区'}
+          title={sectionsOpen ? t('layout.collapseDocuments') : t('layout.expandDocuments')}
           onClick={() => setSectionsOpen(!sectionsOpen)}
           className="shrink-0 px-1 py-1.5 text-muted-foreground hover:text-foreground"
         >
@@ -395,21 +402,21 @@ function WorkspaceSection({
             <span className="truncate">{ws.name}</span>
             <span className="ml-1 flex items-center gap-0.5 rounded-sm bg-muted px-1 py-px text-[11px] font-normal text-muted-foreground">
               <Archive className="h-2.5 w-2.5" />
-              已归档
+              {t('layout.archived')}
             </span>
           </span>
         ) : (
           <>
             <button
               type="button"
-              title={isRoot ? '项目根 — 终端独占全屏' : '子工作区 — 终端独占全屏'}
+              title={isRoot ? t('layout.rootHubHint') : t('layout.workspaceHubHint')}
               onClick={() => selectHub(workspacePath)}
               className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-[13px] font-semibold"
             >
               {isRoot && <FolderRoot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
               <span className="truncate">{ws.name}</span>
             </button>
-            <NewWorkspaceSessionButton workspacePath={workspacePath} label={isRoot ? '项目根' : ws.name} />
+            <NewWorkspaceSessionButton workspacePath={workspacePath} label={isRoot ? t('layout.projectRoot') : ws.name} />
           </>
         )}
       </div>

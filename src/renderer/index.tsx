@@ -6,23 +6,17 @@ import { initSettingsStore } from './stores/settings-store';
 import { hydrateSessions } from './stores/session-store';
 import { editorStore } from './stores/editor-store';
 import { wireInterrupts } from './cpu/interrupts';
-import { openProject } from './lib/project-actions';
+import { offerPromptProjectionRepair, openProject } from './lib/project-actions';
 import { CHANNELS, EVENTS } from '@shared/protocol';
 import type { WindowBootstrapState } from '@shared/types';
 import { projectStore } from './stores/project-store';
+import { hydrateProjectSettings } from './stores/project-settings-store';
 
 async function bootstrap(): Promise<void> {
-  // Dev-only: the front-cpu instruction console (separate debug entry, zero
-  // production cost). Importing it initializes the logging provider; every
-  // dispatch then prints payload/response/stage-timing to DevTools.
-  if (import.meta.env.DEV) {
-    const { cpuConsole } = await import('front-cpu/debug');
-    cpuConsole.setLocale('zh-CN');
-  }
-
   // Settings (theme included) load before first paint — no flash of the
   // wrong theme; index.html's static data-theme covers the load gap.
   await initSettingsStore();
+
   wireInterrupts();
 
   // A conflict or write failure rejects the close handshake and leaves the
@@ -38,6 +32,7 @@ async function bootstrap(): Promise<void> {
   );
   if (bootstrapState.activeScope) {
     await projectStore.restoreActive(bootstrapState.activeScope);
+    await hydrateProjectSettings();
     // Session projection is event-fed; reloads recover the still-live pool
     // without replaying project.open and restarting project backends.
     await hydrateSessions();
@@ -50,6 +45,8 @@ async function bootstrap(): Promise<void> {
       <App />
     </React.StrictMode>,
   );
+
+  if (bootstrapState.activeScope) void offerPromptProjectionRepair();
 
   // Open the project THIS window is bound to (main is the authority on the
   // window→project binding; multi-window, each window gets its own root).

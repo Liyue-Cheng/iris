@@ -1,6 +1,7 @@
 import type { DocImageResult } from '@shared/types';
 import { CHANNELS } from '@shared/protocol';
 import { projectScopeState, sameProjectScope } from '@renderer/stores/project-scope-state';
+import { translate } from '@renderer/i18n';
 
 const DIRECT_IMAGE_PROTOCOL = /^(?:data:image\/(?:png|jpeg|gif|webp|avif);|blob:|https:)/i;
 const BLOCKED_PROTOCOL = /^(?:[a-z][a-z\d+.-]*:|[/\\])/i;
@@ -28,7 +29,9 @@ export function markImageLoadFailure(event: Event): void {
   const image = event.currentTarget instanceof HTMLImageElement ? event.currentTarget : null;
   if (!image) return;
   image.dataset.loadFailed = 'true';
-  image.alt = image.alt ? `图片加载失败：${image.alt}` : '图片加载失败';
+  image.alt = image.alt
+    ? translate('editor.imageFailedNamed', { alt: image.alt })
+    : translate('editor.imageFailed');
 }
 
 function failedImageUrl(): string {

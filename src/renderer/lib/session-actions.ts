@@ -10,6 +10,7 @@ import {
   getLastTerminalDims,
   type TerminalLayoutScope,
 } from '@renderer/stores/session-store';
+import type { SessionInfo } from '@shared/types';
 import { editorStore } from '@renderer/stores/editor-store';
 import { projectStore } from '@renderer/stores/project-store';
 
@@ -22,24 +23,24 @@ export async function openSession(docPath: string | null, agentId: string): Prom
   // the doc on spawn — flush pending editor edits FIRST so it reads the
   // current bytes, not the last-saved ones.
   if (!(await editorStore.flushBeforeSwitch('before-external-action'))) return;
-  // The right pane is anchor-driven: it shows only the sessions whose docPath
-  // matches the middle pane's view anchor. A spawn sets activeSessionId but
-  // NOT the view, so opening under an anchor other than the current view
-  // stages the new session invisibly — e.g. the root-node + while a doc is
-  // selected spawns a root session the doc-anchored pane filters out. Bring
-  // the view to the session's anchor so the new terminal actually surfaces.
-  // See issue 2026-06-16-项目根开终端右栏不切换.
-  if (docPath === null) await projectStore.selectRoot();
-  else await projectStore.selectDoc(docPath);
+  const navigated =
+    docPath === null
+      ? await projectStore.selectRoot()
+      : await projectStore.selectDoc(docPath);
+  if (!navigated) return;
   const scope: TerminalLayoutScope =
     docPath === null ? { kind: 'root-hub' } : { kind: 'doc-right-pane' };
   const { cols, rows } = initialTerminalDims(scope);
-  await pipeline.dispatch('session.open', {
+  const created = await pipeline.dispatch<
+    { docPath: string | null; agentId: string; cols: number; rows: number },
+    SessionInfo
+  >('session.open', {
     docPath,
     agentId,
     cols,
     rows,
   });
+  await projectStore.activateSession(created.id);
 }
 
 /**
@@ -50,20 +51,33 @@ export async function openSession(docPath: string | null, agentId: string): Prom
  */
 export async function openWorkspaceSession(workspacePath: string, agentId: string): Promise<void> {
   if (!(await editorStore.flushBeforeSwitch('before-external-action'))) return;
-  if (workspacePath === '.iris') await projectStore.selectRoot();
-  else await projectStore.selectWorkspace(workspacePath);
+  const navigated =
+    workspacePath === '.iris'
+      ? await projectStore.selectRoot()
+      : await projectStore.selectWorkspace(workspacePath);
+  if (!navigated) return;
   const scope: TerminalLayoutScope =
     workspacePath === '.iris'
       ? { kind: 'root-hub' }
       : { kind: 'workspace-hub', workspacePath };
   const { cols, rows } = initialTerminalDims(scope);
-  await pipeline.dispatch('session.open', {
+  const created = await pipeline.dispatch<
+    {
+      docPath: null;
+      workspacePath: string;
+      agentId: string;
+      cols: number;
+      rows: number;
+    },
+    SessionInfo
+  >('session.open', {
     docPath: null,
     workspacePath,
     agentId,
     cols,
     rows,
   });
+  await projectStore.activateSession(created.id);
 }
 
 export async function closeSession(sessionId: string): Promise<void> {

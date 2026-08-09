@@ -24,9 +24,12 @@ export type ThemeId =
   | 'fairyfloss';
 
 export type EditorConflictPolicy = 'ask' | 'overwrite';
+export type LocalePreference = 'system' | 'zh-CN' | 'en-US';
+export type AppLocale = Exclude<LocalePreference, 'system'>;
 
 export interface Settings {
   version: 1;
+  locale: LocalePreference;
   appearance: {
     theme: ThemeId;
     /** UI font stack; LXGW WenKai inherited from the Marina design language. */
@@ -49,6 +52,11 @@ export interface Settings {
     selectOnCopy: boolean;
     /** Terminal right click: context menu, or paste straight away. */
     terminalRightClick: 'menu' | 'paste';
+    /** Dragging an Iris document into the terminal pastes either its project-
+     *  relative path or the existing metadata-prefixed content snapshot. */
+    terminalDocDrop: 'path' | 'content';
+    /** Check every GFM task checkbox when an issue transitions to Done. */
+    autoCheckTodosOnDone: boolean;
     /** Confirm before closing the window while live sessions exist. */
     confirmOnQuit: boolean;
     /** Enable Crepe's BlockEdit feature: the hover block handle (＋ / drag)
@@ -84,6 +92,9 @@ export interface Settings {
     /** Most-recently-used project folders. Independent from openRoots so
      *  closing a window never erases the welcome page's history. */
     recentRoots: string[];
+    /** Machine-local trust for executable project settings. Keyed by the
+     * canonical project root; value is the approved project-settings revision. */
+    commandTrust: Record<string, string>;
   };
   /**
    * Agent CLIs offered by the "open with X" gesture. The shell is dumb:
@@ -115,23 +126,33 @@ export interface AgentConfig {
   label: string;
   /** Command line executed in the shell; '' means a bare shell. */
   command: string;
-  /**
-   * Context-injection channel (informational — the work happens elsewhere):
-   * 'hook' = a SessionStart hook in the agent's own config calls the
-   * focus-context script; 'flag' = the command line itself carries a flag
-   * (e.g. aider --read $env:FOCUS_DOC); 'none'/absent = degrade to the
-   * AGENTS.md guidance (the protocol's documented fallback).
-   */
-  injection?: 'hook' | 'flag' | 'none';
-  /**
-   * What the session does once the agent command exits:
-   * 'keep-shell'/absent = drop back to an interactive shell (so you can keep
-   * typing instead of facing a dead terminal); 'close' = let the host shell
-   * exit with the command, ending the session. No effect on bare-shell
-   * agents (command === ''), which already are the shell.
-   */
-  onExit?: 'keep-shell' | 'close';
 }
+
+/**
+ * App-owned launcher templates. They populate settings but never own a
+ * launcher after it has been added: users can edit, duplicate, reorder, or
+ * remove every field. Context adapters are intentionally a separate registry.
+ */
+export const AGENT_PRESETS: readonly AgentConfig[] = [
+  { id: 'claude', label: 'claude', command: 'claude' },
+  { id: 'codex', label: 'codex', command: 'codex' },
+  { id: 'gemini', label: 'gemini', command: 'gemini' },
+  { id: 'qwen', label: 'qwen', command: 'qwen' },
+  { id: 'cursor', label: 'cursor', command: 'cursor-agent' },
+  { id: 'pi', label: 'pi', command: 'pi' },
+  {
+    id: 'aider',
+    label: 'aider',
+    command: 'aider --read $env:FOCUS_DOC',
+  },
+  {
+    id: 'goose',
+    label: 'goose',
+    command:
+      'goose run --interactive --system "$((powershell -NoProfile -ExecutionPolicy Bypass -File \\"$env:USERPROFILE/.iris/focus-context.ps1\\") -join \\"`n\\")"',
+  },
+  { id: 'shell', label: 'terminal', command: '' },
+];
 
 // ──────────────────────────────────────────────────────────────────
 // Context-injection adapter state (round-3 A 条) — agent:injection-state
@@ -171,7 +192,13 @@ export interface InjectionState {
  *  - missing : file exists but carries no block.
  *  - drifted : body differs from the built-in source or the tag has attrs.
  *  - ok      : attribute-free block with the exact built-in body. */
-export type SoftwareBlockStateUi = 'no-entry' | 'missing' | 'drifted' | 'ok';
+export type SoftwareBlockStateUi =
+  | 'no-entry'
+  | 'missing'
+  | 'drifted'
+  | 'duplicate'
+  | 'write-failed'
+  | 'ok';
 
 export interface SoftwareEntryStatus {
   /** Project-root-relative path. */
@@ -181,19 +208,46 @@ export interface SoftwareEntryStatus {
   state: SoftwareBlockStateUi;
 }
 
-export type ProjectPromptStateUi = 'missing' | 'synced' | 'conflict';
+export type ProjectPromptStateUi =
+  | 'missing'
+  | 'synced'
+  | 'conflict'
+  | 'drifted'
+  | 'partial'
+  | 'invalid-settings';
 
 export interface ProjectPromptConflict {
   path: string;
   text: string;
 }
 
+export type ProjectPromptEntryState =
+  | 'synced'
+  | 'missing'
+  | 'drifted'
+  | 'duplicate'
+  | 'write-failed';
+
+export interface ProjectPromptEntryStatus {
+  path: string;
+  isStandard: boolean;
+  state: ProjectPromptEntryState;
+  text: string | null;
+  error: string | null;
+}
+
 export interface SoftwarePromptState {
+  /** Canonical app-owned software block, independent of any on-disk drift. */
+  softwareText: string;
   entries: SoftwareEntryStatus[];
+  /** Supported entry files not currently enrolled in this project's projection set. */
+  availableEntries: string[];
   project: {
     state: ProjectPromptStateUi;
     text: string;
     conflicts: ProjectPromptConflict[];
+    entries: ProjectPromptEntryStatus[];
+    error: string | null;
   };
 }
 
@@ -284,12 +338,6 @@ export interface IrisDoc {
   frontmatter: Record<string, unknown> | null;
   /** True when frontmatter exists but failed to parse — degrade, don't hide. */
   frontmatterBroken: boolean;
-  /**
-   * frontmatter `labels:` — SOFT values passed through verbatim. A YAML
-   * sequence yields its items; a lone scalar yields a singleton (literal
-   * parse, no comma-splitting heuristics); absent/other shapes yield [].
-   */
-  labels: string[];
   /** GFM task-list items in the body (read side of the todo panel). */
   todos: DocTodo[];
   mtimeMs: number;
@@ -334,6 +382,61 @@ export interface ProjectScope {
   /** Monotonic per-window generation; changes only on a real root switch. */
   generation: number;
 }
+
+// ──────────────────────────────────────────────────────────────────
+// Project-level App settings (.iris/settings.json)
+// ──────────────────────────────────────────────────────────────────
+
+export type ProjectCommandTerminal = 'iris' | 'system';
+
+export interface ProjectToolbarAction {
+  /** Canonical Lucide icon slug, e.g. "rocket" or "database-backup". */
+  icon: string;
+  /** Human-facing tooltip, accessible name, and overflow-menu label. */
+  description: string;
+  /** Plain command line executed by the user's host shell. */
+  command: string;
+  /** New Iris root-hub PTY, or an external operating-system terminal. */
+  terminal: ProjectCommandTerminal;
+}
+
+export interface ProjectSettings {
+  version: 1;
+  prompts: {
+    /** Canonical project guidance projected into managed entry-file blocks. */
+    project: string;
+  };
+  agentContext: {
+    /** Explicit project-root entry files receiving both managed prompt layers. */
+    entries: string[];
+  };
+  toolbar: {
+    /** Array order is toolbar order; actions deliberately have no stored id. */
+    actions: ProjectToolbarAction[];
+  };
+}
+
+export interface ProjectSettingsSnapshot {
+  settings: ProjectSettings;
+  /** SHA-256 of the exact file bytes, or "missing" before first save. */
+  revision: string;
+  exists: boolean;
+  /** Invalid individual actions are omitted from settings and reported here. */
+  diagnostics: string[];
+  /** Whole-file parse/schema failures block edits until repaired on disk. */
+  error: string | null;
+  /** Derived from machine-level trust; never persisted in the project. */
+  trusted: boolean;
+}
+
+export interface ProjectPromptUpdateResult {
+  snapshot: ProjectSettingsSnapshot;
+  prompt: SoftwarePromptState['project'];
+}
+
+export type ProjectCommandRunResult =
+  | { kind: 'iris'; session: SessionInfo }
+  | { kind: 'system'; pid: number };
 
 /** Renderer boot distinguishes a requested first open from an already-live project. */
 export interface WindowBootstrapState {
@@ -480,6 +583,8 @@ export interface ProjectOpenResult {
   scope: ProjectScope;
   scan: IrisScanResult;
   sessions: SessionInfo[];
+  /** Configuration captured inside the same serialized project-open transaction. */
+  projectSettings: ProjectSettingsSnapshot;
 }
 
 /** Batched fs change notification pushed by main (already debounced). */

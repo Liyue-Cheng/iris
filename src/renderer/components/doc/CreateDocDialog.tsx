@@ -5,6 +5,7 @@
  * the tree lights up via the watcher loop.
  */
 import { useState, useSyncExternalStore } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { DocType } from '@shared/types';
 import { pipeline } from '@renderer/cpu';
 import { projectStore } from '@renderer/stores/project-store';
@@ -45,6 +46,7 @@ function useTarget(): CreateTarget | null {
 
 export function CreateDocDialog(): JSX.Element | null {
   const t = useTarget();
+  const { t: tr } = useTranslation();
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -82,7 +84,7 @@ export function CreateDocDialog(): JSX.Element | null {
       <DialogContent className="max-w-sm">
         <DialogHeader>
           <DialogTitle>
-            新建 {t.type} 文档
+            {tr('project.newDocument', { type: t.type })}
             <span className="ml-2 text-xs font-normal text-muted-foreground">
               {t.workspacePath}/{t.type}/
             </span>
@@ -90,7 +92,7 @@ export function CreateDocDialog(): JSX.Element | null {
         </DialogHeader>
         <Input
           autoFocus
-          placeholder="标题"
+          placeholder={tr('project.title')}
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && void create()}
@@ -98,10 +100,10 @@ export function CreateDocDialog(): JSX.Element | null {
         {error && <p className="text-xs text-destructive">{error}</p>}
         <DialogFooter>
           <Button variant="ghost" onClick={close}>
-            取消
+            {tr('common.cancel')}
           </Button>
           <Button onClick={() => void create()} disabled={!title.trim() || busy}>
-            创建
+            {tr('common.create')}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -22,6 +22,7 @@ import { projectStore } from '@renderer/stores/project-store';
 import { editorStore, readDocFromDisk } from '@renderer/stores/editor-store';
 import { hydrateSessions, sessionStore } from '@renderer/stores/session-store';
 import { projectScopeState, sameProjectScope } from '@renderer/stores/project-scope-state';
+import { projectSettingsStore } from '@renderer/stores/project-settings-store';
 
 export function wireInterrupts(): void {
   // Session lifecycle events → interrupts → projection ISR. (Output bytes
@@ -100,6 +101,9 @@ export function wireInterrupts(): void {
       const data = event.data as FsIrisChangedEvent;
       // Tree projection: rescans are cheap and idempotent — no dedup needed.
       void projectStore.refreshFromFs(data);
+      if (data.changes.some((change) => change.path === '.iris/settings.json')) {
+        void projectSettingsStore.refresh();
+      }
       // Editor projection: dedup + conflict policy live inside the store
       // (state compare against lastWritten — deterministic, no heuristics).
       const open = editorStore.get();

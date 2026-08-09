@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   AppWindow,
   Folder,
@@ -107,6 +108,7 @@ function PixelStudio(): JSX.Element {
 }
 
 export function WelcomeView(): JSX.Element {
+  const { t } = useTranslation();
   const { phase, error: projectError } = useProject();
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
   const [loadingRecents, setLoadingRecents] = useState(true);
@@ -180,13 +182,13 @@ export function WelcomeView(): JSX.Element {
           <header>
             <h1 className="text-[28px] leading-tight text-foreground">
               <span className="font-semibold">Iris</span>
-              <span className="text-muted-foreground"> - Agent Development Environment</span>
+              <span className="text-muted-foreground"> - {t('project.tagline')}</span>
             </h1>
           </header>
 
           <section className="mt-10" aria-labelledby="welcome-start-title">
             <h2 id="welcome-start-title" className="mb-2.5 text-lg font-medium text-foreground">
-              开始
+              {t('project.start')}
             </h2>
             <div className="flex flex-col items-start gap-0.5">
               <Button
@@ -196,7 +198,7 @@ export function WelcomeView(): JSX.Element {
                 onClick={() => void chooseFolder()}
               >
                 {opening ? <Loader2 className="animate-spin" /> : <FolderOpen />}
-                {opening ? '正在打开…' : '打开项目文件夹'}
+                {opening ? t('project.opening') : t('project.openFolder')}
               </Button>
               <Button
                 variant="ghost"
@@ -205,7 +207,7 @@ export function WelcomeView(): JSX.Element {
                 onClick={() => void chooseFolderInNewWindow()}
               >
                 <AppWindow />
-                在新窗口打开
+                {t('project.openNewWindow')}
               </Button>
             </div>
           </section>
@@ -219,7 +221,7 @@ export function WelcomeView(): JSX.Element {
 
           <section className="mt-9 min-w-0" aria-labelledby="welcome-recent-title">
             <h2 id="welcome-recent-title" className="mb-2.5 text-lg font-medium text-foreground">
-              近期
+              {t('project.recent')}
             </h2>
 
             {loadingRecents ? (
@@ -231,7 +233,7 @@ export function WelcomeView(): JSX.Element {
             ) : recentProjects.length === 0 ? (
               <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
                 <Folder className="h-4 w-4" />
-                还没有近期项目
+                {t('project.noRecent')}
               </div>
             ) : (
               <ul className="flex flex-col gap-px">
@@ -260,7 +262,7 @@ export function WelcomeView(): JSX.Element {
                             {project.path}
                           </span>
                           {!project.exists && (
-                            <span className="shrink-0 text-[10px] text-destructive">路径不可用</span>
+                            <span className="shrink-0 text-[10px] text-destructive">{t('project.pathUnavailable')}</span>
                           )}
                         </span>
                       </button>
@@ -272,13 +274,13 @@ export function WelcomeView(): JSX.Element {
                             size="icon"
                             className="absolute right-0 top-1/2 h-7 w-7 -translate-y-1/2 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
                             disabled={!!removingPath || opening}
-                            aria-label={`从近期项目中移除 ${project.name}`}
+                            aria-label={t('project.removeRecentNamed', { name: project.name })}
                             onClick={() => void removeRecent(project.path)}
                           >
                             {removing ? <Loader2 className="animate-spin" /> : <X />}
                           </Button>
                         </TooltipTrigger>
-                        <TooltipContent>从近期项目中移除</TooltipContent>
+                        <TooltipContent>{t('project.removeRecent')}</TooltipContent>
                       </Tooltip>
                     </li>
                   );

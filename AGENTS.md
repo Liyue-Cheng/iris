@@ -24,6 +24,26 @@ type is decided by the nearest enclosing typed folder.
   report over reshaping an old one.
 - `misc/` — Human scratch space. Do not touch unless asked.
 
+## Document assets
+
+Managed assets live beside their owner document in a companion directory:
+`<name>.md` owns `<name>.assets/`. Use standard relative Markdown links such
+as `./<name>.assets/image--<hash>.png`; do not add an assets manifest or
+frontmatter registry. Asset directories are opaque to document/workspace
+scanning.
+
+- Keep each asset owned by one document; copy it when another document needs
+  an independent copy instead of linking across companion directories.
+- Name imported files `<sanitized-name>--<sha256-prefix>.<ext>`. Treat a
+  referenced asset as immutable: write a new file and update the link rather
+  than overwriting bytes in place.
+- Do not persist `blob:`, absolute filesystem paths, or new `data:` URLs.
+  Existing project-relative and HTTPS references remain compatible but are
+  unmanaged until explicitly imported.
+- Never delete an asset merely because its reference disappeared. It becomes
+  an orphan and awaits explicit human cleanup. When a document is moved,
+  copied, renamed, or human-deleted, handle its companion directory with it.
+
 ## What the app parses
 
 Frontmatter keys are read literally — use exactly these (unknown keys are

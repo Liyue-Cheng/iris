@@ -5,6 +5,7 @@
  * (missing pieces only), so this same dialog also serves as "repair".
  */
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { ProjectInitResult } from '@shared/types';
 import { pipeline } from '@renderer/cpu';
 import { Button } from '@renderer/components/ui/button';
@@ -24,6 +25,7 @@ export function InitDialog({
   open: boolean;
   onClose: () => void;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<ProjectInitResult | null>(null);
@@ -51,21 +53,20 @@ export function InitDialog({
     <Dialog open={open} onOpenChange={(o) => !o && close()}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>初始化 Iris 协议</DialogTitle>
+          <DialogTitle>{t('project.initializeTitle')}</DialogTitle>
           <DialogDescription asChild>
             <div className="space-y-2 text-left">
-              <p>将在当前项目执行（已存在的部分自动跳过）：</p>
+              <p>{t('project.initializeIntro')}</p>
               <ul className="list-disc space-y-1 pl-5 text-xs">
                 <li>
-                  创建 <code>.iris/</code> 下的四个类型文件夹（status / issue / report / misc）
+                  {t('project.initializeFolders')}
                 </li>
                 <li>
-                  在项目根 <code>AGENTS.md</code> 追加 Iris 引导段（无则创建；带标记，重复运行不重复追加）
-                  —— 这是唯一一次触碰项目根
+                  {t('project.initializeAgents')}
                 </li>
               </ul>
               <p className="text-xs text-muted-foreground">
-                删掉 .iris/ 与该引导段即完全卸载，项目毫发无伤。
+                {t('project.initializeUninstall')}
               </p>
             </div>
           </DialogDescription>
@@ -73,24 +74,23 @@ export function InitDialog({
 
         {done && (
           <div className="rounded-md bg-muted/60 p-3 text-xs">
-            <p className="font-medium text-[var(--rp-pine)]">完成</p>
+            <p className="font-medium text-[var(--rp-pine)]">{t('project.complete')}</p>
             <p>
-              新建文件夹：{done.createdFolders.length > 0 ? done.createdFolders.join('、') : '无（已齐）'}
+              {t('project.createdFolders', { folders: done.createdFolders.length > 0 ? done.createdFolders.join(', ') : t('project.foldersReady') })}
             </p>
             <p>
               AGENTS.md：
               {done.agentsMd === 'created'
-                ? '已创建'
+                ? t('project.agentsCreated')
                 : done.agentsMd === 'appended'
-                  ? '已追加引导段'
+                  ? t('project.agentsAppended')
                   : done.agentsMd === 'updated'
-                    ? '已恢复软件块'
-                    : '已有引导段，未动'}
+                    ? t('project.agentsUpdated')
+                    : t('project.agentsUnchanged')}
             </p>
             {done.foreignEntries.length > 0 && (
               <p className="mt-1 text-[var(--rp-gold)]">
-                已维护现存 agent 入口：{done.foreignEntries.join('、')}。Iris 不会创建缺失的
-                vendor 入口文件。
+                {t('project.foreignEntries', { entries: done.foreignEntries.join(', ') })}
               </p>
             )}
           </div>
@@ -99,14 +99,14 @@ export function InitDialog({
 
         <DialogFooter>
           {done ? (
-            <Button onClick={close}>好</Button>
+            <Button onClick={close}>{t('project.ok')}</Button>
           ) : (
             <>
               <Button variant="ghost" onClick={close}>
-                取消
+                {t('common.cancel')}
               </Button>
               <Button onClick={() => void run()} disabled={busy}>
-                {busy ? '执行中…' : '确认执行'}
+                {busy ? t('project.running') : t('project.run')}
               </Button>
             </>
           )}

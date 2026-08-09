@@ -6,13 +6,13 @@
  * are settled, hidden by default).
  */
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Archive, FileWarning, Plus } from 'lucide-react';
 import type { IrisWorkspace } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
 import { collectDocs, docDate, type CollectedDoc } from '@renderer/lib/collect-docs';
 import { docDisplayTitle } from '@renderer/lib/doc-utils';
 import { setDocDragData } from '@renderer/lib/doc-drag';
-import { LabelChip } from '@renderer/components/ui/label-chip';
 import { StatusBadge } from '@renderer/components/ui/status-badge';
 import { projectStore } from '@renderer/stores/project-store';
 import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
@@ -23,8 +23,16 @@ import { GroupHeader } from './parts/GroupHeader';
 
 const GRID = '76px minmax(0,1fr) auto minmax(0,96px)';
 
-const BUCKETS = ['今天', '近7天', '近30天', '更早', '无日期'] as const;
+const BUCKETS = ['today', 'last7Days', 'last30Days', 'older', 'undated'] as const;
 type Bucket = (typeof BUCKETS)[number];
+
+const BUCKET_LABEL: Record<Bucket, 'collection.today' | 'collection.last7Days' | 'collection.last30Days' | 'collection.older' | 'collection.undated'> = {
+  today: 'collection.today',
+  last7Days: 'collection.last7Days',
+  last30Days: 'collection.last30Days',
+  older: 'collection.older',
+  undated: 'collection.undated',
+};
 
 function todayStr(): string {
   const d = new Date();
@@ -32,12 +40,12 @@ function todayStr(): string {
 }
 
 function bucketOf(dateStr: string, today: string): Bucket {
-  if (!dateStr) return '无日期';
+  if (!dateStr) return 'undated';
   const diff = Math.round((Date.parse(today) - Date.parse(dateStr)) / 86_400_000);
-  if (diff <= 0) return '今天';
-  if (diff <= 7) return '近7天';
-  if (diff <= 30) return '近30天';
-  return '更早';
+  if (diff <= 0) return 'today';
+  if (diff <= 7) return 'last7Days';
+  if (diff <= 30) return 'last30Days';
+  return 'older';
 }
 
 /** Reports stay active unless explicitly parked in Backlog. */
@@ -52,6 +60,7 @@ export function ReportTimeline({
   root: IrisWorkspace;
   workspacePath: string | null;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [showAll, setShowAll] = useState(false);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
 
@@ -86,12 +95,12 @@ export function ReportTimeline({
   return (
     <div className="flex h-full flex-col">
       <div className={PANEL_BAR}>
-        <h2 className="text-sm font-semibold">Report</h2>
-        <span className="text-[11px] text-muted-foreground">有日期的交付物</span>
+        <h2 className="text-sm font-semibold">report</h2>
+        <span className="text-[11px] text-muted-foreground">{t('collection.datedDeliverables')}</span>
         {workspacePath && (
           <button
             type="button"
-            title="清除工作区过滤"
+            title={t('collection.clearWorkspaceFilter')}
             className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent"
             onClick={() => projectStore.openCollection('report', null)}
           >
@@ -106,7 +115,7 @@ export function ReportTimeline({
             showAll ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground',
           )}
         >
-          {showAll ? '全部' : '仅活动'}
+          {showAll ? t('collection.all') : t('collection.activeOnly')}
         </button>
         <span className="text-[11px] text-muted-foreground/60">{rows.length}</span>
         <Button
@@ -115,7 +124,7 @@ export function ReportTimeline({
           className="ml-auto h-7"
           onClick={() => openCreateDialog({ workspacePath: workspacePath ?? '.iris', type: 'report' })}
         >
-          <Plus /> 新建
+          <Plus /> {t('collection.new')}
         </Button>
       </div>
 
@@ -123,7 +132,7 @@ export function ReportTimeline({
         {groups.map((g) => (
           <div key={g.key}>
             <GroupHeader
-              label={g.key}
+              label={t(BUCKET_LABEL[g.key])}
               count={g.items.length}
               collapsed={collapsed.has(g.key)}
               onToggle={() => toggleCollapse(g.key)}
@@ -155,9 +164,6 @@ export function ReportTimeline({
                     </span>
                     <span className="flex min-w-0 items-center gap-1 overflow-hidden">
                       {item.doc.status && <StatusBadge value={item.doc.status} size="sm" />}
-                      {item.doc.labels.slice(0, 1).map((l) => (
-                        <LabelChip key={l} label={l} />
-                      ))}
                     </span>
                     <span className="min-w-0 truncate text-[11px] text-muted-foreground">
                       {item.workspaceName}
@@ -169,7 +175,7 @@ export function ReportTimeline({
         ))}
         {rows.length === 0 && (
           <div className="px-4 py-10 text-center text-xs text-muted-foreground">
-            没有 report{!showAll && ' — 试试「全部」'}
+            {t('collection.noReports')}{!showAll && ` - ${t('collection.tryAll')}`}
           </div>
         )}
       </div>

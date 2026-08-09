@@ -6,11 +6,17 @@
  */
 import type { InstructionDefinition } from 'front-cpu';
 import { CHANNELS } from '@shared/protocol';
-import type { ProjectOpenResult } from '@shared/types';
+import type {
+  ProjectCommandRunResult,
+  ProjectOpenResult,
+  ProjectSettingsSnapshot,
+  ProjectToolbarAction,
+} from '@shared/types';
 import { projectStore } from '@renderer/stores/project-store';
 import { sessionStore } from '@renderer/stores/session-store';
 import { sameProjectScope } from '@renderer/stores/project-scope-state';
 import { projectScopeRead, projectScopeWrite } from './project-resources';
+import { projectSettingsStore } from '@renderer/stores/project-settings-store';
 
 export const projectISA: Record<string, InstructionDefinition> = {
   'project.open': {
@@ -26,6 +32,7 @@ export const projectISA: Record<string, InstructionDefinition> = {
     config: { channel: CHANNELS.PROJECT_OPEN, projectScoped: true },
     commit: async (result: ProjectOpenResult) => {
       const idempotent = sameProjectScope(projectStore.get().scope, result.scope);
+      projectSettingsStore.install(result.projectSettings, result.scope);
       projectStore.handleOpened(result);
       if (!idempotent) sessionStore.reset(result.sessions, result.scope);
     },
@@ -94,4 +101,46 @@ export const projectISA: Record<string, InstructionDefinition> = {
       await projectStore.rescan();
     },
   },
+
+  'project-settings.update-toolbar': {
+    meta: {
+      description: 'Replace the active project toolbar actions with revision checking',
+      category: 'system',
+      resourceIdentifier: () => [projectScopeRead(), 'project:settings'],
+      schedulingStrategy: 'read-write',
+      priority: 5,
+      timeout: 5000,
+    },
+    executor: 'ipc',
+    config: { channel: CHANNELS.PROJECT_SETTINGS_UPDATE_TOOLBAR, projectScoped: true },
+    commit: async (result: ProjectSettingsSnapshot) => {
+      projectSettingsStore.handleSnapshot(result);
+    },
+  },
+
+  'project-command.run': {
+    meta: {
+      description: 'Run a trusted project toolbar action in Iris or a system terminal',
+      category: 'system',
+      resourceIdentifier: (payload: { actionIndex: number }) => [
+        projectScopeRead(),
+        'project:settings',
+        `project-command:${payload.actionIndex}`,
+      ],
+      schedulingStrategy: 'read-write',
+      priority: 5,
+      timeout: 15000,
+    },
+    executor: 'ipc',
+    config: { channel: CHANNELS.PROJECT_COMMAND_RUN, projectScoped: true },
+    commit: async (result: ProjectCommandRunResult) => {
+      projectSettingsStore.markTrusted();
+      if (result.kind === 'iris') sessionStore.handleCreated(result.session);
+    },
+  },
 };
+
+export interface UpdateProjectToolbarPayload {
+  actions: ProjectToolbarAction[];
+  expectedRevision: string;
+}

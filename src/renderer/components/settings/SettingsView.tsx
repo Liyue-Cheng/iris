@@ -16,41 +16,67 @@
  * inputs. New persisted fields first go into Settings + DEFAULT_SETTINGS +
  * validateSettings (src/main/settings-manager.ts), then get a control here.
  */
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Bot,
   ChevronDown,
+  ChevronUp,
+  Copy,
+  FolderCog,
   Info,
   Moon,
   MoonStar,
   Palette,
+  Plus,
   ScrollText,
+  RefreshCw,
   SquareTerminal,
   Sun,
   Trash2,
+  Unlink,
   Wrench,
   X,
 } from 'lucide-react';
-import type {
-  AgentConfig,
-  ContextPreview,
-  DeepPartial,
-  HookCliInfo,
-  InjectionState,
-  ProjectPromptStateUi,
-  Settings,
-  SoftwareBlockStateUi,
-  SoftwarePromptState,
-  ThemeId,
+import {
+  AGENT_PRESETS,
+  type AgentConfig,
+  type DeepPartial,
+  type HookCliInfo,
+  type InjectionState,
+  type ProjectPromptStateUi,
+  type ProjectCommandTerminal,
+  type ProjectToolbarAction,
+  type Settings,
+  type SoftwareBlockStateUi,
+  type SoftwarePromptState,
+  type ThemeId,
+  type LocalePreference,
 } from '@shared/types';
 import { CHANNELS, EVENTS } from '@shared/protocol';
 import { pipeline } from '@renderer/cpu';
 import { useSettings } from '@renderer/stores/settings-store';
-import { projectStore, useProject } from '@renderer/stores/project-store';
+import { useProject } from '@renderer/stores/project-store';
 import { editorStore } from '@renderer/stores/editor-store';
 import { Button } from '@renderer/components/ui/button';
 import { Input } from '@renderer/components/ui/input';
 import { cn } from '@renderer/lib/utils';
+import { confirmDialog } from '@renderer/components/ui/confirm-dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@renderer/components/ui/dropdown-menu';
+import {
+  LUCIDE_ICON_NAMES,
+  LucideDynamicIcon,
+  isLucideIconName,
+} from '@renderer/components/ui/lucide-dynamic-icon';
+import {
+  projectSettingsStore,
+  useProjectSettings,
+} from '@renderer/stores/project-settings-store';
 
 // ──────────────────────────────────────────────────────────────────
 // Open/close state — module-level store, same pattern as CreateDocDialog.
@@ -94,17 +120,19 @@ type CategoryId =
   | 'appearance'
   | 'terminal'
   | 'agents'
+  | 'project'
   | 'prompts'
   | 'advanced'
   | 'about';
 
-const CATEGORIES: Array<{ id: CategoryId; icon: typeof Palette; label: string }> = [
-  { id: 'appearance', icon: Palette, label: '外观' },
-  { id: 'terminal', icon: SquareTerminal, label: '终端' },
-  { id: 'agents', icon: Bot, label: 'Agents' },
-  { id: 'prompts', icon: ScrollText, label: '软件提示词' },
-  { id: 'advanced', icon: Wrench, label: '高级' },
-  { id: 'about', icon: Info, label: '关于' },
+const CATEGORIES: Array<{ id: CategoryId; icon: typeof Palette; labelKey: 'settings.appearance' | 'settings.terminal' | 'settings.agents' | 'projectSettings.title' | 'settings.prompts' | 'settings.advanced' | 'settings.about' }> = [
+  { id: 'appearance', icon: Palette, labelKey: 'settings.appearance' },
+  { id: 'terminal', icon: SquareTerminal, labelKey: 'settings.terminal' },
+  { id: 'agents', icon: Bot, labelKey: 'settings.agents' },
+  { id: 'project', icon: FolderCog, labelKey: 'projectSettings.title' },
+  { id: 'prompts', icon: ScrollText, labelKey: 'settings.prompts' },
+  { id: 'advanced', icon: Wrench, labelKey: 'settings.advanced' },
+  { id: 'about', icon: Info, labelKey: 'settings.about' },
 ];
 
 /** All controls funnel updates through here: instruction in, broadcast out. */
@@ -125,6 +153,7 @@ async function updateSettings(
 // ──────────────────────────────────────────────────────────────────
 
 export function SettingsView(): JSX.Element {
+  const { t } = useTranslation();
   const [active, setActive] = useState<CategoryId>('appearance');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -139,7 +168,7 @@ export function SettingsView(): JSX.Element {
   return (
     <div className="flex h-full flex-col bg-background">
       <header className="flex h-11 shrink-0 items-center gap-3 px-4">
-        <h1 className="text-sm font-semibold">设置</h1>
+        <h1 className="text-sm font-semibold">{t('settings.title')}</h1>
         {errorMsg && (
           <span role="alert" className="truncate text-xs text-destructive">
             {errorMsg}
@@ -149,7 +178,7 @@ export function SettingsView(): JSX.Element {
           variant="ghost"
           size="icon"
           className="ml-auto"
-          title="关闭（Esc）"
+          title={t('settings.close')}
           onClick={closeSettingsView}
         >
           <X />
@@ -157,7 +186,7 @@ export function SettingsView(): JSX.Element {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <nav className="w-48 shrink-0 space-y-1 overflow-y-auto border-r border-subtle p-3" aria-label="设置分类">
+        <nav className="w-48 shrink-0 space-y-1 overflow-y-auto border-r border-subtle p-3" aria-label={t('settings.categories')}>
           {CATEGORIES.map((c) => (
             <button
               key={c.id}
@@ -171,7 +200,7 @@ export function SettingsView(): JSX.Element {
               )}
             >
               <c.icon className="h-4 w-4 shrink-0" />
-              {c.label}
+              {t(c.labelKey)}
             </button>
           ))}
         </nav>
@@ -200,6 +229,8 @@ function CategoryPanel({
       return <TerminalPanel setError={setError} />;
     case 'agents':
       return <AgentsPanel setError={setError} />;
+    case 'project':
+      return <ProjectSettingsPanel setError={setError} />;
     case 'prompts':
       return <PromptsPanel setError={setError} />;
     case 'advanced':
@@ -425,22 +456,22 @@ function NumberCommitInput({
 // 外观
 // ──────────────────────────────────────────────────────────────────
 
-const THEMES: Array<{ id: ThemeId; label: string; icon: typeof Moon; tone: string }> = [
-  { id: 'rose-pine', label: 'Rosé Pine', icon: Moon, tone: '深色 · 默认' },
-  { id: 'rose-pine-dawn', label: 'Rosé Pine Dawn', icon: Sun, tone: '浅色' },
-  { id: 'rose-pine-moon', label: 'Rosé Pine Moon', icon: MoonStar, tone: '深色' },
-  { id: 'cutie', label: 'Cutie', icon: Sun, tone: '浅色 · Kawaii' },
-  { id: 'light-pink', label: 'Light Pink', icon: Sun, tone: '浅色 · Kawaii' },
-  { id: 'fairyfloss', label: 'Fairyfloss', icon: Moon, tone: '深色 · Kawaii' },
-  { id: 'business', label: 'Business', icon: Moon, tone: '深色' },
-  { id: 'ubuntu', label: 'Ubuntu', icon: Moon, tone: '深色' },
-  { id: 'windows-terminal', label: 'Windows Terminal', icon: Moon, tone: '深色' },
-  { id: 'one-dark-pro', label: 'One Dark Pro', icon: Moon, tone: '深色' },
-  { id: 'dracula', label: 'Dracula', icon: Moon, tone: '深色' },
-  { id: 'tokyo-night', label: 'Tokyo Night', icon: Moon, tone: '深色' },
-  { id: 'tokyo-night-day', label: 'Tokyo Night Day', icon: Sun, tone: '浅色' },
-  { id: 'catppuccin-mocha', label: 'Catppuccin Mocha', icon: Moon, tone: '深色' },
-  { id: 'catppuccin-latte', label: 'Catppuccin Latte', icon: Sun, tone: '浅色' },
+const THEMES: Array<{ id: ThemeId; label: string; icon: typeof Moon; toneKey: 'settings.darkDefault' | 'settings.dark' | 'settings.light' | 'settings.darkKawaii' | 'settings.lightKawaii' }> = [
+  { id: 'rose-pine', label: 'Rosé Pine', icon: Moon, toneKey: 'settings.darkDefault' },
+  { id: 'rose-pine-dawn', label: 'Rosé Pine Dawn', icon: Sun, toneKey: 'settings.light' },
+  { id: 'rose-pine-moon', label: 'Rosé Pine Moon', icon: MoonStar, toneKey: 'settings.dark' },
+  { id: 'cutie', label: 'Cutie', icon: Sun, toneKey: 'settings.lightKawaii' },
+  { id: 'light-pink', label: 'Light Pink', icon: Sun, toneKey: 'settings.lightKawaii' },
+  { id: 'fairyfloss', label: 'Fairyfloss', icon: Moon, toneKey: 'settings.darkKawaii' },
+  { id: 'business', label: 'Business', icon: Moon, toneKey: 'settings.dark' },
+  { id: 'ubuntu', label: 'Ubuntu', icon: Moon, toneKey: 'settings.dark' },
+  { id: 'windows-terminal', label: 'Windows Terminal', icon: Moon, toneKey: 'settings.dark' },
+  { id: 'one-dark-pro', label: 'One Dark Pro', icon: Moon, toneKey: 'settings.dark' },
+  { id: 'dracula', label: 'Dracula', icon: Moon, toneKey: 'settings.dark' },
+  { id: 'tokyo-night', label: 'Tokyo Night', icon: Moon, toneKey: 'settings.dark' },
+  { id: 'tokyo-night-day', label: 'Tokyo Night Day', icon: Sun, toneKey: 'settings.light' },
+  { id: 'catppuccin-mocha', label: 'Catppuccin Mocha', icon: Moon, toneKey: 'settings.dark' },
+  { id: 'catppuccin-latte', label: 'Catppuccin Latte', icon: Sun, toneKey: 'settings.light' },
 ];
 
 // Hardcoded hex values for inactive-theme color previews (CSS vars only resolve
@@ -465,30 +496,45 @@ const THEME_COLORS: Record<ThemeId, [string, string, string, string, string]> = 
 };
 
 function AppearancePanel({ setError }: { setError: (m: string | null) => void }): JSX.Element {
+  const { t } = useTranslation();
   const settings = useSettings();
   const theme = settings?.appearance.theme ?? 'rose-pine';
 
   return (
     <section>
-      <PanelTitle description="主题配色、字体、编辑器视觉偏好">外观</PanelTitle>
+      <PanelTitle description={t('settings.appearanceDescription')}>{t('settings.appearance')}</PanelTitle>
 
-      <SettingGroup title="主题">
-        <SettingRow label="主题" hint="立即生效；终端配色同步切换">
+      <SettingGroup title={t('locale.label')}>
+        <SettingRow label={t('locale.label')} hint={t('locale.hint')}>
+          <Segmented
+            value={settings?.locale ?? 'system'}
+            options={[
+              { value: 'system', label: t('locale.system') },
+              { value: 'zh-CN', label: t('locale.zhCN') },
+              { value: 'en-US', label: t('locale.enUS') },
+            ]}
+            onChange={(v) => void updateSettings({ locale: v as LocalePreference }, setError)}
+          />
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup title={t('settings.themeGroup')}>
+        <SettingRow label={t('settings.theme')} hint={t('settings.themeHint')}>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {THEMES.map((t) => (
+            {THEMES.map((themeOption) => (
               <button
-                key={t.id}
+                key={themeOption.id}
                 type="button"
-                onClick={() => void updateSettings({ appearance: { theme: t.id } }, setError)}
+                onClick={() => void updateSettings({ appearance: { theme: themeOption.id } }, setError)}
                 className={cn(
                   'flex min-w-0 flex-col items-start gap-2 rounded-lg border px-3 py-2.5 text-left transition-colors',
-                  theme === t.id
+                  theme === themeOption.id
                     ? 'border-primary bg-accent ring-1 ring-primary/30'
                     : 'hover:bg-muted',
                 )}
               >
                 <span className="flex items-center gap-1">
-                  {THEME_COLORS[t.id].map((color, i) => (
+                  {THEME_COLORS[themeOption.id].map((color, i) => (
                     <span
                       key={i}
                       className="h-3 w-3 rounded-full border border-foreground/10"
@@ -497,18 +543,18 @@ function AppearancePanel({ setError }: { setError: (m: string | null) => void })
                   ))}
                 </span>
                 <span className="flex items-center gap-1.5 text-[13px]">
-                  <t.icon className="h-3.5 w-3.5 text-muted-foreground" />
-                  {t.label}
+                  <themeOption.icon className="h-3.5 w-3.5 text-muted-foreground" />
+                  {themeOption.label}
                 </span>
-                <span className="text-[11px] text-muted-foreground">{t.tone}</span>
+                <span className="text-[11px] text-muted-foreground">{t(themeOption.toneKey)}</span>
               </button>
             ))}
           </div>
         </SettingRow>
       </SettingGroup>
 
-      <SettingGroup title="字体与缩放">
-        <SettingRow label="UI 字体" hint="侧栏 / 按钮 / 正文等界面区域；font-family 串">
+      <SettingGroup title={t('settings.fontsZoom')}>
+        <SettingRow label={t('settings.uiFont')} hint={t('settings.uiFontHint')}>
           <CommitInput
             value={settings?.appearance.uiFontFamily ?? ''}
             placeholder="'LXGW WenKai', system-ui, sans-serif"
@@ -516,7 +562,7 @@ function AppearancePanel({ setError }: { setError: (m: string | null) => void })
           />
         </SettingRow>
 
-        <SettingRow label="界面缩放" hint="整窗缩放（原生 Chromium zoom），1.0 为 100%">
+        <SettingRow label={t('settings.uiZoom')} hint={t('settings.uiZoomHint')}>
           <NumberCommitInput
             value={settings?.appearance.uiZoom ?? 1.0}
             min={0.75}
@@ -527,15 +573,15 @@ function AppearancePanel({ setError }: { setError: (m: string | null) => void })
         </SettingRow>
       </SettingGroup>
 
-      <SettingGroup title="编辑器">
-        <SettingRow label="自动保存" hint="正文停止输入后保存；切换文档、切换视图和退出时始终刷新草稿">
+      <SettingGroup title={t('settings.editorGroup')}>
+        <SettingRow label={t('settings.autosave')} hint={t('settings.autosaveHint')}>
           <ToggleSwitch
             checked={settings?.behavior.editorAutosave ?? true}
             onChange={(v) => void updateSettings({ behavior: { editorAutosave: v } }, setError)}
           />
         </SettingRow>
 
-        <SettingRow label="自动保存延迟（毫秒）" hint="仅用于正文和源码输入，范围 300–10000">
+        <SettingRow label={t('settings.autosaveDelay')} hint={t('settings.autosaveDelayHint')}>
           <NumberCommitInput
             value={settings?.behavior.editorAutosaveDelayMs ?? 1500}
             min={300}
@@ -547,19 +593,19 @@ function AppearancePanel({ setError }: { setError: (m: string | null) => void })
           />
         </SettingRow>
 
-        <SettingRow label="离开编辑器时保存" hint="焦点移到 Git、终端或其他面板时刷新真正发生过的编辑">
+        <SettingRow label={t('settings.saveOnBlur')} hint={t('settings.saveOnBlurHint')}>
           <ToggleSwitch
             checked={settings?.behavior.editorSaveOnBlur ?? true}
             onChange={(v) => void updateSettings({ behavior: { editorSaveOnBlur: v } }, setError)}
           />
         </SettingRow>
 
-        <SettingRow label="外部修改冲突" hint="提示处理会暂停自动保存；静默覆盖保持最后写入者优先">
+        <SettingRow label={t('settings.conflictPolicy')} hint={t('settings.conflictPolicyHint')}>
           <Segmented
             value={settings?.behavior.editorConflictPolicy ?? 'ask'}
             options={[
-              { value: 'ask', label: '提示处理' },
-              { value: 'overwrite', label: '静默覆盖' },
+              { value: 'ask', label: t('settings.ask') },
+              { value: 'overwrite', label: t('settings.overwrite') },
             ]}
             onChange={(v) =>
               void updateSettings({ behavior: { editorConflictPolicy: v } }, setError)
@@ -568,8 +614,8 @@ function AppearancePanel({ setError }: { setError: (m: string | null) => void })
         </SettingRow>
 
         <SettingRow
-          label="编辑器块编辑（BlockEdit）"
-          hint="悬停块左侧的 ＋/拖拽手柄与斜杠菜单（/ 唤起）；关闭即整体禁用"
+          label={t('settings.blockEdit')}
+          hint={t('settings.blockEditHint')}
         >
           <ToggleSwitch
             checked={settings?.behavior.editorBlockEdit ?? false}
@@ -577,24 +623,24 @@ function AppearancePanel({ setError }: { setError: (m: string | null) => void })
           />
         </SettingRow>
 
-        <SettingRow label="正文对齐" hint="正文阅读列居中或靠左；标题与右侧控件随列对齐">
+        <SettingRow label={t('settings.bodyAlign')} hint={t('settings.bodyAlignHint')}>
           <Segmented
             value={settings?.behavior.editorBodyAlign ?? 'center'}
             options={[
-              { value: 'center', label: '居中' },
-              { value: 'left', label: '靠左' },
+              { value: 'center', label: t('settings.center') },
+              { value: 'left', label: t('settings.left') },
             ]}
             onChange={(v) => void updateSettings({ behavior: { editorBodyAlign: v } }, setError)}
           />
         </SettingRow>
 
-        <SettingRow label="正文列宽" hint="正文阅读列的最大宽度；标题表头随列同宽">
+        <SettingRow label={t('settings.bodyWidth')} hint={t('settings.bodyWidthHint')}>
           <Segmented
             value={String(settings?.behavior.editorMaxWidth ?? 58)}
             options={[
-              { value: '48', label: '窄' },
-              { value: '58', label: '中' },
-              { value: '72', label: '宽' },
+              { value: '48', label: t('settings.narrow') },
+              { value: '58', label: t('settings.medium') },
+              { value: '72', label: t('settings.wide') },
             ]}
             onChange={(v) =>
               void updateSettings({ behavior: { editorMaxWidth: Number(v) } }, setError)
@@ -611,14 +657,15 @@ function AppearancePanel({ setError }: { setError: (m: string | null) => void })
 // ──────────────────────────────────────────────────────────────────
 
 function TerminalPanel({ setError }: { setError: (m: string | null) => void }): JSX.Element {
+  const { t } = useTranslation();
   const settings = useSettings();
 
   return (
     <section>
-      <PanelTitle description="终端字体、渲染与交互行为">终端</PanelTitle>
+      <PanelTitle description={t('settings.terminalDescription')}>{t('settings.terminal')}</PanelTitle>
 
-      <SettingGroup title="字体">
-        <SettingRow label="终端字体" hint="等宽字体优先；font-family 串">
+      <SettingGroup title={t('settings.fonts')}>
+        <SettingRow label={t('settings.terminalFont')} hint={t('settings.terminalFontHint')}>
           <CommitInput
             value={settings?.appearance.terminalFontFamily ?? ''}
             placeholder="'Cascadia Mono', Consolas, monospace"
@@ -628,7 +675,7 @@ function TerminalPanel({ setError }: { setError: (m: string | null) => void }): 
           />
         </SettingRow>
 
-        <SettingRow label="终端字号">
+        <SettingRow label={t('settings.terminalFontSize')}>
           <NumberCommitInput
             value={settings?.appearance.terminalFontSize ?? 13}
             min={8}
@@ -638,7 +685,7 @@ function TerminalPanel({ setError }: { setError: (m: string | null) => void }): 
           />
         </SettingRow>
 
-        <SettingRow label="终端行高" hint="行高倍数，默认 1.2">
+        <SettingRow label={t('settings.terminalLineHeight')} hint={t('settings.terminalLineHeightHint')}>
           <NumberCommitInput
             value={settings?.appearance.terminalLineHeight ?? 1.2}
             min={1.0}
@@ -651,20 +698,20 @@ function TerminalPanel({ setError }: { setError: (m: string | null) => void }): 
         </SettingRow>
       </SettingGroup>
 
-      <SettingGroup title="行为">
-        <SettingRow label="划选即复制" hint="选中终端文本自动写入剪贴板">
+      <SettingGroup title={t('settings.behavior')}>
+        <SettingRow label={t('settings.selectToCopy')} hint={t('settings.selectToCopyHint')}>
           <ToggleSwitch
             checked={settings?.behavior.selectOnCopy ?? true}
             onChange={(v) => void updateSettings({ behavior: { selectOnCopy: v } }, setError)}
           />
         </SettingRow>
 
-        <SettingRow label="终端右键" hint="菜单：复制/粘贴/清屏；直接粘贴：右键即粘贴（配合划选即复制）">
+        <SettingRow label={t('settings.rightClick')} hint={t('settings.rightClickHint')}>
           <Segmented
             value={settings?.behavior.terminalRightClick ?? 'menu'}
             options={[
-              { value: 'menu', label: '菜单' },
-              { value: 'paste', label: '直接粘贴' },
+              { value: 'menu', label: t('settings.menu') },
+              { value: 'paste', label: t('settings.directPaste') },
             ]}
             onChange={(v) =>
               void updateSettings({ behavior: { terminalRightClick: v } }, setError)
@@ -672,9 +719,22 @@ function TerminalPanel({ setError }: { setError: (m: string | null) => void }): 
           />
         </SettingRow>
 
+        <SettingRow label={t('settings.docDrop')} hint={t('settings.docDropHint')}>
+          <Segmented
+            value={settings?.behavior.terminalDocDrop ?? 'content'}
+            options={[
+              { value: 'path', label: t('settings.path') },
+              { value: 'content', label: t('settings.fullContent') },
+            ]}
+            onChange={(v) =>
+              void updateSettings({ behavior: { terminalDocDrop: v } }, setError)
+            }
+          />
+        </SettingRow>
+
         <SettingRow
-          label="终端渲染器"
-          hint="auto 优先 WebGL、失败回退 DOM；显式 DOM 是兼容性逃生舱。切换会话后生效"
+          label={t('settings.renderer')}
+          hint={t('settings.rendererHint')}
         >
           <Segmented
             value={settings?.advanced.terminalRenderer ?? 'auto'}
@@ -700,48 +760,40 @@ function TerminalPanel({ setError }: { setError: (m: string | null) => void }): 
 // 只检测、建议、经确认代写）。
 // ──────────────────────────────────────────────────────────────────
 
-const INJECTION_LABEL: Record<NonNullable<AgentConfig['injection']> | 'unset', string> = {
-  hook: 'hook',
-  flag: 'flag',
-  none: '无',
-  unset: '无',
-};
-
 const HOOK_STATE_META: Record<
   HookCliInfo['state'],
-  { label: string; cls: string }
+  { labelKey: 'settings.configured' | 'settings.stale' | 'settings.hookMissing' | 'settings.cliMissing'; cls: string }
 > = {
-  configured: { label: '已配置', cls: 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]' },
-  stale: { label: '旧版 · 可更新', cls: 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]' },
-  'not-configured': { label: '未配置 hook', cls: 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]' },
-  'cli-not-found': { label: '未检测到', cls: 'bg-muted text-muted-foreground' },
+  configured: { labelKey: 'settings.configured', cls: 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]' },
+  stale: { labelKey: 'settings.stale', cls: 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]' },
+  'not-configured': { labelKey: 'settings.hookMissing', cls: 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]' },
+  'cli-not-found': { labelKey: 'settings.cliMissing', cls: 'bg-muted text-muted-foreground' },
 };
 
-/** New-agent quick presets — flag templates for the hook-less CLIs included
- *  (the "哪个 agent 吃哪种参数" knowledge, living at the machine layer). */
-const AGENT_PRESETS: AgentConfig[] = [
-  { id: 'claude', label: 'claude', command: 'claude', injection: 'hook' },
-  { id: 'codex', label: 'codex', command: 'codex', injection: 'hook' },
-  { id: 'gemini', label: 'gemini', command: 'gemini', injection: 'hook' },
-  { id: 'qwen', label: 'qwen', command: 'qwen', injection: 'hook' },
-  { id: 'cursor', label: 'cursor', command: 'cursor-agent', injection: 'hook' },
-  { id: 'aider', label: 'aider', command: 'aider --read $env:FOCUS_DOC', injection: 'flag' },
-  {
-    id: 'goose',
-    label: 'goose',
-    command:
-      'goose run --interactive --system "$((powershell -NoProfile -ExecutionPolicy Bypass -File \\"$env:USERPROFILE/.iris/focus-context.ps1\\") -join \\"`n\\")"',
-    injection: 'flag',
-  },
-  { id: 'shell', label: '终端', command: '', injection: 'none' },
-];
+function uniqueAgentId(preferred: string, agents: readonly AgentConfig[]): string {
+  const base = preferred
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'agent';
+  const ids = new Set(agents.map((agent) => agent.id));
+  if (!ids.has(base)) return base;
+  let suffix = 2;
+  while (ids.has(`${base}-${suffix}`)) suffix += 1;
+  return `${base}-${suffix}`;
+}
 
 function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JSX.Element {
+  const { t } = useTranslation();
   const settings = useSettings();
   const agents = settings?.agents ?? [];
   const [inj, setInj] = useState<InjectionState | null>(null);
   const [confirmCli, setConfirmCli] = useState<string | null>(null);
+  const [confirmRemoveCli, setConfirmRemoveCli] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newLabel, setNewLabel] = useState('');
+  const [newCommand, setNewCommand] = useState('');
 
   const refreshInj = async (): Promise<void> => {
     try {
@@ -761,10 +813,47 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
   const patchAgent = (id: string, patch: Partial<AgentConfig>): void => {
     writeAgents(agents.map((a) => (a.id === id ? { ...a, ...patch } : a)));
   };
+  const addPreset = (preset: AgentConfig): void => {
+    writeAgents([...agents, { ...preset, id: uniqueAgentId(preset.id, agents) }]);
+  };
+  const addCustom = (): void => {
+    const label = newLabel.trim();
+    if (!label) return;
+    const next: AgentConfig = {
+      id: uniqueAgentId(label, agents),
+      label,
+      command: newCommand.trim(),
+    };
+    writeAgents([...agents, next]);
+    setNewLabel('');
+    setNewCommand('');
+  };
+  const moveAgent = (index: number, delta: -1 | 1): void => {
+    const target = index + delta;
+    if (target < 0 || target >= agents.length) return;
+    const next = [...agents];
+    const current = next[index];
+    const destination = next[target];
+    if (!current || !destination) return;
+    next[index] = destination;
+    next[target] = current;
+    writeAgents(next);
+  };
+  const duplicateAgent = (agent: AgentConfig): void => {
+    writeAgents([
+      ...agents,
+      {
+        ...agent,
+        id: uniqueAgentId(agent.id, agents),
+        label: t('settings.launcherCopyName', { name: agent.label }),
+      },
+    ]);
+  };
 
   const installCliHook = async (cliId: string): Promise<void> => {
     setBusy(true);
     setConfirmCli(null);
+    setConfirmRemoveCli(null);
     try {
       // The hook calls the script — make sure the script exists first.
       if (inj && inj.script.state !== 'current') {
@@ -779,79 +868,87 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
     }
   };
 
-  const presets = AGENT_PRESETS.filter((p) => !agents.some((a) => a.id === p.id));
+  const removeCliHook = async (cliId: string): Promise<void> => {
+    setBusy(true);
+    setConfirmCli(null);
+    setConfirmRemoveCli(null);
+    try {
+      await pipeline.dispatch('agent.remove-hook', { cliId });
+      await refreshInj();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <section>
-      <PanelTitle description="右键菜单「用 X 打开」的 agent 列表与上下文注入配置">Agents</PanelTitle>
+      <PanelTitle description={t('settings.agentsDescription')}>{t('settings.agents')}</PanelTitle>
       <p className="mb-3 text-xs text-muted-foreground">
-        右键菜单「用 X 打开」的候选列表。command 为空表示纯终端；注入通道只是标注——hook
-        在下方的注入区配置，flag 直接写在命令里。
+        {t('settings.agentsIntro')}
       </p>
 
-      <div className="overflow-hidden rounded-lg border">
+      <div className="overflow-x-auto rounded-lg border">
         <table className="w-full text-[13px]">
           <thead className="bg-muted/50 text-left text-xs uppercase tracking-wider text-muted-foreground">
             <tr>
-              <th className="w-20 px-3 py-1.5 font-medium">id</th>
-              <th className="w-28 px-3 py-1.5 font-medium">显示名</th>
-              <th className="px-3 py-1.5 font-medium">命令</th>
-              <th className="w-28 px-3 py-1.5 font-medium">注入通道</th>
-              <th className="w-24 px-3 py-1.5 font-medium">退出后</th>
-              <th className="w-8 px-2 py-1.5" />
+              <th className="w-28 px-3 py-1.5 font-medium">{t('settings.displayName')}</th>
+              <th className="px-3 py-1.5 font-medium">{t('settings.command')}</th>
+              <th className="w-32 px-2 py-1.5" />
             </tr>
           </thead>
           <tbody>
-            {agents.map((a) => (
+            {agents.map((a, index) => (
               <tr key={a.id} className="border-t border-subtle align-middle">
-                <td className="px-3 py-1.5 font-mono text-xs">{a.id}</td>
                 <td className="px-2 py-1">
                   <CommitInput value={a.label} onCommit={(v) => patchAgent(a.id, { label: v })} />
                 </td>
                 <td className="px-2 py-1">
                   <CommitInput
                     value={a.command}
-                    placeholder="（纯终端）"
+                    placeholder={t('settings.plainTerminal')}
                     onCommit={(v) => patchAgent(a.id, { command: v })}
                   />
                 </td>
                 <td className="px-2 py-1">
-                  <Segmented
-                    value={a.injection ?? 'none'}
-                    options={[
-                      { value: 'hook', label: 'hook' },
-                      { value: 'flag', label: 'flag' },
-                      { value: 'none', label: INJECTION_LABEL.none },
-                    ]}
-                    onChange={(v) => patchAgent(a.id, { injection: v })}
-                  />
-                </td>
-                <td className="px-2 py-1">
-                  {a.command ? (
-                    <Segmented
-                      value={a.onExit ?? 'keep-shell'}
-                      options={[
-                        { value: 'keep-shell', label: '回落', hint: '命令退出后落回交互 shell' },
-                        { value: 'close', label: '关闭', hint: '命令退出即结束会话' },
-                      ]}
-                      onChange={(v) => patchAgent(a.id, { onExit: v })}
-                    />
-                  ) : (
-                    <span className="text-xs text-muted-foreground/40" title="纯终端本就是 shell">
-                      —
-                    </span>
-                  )}
-                </td>
-                <td className="px-2 py-1">
-                  <button
-                    type="button"
-                    title={agents.length <= 1 ? '至少保留一个 agent' : `移除 ${a.label}`}
-                    disabled={agents.length <= 1}
-                    onClick={() => writeAgents(agents.filter((x) => x.id !== a.id))}
-                    className="rounded-sm p-1 text-muted-foreground/60 hover:bg-muted hover:text-destructive disabled:opacity-30"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  <div className="flex justify-end gap-0.5">
+                    <button
+                      type="button"
+                      title={t('settings.moveLauncherUp', { agent: a.label })}
+                      disabled={index === 0}
+                      onClick={() => moveAgent(index, -1)}
+                      className="rounded-sm p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground disabled:opacity-20"
+                    >
+                      <ChevronUp className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      title={t('settings.moveLauncherDown', { agent: a.label })}
+                      disabled={index === agents.length - 1}
+                      onClick={() => moveAgent(index, 1)}
+                      className="rounded-sm p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground disabled:opacity-20"
+                    >
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      title={t('settings.duplicateLauncher', { agent: a.label })}
+                      onClick={() => duplicateAgent(a)}
+                      className="rounded-sm p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      title={agents.length <= 1 ? t('settings.keepAgent') : t('settings.removeAgent', { agent: a.label })}
+                      disabled={agents.length <= 1}
+                      onClick={() => writeAgents(agents.filter((x) => x.id !== a.id))}
+                      className="rounded-sm p-1 text-muted-foreground/60 hover:bg-muted hover:text-destructive disabled:opacity-30"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -859,112 +956,466 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
         </table>
       </div>
 
-      {presets.length > 0 && (
-        <div className="mt-2 flex flex-wrap items-center gap-1.5">
-          <span className="text-xs text-muted-foreground">快速添加：</span>
-          {presets.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              title={p.command || '（纯终端）'}
-              onClick={() => writeAgents([...agents, p])}
-              className="rounded border border-subtle px-1.5 py-0.5 text-xs text-muted-foreground hover:border-border hover:text-foreground"
-            >
-              + {p.label}
-            </button>
-          ))}
+      <div className="mt-3">
+        <Button size="sm" variant="outline" onClick={() => setShowAdd((value) => !value)}>
+          <Plus />
+          {t('settings.addLauncher')}
+        </Button>
+      </div>
+
+      {showAdd && (
+        <div className="mt-3 border-l-2 border-subtle pl-4">
+          <div className="text-xs font-medium text-muted-foreground">
+            {t('settings.launcherPresets')}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {AGENT_PRESETS.map((preset) => (
+              <Button
+                key={preset.id}
+                type="button"
+                size="sm"
+                variant="secondary"
+                title={preset.command || t('settings.plainTerminal')}
+                onClick={() => addPreset(preset)}
+              >
+                <Plus />
+                {preset.label}
+              </Button>
+            ))}
+          </div>
+
+          <div className="mt-4 text-xs font-medium text-muted-foreground">
+            {t('settings.customLauncher')}
+          </div>
+          <div className="mt-2 grid grid-cols-[minmax(7rem,0.6fr)_minmax(12rem,1.4fr)] gap-2">
+            <Input
+              value={newLabel}
+              placeholder={t('settings.launcherNamePlaceholder')}
+              aria-label={t('settings.displayName')}
+              onChange={(event) => setNewLabel(event.target.value)}
+            />
+            <Input
+              value={newCommand}
+              placeholder={t('settings.launcherCommandPlaceholder')}
+              aria-label={t('settings.command')}
+              onChange={(event) => setNewCommand(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') addCustom();
+              }}
+            />
+          </div>
+          <div className="mt-2 flex justify-end">
+            <Button size="sm" disabled={!newLabel.trim()} onClick={addCustom}>
+              <Plus />
+              {t('settings.addCustomLauncher')}
+            </Button>
+          </div>
         </div>
       )}
 
       <div className="mb-5 mt-8">
-        <h3 className="text-base font-semibold">上下文注入</h3>
+        <h3 className="text-base font-semibold">{t('settings.contextInjection')}</h3>
         <p className="mt-1 text-[13px] text-muted-foreground">
-          零轮次注入：终端打开时 agent 的 SessionStart hook 调用 focus-context 脚本，把
-          FOCUS_DOC 指向的文档，或 IRIS_WORKSPACE_PATH 指向的 hub workspace，直接放进上下文——agent
-          依然静止等待指令，打开 ≠ 开跑。Iris 自动维护生成脚本；hook 配置住在你自己的 agent
-          配置文件里，只在你确认后代写。
+          {t('settings.contextIntro')}
         </p>
       </div>
 
-      <SettingGroup>
-        <SettingRow
-          label="focus-context 脚本"
-          hint={inj ? inj.script.path : '~/.iris/focus-context.ps1'}
-        >
-        <div className="flex items-center gap-2">
-          <span
-            className={cn(
-              'rounded px-1.5 py-0.5 text-xs',
-              inj?.script.state === 'current'
-                ? 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]'
-                : 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]',
-            )}
-          >
-            {inj?.script.state === 'current'
-              ? '最新'
-              : inj?.script.state === 'stale'
-                ? '旧版 · 自动同步失败'
-                : '缺失 · 自动同步失败'}
-          </span>
-          <span className="text-xs text-muted-foreground">
-            {inj?.script.state === 'current' ? '由 Iris 自动维护' : '自动同步失败，请查看日志'}
-          </span>
+      {inj && inj.script.state !== 'current' && (
+        <div className="mb-3 border-l-2 border-[var(--rp-gold)] pl-3 text-xs text-muted-foreground">
+          <div className="text-[var(--rp-gold)]">
+            {inj.script.state === 'stale'
+              ? t('settings.staleSyncFailed')
+              : t('settings.missingSyncFailed')}
+          </div>
+          <div className="mt-0.5 break-all">{inj.script.path}</div>
         </div>
-      </SettingRow>
+      )}
 
-      <SettingRow label="hook 命令" hint="五家 CLI 的 SessionStart hook 都指向这一条命令">
-        <code className="block break-all rounded bg-muted/60 px-2 py-1.5 font-mono text-[11px] text-muted-foreground">
-          {inj?.script.hookCommand ?? '…'}
-        </code>
-      </SettingRow>
-
-      {(inj?.clis ?? []).map((cli) => (
-        <SettingRow key={cli.id} label={cli.label} hint={cli.configPath}>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className={cn('rounded px-1.5 py-0.5 text-xs', HOOK_STATE_META[cli.state].cls)}>
-              {HOOK_STATE_META[cli.state].label}
-            </span>
-            {(cli.state === 'not-configured' || cli.state === 'stale') &&
-              (confirmCli === cli.id ? (
-                <>
-                  <span className="text-xs text-muted-foreground">
-                    将{cli.state === 'stale' ? '更新' : '写入'}你的 {cli.label} 配置：
-                  </span>
+      <SettingGroup>
+        {(inj?.clis ?? []).map((cli) => (
+          <SettingRow key={cli.id} label={cli.label} hint={cli.configPath}>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={cn('rounded px-1.5 py-0.5 text-xs', HOOK_STATE_META[cli.state].cls)}>
+                {t(HOOK_STATE_META[cli.state].labelKey)}
+              </span>
+              {(cli.state === 'not-configured' || cli.state === 'stale') &&
+                (confirmCli === cli.id ? (
+                  <>
+                    <span className="text-xs text-muted-foreground">
+                      {t('settings.writeCliConfig', {
+                        action: cli.state === 'stale' ? t('settings.updateAction') : t('settings.writeAction'),
+                        cli: cli.label,
+                      })}
+                    </span>
+                    <Button
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => void installCliHook(cli.id)}
+                    >
+                      {t('settings.confirmWrite')}
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setConfirmCli(null)}>
+                      {t('common.cancel')}
+                    </Button>
+                  </>
+                ) : (
                   <Button
                     size="sm"
+                    variant="secondary"
                     disabled={busy}
-                    onClick={() => void installCliHook(cli.id)}
+                    onClick={() => {
+                      setConfirmRemoveCli(null);
+                      setConfirmCli(cli.id);
+                    }}
                   >
-                    确认代写
+                    {cli.state === 'stale' ? t('settings.updateHook') : t('settings.writeHook')}
                   </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setConfirmCli(null)}>
-                    取消
+                ))}
+              {(cli.state === 'configured' || cli.state === 'stale') &&
+                (confirmRemoveCli === cli.id ? (
+                  <>
+                    <span className="text-xs text-muted-foreground">
+                      {t('settings.removeHookConfirm', { cli: cli.label })}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      disabled={busy}
+                      onClick={() => void removeCliHook(cli.id)}
+                    >
+                      <Trash2 />
+                      {t('settings.confirmRemoveHook')}
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setConfirmRemoveCli(null)}>
+                      {t('common.cancel')}
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-destructive hover:text-destructive"
+                    disabled={busy}
+                    onClick={() => {
+                      setConfirmCli(null);
+                      setConfirmRemoveCli(cli.id);
+                    }}
+                  >
+                    <Trash2 />
+                    {t('settings.removeHook')}
                   </Button>
-                </>
-              ) : (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={busy}
-                  onClick={() => setConfirmCli(cli.id)}
-                >
-                  {cli.state === 'stale' ? '更新 hook…' : '代写 hook…'}
-                </Button>
-              ))}
-            {cli.detail && cli.id === 'codex' && (
-              <span className="max-w-md text-xs leading-snug text-muted-foreground">
-                {cli.detail}
-              </span>
-            )}
-          </div>
-        </SettingRow>
-      ))}
+                ))}
+              {cli.detail && cli.id === 'codex' && (
+                <span className="max-w-md text-xs leading-snug text-muted-foreground">
+                  {cli.detail}
+                </span>
+              )}
+            </div>
+          </SettingRow>
+        ))}
       </SettingGroup>
 
       <p className="mt-3 text-xs text-muted-foreground/70">
-        没有 hook 的 CLI 用启动 flag（上方 aider / goose 预设即模板）；两者皆无的 agent
-        降级回 AGENTS.md 引导——协议本来就允许。
+        {t('settings.noHookFallback')}
       </p>
+    </section>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Project settings — project-owned toolbar commands in .iris/settings.json.
+// ──────────────────────────────────────────────────────────────────
+
+function IconNameInput({
+  value,
+  onCommit,
+}: {
+  value: string;
+  onCommit: (value: string) => void;
+}): JSX.Element {
+  const { t } = useTranslation();
+  const [draft, setDraft] = useState(value);
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    if (!focused) setDraft(value);
+  }, [focused, value]);
+  const matches = useMemo(() => {
+    const needle = draft.trim().toLowerCase();
+    if (!needle) return LUCIDE_ICON_NAMES.slice(0, 8);
+    return LUCIDE_ICON_NAMES.filter((name) => name.includes(needle)).slice(0, 8);
+  }, [draft]);
+
+  const commit = (name: string): void => {
+    setDraft(name);
+    if (name !== value && isLucideIconName(name)) onCommit(name);
+  };
+
+  return (
+    <div className="relative">
+      <div className="flex items-center gap-2">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-subtle">
+          <LucideDynamicIcon name={draft} className="h-4 w-4" />
+        </span>
+        <Input
+          value={draft}
+          aria-label={t('projectSettings.icon')}
+          aria-invalid={draft.length > 0 && !isLucideIconName(draft)}
+          placeholder="rocket"
+          onFocus={() => setFocused(true)}
+          onChange={(event) => setDraft(event.target.value.toLowerCase())}
+          onBlur={() => {
+            setFocused(false);
+            if (isLucideIconName(draft)) commit(draft);
+            else setDraft(value);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') event.currentTarget.blur();
+            if (event.key === 'Escape') {
+              setDraft(value);
+              event.currentTarget.blur();
+              event.stopPropagation();
+            }
+          }}
+        />
+      </div>
+      {focused && matches.length > 0 && (
+        <div className="absolute left-10 right-0 top-9 z-20 max-h-48 overflow-y-auto rounded-md border border-subtle bg-popover p-1 shadow-md">
+          {matches.map((name) => (
+            <button
+              key={name}
+              type="button"
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-muted"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                commit(name);
+                setFocused(false);
+              }}
+            >
+              <LucideDynamicIcon name={name} className="h-4 w-4" />
+              <span>{name}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectSettingsPanel({
+  setError,
+}: {
+  setError: (message: string | null) => void;
+}): JSX.Element {
+  const { t } = useTranslation();
+  const { phase, scan } = useProject();
+  const { snapshot, loading, error } = useProjectSettings();
+  const projectOpen = phase === 'ready' && (scan?.hasIris ?? false);
+  const actions = snapshot?.settings.toolbar.actions ?? [];
+  const [newIcon, setNewIcon] = useState('rocket');
+  const [newDescription, setNewDescription] = useState('');
+  const [newCommand, setNewCommand] = useState('');
+  const [newTerminal, setNewTerminal] = useState<ProjectCommandTerminal>('iris');
+
+  const writeActions = async (next: ProjectToolbarAction[]): Promise<boolean> => {
+    if (!snapshot || snapshot.error) return false;
+    setError(null);
+    try {
+      await pipeline.dispatch('project-settings.update-toolbar', {
+        actions: next,
+        expectedRevision: snapshot.revision,
+      });
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return false;
+    }
+  };
+  const patchAction = (index: number, patch: Partial<ProjectToolbarAction>): void => {
+    void writeActions(actions.map((action, i) => (i === index ? { ...action, ...patch } : action)));
+  };
+  const moveAction = (index: number, delta: -1 | 1): void => {
+    const target = index + delta;
+    if (target < 0 || target >= actions.length) return;
+    const next = [...actions];
+    const current = next[index];
+    const other = next[target];
+    if (!current || !other) return;
+    next[index] = other;
+    next[target] = current;
+    void writeActions(next);
+  };
+  const addAction = (): void => {
+    if (!isLucideIconName(newIcon) || !newDescription.trim() || !newCommand.trim()) return;
+    void writeActions([
+      ...actions,
+      {
+        icon: newIcon,
+        description: newDescription.trim(),
+        command: newCommand.trim(),
+        terminal: newTerminal,
+      },
+    ]).then((saved) => {
+      if (saved) {
+        setNewDescription('');
+        setNewCommand('');
+      }
+    });
+  };
+
+  if (!projectOpen) {
+    return (
+      <section>
+        <PanelTitle description={t('projectSettings.description')}>
+          {t('projectSettings.title')}
+        </PanelTitle>
+        <Placeholder>{t('projectSettings.needProject')}</Placeholder>
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <PanelTitle description={t('projectSettings.description')}>
+        {t('projectSettings.title')}
+      </PanelTitle>
+      {(error || snapshot?.error) && (
+        <div role="alert" className="mb-4 border-l-2 border-destructive pl-3 text-xs text-destructive">
+          {error ?? snapshot?.error}
+        </div>
+      )}
+      {snapshot && snapshot.diagnostics.length > 0 && (
+        <div className="mb-4 border-l-2 border-[var(--rp-gold)] pl-3 text-xs text-muted-foreground">
+          {snapshot.diagnostics.join('\n')}
+        </div>
+      )}
+      {loading && !snapshot ? (
+        <Placeholder>{t('common.loading')}</Placeholder>
+      ) : (
+        <SettingGroup title={t('projectSettings.toolbarActions')}>
+          {actions.map((action, index) => (
+            <div key={`${index}:${action.icon}:${action.description}`} className="p-4">
+              <div className="mb-3 flex items-center gap-2">
+                <LucideDynamicIcon name={action.icon} className="h-4 w-4 shrink-0" />
+                <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
+                  {action.description}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  disabled={index === 0}
+                  title={t('projectSettings.moveUp', { description: action.description })}
+                  onClick={() => moveAction(index, -1)}
+                >
+                  <ChevronUp />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  disabled={index === actions.length - 1}
+                  title={t('projectSettings.moveDown', { description: action.description })}
+                  onClick={() => moveAction(index, 1)}
+                >
+                  <ChevronDown />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-destructive"
+                  title={t('projectSettings.remove', { description: action.description })}
+                  onClick={() => void writeActions(actions.filter((_, i) => i !== index))}
+                >
+                  <Trash2 />
+                </Button>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="space-y-1 text-[11px] text-muted-foreground">
+                  <span>{t('projectSettings.icon')}</span>
+                  <IconNameInput
+                    value={action.icon}
+                    onCommit={(icon) => patchAction(index, { icon })}
+                  />
+                </label>
+                <label className="space-y-1 text-[11px] text-muted-foreground">
+                  <span>{t('projectSettings.actionDescription')}</span>
+                  <CommitInput
+                    value={action.description}
+                    onCommit={(description) => patchAction(index, { description })}
+                  />
+                </label>
+                <label className="space-y-1 text-[11px] text-muted-foreground sm:col-span-2">
+                  <span>{t('projectSettings.command')}</span>
+                  <CommitInput
+                    value={action.command}
+                    onCommit={(command) => patchAction(index, { command })}
+                  />
+                </label>
+              </div>
+              <div className="mt-3">
+                <Segmented
+                  value={action.terminal}
+                  options={[
+                    { value: 'iris', label: t('projectSettings.irisTerminal') },
+                    { value: 'system', label: t('projectSettings.systemTerminal') },
+                  ]}
+                  onChange={(terminal) => patchAction(index, { terminal })}
+                />
+              </div>
+            </div>
+          ))}
+          {actions.length === 0 && (
+            <div className="px-4 py-5 text-xs text-muted-foreground">
+              {t('projectSettings.noActions')}
+            </div>
+          )}
+          <div className="border-t border-subtle p-4">
+            <div className="mb-3 text-[13px] font-medium">{t('projectSettings.addAction')}</div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <IconNameInput value={newIcon} onCommit={setNewIcon} />
+              <Input
+                value={newDescription}
+                placeholder={t('projectSettings.descriptionPlaceholder')}
+                aria-label={t('projectSettings.actionDescription')}
+                onChange={(event) => setNewDescription(event.target.value)}
+              />
+              <Input
+                value={newCommand}
+                className="sm:col-span-2"
+                placeholder={t('projectSettings.commandPlaceholder')}
+                aria-label={t('projectSettings.command')}
+                onChange={(event) => setNewCommand(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') addAction();
+                }}
+              />
+            </div>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+              <Segmented
+                value={newTerminal}
+                options={[
+                  { value: 'iris', label: t('projectSettings.irisTerminal') },
+                  { value: 'system', label: t('projectSettings.systemTerminal') },
+                ]}
+                onChange={setNewTerminal}
+              />
+              <Button
+                size="sm"
+                disabled={
+                  !!snapshot?.error ||
+                  !isLucideIconName(newIcon) ||
+                  !newDescription.trim() ||
+                  !newCommand.trim()
+                }
+                onClick={addAction}
+              >
+                <Plus />
+                {t('projectSettings.addAction')}
+              </Button>
+            </div>
+          </div>
+        </SettingGroup>
+      )}
     </section>
   );
 }
@@ -976,17 +1427,22 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
 // 一切写入经此处确认。
 // ──────────────────────────────────────────────────────────────────
 
-const SW_STATE_META: Record<SoftwareBlockStateUi, { label: string; cls: string }> = {
-  ok: { label: '最新', cls: 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]' },
-  drifted: { label: '被改动', cls: 'bg-[var(--rp-love)]/20 text-[var(--rp-love)]' },
-  missing: { label: '无标签块', cls: 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]' },
-  'no-entry': { label: '文件不存在', cls: 'bg-muted text-muted-foreground' },
+const SW_STATE_META: Record<SoftwareBlockStateUi, { labelKey: string; cls: string }> = {
+  ok: { labelKey: 'settings.stateOk', cls: 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]' },
+  drifted: { labelKey: 'settings.stateDrifted', cls: 'bg-[var(--rp-love)]/20 text-[var(--rp-love)]' },
+  missing: { labelKey: 'settings.stateMissing', cls: 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]' },
+  duplicate: { labelKey: 'settings.stateDuplicate', cls: 'bg-[var(--rp-love)]/20 text-[var(--rp-love)]' },
+  'write-failed': { labelKey: 'settings.stateWriteFailed', cls: 'bg-[var(--rp-love)]/20 text-[var(--rp-love)]' },
+  'no-entry': { labelKey: 'settings.stateNoEntry', cls: 'bg-muted text-muted-foreground' },
 };
 
-const PROJECT_STATE_META: Record<ProjectPromptStateUi, { label: string; cls: string }> = {
-  synced: { label: '已同步', cls: 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]' },
-  conflict: { label: '入口冲突', cls: 'bg-[var(--rp-love)]/20 text-[var(--rp-love)]' },
-  missing: { label: '未设置', cls: 'bg-muted text-muted-foreground' },
+const PROJECT_STATE_META: Record<ProjectPromptStateUi, { labelKey: string; cls: string }> = {
+  synced: { labelKey: 'settings.projectSynced', cls: 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]' },
+  conflict: { labelKey: 'settings.projectConflictState', cls: 'bg-[var(--rp-love)]/20 text-[var(--rp-love)]' },
+  missing: { labelKey: 'settings.projectUnset', cls: 'bg-muted text-muted-foreground' },
+  drifted: { labelKey: 'settings.projectDrifted', cls: 'bg-[var(--rp-gold)]/20 text-[var(--rp-gold)]' },
+  partial: { labelKey: 'settings.projectPartial', cls: 'bg-[var(--rp-love)]/20 text-[var(--rp-love)]' },
+  'invalid-settings': { labelKey: 'settings.projectInvalid', cls: 'bg-[var(--rp-love)]/20 text-[var(--rp-love)]' },
 };
 
 /**
@@ -1007,6 +1463,7 @@ function PromptViewer({
   note?: string | undefined;
   defaultOpen?: boolean;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(defaultOpen);
   const has = body !== null && body.trim() !== '';
   return (
@@ -1028,7 +1485,7 @@ function PromptViewer({
             </pre>
           ) : (
             <div className="mt-1.5 rounded-md border border-subtle px-3 py-2 text-[11px] text-muted-foreground">
-              {empty ?? '（空）'}
+              {empty ?? t('settings.emptyValue')}
             </div>
           )}
         </>
@@ -1038,31 +1495,24 @@ function PromptViewer({
 }
 
 function PromptsPanel({ setError }: { setError: (m: string | null) => void }): JSX.Element {
+  const { t } = useTranslation();
   const { phase, scan, scope } = useProject();
+  const { snapshot: projectSettingsSnapshot } = useProjectSettings();
   const projectOpen = phase === 'ready' && (scan?.hasIris ?? false);
   const [state, setState] = useState<SoftwarePromptState | null>(null);
-  const [preview, setPreview] = useState<ContextPreview | null>(null);
   const [busy, setBusy] = useState(false);
-  const [confirm, setConfirm] = useState<string | null>(null);
   const [projectDraft, setProjectDraft] = useState('');
+  const [projectDraftRevision, setProjectDraftRevision] = useState<string | null>(null);
+  const [projectDraftDirty, setProjectDraftDirty] = useState(false);
 
   const refresh = async (): Promise<void> => {
     if (!scope) return;
     try {
-      const [s, p] = await Promise.all([
-        window.api.invoke<{ expectedScope: typeof scope }, SoftwarePromptState>(
-          CHANNELS.SOFTWARE_PROMPT_STATE,
-          { expectedScope: scope },
-        ),
-        window.api.invoke<{ expectedScope: typeof scope }, ContextPreview>(
-          CHANNELS.SOFTWARE_PROMPT_PREVIEW,
-          { expectedScope: scope },
-        ),
-      ]);
-      if (scope.generation !== projectStore.get().scope?.generation) return;
-      setState(s);
-      setPreview(p);
-      if (s.project.state !== 'conflict') setProjectDraft(s.project.text);
+      const next = await window.api.invoke<
+        { expectedScope: typeof scope },
+        SoftwarePromptState
+      >(CHANNELS.SOFTWARE_PROMPT_STATE, { expectedScope: scope });
+      setState(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -1072,33 +1522,79 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectOpen, scope]);
   useEffect(() => {
+    setProjectDraftDirty(false);
+    setProjectDraftRevision(null);
+  }, [scope?.root, scope?.generation]);
+  useEffect(() => {
+    if (!projectSettingsSnapshot || projectDraftDirty) return;
+    setProjectDraft(projectSettingsSnapshot.settings.prompts.project);
+    setProjectDraftRevision(projectSettingsSnapshot.revision);
+  }, [projectSettingsSnapshot, projectDraftDirty]);
+  useEffect(() => {
     if (!projectOpen) return;
     return window.api.on(EVENTS.PROMPT_CHANGED, () => void refresh());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectOpen]);
 
-  const run = async (verb: string, payload: Record<string, unknown>): Promise<void> => {
+  const run = async (verb: string, payload: Record<string, unknown>): Promise<boolean> => {
     setBusy(true);
-    setConfirm(null);
     setError(null);
     try {
       await pipeline.dispatch(verb, payload);
       await refresh(); // pull both status badges and the now-changed content
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setBusy(false);
     }
   };
 
+  const saveProjectPrompt = async (): Promise<void> => {
+    if (projectDraftRevision === null || projectSettingsSnapshot?.error) return;
+    const saved = await run('project-prompt.sync', {
+      text: projectDraft,
+      expectedRevision: projectDraftRevision,
+    });
+    if (!saved) return;
+    const latest = projectSettingsStore.get().snapshot;
+    setProjectDraftDirty(false);
+    if (latest) {
+      setProjectDraft(latest.settings.prompts.project);
+      setProjectDraftRevision(latest.revision);
+    }
+  };
+
+  const removeEntry = async (path: string): Promise<void> => {
+    if (!projectSettingsSnapshot || projectDraftDirty) return;
+    const confirmed = await confirmDialog({
+      title: t('settings.stopSyncTitle'),
+      message: t('settings.stopSyncMessage', { path }),
+      confirmText: t('settings.stopSync'),
+      tone: 'destructive',
+    });
+    if (!confirmed) return;
+    await run('prompt.entry-remove', {
+      path,
+      expectedRevision: projectSettingsSnapshot.revision,
+    });
+  };
+
+  const addEntry = async (path: string): Promise<void> => {
+    if (!projectSettingsSnapshot || projectDraftDirty) return;
+    await run('prompt.entry-add', {
+      path,
+      expectedRevision: projectSettingsSnapshot.revision,
+    });
+  };
+
   if (!projectOpen) {
     return (
       <section>
-        <PanelTitle description="软件层与项目层提示词治理">软件提示词</PanelTitle>
+        <PanelTitle description={t('settings.promptsDescription')}>{t('settings.prompts')}</PanelTitle>
         <Placeholder>
-          打开一个带 <code className="font-mono">.iris/</code> 的项目后，在这里查看软件与项目提示词、
-          hook 动态上下文，以及注入到 AGENTS.md / vendor 入口的{' '}
-          <code className="font-mono">&lt;iris-software&gt;</code> 托管块状态。
+          {t('settings.promptsNeedProject')}
         </Placeholder>
       </section>
     );
@@ -1106,95 +1602,45 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
 
   return (
     <section>
-      <PanelTitle description="软件层与项目层提示词治理">软件提示词</PanelTitle>
+      <PanelTitle description={t('settings.promptsDescription')}>{t('settings.prompts')}</PanelTitle>
       <p className="mb-4 text-xs text-muted-foreground">
-        这里能<b>看见</b>软件与项目提示词的实际正文，并治理软件层注入。<b>软件层</b>是 App 拥有、
-        内置的 <code className="font-mono">&lt;iris-software&gt;</code>{' '}
-        托管块（盘上不同即告警，由你确认恢复）；<b>可选项目提示词</b>是同一入口中的{' '}
-        <code className="font-mono">&lt;iris-project&gt;</code> 锁相块，盘上内容是真相之源。
+        {t('settings.promptsIntro')}
       </p>
-
-      <SettingGroup title="软件层 · 入口文件">
-      {(state?.entries ?? []).map((e) => {
-        const needsWrite = e.state !== 'ok';
-        const cid = `entry:${e.path}`;
-        return (
-          <SettingRow
-            key={e.path}
-            label={e.path}
-            hint={
-              (e.isStandard ? '标准入口（Iris 拥有）' : 'vendor 入口（存在才维护）')
-            }
-          >
-            <div className="flex flex-wrap items-center gap-2">
-              <span className={cn('rounded px-1.5 py-0.5 text-xs', SW_STATE_META[e.state].cls)}>
-                {SW_STATE_META[e.state].label}
-              </span>
-              {needsWrite &&
-                (confirm === cid ? (
-                  <>
-                    <span className="text-xs text-muted-foreground">
-                      将写入 {e.path}：
-                    </span>
-                    <Button
-                      size="sm"
-                      disabled={busy}
-                      onClick={() => void run('software-prompt.sync-entry', { path: e.path })}
-                    >
-                      确认
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setConfirm(null)}>
-                      取消
-                    </Button>
-                  </>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    disabled={busy}
-                    onClick={() => setConfirm(cid)}
-                  >
-                    {e.state === 'no-entry' ? '注入…' : e.state === 'drifted' ? '重新同步…' : '同步…'}
-                  </Button>
-                ))}
-            </div>
-          </SettingRow>
-        );
-      })}
-      </SettingGroup>
-      <PromptViewer
-        title="查看软件层正文（<iris-software> 托管块）"
-        body={preview?.software.block ?? null}
-        note={
-          preview && !preview.software.onDisk
-            ? '尚未注入任何入口文件——以下是将写入的出厂正文。'
-            : undefined
-        }
-      />
-
-      <SettingGroup title="项目层 · 可选提示词">
-        <SettingRow label="<iris-project>" hint="AGENTS.md 与现有 vendor 入口保持相同正文">
+      <SettingGroup title={t('settings.projectLayer')}>
+        <SettingRow label={t('settings.projectInstructions')} hint={t('settings.projectHint')}>
           <span
             className={cn(
               'rounded px-1.5 py-0.5 text-xs',
               PROJECT_STATE_META[state?.project.state ?? 'missing'].cls,
             )}
           >
-            {PROJECT_STATE_META[state?.project.state ?? 'missing'].label}
+            {t(PROJECT_STATE_META[state?.project.state ?? 'missing'].labelKey)}
           </span>
         </SettingRow>
       </SettingGroup>
+      {state?.project.error && (
+        <div role="alert" className="mt-3 border-l-2 border-destructive pl-3 text-xs text-destructive">
+          {state.project.error}
+        </div>
+      )}
       {state?.project.state === 'conflict' && (
         <div className="mt-3 space-y-3 rounded-md border border-[var(--rp-love)]/40 bg-[var(--rp-love)]/5 p-3">
           <p className="text-xs text-[var(--rp-love)]">
-            多个入口包含不同正文，Iris 未覆盖任何文件。选择一个版本载入编辑框，再保存以解决冲突。
+            {t('settings.projectConflict')}
           </p>
           {state.project.conflicts.map((item) => (
             <div key={item.path}>
               <div className="mb-1 flex items-center justify-between gap-2">
                 <code className="text-xs">{item.path}</code>
-                <Button size="sm" variant="secondary" onClick={() => setProjectDraft(item.text)}>
-                  采用此版本
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    setProjectDraft(item.text);
+                    setProjectDraftDirty(true);
+                  }}
+                >
+                  {t('settings.useVersion')}
                 </Button>
               </div>
               <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded border border-subtle bg-muted/30 px-2 py-1.5 font-mono text-[11px]">
@@ -1206,36 +1652,144 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
       )}
       <textarea
         value={projectDraft}
-        onChange={(event) => setProjectDraft(event.target.value)}
-        placeholder="留空表示不设置项目提示词"
+        onChange={(event) => {
+          setProjectDraft(event.target.value);
+          setProjectDraftDirty(true);
+        }}
+        placeholder={t('settings.projectPlaceholder')}
         className="mt-3 min-h-48 w-full resize-y rounded-md border border-subtle bg-background px-3 py-2 font-mono text-xs leading-relaxed outline-none focus:border-[var(--rp-iris)]"
       />
+      {projectDraftDirty &&
+        projectSettingsSnapshot &&
+        projectDraftRevision !== projectSettingsSnapshot.revision && (
+          <div role="alert" className="mt-2 flex items-center justify-between gap-3 border-l-2 border-[var(--rp-gold)] pl-3 text-xs text-muted-foreground">
+            <span>{t('settings.projectDraftStale')}</span>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                setProjectDraft(projectSettingsSnapshot.settings.prompts.project);
+                setProjectDraftRevision(projectSettingsSnapshot.revision);
+                setProjectDraftDirty(false);
+              }}
+            >
+              {t('settings.reloadLatest')}
+            </Button>
+          </div>
+        )}
       <div className="mt-2 flex justify-end">
         <Button
           size="sm"
-          disabled={busy || (state?.project.state !== 'conflict' && projectDraft === state?.project.text)}
-          onClick={() => void run('project-prompt.sync', { text: projectDraft })}
+          disabled={
+            busy ||
+            !projectDraftDirty ||
+            projectDraftRevision === null ||
+            !!projectSettingsSnapshot?.error ||
+            projectDraftRevision !== projectSettingsSnapshot?.revision
+          }
+          onClick={() => void saveProjectPrompt()}
         >
-          保存并同步
+          {t('settings.saveSync')}
         </Button>
       </div>
 
-      <div className="mb-5 mt-8">
-        <h3 className="text-base font-semibold">动态上下文预览 · SessionStart hook</h3>
-        <p className="mt-1 text-[13px] text-muted-foreground">
-          静态软件与项目提示词由入口文件直接提供；hook 只补充 workspace 或会话焦点。
-          <code className="font-mono">&lt;iris-focus&gt;</code> 段按会话实时填充，此处仅示形。
-        </p>
+      <div className="mb-2 mt-8 flex items-center gap-3">
+        <div>
+          <h3 className="text-base font-semibold">{t('settings.participatingEntries')}</h3>
+          <p className="mt-1 text-[13px] text-muted-foreground">
+            {t('settings.participatingEntriesHint')}
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant="secondary"
+          className="ml-auto"
+          disabled={busy || !state || state.project.state === 'conflict' || state.project.state === 'invalid-settings'}
+          onClick={() => void run('prompt.sync-all', {})}
+        >
+          <RefreshCw />
+          {t('settings.resyncAll')}
+        </Button>
       </div>
-      <PromptViewer
-        title="查看 hook 动态注入"
-        body={preview?.assembled ?? null}
-        defaultOpen
-      />
 
-      <p className="mt-4 text-xs text-muted-foreground/70">
-        各 agent CLI 的 SessionStart hook 接入与 agent 清单在「Agents」页配置。
-      </p>
+      <SettingGroup>
+        {(state?.entries ?? []).map((softwareEntry) => {
+          const projectEntry = state?.project.entries.find(
+            (entry) => entry.path === softwareEntry.path,
+          );
+          const healthy = softwareEntry.state === 'ok' && projectEntry?.state === 'synced';
+          return (
+            <SettingRow
+              key={softwareEntry.path}
+              label={softwareEntry.path}
+              hint={softwareEntry.isStandard ? t('settings.requiredEntry') : t('settings.participatingEntry')}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={cn('rounded px-1.5 py-0.5 text-xs', SW_STATE_META[softwareEntry.state].cls)}>
+                  {t('settings.softwareStatus', { status: t(SW_STATE_META[softwareEntry.state].labelKey) })}
+                </span>
+                {projectEntry && (
+                  <span className={cn(
+                    'rounded px-1.5 py-0.5 text-xs',
+                    projectEntry.state === 'synced'
+                      ? 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]'
+                      : 'bg-[var(--rp-love)]/20 text-[var(--rp-love)]',
+                  )}>
+                    {t('settings.projectStatus', { status: t(`settings.projectEntry.${projectEntry.state}`) })}
+                  </span>
+                )}
+                {!healthy && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={busy}
+                    onClick={() => void run('software-prompt.sync-entry', { path: softwareEntry.path })}
+                  >
+                    <RefreshCw />
+                    {t('settings.resync')}
+                  </Button>
+                )}
+                {!softwareEntry.isStandard && (
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="ml-auto h-7 w-7 text-destructive"
+                    title={t('settings.stopSync')}
+                    disabled={busy || projectDraftDirty}
+                    onClick={() => void removeEntry(softwareEntry.path)}
+                  >
+                    <Unlink />
+                  </Button>
+                )}
+              </div>
+            </SettingRow>
+          );
+        })}
+        {(state?.availableEntries.length ?? 0) > 0 && (
+          <div className="flex justify-end border-t border-subtle px-4 py-3">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" variant="outline" disabled={busy || projectDraftDirty}>
+                  <Plus />
+                  {t('settings.addEntry')}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {(state?.availableEntries ?? []).map((path) => (
+                  <DropdownMenuItem key={path} onClick={() => void addEntry(path)}>
+                    {path}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        )}
+      </SettingGroup>
+
+      <PromptViewer
+        title={t('settings.softwareBody')}
+        body={state?.softwareText ?? null}
+      />
     </section>
   );
 }
@@ -1245,16 +1799,17 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
 // ──────────────────────────────────────────────────────────────────
 
 function AdvancedPanel({ setError }: { setError: (m: string | null) => void }): JSX.Element {
+  const { t } = useTranslation();
   const settings = useSettings();
 
   return (
     <section>
-      <PanelTitle description="启动行为、会话空闲检测、退出确认">高级</PanelTitle>
+      <PanelTitle description={t('settings.advancedDescription')}>{t('settings.advanced')}</PanelTitle>
 
       <SettingGroup>
         <SettingRow
-          label="启动时恢复项目"
-          hint="开启后恢复上次退出时仍打开的项目窗口；关闭时进入欢迎页"
+          label={t('settings.restoreProjects')}
+          hint={t('settings.restoreProjectsHint')}
         >
           <ToggleSwitch
             checked={settings?.behavior.restoreProjectsOnStartup ?? false}
@@ -1265,8 +1820,8 @@ function AdvancedPanel({ setError }: { setError: (m: string | null) => void }): 
         </SettingRow>
 
         <SettingRow
-          label="会话空闲阈值（秒）"
-          hint="终端无输出超过该时长 → 状态点从 ● 工作中 变为 ◐ 等待"
+          label={t('settings.idleThreshold')}
+          hint={t('settings.idleThresholdHint')}
         >
           <NumberCommitInput
             value={settings?.advanced.activeIdleThresholdSeconds ?? 2}
@@ -1279,7 +1834,19 @@ function AdvancedPanel({ setError }: { setError: (m: string | null) => void }): 
           />
         </SettingRow>
 
-        <SettingRow label="退出确认" hint="关闭窗口时若仍有运行中的会话（含工作中的 agent），先弹确认">
+        <SettingRow
+          label={t('settings.autoCheckTodosOnDone')}
+          hint={t('settings.autoCheckTodosOnDoneHint')}
+        >
+          <ToggleSwitch
+            checked={settings?.behavior.autoCheckTodosOnDone ?? false}
+            onChange={(v) =>
+              void updateSettings({ behavior: { autoCheckTodosOnDone: v } }, setError)
+            }
+          />
+        </SettingRow>
+
+        <SettingRow label={t('settings.confirmQuit')} hint={t('settings.confirmQuitHint')}>
           <ToggleSwitch
             checked={settings?.behavior.confirmOnQuit ?? true}
             onChange={(v) => void updateSettings({ behavior: { confirmOnQuit: v } }, setError)}
@@ -1295,9 +1862,10 @@ function AdvancedPanel({ setError }: { setError: (m: string | null) => void }): 
 // ──────────────────────────────────────────────────────────────────
 
 function AboutPanel(): JSX.Element {
+  const { t } = useTranslation();
   return (
     <section>
-      <PanelTitle>关于</PanelTitle>
+      <PanelTitle>{t('settings.about')}</PanelTitle>
 
       <div className="mb-6 flex items-center gap-4 rounded-lg border bg-card/50 px-5 py-5">
         <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-primary/10">
@@ -1306,17 +1874,17 @@ function AboutPanel(): JSX.Element {
         <div>
           <h3 className="text-base font-semibold">Iris</h3>
           <p className="mt-0.5 text-[13px] text-muted-foreground">
-            AI 原生 · 文档中心 · 终端驱动的项目管理
+            {t('settings.aboutDescription')}
           </p>
           <p className="mt-1 text-xs text-muted-foreground/70">
-            占位 — 版本号 / 构建形态（dev · portable · installed）/ 数据目录待接 IPC。
+            {t('settings.aboutPlaceholder')}
           </p>
         </div>
       </div>
 
       <SettingGroup>
-        <SettingRow label="文件契约" hint=".iris/ 类型目录 + 入口提示词标签块">
-          <span className="text-[13px] text-muted-foreground">无版本元数据</span>
+        <SettingRow label={t('settings.fileContract')} hint={t('settings.fileContractHint')}>
+          <span className="text-[13px] text-muted-foreground">{t('settings.noVersionMetadata')}</span>
         </SettingRow>
 
         <SettingRow label="License">

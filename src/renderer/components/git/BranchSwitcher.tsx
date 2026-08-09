@@ -1,4 +1,5 @@
 import { Check, ChevronsUpDown, GitBranch } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@renderer/components/ui/button';
 import {
   DropdownMenu,
@@ -17,6 +18,7 @@ export function BranchSwitcher({
   snapshot: GitSnapshot;
   pending: boolean;
 }): JSX.Element {
+  const { t } = useTranslation();
   const label = snapshot.branch ?? (snapshot.detached ? 'HEAD (detached)' : 'Git');
   const hasSync = snapshot.ahead > 0 || snapshot.behind > 0;
 
@@ -45,7 +47,7 @@ export function BranchSwitcher({
         className="max-h-72 max-w-[min(18rem,calc(100vw-2rem))] overflow-y-auto"
       >
         <DropdownMenuLabel className="text-[11px] text-muted-foreground">
-          本地分支
+          {t('git.localBranches')}
         </DropdownMenuLabel>
         {snapshot.branches.map((branch) => (
           <DropdownMenuItem

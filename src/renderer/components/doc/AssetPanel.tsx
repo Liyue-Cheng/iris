@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   AlertTriangle,
   Copy,
@@ -29,11 +30,11 @@ import {
   trashAsset,
 } from '@renderer/lib/asset-actions';
 
-const HEALTH_LABEL: Record<AssetHealth, string> = {
-  referenced: '已引用',
-  orphan: '孤儿',
-  missing: '缺失',
-  unmanaged: '非受管',
+const HEALTH_LABEL: Record<AssetHealth, 'editor.assetReferenced' | 'editor.assetOrphan' | 'editor.assetMissing' | 'editor.assetUnmanaged'> = {
+  referenced: 'editor.assetReferenced',
+  orphan: 'editor.assetOrphan',
+  missing: 'editor.assetMissing',
+  unmanaged: 'editor.assetUnmanaged',
 };
 
 export function AssetPanel({
@@ -45,6 +46,7 @@ export function AssetPanel({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [inventory, setInventory] = useState<AssetInventory | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -105,9 +107,9 @@ export function AssetPanel({
 
   const removeOrphan = async (asset: AssetEntry): Promise<void> => {
     const confirmed = await confirmDialog({
-      title: '删除孤儿资产',
-      message: `${asset.name} 当前没有 Markdown 引用，将移入系统回收站。`,
-      confirmText: '移入回收站',
+      title: t('editor.deleteOrphanTitle'),
+      message: t('editor.deleteOrphanMessage', { name: asset.name }),
+      confirmText: t('editor.moveToTrash'),
       tone: 'destructive',
     });
     if (!confirmed) return;
@@ -142,7 +144,7 @@ export function AssetPanel({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl gap-3 p-0">
         <DialogHeader className="border-b px-5 py-4">
-          <DialogTitle className="text-base">文档资产</DialogTitle>
+          <DialogTitle className="text-base">{t('editor.assets')}</DialogTitle>
         </DialogHeader>
 
         <div className="flex items-center gap-2 px-5">
@@ -155,13 +157,13 @@ export function AssetPanel({
           />
           <Button size="sm" disabled={busy} onClick={() => fileInput.current?.click()}>
             {busy ? <Loader2 className="animate-spin" /> : <Upload />}
-            添加
+            {t('common.add')}
           </Button>
-          <IconAction label="刷新" disabled={loading} onClick={() => void refresh()}>
+          <IconAction label={t('common.refresh')} disabled={loading} onClick={() => void refresh()}>
             <RefreshCw className={cn(loading && 'animate-spin')} />
           </IconAction>
           <span className="ml-auto text-xs text-muted-foreground">
-            {inventory ? `${assets.length} 项` : ''}
+            {inventory ? t('editor.assetCount', { count: assets.length }) : ''}
           </span>
         </div>
 
@@ -179,7 +181,7 @@ export function AssetPanel({
             </div>
           ) : assets.length === 0 ? (
             <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
-              暂无资产
+              {t('editor.noAssets')}
             </div>
           ) : (
             assets.map((asset) => (
@@ -213,6 +215,7 @@ function AssetRow({
   onAdopt: () => void;
   onRemove: () => void;
 }): JSX.Element {
+  const { t } = useTranslation();
   const canOpen = asset.health !== 'missing' && asset.path !== '';
   const canTrash = asset.health === 'orphan';
   const canAdopt = asset.health === 'unmanaged';
@@ -232,41 +235,41 @@ function AssetRow({
               asset.health === 'orphan' && 'text-[var(--rp-gold)]',
             )}
           >
-            {HEALTH_LABEL[asset.health]}
+            {t(HEALTH_LABEL[asset.health])}
           </span>
           {asset.size !== null && <span>{formatBytes(asset.size)}</span>}
-          {asset.referenceCount > 0 && <span>{asset.referenceCount} 处引用</span>}
+          {asset.referenceCount > 0 && <span>{t('editor.referenceCount', { count: asset.referenceCount })}</span>}
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
         {canAdopt && (
-          <IconAction label="收编为受管资产" disabled={disabled} onClick={onAdopt}>
+          <IconAction label={t('editor.adoptAsset')} disabled={disabled} onClick={onAdopt}>
             <PackagePlus />
           </IconAction>
         )}
         <IconAction
-          label="复制 Markdown 链接"
+          label={t('editor.copyMarkdown')}
           disabled={asset.health === 'missing'}
           onClick={() => void writeClipboardText(markdownForAsset(asset))}
         >
           <Copy />
         </IconAction>
         <IconAction
-          label="在资源管理器中显示"
+          label={t('common.reveal')}
           disabled={!canOpen}
           onClick={() => void pipeline.dispatch('shell.reveal-project-item', { path: asset.path })}
         >
           <FolderOpen />
         </IconAction>
         <IconAction
-          label="用默认程序打开"
+          label={t('common.openDefault')}
           disabled={!canOpen}
           onClick={() => void pipeline.dispatch('shell.open-project-item', { path: asset.path })}
         >
           <ExternalLink />
         </IconAction>
         {canTrash && (
-          <IconAction label="移入回收站" disabled={disabled} destructive onClick={onRemove}>
+          <IconAction label={t('editor.moveToTrash')} disabled={disabled} destructive onClick={onRemove}>
             <Trash2 />
           </IconAction>
         )}

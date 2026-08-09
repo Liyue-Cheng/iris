@@ -40,6 +40,7 @@ import {
 import { getBuildType } from './build-type';
 import { logger } from './logger';
 import { CHANNELS, EVENTS } from '@shared/protocol';
+import { initializeMainI18n, mainT } from './i18n';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const isDev = !!process.env.ELECTRON_RENDERER_URL;
@@ -385,12 +386,12 @@ function createWindow(initialRoot: string | null): BrowserWindow {
       if (live > 0) {
         const choice = dialog.showMessageBoxSync(win, {
           type: 'warning',
-          buttons: ['退出', '取消'],
+          buttons: [mainT('app.quit'), mainT('common.cancel')],
           defaultId: 1,
           cancelId: 1,
           title: 'Iris',
-          message: `仍有 ${live} 个会话在运行`,
-          detail: '退出会终止所有会话（包括正在工作的 agent）。',
+          message: mainT('app.quitMessage', { count: live }),
+          detail: mainT('app.quitDetail'),
         });
         // Cancel: re-arm the flush so a later close attempt flushes fresh edits.
         if (choice === 1) {
@@ -434,6 +435,10 @@ function createWindow(initialRoot: string | null): BrowserWindow {
 
 app.whenReady().then(async () => {
   const source = await settingsManager.initialize();
+  await initializeMainI18n(settingsManager.get().locale, app.getLocale());
+  settingsManager.on('settingsChanged', ({ settings }) => {
+    void initializeMainI18n(settings.locale, app.getLocale());
+  });
   logger.info('main', `settings loaded from ${source} (${settingsFilePath()})`);
 
   // The generated hook payload is app-owned and all CLI configs point to its
@@ -460,10 +465,10 @@ app.whenReady().then(async () => {
         const parent = BrowserWindow.fromWebContents(event.sender);
         const r = await (parent
           ? dialog.showOpenDialog(parent, {
-              title: '在新窗口打开项目',
+              title: mainT('app.openProjectNewWindow'),
               properties: ['openDirectory'],
             })
-          : dialog.showOpenDialog({ title: '在新窗口打开项目', properties: ['openDirectory'] }));
+          : dialog.showOpenDialog({ title: mainT('app.openProjectNewWindow'), properties: ['openDirectory'] }));
         if (r.canceled || r.filePaths.length === 0) return { opened: false };
         root = r.filePaths[0] ?? null;
       }

@@ -1,5 +1,10 @@
 import { normalize, resolve } from 'node:path';
-import type { ProjectOpenResult, ProjectScope, SessionInfo } from '@shared/types';
+import type {
+  ProjectOpenResult,
+  ProjectScope,
+  ProjectSettingsSnapshot,
+  SessionInfo,
+} from '@shared/types';
 import type { WindowContext } from './window-context';
 import { logger } from './logger';
 
@@ -31,6 +36,7 @@ export function enqueueProjectSwitch(
   ctx: WindowContext,
   request: ProjectSwitchRequest,
   onCommitted: (scope: ProjectScope) => void,
+  readProjectSettings: (scope: ProjectScope) => Promise<ProjectSettingsSnapshot>,
 ): Promise<ProjectOpenResult> {
   const run = ctx.projectSwitchTail.catch(() => undefined).then(async () => {
     if (!sameScope(request.expectedScope, ctx.projectScope)) {
@@ -40,8 +46,16 @@ export function enqueueProjectSwitch(
     const targetRoot = normalize(resolve(request.root));
     const current = ctx.projectScope;
     if (current?.root === targetRoot && ctx.projectManager.getRoot() === targetRoot) {
-      const scan = await ctx.projectManager.scan();
-      return { scope: current, scan, sessions: sessionsForScope(ctx, current) };
+      const [scan, projectSettings] = await Promise.all([
+        ctx.projectManager.scan(),
+        readProjectSettings(current),
+      ]);
+      return {
+        scope: current,
+        scan,
+        sessions: sessionsForScope(ctx, current),
+        projectSettings,
+      };
     }
 
     ctx.projectSwitching = true;
@@ -50,10 +64,12 @@ export function enqueueProjectSwitch(
       // realpath preflight collapses Windows casing, junction and symlink
       // aliases. Re-check identity before crossing the destructive boundary.
       if (current?.root === prepared.root && ctx.projectManager.getRoot() === prepared.root) {
+        const projectSettings = await readProjectSettings(current);
         return {
           scope: current,
           scan: prepared.scan,
           sessions: sessionsForScope(ctx, current),
+          projectSettings,
         };
       }
 
@@ -78,7 +94,8 @@ export function enqueueProjectSwitch(
       } catch (err) {
         logger.warn('project', `post-commit persistence failed for ${scope.root}`, err);
       }
-      return { scope, scan, sessions: [] };
+      const projectSettings = await readProjectSettings(scope);
+      return { scope, scan, sessions: [], projectSettings };
     } finally {
       ctx.projectSwitching = false;
     }

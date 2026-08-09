@@ -10,6 +10,38 @@ import { sessionStore } from '@renderer/stores/session-store';
 import { editorStore } from '@renderer/stores/editor-store';
 import { alertDialog, confirmDialog } from '@renderer/components/ui/confirm-dialog';
 import { gitStore } from '@renderer/stores/git-store';
+import { translate } from '@renderer/i18n';
+import type { SoftwarePromptState } from '@shared/types';
+
+/** Audit both static projections after a project is active and offer one repair. */
+export async function offerPromptProjectionRepair(): Promise<void> {
+  const scope = projectStore.get().scope;
+  if (!scope) return;
+  const promptState = await window.api.invoke<
+    { expectedScope: typeof scope },
+    SoftwarePromptState
+  >(CHANNELS.SOFTWARE_PROMPT_STATE, { expectedScope: scope });
+  const softwareDrift = promptState.entries.filter((entry) => entry.state !== 'ok');
+  const projectDrift = promptState.project.entries.filter((entry) => entry.state !== 'synced');
+  const repairable =
+    promptState.project.state !== 'conflict' &&
+    promptState.project.state !== 'invalid-settings';
+  if (!repairable || (softwareDrift.length === 0 && projectDrift.length === 0)) return;
+
+  const affected = [...new Set([
+    ...softwareDrift.map((entry) => entry.path),
+    ...projectDrift.map((entry) => entry.path),
+  ])];
+  const confirmed = await confirmDialog({
+    title: translate('settings.syncRequiredTitle'),
+    message: translate('settings.syncRequiredMessage', {
+      count: affected.length,
+      files: affected.join('\n'),
+    }),
+    confirmText: translate('settings.resyncAll'),
+  });
+  if (confirmed) await pipeline.dispatch('prompt.sync-all', {});
+}
 
 export async function openProject(root: string): Promise<void> {
   const currentRoot = projectStore.get().scan?.projectRoot ?? null;
@@ -18,11 +50,11 @@ export async function openProject(root: string): Promise<void> {
     const sessions = sessionStore.get().sessions;
     const live = sessions.filter((session) => session.state !== 'exited').length;
     const confirmed = await confirmDialog({
-      title: '切换项目',
-      message:
-        `切换会关闭当前项目的 ${sessions.length} 个终端会话` +
-        (live > 0 ? `，其中 ${live} 个仍在运行。` : '。'),
-      confirmText: '关闭并切换',
+      title: translate('layout.switchTitle'),
+      message: live > 0
+        ? translate('layout.switchMessage', { count: sessions.length, live })
+        : translate('layout.switchMessageNoneLive', { count: sessions.length }),
+      confirmText: translate('layout.closeAndSwitch'),
       tone: 'destructive',
     });
     if (!confirmed) return;
@@ -33,11 +65,18 @@ export async function openProject(root: string): Promise<void> {
   try {
     await editorStore.flushBeforeProjectSwitch();
     await pipeline.dispatch('project.open', { root });
-    // store update happens in the instruction's commit
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     projectStore.handleOpenFailed(message);
-    void alertDialog({ title: '项目切换失败', message });
+    void alertDialog({ title: translate('layout.switchFailed'), message });
+    return;
+  }
+
+  try {
+    await offerPromptProjectionRepair();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    void alertDialog({ title: translate('settings.syncRequiredTitle'), message });
   }
 }
 

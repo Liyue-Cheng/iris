@@ -26,18 +26,27 @@ export const CHANNELS = {
   WORKSPACE_CREATE: 'workspace:create',
   /** Context-injection adapter layer (round-3 A 条): focus-context script in
    *  ~/.iris/ + SessionStart hooks in the user's agent CLI configs. State is
-   *  a query; the two installs are verbs gated behind explicit confirmation
-   *  in the settings UI. */
+   *  a query; user-config writes/removals are verbs gated behind explicit
+   *  confirmation in the settings UI. */
   AGENT_INJECTION_STATE: 'agent:injection-state',
   AGENT_INSTALL_FOCUS_SCRIPT: 'agent:install-focus-script',
   AGENT_INSTALL_HOOK: 'agent:install-hook',
+  AGENT_REMOVE_HOOK: 'agent:remove-hook',
   /** Prompt governance for project-root entry-file blocks. */
   SOFTWARE_PROMPT_STATE: 'software-prompt:state',
   /** Read-only: the prompt layers' on-disk text + assembled injection, for the
    *  settings viewer (content behind the freshness badges). */
   SOFTWARE_PROMPT_PREVIEW: 'software-prompt:preview',
   SOFTWARE_PROMPT_SYNC_ENTRY: 'software-prompt:sync-entry',
+  PROMPT_SYNC_ALL: 'prompt:sync-all',
+  PROMPT_ENTRY_ADD: 'prompt:entry-add',
+  PROMPT_ENTRY_REMOVE: 'prompt:entry-remove',
   PROJECT_PROMPT_SYNC: 'project-prompt:sync',
+  PROJECT_PROMPT_RESTORE_ENTRY: 'project-prompt:restore-entry',
+  /** Project-level App settings stored in .iris/settings.json. */
+  PROJECT_SETTINGS_GET: 'project-settings:get',
+  PROJECT_SETTINGS_UPDATE_TOOLBAR: 'project-settings:update-toolbar',
+  PROJECT_COMMAND_RUN: 'project-command:run',
   /** UI helper: reveal a path in the system file manager. */
   SHELL_REVEAL: 'shell:reveal',
   /** UI helper: open a path with its operating-system default application. */

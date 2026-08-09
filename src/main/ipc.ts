@@ -14,6 +14,7 @@ import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { CHANNELS, EVENTS } from '@shared/protocol';
+import { mainT } from './i18n';
 import type {
   AssetImportPayload,
   AssetImportResult,
@@ -26,7 +27,11 @@ import type {
   IrisScanResult,
   PingResult,
   ProjectOpenResult,
+  ProjectPromptUpdateResult,
+  ProjectCommandRunResult,
+  ProjectSettingsSnapshot,
   ProjectScope,
+  ProjectToolbarAction,
   RawTreeNode,
   RecentProject,
   SessionExitedPayload,
@@ -43,7 +48,7 @@ import type { SettingsManager } from './settings-manager';
 import type { ProjectManager } from './project-manager';
 import type { GitManager } from './git-manager';
 import type { SessionManager } from './session-manager';
-import { injectionState, installFocusScript, installHook } from './agent-injection';
+import { injectionState, installFocusScript, installHook, removeHook } from './agent-injection';
 import {
   contextForWebContents,
   persistOpenRoots,
@@ -52,6 +57,7 @@ import {
 } from './window-context';
 import { logger } from './logger';
 import { enqueueProjectSwitch } from './project-switch';
+import { launchSystemTerminal } from './system-terminal';
 
 const execFileP = promisify(execFile);
 
@@ -146,16 +152,29 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     },
   );
 
+  const withProjectTrust = (
+    scope: ProjectScope,
+    snapshot: Awaited<ReturnType<ProjectManager['projectSettings']>>,
+  ): ProjectSettingsSnapshot => ({
+    ...snapshot,
+    trusted: settingsManager.get().project.commandTrust[scope.root] === snapshot.revision,
+  });
+
   // ── project ────────────────────────────────────────────────────────
 
   ipcMain.handle(
     CHANNELS.PROJECT_OPEN,
     (event, payload: { root: string } & ProjectScopedPayload): Promise<ProjectOpenResult> => {
       const ctx = requireContext(event);
-      return enqueueProjectSwitch(ctx, payload, (scope) => {
+      return enqueueProjectSwitch(
+        ctx,
+        payload,
+        (scope) => {
           settingsManager.recordRecentProject(scope.root);
           persistOpenRoots(settingsManager);
-      });
+        },
+        async (scope) => withProjectTrust(scope, await ctx.projectManager.projectSettings()),
+      );
     },
   );
 
@@ -235,6 +254,10 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     installHook(payload.cliId),
   );
 
+  ipcMain.handle(CHANNELS.AGENT_REMOVE_HOOK, (_event, payload: { cliId: string }) =>
+    removeHook(payload.cliId),
+  );
+
   // ── prompt governance (issue: iris软件提示词治理) ─────────────────────
 
   ipcMain.handle(CHANNELS.SOFTWARE_PROMPT_STATE, (event, payload: ProjectScopedPayload) => {
@@ -258,12 +281,138 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     },
   );
 
+  ipcMain.handle(CHANNELS.PROMPT_SYNC_ALL, (event, payload: ProjectScopedPayload) => {
+    const ctx = requireContext(event);
+    requireProjectScope(ctx, payload, CHANNELS.PROMPT_SYNC_ALL);
+    return ctx.projectManager.syncAllPromptEntries();
+  });
+
+  ipcMain.handle(
+    CHANNELS.PROMPT_ENTRY_ADD,
+    async (
+      event,
+      payload: { path: string; expectedRevision: string } & ProjectScopedPayload,
+    ): Promise<ProjectPromptUpdateResult> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.PROMPT_ENTRY_ADD);
+      const result = await ctx.projectManager.addPromptEntry(payload.path, payload.expectedRevision);
+      return { ...result, snapshot: withProjectTrust(scope, result.snapshot) };
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.PROMPT_ENTRY_REMOVE,
+    async (
+      event,
+      payload: { path: string; expectedRevision: string } & ProjectScopedPayload,
+    ): Promise<ProjectPromptUpdateResult> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.PROMPT_ENTRY_REMOVE);
+      const result = await ctx.projectManager.removePromptEntry(payload.path, payload.expectedRevision);
+      return { ...result, snapshot: withProjectTrust(scope, result.snapshot) };
+    },
+  );
+
   ipcMain.handle(
     CHANNELS.PROJECT_PROMPT_SYNC,
-    (event, payload: { text: string } & ProjectScopedPayload) => {
+    async (
+      event,
+      payload: { text: string; expectedRevision: string } & ProjectScopedPayload,
+    ): Promise<ProjectPromptUpdateResult> => {
       const ctx = requireContext(event);
-      requireProjectScope(ctx, payload, CHANNELS.PROJECT_PROMPT_SYNC);
-      return ctx.projectManager.syncProjectPrompt(payload.text);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.PROJECT_PROMPT_SYNC);
+      const result = await ctx.projectManager.syncProjectPrompt(
+        payload.text,
+        payload.expectedRevision,
+      );
+      return { ...result, snapshot: withProjectTrust(scope, result.snapshot) };
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.PROJECT_PROMPT_RESTORE_ENTRY,
+    (event, payload: { path: string } & ProjectScopedPayload) => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.PROJECT_PROMPT_RESTORE_ENTRY);
+      return ctx.projectManager.restoreProjectPromptEntry(payload.path);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.PROJECT_SETTINGS_GET,
+    async (event, payload: ProjectScopedPayload): Promise<ProjectSettingsSnapshot> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.PROJECT_SETTINGS_GET);
+      return withProjectTrust(scope, await ctx.projectManager.projectSettings());
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.PROJECT_SETTINGS_UPDATE_TOOLBAR,
+    async (
+      event,
+      payload: {
+        actions: ProjectToolbarAction[];
+        expectedRevision: string;
+      } & ProjectScopedPayload,
+    ): Promise<ProjectSettingsSnapshot> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.PROJECT_SETTINGS_UPDATE_TOOLBAR);
+      const snapshot = await ctx.projectManager.updateProjectToolbar(
+        payload.actions,
+        payload.expectedRevision,
+      );
+      return withProjectTrust(scope, snapshot);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.PROJECT_COMMAND_RUN,
+    async (
+      event,
+      payload: {
+        actionIndex: number;
+        revision: string;
+        approveRevision?: string;
+        cols: number;
+        rows: number;
+      } & ProjectScopedPayload,
+    ): Promise<ProjectCommandRunResult> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.PROJECT_COMMAND_RUN);
+      if (!Number.isInteger(payload.actionIndex) || payload.actionIndex < 0) {
+        throw new Error(`[${CHANNELS.PROJECT_COMMAND_RUN}] invalid action index`);
+      }
+      const snapshot = await ctx.projectManager.projectSettings();
+      if (snapshot.error) throw new Error(`[${CHANNELS.PROJECT_COMMAND_RUN}] ${snapshot.error}`);
+      if (snapshot.revision !== payload.revision) {
+        throw new Error(`[${CHANNELS.PROJECT_COMMAND_RUN}] stale project settings revision`);
+      }
+      const action = snapshot.settings.toolbar.actions[payload.actionIndex];
+      if (!action) throw new Error(`[${CHANNELS.PROJECT_COMMAND_RUN}] action not found`);
+
+      const trustedRevision = settingsManager.get().project.commandTrust[scope.root];
+      if (trustedRevision !== snapshot.revision) {
+        if (payload.approveRevision !== snapshot.revision) {
+          throw new Error(`[${CHANNELS.PROJECT_COMMAND_RUN}] project command trust required`);
+        }
+        settingsManager.trustProjectCommands(scope.root, snapshot.revision);
+      }
+
+      if (action.terminal === 'iris') {
+        const session = ctx.sessionManager.createCommandSession({
+          actionIndex: payload.actionIndex,
+          description: action.description,
+          command: action.command,
+          projectRoot: scope.root,
+          projectGeneration: scope.generation,
+          cols: payload.cols,
+          rows: payload.rows,
+        });
+        return { kind: 'iris', session };
+      }
+      const pid = await launchSystemTerminal(action.command, scope.root);
+      return { kind: 'system', pid };
     },
   );
 
@@ -528,7 +677,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
 
   ipcMain.handle(
     CHANNELS.SESSION_OPEN,
-    (
+    async (
       event,
       payload: {
         docPath: string | null;
@@ -537,9 +686,10 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
         cols: number;
         rows: number;
       } & ProjectScopedPayload,
-    ): SessionInfo => {
+    ): Promise<SessionInfo> => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_OPEN);
+      await ctx.projectManager.assertProjectSettingsReady();
       return ctx.sessionManager.createSession({
         docPath: payload.docPath,
         workspacePath: payload.workspacePath ?? null,
@@ -636,8 +786,8 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
   ipcMain.handle(CHANNELS.DIALOG_PICK_FOLDER, async (event): Promise<string | null> => {
     const parent = senderWindow(event);
     const result = await (parent
-      ? dialog.showOpenDialog(parent, { title: '打开项目文件夹', properties: ['openDirectory'] })
-      : dialog.showOpenDialog({ title: '打开项目文件夹', properties: ['openDirectory'] }));
+      ? dialog.showOpenDialog(parent, { title: mainT('app.openProject'), properties: ['openDirectory'] })
+      : dialog.showOpenDialog({ title: mainT('app.openProject'), properties: ['openDirectory'] }));
     if (result.canceled || result.filePaths.length === 0) return null;
     return result.filePaths[0] ?? null;
   });

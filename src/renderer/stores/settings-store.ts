@@ -12,6 +12,7 @@
 import { useSyncExternalStore } from 'react';
 import type { Settings, SettingsChangedEvent } from '@shared/types';
 import { CHANNELS, EVENTS } from '@shared/protocol';
+import { initializeRendererI18n } from '@renderer/i18n';
 
 let settings: Settings | null = null;
 const subscribers = new Set<() => void>();
@@ -32,11 +33,21 @@ function setSettings(next: Settings): void {
   emit();
 }
 
+async function applyLocale(next: Settings): Promise<void> {
+  const locale = await initializeRendererI18n(next.locale);
+  if (import.meta.env.DEV) {
+    const { cpuConsole } = await import('front-cpu/debug');
+    cpuConsole.setLocale(locale === 'zh-CN' ? 'zh-CN' : 'en');
+  }
+}
+
 /** Load once at startup, then follow main-process broadcasts. */
 export async function initSettingsStore(): Promise<void> {
   const initial = await window.api.invoke<undefined, Settings>(CHANNELS.SETTINGS_GET);
+  await applyLocale(initial);
   setSettings(initial);
   window.api.on<SettingsChangedEvent>(EVENTS.SETTINGS_CHANGED, (event) => {
+    void applyLocale(event.settings);
     setSettings(event.settings);
   });
 }

@@ -11,6 +11,30 @@ import type { DocContent } from '@shared/types';
 
 export const IRIS_DOC_MIME = 'application/x-iris-doc';
 
+export interface EditorDropPoint {
+  x: number;
+  y: number;
+}
+
+export interface EditorDropAdapter {
+  insertTextAtPoint(text: string, point: EditorDropPoint): boolean;
+}
+
+export interface EditorPathDrop {
+  source: 'iris-document' | 'system-file';
+  paths: string[];
+}
+
+export type FilePathResolver = (file: File) => string;
+export type EditorPathDropResult = 'ignored' | 'path-unavailable' | 'insert-failed' | 'inserted';
+
+export interface EditorPathDropEvent {
+  dataTransfer: DataTransfer;
+  clientX: number;
+  clientY: number;
+  preventDefault(): void;
+}
+
 /** Inline-snapshot cap; bigger docs paste a pointer instead (32 KiB — the
  *  same default ceiling Codex applies to AGENTS.md). */
 export const DOC_PASTE_MAX_BYTES = 32 * 1024;
@@ -29,19 +53,86 @@ export function getDocDragPath(dt: DataTransfer): string | null {
   return dt.getData(IRIS_DOC_MIME) || null;
 }
 
+export function isEditorPathDrag(dt: DataTransfer): boolean {
+  return isDocDrag(dt) || dt.types.includes('Files') || dt.files.length > 0;
+}
+
+export function resolveSystemFilePaths(
+  files: FileList | readonly File[],
+  resolvePath: FilePathResolver,
+): string[] {
+  return Array.from(files).flatMap((file) => {
+    try {
+      const path = resolvePath(file);
+      return path.length > 0 ? [path] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/** Resolve only privileged path-bearing drags. Ordinary text/URL and editor
+ * internal drags deliberately return null and keep their native behavior. */
+export function resolveEditorPathDrop(
+  dt: DataTransfer,
+  resolvePath: FilePathResolver,
+): EditorPathDrop | null {
+  if (isDocDrag(dt)) {
+    const path = getDocDragPath(dt);
+    return { source: 'iris-document', paths: path ? [path] : [] };
+  }
+  if (dt.types.includes('Files') || dt.files.length > 0) {
+    return {
+      source: 'system-file',
+      paths: resolveSystemFilePaths(dt.files, resolvePath),
+    };
+  }
+  return null;
+}
+
+export function formatDroppedPaths(paths: readonly string[]): string {
+  return paths.join('\n');
+}
+
+/** Cancel the editor's default file semantics without stopping propagation.
+ * The original drop must still reach Milkdown/CodeMirror lifecycle observers
+ * so their hover indicators can clear. */
+export function governEditorPathDrop(
+  event: EditorPathDropEvent,
+  resolvePath: FilePathResolver,
+  adapter: EditorDropAdapter | null,
+): EditorPathDropResult {
+  const drop = resolveEditorPathDrop(event.dataTransfer, resolvePath);
+  if (!drop) return 'ignored';
+
+  event.preventDefault();
+  if (drop.paths.length === 0) return 'path-unavailable';
+
+  try {
+    return adapter?.insertTextAtPoint(formatDroppedPaths(drop.paths), {
+      x: event.clientX,
+      y: event.clientY,
+    })
+      ? 'inserted'
+      : 'insert-failed';
+  } catch {
+    return 'insert-failed';
+  }
+}
+
 const TYPED_FOLDERS = ['status', 'issue', 'report', 'misc'];
 
-/** "类型 issue，工作区 .iris" — both derived from the path (名字即类型). */
+/** Canonical English agent context; independent from the UI locale. */
 function describePath(path: string): string {
   const segments = path.split('/');
   for (let i = segments.length - 2; i >= 0; i--) {
     const seg = segments[i];
     if (seg !== undefined && TYPED_FOLDERS.includes(seg)) {
       const workspace = segments.slice(0, i).join('/') || '.';
-      return `类型 ${seg}，工作区 ${workspace}`;
+      return `type ${seg}, workspace ${workspace}`;
     }
   }
-  return '类型未知';
+  return 'unknown type';
 }
 
 /**
@@ -52,15 +143,15 @@ function describePath(path: string): string {
 export function composeDocPasteBlock(doc: DocContent): string {
   const status =
     typeof doc.frontmatter?.['status'] === 'string'
-      ? `，status: ${doc.frontmatter['status']}`
+      ? `, status: ${doc.frontmatter['status']}`
       : '';
-  const header = `[Iris] 文档粘贴: ${doc.path}（${describePath(doc.path)}${status}）`;
+  const header = `[Iris] Document snapshot: ${doc.path} (${describePath(doc.path)}${status})`;
   // ESC stripped wholesale: a markdown doc has no business carrying
   // control bytes, and a literal \x1b[201~ inside the body would break
   // out of the bracketed-paste wrap (paste injection).
   const text = doc.raw.replace(/\x1b/g, '');
   if (new TextEncoder().encode(text).length > DOC_PASTE_MAX_BYTES) {
-    return `${header}\n—— 文档超过 32 KiB，未内联快照，请直接读取该文件 ——\n`;
+    return `${header}\nThe document exceeds 32 KiB, so the snapshot was not inlined. Read the file directly.\n`;
   }
-  return `${header}\n—— 以下为拖入时快照，写回以盘上文件为准 ——\n${text}\n`;
+  return `${header}\nThe following is a point-in-time snapshot. Treat the file on disk as authoritative when writing back.\n${text}\n`;
 }

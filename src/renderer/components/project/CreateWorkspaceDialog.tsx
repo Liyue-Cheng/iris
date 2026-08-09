@@ -4,6 +4,7 @@
  * custom shaped later).
  */
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { IrisWorkspace } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
 import { pipeline } from '@renderer/cpu';
@@ -39,6 +40,7 @@ export function CreateWorkspaceDialog({
   open: boolean;
   onClose: () => void;
 }): JSX.Element | null {
+  const { t } = useTranslation();
   const { scan } = useProject();
   const [name, setName] = useState('');
   const [parent, setParent] = useState('.iris');
@@ -81,15 +83,15 @@ export function CreateWorkspaceDialog({
     <Dialog open={open} onOpenChange={(o) => !o && close()}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>新建工作区</DialogTitle>
+          <DialogTitle>{t('project.newWorkspace')}</DialogTitle>
           <DialogDescription>
-            子工作区用于独立探索、临时攻坚。生死同域：失败删整个文件夹，成功把有价值的文档晋升到父级。
+            {t('project.workspaceDescription')}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3">
           <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">父工作区</label>
+            <label className="text-xs text-muted-foreground">{t('project.parentWorkspace')}</label>
             <select
               value={parent}
               onChange={(e) => setParent(e.target.value)}
@@ -104,21 +106,21 @@ export function CreateWorkspaceDialog({
           </div>
 
           <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">名字（如 spike-auth）</label>
+            <label className="text-xs text-muted-foreground">{t('project.workspaceName')}</label>
             <Input
               autoFocus
               value={name}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && void create()}
-              placeholder="不能叫 status / issue / report / misc"
+              placeholder={t('project.reservedNames')}
             />
           </div>
 
           <div className="grid grid-cols-2 gap-2">
             {(
               [
-                { id: 'standard', title: '标准', desc: '四个类型文件夹齐备' },
-                { id: 'empty', title: '空自定义', desc: '空文件夹，之后自己加类型文件夹' },
+                { id: 'standard', title: t('project.standard'), desc: t('project.standardDescription') },
+                { id: 'empty', title: t('project.emptyCustom'), desc: t('project.emptyCustomDescription') },
               ] as const
             ).map((t) => (
               <button
@@ -141,10 +143,10 @@ export function CreateWorkspaceDialog({
 
         <DialogFooter>
           <Button variant="ghost" onClick={close}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button onClick={() => void create()} disabled={!name.trim() || busy}>
-            创建
+            {t('common.create')}
           </Button>
         </DialogFooter>
       </DialogContent>

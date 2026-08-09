@@ -118,20 +118,6 @@ function fmString(fm: Record<string, unknown> | null, key: string): string | nul
   return null;
 }
 
-/** `labels:` literal projection: sequence → items, lone scalar → singleton. */
-function fmLabels(fm: Record<string, unknown> | null): string[] {
-  const v = fm?.['labels'];
-  if (Array.isArray(v)) {
-    return v
-      .filter((x) => typeof x === 'string' || typeof x === 'number')
-      .map((x) => String(x).trim())
-      .filter((x) => x !== '');
-  }
-  if (typeof v === 'string' && v.trim() !== '') return [v.trim()];
-  if (typeof v === 'number') return [String(v)];
-  return [];
-}
-
 async function readDocMeta(
   projectRoot: string,
   absPath: string,
@@ -160,7 +146,6 @@ async function readDocMeta(
     status: fmString(frontmatter, 'status'),
     frontmatter,
     frontmatterBroken: broken,
-    labels: fmLabels(frontmatter),
     todos,
     mtimeMs,
   };

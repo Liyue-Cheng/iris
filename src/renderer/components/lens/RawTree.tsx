@@ -12,7 +12,8 @@ import { projectStore, useProject } from '@renderer/stores/project-store';
 
 function Node({ node, depth }: { node: RawTreeNode; depth: number }): JSX.Element {
   const [open, setOpen] = useState(depth < 2);
-  const { selectedPath } = useProject();
+  const { view } = useProject();
+  const selectedPath = view.kind === 'doc' ? view.path : null;
 
   if (node.kind === 'dir') {
     return (

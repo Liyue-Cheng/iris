@@ -21,6 +21,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/components/ui/dialog';
+import { translate } from '@renderer/i18n';
 
 interface ConfirmRequest {
   title: string;
@@ -59,8 +60,8 @@ export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
     current = {
       title: opts.title,
       message: opts.message,
-      confirmText: opts.confirmText ?? '继续',
-      cancelText: opts.cancelText ?? '取消',
+      confirmText: opts.confirmText ?? translate('dialog.defaultConfirm'),
+      cancelText: opts.cancelText ?? translate('dialog.defaultCancel'),
       tone: opts.tone ?? 'default',
       resolve,
     };
@@ -111,7 +112,7 @@ export function alertDialog(opts: AlertOptions): Promise<void> {
     alertCurrent = {
       title: opts.title,
       message: opts.message,
-      buttonText: opts.buttonText ?? '确定',
+      buttonText: opts.buttonText ?? translate('dialog.defaultOk'),
       tone: opts.tone ?? 'destructive',
       resolve,
     };

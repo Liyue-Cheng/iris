@@ -1,4 +1,5 @@
 import type { GitResourceGroup } from '@shared/types';
+import { translate } from '@renderer/i18n';
 
 const COLOR_MAP: Record<string, string> = {
   M: 'var(--rp-gold)',
@@ -12,16 +13,16 @@ const COLOR_MAP: Record<string, string> = {
   T: 'var(--rp-gold)',
 };
 
-const LABEL_MAP: Record<string, string> = {
-  M: '修改',
-  A: '新增',
-  D: '删除',
-  R: '重命名',
-  C: '复制',
-  U: '冲突',
-  '?': '未跟踪',
-  '!': '已忽略',
-  T: '类型变更',
+const LABEL_MAP: Record<string, 'git.modified' | 'git.added' | 'git.deleted' | 'git.renamed' | 'git.copied' | 'git.conflict' | 'git.untracked' | 'git.ignored' | 'git.typeChanged'> = {
+  M: 'git.modified',
+  A: 'git.added',
+  D: 'git.deleted',
+  R: 'git.renamed',
+  C: 'git.copied',
+  U: 'git.conflict',
+  '?': 'git.untracked',
+  '!': 'git.ignored',
+  T: 'git.typeChanged',
 };
 
 export function effectiveChar(status: string, group: GitResourceGroup): string {
@@ -36,5 +37,6 @@ export function statusColor(status: string, group: GitResourceGroup): string {
 }
 
 export function statusLabel(status: string, group: GitResourceGroup): string {
-  return LABEL_MAP[effectiveChar(status, group)] ?? status;
+  const key = LABEL_MAP[effectiveChar(status, group)];
+  return key ? translate(key) : status;
 }

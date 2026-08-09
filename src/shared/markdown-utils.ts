@@ -41,16 +41,11 @@ export function yamlScalar(value: string): string {
   return needsQuoting ? JSON.stringify(value) : value;
 }
 
-/** Single-line YAML flow sequence, items quoted minimally: `[bug, ui]`.
- *  Single-line so setFrontmatterRawKey's line surgery stays applicable. */
-export function yamlFlowSeq(items: string[]): string {
-  return `[${items.map(yamlScalar).join(', ')}]`;
-}
-
 /**
  * Set (replace or insert) one top-level key in a frontmatter block.
  * - Empty block → a fresh `---\nkey: value\n---\n` block is created.
- * - Existing key line → that line alone is rewritten.
+ * - Existing key → its line and any indented YAML continuation lines are
+ *   replaced as one value, while trailing separator lines stay untouched.
  * - Missing key → inserted before the closing fence.
  * Only top-level `key:` lines (no leading whitespace) are matched; nested
  * mappings are untouched.
@@ -61,7 +56,7 @@ export function setFrontmatterKey(fmBlock: string, key: string, value: string): 
 
 /**
  * Same surgery, but the value is a preformatted single-line YAML literal
- * (e.g. a flow sequence from yamlFlowSeq) written without extra quoting.
+ * written without extra quoting.
  * The value must not contain newlines — that would break the line surgery.
  */
 export function setFrontmatterRawKey(fmBlock: string, key: string, rawValue: string): string {
@@ -69,6 +64,7 @@ export function setFrontmatterRawKey(fmBlock: string, key: string, rawValue: str
   if (fmBlock === '') {
     return `---\n${line}\n---\n`;
   }
+  const eol = fmBlock.includes('\r\n') ? '\r\n' : '\n';
   const lines = fmBlock.split(/\r?\n/);
   // locate closing fence (last line that is exactly ---)
   let closing = -1;
@@ -85,12 +81,18 @@ export function setFrontmatterRawKey(fmBlock: string, key: string, rawValue: str
   const keyRe = new RegExp(`^${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*:`);
   for (let i = 1; i < closing; i++) {
     if (keyRe.test(lines[i] ?? '')) {
-      lines[i] = line;
-      return lines.join('\n');
+      let lastOwnedLine = i;
+      for (let j = i + 1; j < closing; j++) {
+        const candidate = lines[j] ?? '';
+        if (/^\S/.test(candidate)) break;
+        if (/^[ \t]+\S/.test(candidate)) lastOwnedLine = j;
+      }
+      lines.splice(i, lastOwnedLine - i + 1, line);
+      return lines.join(eol);
     }
   }
   lines.splice(closing, 0, line);
-  return lines.join('\n');
+  return lines.join(eol);
 }
 
 /** Read one top-level scalar key from a frontmatter block (literal-ish). */
@@ -111,54 +113,6 @@ export function getFrontmatterKey(fmBlock: string, key: string): string | null {
     } catch {
       /* keep raw */
     }
-  }
-  return v;
-}
-
-/**
- * Literal parse of a single-line flow-sequence value as read by
- * getFrontmatterKey: `[a, "b: c"]` → items. A lone scalar yields a
- * singleton (mirror of the scanner's labels projection); empty/blank → [].
- * Quote handling covers what yamlFlowSeq writes (JSON double quotes,
- * simple single quotes) — no full YAML here.
- */
-export function parseYamlFlowSeq(value: string): string[] {
-  const v = value.trim();
-  if (v === '' || v === '[]') return [];
-  if (!(v.startsWith('[') && v.endsWith(']'))) return [unquoteScalar(v)];
-  const inner = v.slice(1, -1);
-  const items: string[] = [];
-  let current = '';
-  let quote: '"' | "'" | null = null;
-  for (let i = 0; i < inner.length; i++) {
-    const ch = inner[i]!;
-    if (quote) {
-      current += ch;
-      if (ch === quote && !(quote === '"' && inner[i - 1] === '\\')) quote = null;
-    } else if (ch === '"' || ch === "'") {
-      quote = ch;
-      current += ch;
-    } else if (ch === ',') {
-      items.push(current);
-      current = '';
-    } else {
-      current += ch;
-    }
-  }
-  items.push(current);
-  return items.map((s) => unquoteScalar(s.trim())).filter((s) => s !== '');
-}
-
-function unquoteScalar(v: string): string {
-  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) {
-    try {
-      return JSON.parse(v) as string;
-    } catch {
-      return v;
-    }
-  }
-  if (v.length >= 2 && v.startsWith("'") && v.endsWith("'")) {
-    return v.slice(1, -1).replace(/''/g, "'");
   }
   return v;
 }
@@ -206,6 +160,42 @@ export function extractTodos(raw: string): DocTodo[] {
     });
   }
   return todos;
+}
+
+/** Check every unchecked GFM task item outside fenced code blocks. */
+export function checkAllTaskCheckboxes(raw: string): string {
+  const { fmBlock, body } = splitFrontmatter(raw);
+  const lines = body.split(/(?<=\n)/);
+  let fence: { char: string; len: number } | null = null;
+  let changed = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const content = line.replace(/\r?\n$/, '');
+    const fm = FENCE_OPEN_RE.exec(content);
+    if (fence) {
+      if (
+        fm &&
+        fm[1]![0] === fence.char &&
+        fm[1]!.length >= fence.len &&
+        /^\s*$/.test(content.slice(fm[0].length))
+      ) {
+        fence = null;
+      }
+      continue;
+    }
+    if (fm) {
+      fence = { char: fm[1]![0]!, len: fm[1]!.length };
+      continue;
+    }
+    const next = line.replace(/^(\s*(?:[-*+]|\d+[.)])\s+)\[ \]/, '$1[x]');
+    if (next !== line) {
+      lines[i] = next;
+      changed = true;
+    }
+  }
+
+  return changed ? fmBlock + lines.join('') : raw;
 }
 
 /** File-name slug: keep CJK and word chars, collapse the rest into dashes. */

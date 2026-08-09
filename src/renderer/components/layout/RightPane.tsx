@@ -11,19 +11,23 @@
  * new one. No session under the anchor → a full-page launch pad (Marina 式
  * EmptyPathState, F-1): spawn happens only on an explicit click.
  */
+import { useState } from 'react';
 import { ChevronDown, Plus, X, FileText, FolderRoot, SquareTerminal } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import type { AgentConfig } from '@shared/types';
 import {
   useSessions,
-  sessionStore,
+  selectedSessionIdForAnchor,
   sessionAnchorKey,
   workspaceAnchorKey,
 } from '@renderer/stores/session-store';
 import { useSettings } from '@renderer/stores/settings-store';
-import { useProject } from '@renderer/stores/project-store';
+import { projectStore, useProject } from '@renderer/stores/project-store';
 import { closeSession, openSession, openWorkspaceSession } from '@renderer/lib/session-actions';
 import { docDisplayTitle, findDocByPath } from '@renderer/lib/doc-utils';
 import { TerminalView } from '@renderer/components/terminal/TerminalView';
 import { Button } from '@renderer/components/ui/button';
+import { Input } from '@renderer/components/ui/input';
 import { SessionDot } from '@renderer/components/ui/session-dot';
 import {
   DropdownMenu,
@@ -39,11 +43,64 @@ import {
   ContextMenuTrigger,
 } from '@renderer/components/ui/context-menu';
 
+const LAUNCHER_SEARCH_THRESHOLD = 6;
+
+function matchingLaunchers(agents: readonly AgentConfig[], query: string): AgentConfig[] {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return [...agents];
+  return agents.filter(
+    (agent) =>
+      agent.label.toLocaleLowerCase().includes(needle) ||
+      agent.command.toLocaleLowerCase().includes(needle),
+  );
+}
+
+export function LauncherMenuItems({
+  agents,
+  onSelect,
+}: {
+  agents: readonly AgentConfig[];
+  onSelect: (agentId: string) => void;
+}): JSX.Element {
+  const { t } = useTranslation();
+  const [query, setQuery] = useState('');
+  const visible = matchingLaunchers(agents, query);
+
+  return (
+    <>
+      {agents.length > LAUNCHER_SEARCH_THRESHOLD && (
+        <div className="p-1" onKeyDown={(event) => event.stopPropagation()}>
+          <Input
+            value={query}
+            className="h-8"
+            placeholder={t('common.search')}
+            aria-label={t('settings.searchLaunchers')}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+      )}
+      {visible.map((agent) => (
+        <DropdownMenuItem key={agent.id} onClick={() => onSelect(agent.id)}>
+          {t('layout.openWith', { agent: agent.label })}
+        </DropdownMenuItem>
+      ))}
+      {visible.length === 0 && (
+        <div className="px-2 py-3 text-center text-xs text-muted-foreground">
+          {t('common.noMatches')}
+        </div>
+      )}
+    </>
+  );
+}
+
 export function RightPane(): JSX.Element {
-  const { sessions, activeSessionId } = useSessions();
+  const { t } = useTranslation();
+  const { sessions } = useSessions();
   const settings = useSettings();
-  const { phase, selectedPath, view, scan } = useProject();
+  const { phase, view, scan } = useProject();
   const agents = settings?.agents ?? [];
+  const [launcherQuery, setLauncherQuery] = useState('');
+  const visibleLaunchers = matchingLaunchers(agents, launcherQuery);
   const projectReady = phase === 'ready';
 
   // The pane's anchor mirrors the middle pane: a selected doc, or a workspace
@@ -51,6 +108,7 @@ export function RightPane(): JSX.Element {
   // they group by `ws:<workspacePath>` key. Doc sessions key by their path.
   const isHub = view.kind === 'root' || view.kind === 'workspace';
   const hubWorkspacePath = view.kind === 'workspace' ? view.path : '.iris';
+  const selectedPath = view.kind === 'doc' ? view.path : null;
   const anchorKey: string | null =
     view.kind === 'root'
       ? workspaceAnchorKey('.iris')
@@ -62,12 +120,12 @@ export function RightPane(): JSX.Element {
   const anchorName = isHub
     ? view.kind === 'workspace'
       ? (view.path.split('/').pop() ?? view.path)
-      : '项目根'
+      : t('layout.projectRoot')
     : selectedPath
       ? anchorDoc
         ? docDisplayTitle(anchorDoc)
         : (selectedPath.split('/').pop()?.replace(/\.md$/i, '') ?? selectedPath)
-      : '项目根';
+      : t('layout.projectRoot');
   const AnchorIcon = isHub ? FolderRoot : FileText;
 
   const spawn = (agentId: string): void => {
@@ -83,7 +141,7 @@ export function RightPane(): JSX.Element {
   // the staged id points elsewhere but this anchor HAS sessions, fall back
   // to the newest one (display-level only — no state mutation in render).
   const shownSession =
-    visibleSessions.find((s) => s.id === activeSessionId) ??
+    visibleSessions.find((s) => s.id === (anchorKey ? selectedSessionIdForAnchor(anchorKey) : null)) ??
     visibleSessions[visibleSessions.length - 1] ??
     null;
 
@@ -99,7 +157,7 @@ export function RightPane(): JSX.Element {
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
-                      title="切换该锚点下的会话（右键可关闭）"
+                      title={t('layout.switchSession')}
                       className="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm px-1.5 py-1 text-left text-[13px] hover:bg-muted/60"
                     >
                       <SessionDot state={shownSession.state} />
@@ -128,12 +186,12 @@ export function RightPane(): JSX.Element {
                     className="w-max min-w-64 max-w-[32rem]"
                   >
                     <DropdownMenuLabel className="truncate">
-                      {anchorName} 的会话
+                      {t('layout.sessionsFor', { name: anchorName })}
                     </DropdownMenuLabel>
                     {visibleSessions.map((s) => (
                       <DropdownMenuItem
                         key={s.id}
-                        onClick={() => sessionStore.select(s.id)}
+                        onClick={() => void projectStore.activateSession(s.id)}
                         className="flex items-center gap-1.5"
                       >
                         <SessionDot state={s.state} />
@@ -149,11 +207,11 @@ export function RightPane(): JSX.Element {
                           </span>
                         )}
                         {s.id === shownSession.id && (
-                          <span className="shrink-0 text-[11px] text-muted-foreground/60">当前</span>
+                          <span className="shrink-0 text-[11px] text-muted-foreground/60">{t('common.current')}</span>
                         )}
                         <button
                           type="button"
-                          title="关闭会话"
+                          title={t('layout.closeSession')}
                           onClick={(e) => {
                             e.stopPropagation();
                             void closeSession(s.id);
@@ -170,7 +228,7 @@ export function RightPane(): JSX.Element {
             </ContextMenuTrigger>
             <ContextMenuContent>
               <ContextMenuItem onClick={() => void closeSession(shownSession.id)}>
-                关闭会话
+                {t('layout.closeSession')}
               </ContextMenuItem>
             </ContextMenuContent>
           </ContextMenu>
@@ -178,7 +236,7 @@ export function RightPane(): JSX.Element {
           <span className="flex min-w-0 flex-1 items-center gap-1.5 px-1.5 text-[13px] text-muted-foreground">
             <AnchorIcon className="h-3.5 w-3.5 shrink-0" />
             <span className="truncate">{anchorName}</span>
-            <span className="shrink-0 text-[11px] text-muted-foreground/60">无会话</span>
+            <span className="shrink-0 text-[11px] text-muted-foreground/60">{t('layout.noSession')}</span>
           </span>
         )}
 
@@ -188,21 +246,17 @@ export function RightPane(): JSX.Element {
               variant="ghost"
               size="icon"
               className="h-7 w-7 shrink-0"
-              title="新建会话"
+              title={t('layout.newSession')}
               disabled={!projectReady}
             >
               <Plus className="!size-4" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
+          <DropdownMenuContent align="end" className="max-h-80 w-64 overflow-y-auto">
             <DropdownMenuLabel className="max-w-52 truncate">
-              {isHub ? `${anchorName}（无聚焦兜底）` : `挂在 ${anchorName}`}
+              {isHub ? t('layout.workspaceFallback', { name: anchorName }) : t('layout.attachedTo', { name: anchorName })}
             </DropdownMenuLabel>
-            {agents.map((a) => (
-              <DropdownMenuItem key={a.id} onClick={() => spawn(a.id)}>
-                用 {a.label} 打开
-              </DropdownMenuItem>
-            ))}
+            <LauncherMenuItems agents={agents} onSelect={spawn} />
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -232,22 +286,31 @@ export function RightPane(): JSX.Element {
               <p className="max-w-64 truncate text-sm">
                 {isHub ? (
                   <>
-                    <span className="font-semibold">{anchorName}</span> 会话
+                    {t('layout.workspaceSession', { name: anchorName })}
                   </>
                 ) : (
                   <>
-                    挂在 <span className="font-semibold">{anchorName}</span> 的新会话
+                    {t('layout.documentSession', { name: anchorName })}
                   </>
                 )}
               </p>
               <p className="mt-1 max-w-64 text-xs text-muted-foreground">
                 {isHub
-                  ? '注入当前 workspace 上下文，不绑定单篇文档'
-                  : '终端将注入 FOCUS_DOC 指向这篇文档'}
+                  ? t('layout.workspaceContext')
+                  : t('layout.documentContext')}
               </p>
             </div>
-            <div className="flex w-64 flex-col gap-2">
-              {agents.map((a) => (
+            <div className="flex max-h-[min(24rem,55vh)] w-64 flex-col gap-2 overflow-y-auto pr-1">
+              {agents.length > LAUNCHER_SEARCH_THRESHOLD && (
+                <Input
+                  value={launcherQuery}
+                  className="shrink-0"
+                  placeholder={t('common.search')}
+                  aria-label={t('settings.searchLaunchers')}
+                  onChange={(event) => setLauncherQuery(event.target.value)}
+                />
+              )}
+              {visibleLaunchers.map((a) => (
                 <Button
                   key={a.id}
                   variant="secondary"
@@ -255,18 +318,21 @@ export function RightPane(): JSX.Element {
                   onClick={() => spawn(a.id)}
                 >
                   <SquareTerminal className="!size-4 text-muted-foreground" />
-                  用 {a.label} 打开
+                  {t('layout.openWith', { agent: a.label })}
                 </Button>
               ))}
+              {visibleLaunchers.length === 0 && (
+                <p className="py-4 text-xs text-muted-foreground">{t('common.noMatches')}</p>
+              )}
             </div>
             <p className="max-w-64 text-xs text-muted-foreground/70">
-              会话锚定一经创建终生不变；同一文档可同时挂多个会话。
+              {t('layout.anchorHelp')}
             </p>
           </div>
           ) : (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center text-sm text-muted-foreground">
-              <p>没有会话。</p>
-              <p className="max-w-56 text-xs text-muted-foreground/70">先打开一个项目。</p>
+              <p>{t('layout.noSessions')}</p>
+              <p className="max-w-56 text-xs text-muted-foreground/70">{t('layout.openProjectFirst')}</p>
             </div>
           ))}
       </div>

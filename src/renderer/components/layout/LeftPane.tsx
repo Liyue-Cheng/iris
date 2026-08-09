@@ -2,7 +2,8 @@
  * Left pane: lens tree + project-level empty states. The pane header carries
  * project, navigation, and status affordances.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   AppWindow,
   ArrowDownAZ,
@@ -11,9 +12,9 @@ import {
   FolderOpen,
   FolderPlus,
   GitBranch,
-  History,
   ListChecks,
   Loader2,
+  MoreHorizontal,
   Search,
   X,
 } from 'lucide-react';
@@ -27,6 +28,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@renderer/components/ui/dropdown-menu';
 import {
@@ -46,6 +48,13 @@ import { InitDialog } from '@renderer/components/project/InitDialog';
 import { CreateWorkspaceDialog } from '@renderer/components/project/CreateWorkspaceDialog';
 import { SourceControlPanel } from '@renderer/components/git/SourceControlPanel';
 import { gitStore, useGit } from '@renderer/stores/git-store';
+import { useProjectSettings } from '@renderer/stores/project-settings-store';
+import {
+  LucideDynamicIcon,
+  isLucideIconName,
+} from '@renderer/components/ui/lucide-dynamic-icon';
+import { runProjectToolbarAction } from '@renderer/lib/project-command-actions';
+import { alertDialog } from '@renderer/components/ui/confirm-dialog';
 
 function EmptyState({ children }: { children: React.ReactNode }): JSX.Element {
   return (
@@ -55,7 +64,112 @@ function EmptyState({ children }: { children: React.ReactNode }): JSX.Element {
   );
 }
 
+export function ProjectToolbarActions(): JSX.Element | null {
+  const { t } = useTranslation();
+  const { snapshot } = useProjectSettings();
+  const actions = snapshot?.settings.toolbar.actions ?? [];
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const [slots, setSlots] = useState(1);
+  const [pendingIndex, setPendingIndex] = useState<number | null>(null);
+
+  const setContainer = useCallback((element: HTMLDivElement | null): void => {
+    resizeObserverRef.current?.disconnect();
+    resizeObserverRef.current = null;
+    if (!element) return;
+    const update = (): void => setSlots(Math.max(1, Math.floor(element.clientWidth / 32)));
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    resizeObserverRef.current = observer;
+  }, []);
+
+  if (!snapshot || snapshot.error || actions.length === 0) return null;
+  const visibleCount = actions.length <= slots ? actions.length : Math.max(0, slots - 1);
+  const visible = actions.slice(0, visibleCount);
+  const overflow = actions.slice(visibleCount);
+
+  const run = async (index: number): Promise<void> => {
+    const action = actions[index];
+    if (!action || !isLucideIconName(action.icon)) return;
+    setPendingIndex(index);
+    try {
+      await runProjectToolbarAction(index, action, snapshot);
+    } catch (err) {
+      await alertDialog({
+        title: t('projectSettings.runFailed'),
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setPendingIndex(null);
+    }
+  };
+
+  return (
+    <div
+      ref={setContainer}
+      className="flex min-w-7 flex-1 items-center justify-end gap-1 overflow-hidden"
+    >
+      {visible.map((action, index) => (
+        <Tooltip key={`${index}:${action.icon}:${action.description}`}>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 shrink-0"
+              aria-label={action.description}
+              disabled={pendingIndex !== null || !isLucideIconName(action.icon)}
+              onClick={() => void run(index)}
+            >
+              {pendingIndex === index ? (
+                <Loader2 className="!size-4 animate-spin" />
+              ) : (
+                <LucideDynamicIcon name={action.icon} className="!size-4" />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{action.description}</TooltipContent>
+        </Tooltip>
+      ))}
+      {overflow.length > 0 && (
+        <DropdownMenu>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 shrink-0"
+                  aria-label={t('projectSettings.moreActions')}
+                >
+                  <MoreHorizontal className="!size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+            </TooltipTrigger>
+            <TooltipContent>{t('projectSettings.moreActions')}</TooltipContent>
+          </Tooltip>
+          <DropdownMenuContent align="start" className="max-w-80">
+            {overflow.map((action, overflowIndex) => {
+              const index = visibleCount + overflowIndex;
+              return (
+                <DropdownMenuItem
+                  key={`${index}:${action.icon}:${action.description}`}
+                  disabled={pendingIndex !== null || !isLucideIconName(action.icon)}
+                  onClick={() => void run(index)}
+                >
+                  <LucideDynamicIcon name={action.icon} className="h-4 w-4" />
+                  <span className="truncate">{action.description}</span>
+                </DropdownMenuItem>
+              );
+            })}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+    </div>
+  );
+}
+
 export function LeftPane(): JSX.Element {
+  const { t } = useTranslation();
   const { phase, error, scan, view } = useProject();
   const { sort, filter, filterOpen } = useLensPrefs();
   const [initOpen, setInitOpen] = useState(false);
@@ -106,49 +220,45 @@ export function LeftPane(): JSX.Element {
       */}
       <div className="flex h-11 shrink-0 items-center gap-1 px-2">
         <div className="flex items-center">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => void pickAndOpenProject()}
-              >
-                <FolderOpen className="!size-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>打开项目文件夹</TooltipContent>
-          </Tooltip>
-
           <DropdownMenu onOpenChange={(open) => open && void refreshRecentProjects()}>
             <Tooltip>
               <TooltipTrigger asChild>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="打开最近的项目">
-                    <History className="!size-4" />
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    aria-label={t('layout.projectMenu')}
+                  >
+                    <FolderOpen className="!size-4" />
                   </Button>
                 </DropdownMenuTrigger>
               </TooltipTrigger>
-              <TooltipContent>打开最近的项目</TooltipContent>
+              <TooltipContent>{t('layout.projectMenu')}</TooltipContent>
             </Tooltip>
             <DropdownMenuContent
               align="start"
               className="max-h-80 w-72 max-w-[calc(100vw-2rem)] overflow-y-auto"
             >
+              <DropdownMenuItem onClick={() => void pickAndOpenProject()}>
+                <FolderOpen />
+                {t('app.openProject')}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuLabel className="text-xs text-muted-foreground">
-                最近的项目
+                {t('layout.recentProjects')}
               </DropdownMenuLabel>
               {recentLoading ? (
                 <DropdownMenuItem disabled>
                   <Loader2 className="animate-spin" />
-                  正在读取…
+                  {t('common.loading')}
                 </DropdownMenuItem>
               ) : recentError ? (
                 <div role="alert" className="break-words px-2 py-1.5 text-xs text-destructive">
                   {recentError}
                 </div>
               ) : recentProjects.length === 0 ? (
-                <DropdownMenuItem disabled>还没有最近项目</DropdownMenuItem>
+                <DropdownMenuItem disabled>{t('project.noRecent')}</DropdownMenuItem>
               ) : (
                 recentProjects.map((project) => (
                   <DropdownMenuItem
@@ -162,28 +272,19 @@ export function LeftPane(): JSX.Element {
                     <span className="min-w-0">
                       <span className="block truncate">{project.name}</span>
                       <span className="block truncate text-[11px] text-muted-foreground">
-                        {project.exists ? project.path : `${project.path}（路径不可用）`}
+                        {project.exists ? project.path : `${project.path} (${t('project.pathUnavailable')})`}
                       </span>
                     </span>
                   </DropdownMenuItem>
                 ))
               )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => void openProjectInNewWindow()}>
+                <AppWindow />
+                {t('app.openProjectNewWindow')}
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => void openProjectInNewWindow()}
-              >
-                <AppWindow className="!size-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>在新窗口打开项目</TooltipContent>
-          </Tooltip>
           {phase === 'ready' && scan?.hasIris && (
             <>
               <Tooltip>
@@ -197,7 +298,7 @@ export function LeftPane(): JSX.Element {
                     <FolderPlus className="!size-4" />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>新建工作区（人的手势）</TooltipContent>
+                <TooltipContent>{t('layout.newWorkspaceHuman')}</TooltipContent>
               </Tooltip>
               {scan.root && (
                 <>
@@ -217,7 +318,7 @@ export function LeftPane(): JSX.Element {
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>
-                      {sort === 'mtime' ? '排序：修改时间（点击切字母序）' : '排序：字母序（点击切修改时间）'}
+                      {sort === 'mtime' ? t('layout.sortMtime') : t('layout.sortAlpha')}
                     </TooltipContent>
                   </Tooltip>
                   <Tooltip>
@@ -234,7 +335,7 @@ export function LeftPane(): JSX.Element {
                         <Search className="!size-4" />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent>筛选文档（名称 / 标题）</TooltipContent>
+                    <TooltipContent>{t('layout.filterDocuments')}</TooltipContent>
                   </Tooltip>
                 </>
               )}
@@ -258,7 +359,7 @@ export function LeftPane(): JSX.Element {
                       )}
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent>待办面板（活动 issue 的未勾选任务项）</TooltipContent>
+                  <TooltipContent>{t('layout.todosHint')}</TooltipContent>
                 </Tooltip>
               )}
               <Tooltip>
@@ -272,7 +373,7 @@ export function LeftPane(): JSX.Element {
                       gitOpen && 'bg-accent text-accent-foreground',
                       (gitLoading || gitPending) && 'text-primary',
                     )}
-                    aria-label={`Git 源代码管理：${gitBranch}`}
+                    aria-label={t('layout.gitAria', { branch: gitBranch })}
                     aria-busy={gitLoading || !!gitPending}
                     onClick={() => setGitOpen((open) => !open)}
                   >
@@ -291,13 +392,14 @@ export function LeftPane(): JSX.Element {
                 </TooltipTrigger>
                 <TooltipContent>
                   {gitSnapshot?.branch
-                    ? `Git：${gitSnapshot.branch}（${gitCount} 个变更）`
-                    : 'Git 源代码管理'}
+                    ? t('layout.gitSummary', { branch: gitSnapshot.branch, count: gitCount })
+                    : t('git.sourceControl')}
                 </TooltipContent>
               </Tooltip>
             </>
           )}
         </div>
+        <ProjectToolbarActions />
       </div>
 
       {!gitOpen && phase === 'ready' && scan?.hasIris && filterOpen && (
@@ -306,7 +408,7 @@ export function LeftPane(): JSX.Element {
           <input
             autoFocus
             value={filter}
-            placeholder="筛选文档…"
+            placeholder={t('layout.filterPlaceholder')}
             onChange={(e) => lensPrefs.setFilter(e.target.value.toLowerCase())}
             onKeyDown={(e) => {
               if (e.key === 'Escape') lensPrefs.toggleFilter();
@@ -316,7 +418,7 @@ export function LeftPane(): JSX.Element {
           {filter !== '' && (
             <button
               type="button"
-              title="清除"
+              title={t('common.clear')}
               onClick={() => lensPrefs.setFilter('')}
               className="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
             >
@@ -334,9 +436,9 @@ export function LeftPane(): JSX.Element {
         <div className="min-h-0 flex-1 overflow-y-auto">
           {phase === 'idle' && (
             <EmptyState>
-              <p>打开一个项目开始。</p>
+              <p>{t('layout.startOpenProject')}</p>
               <Button size="sm" variant="secondary" onClick={() => void pickAndOpenProject()}>
-                <FolderOpen /> 打开项目
+                <FolderOpen /> {t('layout.openProject')}
               </Button>
             </EmptyState>
           )}
@@ -344,30 +446,28 @@ export function LeftPane(): JSX.Element {
           {phase === 'opening' && (
             <EmptyState>
               <Loader2 className="h-4 w-4 animate-spin" />
-              <p>正在打开…</p>
+              <p>{t('layout.openingProject')}</p>
             </EmptyState>
           )}
 
           {phase === 'error' && (
             <EmptyState>
-              <p className="text-destructive">打开项目失败</p>
+              <p className="text-destructive">{t('layout.projectOpenFailed')}</p>
               <p className="max-w-44 break-all text-muted-foreground/70">{error}</p>
               <Button size="sm" variant="secondary" onClick={() => void pickAndOpenProject()}>
-                <FolderOpen /> 重新选择
+                <FolderOpen /> {t('layout.chooseAgain')}
               </Button>
             </EmptyState>
           )}
 
           {phase === 'ready' && scan && !scan.hasIris && (
             <EmptyState>
-              <p>
-                该项目还没有 <code className="rounded bg-muted px-1">.iris/</code>
-              </p>
+              <p>{t('layout.noIris')}</p>
               <Button size="sm" variant="secondary" onClick={() => setInitOpen(true)}>
-                初始化 Iris 协议
+                {t('layout.initializeIris')}
               </Button>
               <p className="max-w-48 text-muted-foreground/70">
-                也可以手建 .iris/ 与类型文件夹——协议不需要应用在场。
+                {t('layout.manualInit')}
               </p>
             </EmptyState>
           )}

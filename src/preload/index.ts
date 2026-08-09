@@ -6,7 +6,7 @@
  *
  * contextIsolation is on; sandbox is off (ESM preload, see main/index.ts).
  */
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { platform, release } from 'node:os';
 
 /**
@@ -38,9 +38,15 @@ function on<P>(channel: string, handler: (payload: P) => void): () => void {
   };
 }
 
+/** Resolve an OS-backed DOM File without exposing Node or Electron APIs. */
+function getPathForFile(file: File): string {
+  return webUtils.getPathForFile(file);
+}
+
 const api = {
   invoke,
   on,
+  getPathForFile,
   windowsBuild,
 } as const;
 

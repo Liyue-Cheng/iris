@@ -102,10 +102,10 @@ describe('scanProject on the sample fixture', () => {
     expect(allDocs).not.toContain('.iris/spike-auth/index.md');
   });
 
-  it('projects labels and body todos onto docs', async () => {
+  it('projects body todos while preserving legacy metadata in raw frontmatter', async () => {
     const { root } = await scanProject(FIXTURE);
     const auth = root!.docs.find((d) => d.path === '.iris/issue/2026-06-10-auth-refactor.md')!;
-    expect(auth.labels).toEqual(['auth', 'refactor']);
+    expect(auth.frontmatter?.labels).toEqual(['auth', 'refactor']);
     expect(auth.todos.map((t) => [t.text, t.checked])).toEqual([
       ['现状梳理', true],
       ['策略表接口设计', false],
@@ -113,7 +113,7 @@ describe('scanProject on the sample fixture', () => {
     ]);
 
     const edge = root!.docs.find((d) => d.path === '.iris/issue/2026-06-12-todo-edge-cases.md')!;
-    expect(edge.labels).toEqual(['单标签']); // lone scalar → singleton, no comma heuristics
+    expect(edge.frontmatter?.labels).toBe('单标签');
     expect(edge.todos.map((t) => t.text)).toEqual([
       '普通未勾选项',
       '已勾选项',

@@ -5,6 +5,7 @@ import { pipeline } from '@renderer/cpu';
 import { alertDialog } from '@renderer/components/ui/confirm-dialog';
 import { projectScopeState, sameProjectScope } from './project-scope-state';
 import { editorStore } from './editor-store';
+import { translate } from '@renderer/i18n';
 
 type State = { loading: boolean; snapshot: GitSnapshot | null; error: string | null; pending: string | null };
 let state: State = { loading: false, snapshot: null, error: null, pending: null };
@@ -43,7 +44,7 @@ export const gitStore = {
     catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       set({ pending: null, error: msg });
-      void alertDialog({ title: 'Git 操作失败', message: msg });
+      void alertDialog({ title: translate('git.operationFailed'), message: msg });
     }
   },
 };

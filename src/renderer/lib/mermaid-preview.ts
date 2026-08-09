@@ -1,16 +1,20 @@
+import { translate } from '@renderer/i18n';
+import DOMPurify from 'dompurify';
+
 let initialized = false;
 let renderSequence = 0;
+const purifier = DOMPurify(window);
 
 export function renderMermaidPreview(
   language: string,
   source: string,
   applyPreview: (value: null | string | HTMLElement) => void,
-): null {
+): void | null {
   if (language.trim().toLowerCase() !== 'mermaid') return null;
 
   const container = document.createElement('div');
   container.className = 'mermaid-preview';
-  container.textContent = '图表渲染中…';
+  container.textContent = translate('editor.diagramRendering');
   applyPreview(container);
 
   void import('mermaid')
@@ -28,14 +32,21 @@ export function renderMermaidPreview(
       const id = `iris-mermaid-${Date.now()}-${renderSequence++}`;
       const { svg, bindFunctions } = await mermaid.render(id, source);
       container.replaceChildren();
-      container.innerHTML = svg;
+      container.innerHTML = purifier.sanitize(svg, {
+        // Mermaid uses sanitized HTML labels inside SVG foreignObject nodes.
+        // DOMPurify's default profile keeps HTML + SVG but excludes that one
+        // integration tag, so opt it in without admitting scripts or handlers.
+        ADD_TAGS: ['foreignObject'],
+        HTML_INTEGRATION_POINTS: { foreignobject: true },
+      });
       bindFunctions?.(container);
     })
     .catch((error: unknown) => {
       container.classList.add('mermaid-preview-error');
-      const message = error instanceof Error ? error.message.split('\n')[0] : '未知语法错误';
-      container.textContent = `Mermaid 渲染失败：${message}`;
+      const message = error instanceof Error ? error.message.split('\n')[0] : translate('common.unknownError');
+      container.textContent = translate('editor.mermaidFailed', { error: message });
     });
 
-  return null;
+  // `undefined` is Milkdown's async-preview contract. Returning `null` here
+  // clears the container that was just passed to applyPreview.
 }

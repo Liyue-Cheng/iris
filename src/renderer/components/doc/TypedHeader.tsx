@@ -10,7 +10,6 @@
  *           sits AFTER the title. The doc path is NOT resident: it shows in a
  *           tooltip when hovering the title. No type badge (the lens already
  *           told you the type).
- *   row 2 — priority + labels (issue only), in the same column.
  * Row 1 is h-11 to line up with the left/right pane headers (三栏第一行对齐).
  *
  * `status:` is a SOFT value: the menu shows the canonical state machine for
@@ -19,6 +18,7 @@
  * styles come from the configurable status → style table.
  */
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Check,
   Code2,
@@ -27,20 +27,15 @@ import {
   Loader2,
   Paperclip,
   Pencil,
-  Plus,
-  Tag,
   TriangleAlert,
 } from 'lucide-react';
 import type { DocType } from '@shared/types';
 import { ISSUE_STATUSES, REPORT_STATUSES } from '@shared/document-status';
-import { parseYamlFlowSeq, splitFrontmatter, yamlFlowSeq } from '@shared/markdown-utils';
+import { splitFrontmatter } from '@shared/markdown-utils';
 import { cn } from '@renderer/lib/utils';
 import { editorStore, type EditorSession } from '@renderer/stores/editor-store';
-import { useProject } from '@renderer/stores/project-store';
 import { useSettings } from '@renderer/stores/settings-store';
-import { collectAllLabels } from '@renderer/lib/label-utils';
 import { setDocStatus } from '@renderer/lib/issue-actions';
-import { LabelChip } from '@renderer/components/ui/label-chip';
 import { StatusBadge } from '@renderer/components/ui/status-badge';
 import { Button } from '@renderer/components/ui/button';
 import {
@@ -120,6 +115,7 @@ function StatusEditor({
   value: string;
   disabled: boolean;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const options: readonly string[] = type === 'report' ? REPORT_STATUSES : ISSUE_STATUSES;
@@ -141,7 +137,7 @@ function StatusEditor({
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
-        <button type="button" title="状态">
+        <button type="button" title={t('editor.status')}>
           {badge}
         </button>
       </DropdownMenuTrigger>
@@ -153,7 +149,7 @@ function StatusEditor({
         ))}
         <input
           value={draft}
-          placeholder="自由值，回车写入"
+          placeholder={t('editor.customStatus')}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             e.stopPropagation(); // keep Radix typeahead out of the input
@@ -166,81 +162,8 @@ function StatusEditor({
   );
 }
 
-/**
- * Label editor — chips plus an add menu whose suggestions are the
- * project-wide union of labels in use (no registry; see label-utils).
- * Writes `labels:` as a single-line YAML flow sequence so the frontmatter
- * line surgery applies.
- */
-function LabelsEditor({ disabled }: { disabled: boolean }): JSX.Element {
-  const { scan } = useProject();
-  const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState('');
-
-  const labels = parseYamlFlowSeq(editorStore.getFrontmatterField('labels') ?? '');
-  const candidates = (scan?.root ? collectAllLabels(scan.root) : []).filter(
-    (l) => !labels.includes(l),
-  );
-
-  const write = (next: string[]): void => {
-    void editorStore.setFrontmatterFieldRaw('labels', yamlFlowSeq(next));
-  };
-  const add = (label: string): void => {
-    const v = label.trim();
-    if (v !== '' && !labels.includes(v)) write([...labels, v]);
-    setDraft('');
-    setOpen(false);
-  };
-
-  return (
-    <div className="flex flex-wrap items-center gap-1">
-      <Tag className="h-3 w-3 text-muted-foreground/60" />
-      {labels.map((l) => (
-        <LabelChip
-          key={l}
-          label={l}
-          onRemove={disabled ? undefined : () => write(labels.filter((x) => x !== l))}
-        />
-      ))}
-      {labels.length === 0 && (
-        <span className="text-[11px] text-muted-foreground/50">无标签</span>
-      )}
-      {!disabled && (
-        <DropdownMenu open={open} onOpenChange={setOpen}>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              title="添加标签"
-              className="rounded-full border border-subtle p-0.5 text-muted-foreground hover:border-border hover:text-foreground"
-            >
-              <Plus className="h-2.5 w-2.5" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start">
-            <input
-              autoFocus
-              value={draft}
-              placeholder="新标签，回车添加"
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                e.stopPropagation(); // keep Radix typeahead out of the input
-                if (e.key === 'Enter') add(draft);
-              }}
-              className="mx-1 my-0.5 w-36 rounded-sm bg-muted/60 px-1.5 py-0.5 text-xs outline-none"
-            />
-            {candidates.map((c) => (
-              <DropdownMenuItem key={c} onClick={() => add(c)}>
-                <LabelChip label={c} />
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      )}
-    </div>
-  );
-}
-
 export function TypedHeader({ session }: { session: EditorSession }): JSX.Element {
+  const { t } = useTranslation();
   const [assetsOpen, setAssetsOpen] = useState(false);
   const type = typeOfPath(session.path);
   const title = editorStore.getFrontmatterField('title') ?? '';
@@ -291,7 +214,7 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
           {!fmEditable && (
             <span className="flex shrink-0 items-center gap-1 rounded bg-destructive/15 px-1.5 py-0.5 text-xs text-destructive">
               <FileWarning className="h-3 w-3" />
-              frontmatter 异常 — 字段编辑已禁用，可用源码模式修复
+              {t('editor.frontmatterBroken')}
             </span>
           )}
 
@@ -300,18 +223,18 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
               <TooltipTrigger asChild>
                 <span className="flex shrink-0 items-center gap-1 rounded bg-[var(--rp-gold)]/20 px-1.5 py-0.5 text-xs text-[var(--rp-gold)]">
                   <TriangleAlert className="h-3 w-3" />
-                  外部已修改
+                  {t('editor.externallyModified')}
                 </span>
               </TooltipTrigger>
               <TooltipContent>
-                该文件在你编辑期间被外部修改，保存已暂停等待处理。
+                {t('editor.conflictDetail')}
               </TooltipContent>
             </Tooltip>
           )}
 
           {session.saveError && (
             <span className="shrink-0 rounded bg-destructive/15 px-1.5 py-0.5 text-xs text-destructive">
-              保存失败：{session.saveError}
+              {t('editor.saveFailed', { error: session.saveError })}
             </span>
           )}
 
@@ -324,7 +247,7 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
                     terminal's idle light. A monochrome glyph reads as "edited". */}
                 <Pencil className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               </TooltipTrigger>
-              <TooltipContent>未保存（Ctrl+S 保存）</TooltipContent>
+              <TooltipContent>{t('editor.unsaved')}</TooltipContent>
             </Tooltip>
           ) : (
             <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
@@ -345,7 +268,7 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
                 <Paperclip className="!size-3.5" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>文档资产</TooltipContent>
+            <TooltipContent>{t('editor.assets')}</TooltipContent>
           </Tooltip>
 
           <Tooltip>
@@ -364,17 +287,11 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
               </Button>
             </TooltipTrigger>
             <TooltipContent>
-              {session.mode === 'wysiwyg' ? '源码模式（逃生舱）' : '返回所见即所得'}
+              {session.mode === 'wysiwyg' ? t('editor.sourceMode') : t('editor.visualMode')}
             </TooltipContent>
           </Tooltip>
         </div>
 
-        {/* Row 2 — labels (issue only), in the same column. */}
-        {type === 'issue' && (
-          <div className="flex items-center gap-2 pb-1.5">
-            <LabelsEditor disabled={!fmEditable} />
-          </div>
-        )}
       </div>
       <AssetPanel docPath={session.path} open={assetsOpen} onOpenChange={setAssetsOpen} />
     </div>

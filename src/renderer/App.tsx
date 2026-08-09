@@ -8,8 +8,10 @@ import { SettingsView, useSettingsViewOpen } from '@renderer/components/settings
 import { WelcomeView } from '@renderer/components/project/WelcomeView';
 import { useProject } from '@renderer/stores/project-store';
 import { Loader2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 export function App(): JSX.Element {
+  const { t } = useTranslation();
   // Settings is a view, not a modal (Marina CP-4 decision): it replaces the
   // three-pane body; TitleBar stays for the drag region and window controls.
   const settingsOpen = useSettingsViewOpen();
@@ -25,7 +27,7 @@ export function App(): JSX.Element {
           ) : phase === 'opening' ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              正在切换项目…
+              {t('app.switchingProject')}
             </div>
           ) : scan ? (
             <ThreePane />

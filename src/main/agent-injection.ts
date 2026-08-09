@@ -15,6 +15,7 @@
  * powershell.exe. POSIX variants are a later milestone.
  */
 import { promises as fs } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { ContextPreview, HookCliInfo, HookCliState, InjectionState } from '@shared/types';
@@ -23,10 +24,13 @@ import {
   buildSoftwareBlock,
   parseProjectBlock,
   parseSoftwareBlock,
+  removeSoftwareBlock,
+  upsertProjectBlock,
   upsertSoftwareBlock,
   type UpsertAction,
 } from './software-prompt';
 import { logger } from './logger';
+import { mainT } from './i18n';
 
 /** ~/.iris/focus-context.ps1 — always the REAL ~/.iris (hooks written into
  *  agent configs must keep working whether Iris runs as dev or packaged). */
@@ -103,7 +107,7 @@ export function hookCommand(): string {
 // CLI descriptors
 // ──────────────────────────────────────────────────────────────────
 
-interface JsonHookCli {
+interface ContextHookAdapter {
   id: string;
   label: string;
   dir: string; // config dir under home — its presence is the install signal
@@ -112,7 +116,8 @@ interface JsonHookCli {
   hookKey: string;
 }
 
-function jsonClis(): JsonHookCli[] {
+/** App-owned context adapters, independent from the user launcher list. */
+function contextHookAdapters(): ContextHookAdapter[] {
   const home = homedir();
   return [
     { id: 'claude', label: 'Claude Code', dir: join(home, '.claude'), file: 'settings.json', hookKey: 'SessionStart' },
@@ -156,7 +161,7 @@ function eventHandlers(config: Record<string, unknown>, hookKey: string): unknow
 export async function injectionState(): Promise<InjectionState> {
   const clis: HookCliInfo[] = [];
 
-  for (const cli of jsonClis()) {
+  for (const cli of contextHookAdapters()) {
     const configPath = join(cli.dir, cli.file);
     if (!(await exists(cli.dir))) {
       clis.push({ id: cli.id, label: cli.label, configPath, state: 'cli-not-found' });
@@ -182,7 +187,7 @@ export async function injectionState(): Promise<InjectionState> {
 
   const codex = clis.find((cli) => cli.id === 'codex');
   if (codex) {
-    codex.detail = '安装后请在 Codex 里运行 /hooks，审核并信任这个 SessionStart hook；脚本更新后可能需要重新审核。';
+    codex.detail = mainT('settings.codexHookDetail');
   }
 
   return {
@@ -317,7 +322,7 @@ export async function assembleContextPreview(
     // Missing standard entry is represented by a null layer.
   }
   const segments = [
-    '<iris-focus path="$FOCUS_DOC">\n（按会话的聚焦文档实时填充——设置页无会话上下文，此处仅示形。）\n</iris-focus>',
+    '<iris-focus path="$FOCUS_DOC">\n(Filled with the focused document for each session; settings has no session context, so this is only a placeholder.)\n</iris-focus>',
   ];
 
   return {
@@ -327,6 +332,66 @@ export async function assembleContextPreview(
   };
 }
 
+async function writeEntryFileAtomic(absPath: string, text: string): Promise<void> {
+  const temp = `${absPath}.tmp-${process.pid}-${randomUUID()}`;
+  await fs.mkdir(dirname(absPath), { recursive: true });
+  try {
+    const handle = await fs.open(temp, 'wx');
+    try {
+      await handle.writeFile(text, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await fs.rename(temp, absPath);
+  } catch (err) {
+    await fs.unlink(temp).catch(() => {});
+    throw err;
+  }
+}
+
+/** Reconcile both static prompt layers in one entry-file replacement. */
+export async function syncPromptEntryFile(
+  absPath: string,
+  projectPrompt: string,
+): Promise<EntrySyncResult> {
+  let existed = true;
+  let current = '';
+  try {
+    current = await fs.readFile(absPath, 'utf8');
+  } catch {
+    existed = false;
+  }
+  const software = upsertSoftwareBlock(current);
+  const project = upsertProjectBlock(
+    software.text,
+    projectPrompt.trim() === '' ? null : projectPrompt,
+  );
+  const changed = software.action !== 'unchanged' || project.action !== 'unchanged';
+  if (changed) {
+    await writeEntryFileAtomic(absPath, project.text);
+    logger.info('agent', `prompt layers synchronized in ${absPath}`);
+  }
+  return { existed, action: changed ? (existed ? 'updated' : 'created') : 'unchanged' };
+}
+
+/** Remove both Iris-managed blocks while preserving all foreign file content. */
+export async function removePromptEntryBlocks(absPath: string): Promise<'removed' | 'unchanged'> {
+  let current: string;
+  try {
+    current = await fs.readFile(absPath, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'unchanged';
+    throw err;
+  }
+  const software = removeSoftwareBlock(current);
+  const project = upsertProjectBlock(software.text, null);
+  if (software.action === 'unchanged' && project.action === 'unchanged') return 'unchanged';
+  await writeEntryFileAtomic(absPath, project.text);
+  logger.info('agent', `prompt layers removed from ${absPath}`);
+  return 'removed';
+}
+
 /**
  * Write the SessionStart hook into one CLI's user-level settings file.
  * Called only after the user confirmed in the settings UI. Existing JSON is
@@ -334,7 +399,7 @@ export async function assembleContextPreview(
  * clobbering hand edits.
  */
 export async function installHook(cliId: string): Promise<HookCliInfo> {
-  const cli = jsonClis().find((c) => c.id === cliId);
+  const cli = contextHookAdapters().find((c) => c.id === cliId);
   if (!cli) throw new Error(`[agent:install-hook] unknown CLI: ${cliId}`);
   const configPath = join(cli.dir, cli.file);
 
@@ -348,7 +413,10 @@ export async function installHook(cliId: string): Promise<HookCliInfo> {
     if (hadFile) {
       // Existed but didn't parse — refuse rather than clobber hand edits.
       throw new Error(
-        `${cli.label} 的配置文件无法解析（${err instanceof Error ? err.message : String(err)}）——为避免破坏手工配置，请手动添加 hook。`,
+        mainT('error.hookConfigInvalid', {
+          cli: cli.label,
+          error: err instanceof Error ? err.message : String(err),
+        }),
       );
     }
   }
@@ -357,7 +425,7 @@ export async function installHook(cliId: string): Promise<HookCliInfo> {
   const hooks = (config['hooks'] ??= {}) as Record<string, unknown>;
   const entries = (hooks[cli.hookKey] ??= []) as unknown[];
   if (!Array.isArray(entries)) {
-    throw new Error(`${cli.label} 配置中的 hooks.${cli.hookKey} 不是数组——请手动配置。`);
+    throw new Error(mainT('error.hookEntriesInvalid', { cli: cli.label, hookKey: cli.hookKey }));
   }
   const ours = eventHandlers(config, cli.hookKey).filter(isIrisHandler);
   if (
@@ -379,4 +447,77 @@ export async function installHook(cliId: string): Promise<HookCliInfo> {
   await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
   logger.info('agent', `SessionStart hook written: ${configPath}`);
   return { id: cli.id, label: cli.label, configPath, state: 'configured' };
+}
+
+/** Remove Iris handlers while preserving every unrelated config value. */
+export function removeIrisHookHandlers(
+  config: Record<string, unknown>,
+  hookKey: string,
+): boolean {
+  const hooks = config['hooks'];
+  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) return false;
+  const hookRecord = hooks as Record<string, unknown>;
+  const entries = hookRecord[hookKey];
+  if (!Array.isArray(entries)) return false;
+
+  let removed = false;
+  const nextEntries = entries.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [entry];
+    const group = entry as Record<string, unknown>;
+    const handlers = group['hooks'];
+    if (!Array.isArray(handlers)) return [entry];
+    const kept = handlers.filter((handler) => !isIrisHandler(handler));
+    if (kept.length === handlers.length) return [entry];
+    removed = true;
+    if (kept.length === 0) return [];
+    return [{ ...group, hooks: kept }];
+  });
+
+  if (!removed) return false;
+  if (nextEntries.length > 0) hookRecord[hookKey] = nextEntries;
+  else delete hookRecord[hookKey];
+  if (Object.keys(hookRecord).length === 0) delete config['hooks'];
+  return true;
+}
+
+/**
+ * Remove only Iris's SessionStart handler from a user-owned CLI config.
+ * Unrelated handlers and settings are preserved; the shared App-owned focus
+ * script remains because other configured CLIs may still reference it.
+ */
+export async function removeHook(cliId: string): Promise<HookCliInfo> {
+  const cli = contextHookAdapters().find((candidate) => candidate.id === cliId);
+  if (!cli) throw new Error(`[agent:remove-hook] unknown CLI: ${cliId}`);
+  const configPath = join(cli.dir, cli.file);
+
+  let config: Record<string, unknown>;
+  try {
+    config = JSON.parse(await fs.readFile(configPath, 'utf8')) as Record<string, unknown>;
+  } catch (err) {
+    if (!(await exists(configPath))) {
+      return { id: cli.id, label: cli.label, configPath, state: 'not-configured' };
+    }
+    throw new Error(
+      mainT('error.hookConfigInvalid', {
+        cli: cli.label,
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
+  }
+
+  const hooks = config['hooks'];
+  const entries =
+    hooks && typeof hooks === 'object' && !Array.isArray(hooks)
+      ? (hooks as Record<string, unknown>)[cli.hookKey]
+      : undefined;
+  if (entries !== undefined && !Array.isArray(entries)) {
+    throw new Error(mainT('error.hookEntriesInvalid', { cli: cli.label, hookKey: cli.hookKey }));
+  }
+  if (!removeIrisHookHandlers(config, cli.hookKey)) {
+    return { id: cli.id, label: cli.label, configPath, state: 'not-configured' };
+  }
+
+  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  logger.info('agent', `SessionStart hook removed: ${configPath}`);
+  return { id: cli.id, label: cli.label, configPath, state: 'not-configured' };
 }

@@ -14,13 +14,7 @@ import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DocContextMenu } from '@renderer/components/doc/DocContextMenu';
 import { Button } from '@renderer/components/ui/button';
 import { PANEL_BAR, ROW_BASE } from './parts/layout';
-
-const TYPE_TITLE: Record<DocType, string> = {
-  status: 'Status',
-  issue: 'Issue',
-  report: 'Report',
-  misc: 'Misc — 草稿',
-};
+import { useTranslation } from 'react-i18next';
 
 const GRID = 'minmax(0,1fr) minmax(0,96px) 76px';
 
@@ -33,6 +27,7 @@ export function SimpleList({
   type: DocType;
   workspacePath: string | null;
 }): JSX.Element {
+  const { t } = useTranslation();
   const rows = collectDocs(root, type, workspacePath);
   rows.sort(
     (a, b) => docDate(b.doc).localeCompare(docDate(a.doc)) || a.doc.path.localeCompare(b.doc.path),
@@ -41,11 +36,12 @@ export function SimpleList({
   return (
     <div className="flex h-full flex-col">
       <div className={PANEL_BAR}>
-        <h2 className="text-sm font-semibold">{TYPE_TITLE[type]}</h2>
+        <h2 className="text-sm font-semibold">{type}</h2>
+        {type === 'misc' && <span className="text-[11px] text-muted-foreground">{t('collection.draft')}</span>}
         {workspacePath && (
           <button
             type="button"
-            title="清除工作区过滤"
+            title={t('collection.clearWorkspaceFilter')}
             className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent"
             onClick={() => projectStore.openCollection(type, null)}
           >
@@ -59,7 +55,7 @@ export function SimpleList({
           className="ml-auto h-7"
           onClick={() => openCreateDialog({ workspacePath: workspacePath ?? '.iris', type })}
         >
-          <Plus /> 新建
+          <Plus /> {t('collection.new')}
         </Button>
       </div>
 
@@ -92,7 +88,7 @@ export function SimpleList({
           </DocContextMenu>
         ))}
         {rows.length === 0 && (
-          <div className="px-4 py-10 text-center text-xs text-muted-foreground">空</div>
+          <div className="px-4 py-10 text-center text-xs text-muted-foreground">{t('common.empty')}</div>
         )}
       </div>
     </div>

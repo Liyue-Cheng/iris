@@ -1,4 +1,5 @@
 import { useCallback, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Check } from 'lucide-react';
 import { cn } from '@renderer/lib/utils';
 import { Button } from '@renderer/components/ui/button';
@@ -21,6 +22,7 @@ export function CommitBox({
   stagedCount: number;
   pending: boolean;
 }): JSX.Element {
+  const { t } = useTranslation();
   const ref = useRef<HTMLTextAreaElement>(null);
 
   const canCommit = message.trim().length > 0 && stagedCount > 0 && !pending;
@@ -43,7 +45,7 @@ export function CommitBox({
           value={message}
           onChange={(e) => onMessageChange(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="提交信息（Ctrl+Enter 提交）"
+          placeholder={t('git.commitPlaceholder')}
           rows={3}
           className={cn(
             'w-full resize-none rounded-md border border-input bg-transparent px-2.5 py-2 text-xs leading-relaxed',
@@ -55,8 +57,8 @@ export function CommitBox({
       <div className="mt-1.5 flex items-center justify-between">
         <span className="text-[11px] text-muted-foreground">
           {stagedCount > 0
-            ? `${stagedCount} 个文件已暂存`
-            : '暂存文件后可提交'}
+            ? t('git.stagedCount', { count: stagedCount })
+            : t('git.stageFirst')}
         </span>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -68,7 +70,7 @@ export function CommitBox({
               onClick={onCommit}
             >
               <Check className="!size-3.5" />
-              提交
+              {t('git.commit')}
             </Button>
           </TooltipTrigger>
           <TooltipContent className="text-xs">Ctrl+Enter</TooltipContent>

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight, Minus, Plus } from 'lucide-react';
 import { cn } from '@renderer/lib/utils';
 import { Button } from '@renderer/components/ui/button';
@@ -11,11 +12,11 @@ import { GROUP_BAR } from '@renderer/components/collection/parts/layout';
 import { gitStore, type GitResource, type GitResourceGroup } from '@renderer/stores/git-store';
 import { ResourceRow } from './ResourceRow';
 
-const GROUP_LABELS: Record<GitResourceGroup, string> = {
-  merge: '合并冲突',
-  index: '已暂存',
-  workingTree: '更改',
-  untracked: '未跟踪',
+const GROUP_LABELS: Record<GitResourceGroup, 'git.merge' | 'git.index' | 'git.workingTree' | 'git.untracked'> = {
+  merge: 'git.merge',
+  index: 'git.index',
+  workingTree: 'git.workingTree',
+  untracked: 'git.untracked',
 };
 
 export function ResourceGroup({
@@ -27,6 +28,7 @@ export function ResourceGroup({
   resources: GitResource[];
   pending: boolean;
 }): JSX.Element | null {
+  const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(false);
   if (resources.length === 0) return null;
 
@@ -45,7 +47,7 @@ export function ResourceGroup({
           <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-70" />
         )}
         <span className="truncate font-medium text-foreground/80">
-          {GROUP_LABELS[kind]}
+          {t(GROUP_LABELS[kind])}
         </span>
         <span className="shrink-0 text-muted-foreground/70">{resources.length}</span>
         <span className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/hdr:opacity-100">
@@ -71,7 +73,7 @@ export function ResourceGroup({
               </Button>
             </TooltipTrigger>
             <TooltipContent side="left" className="text-xs">
-              {staged ? '全部取消暂存' : '全部暂存'}
+              {staged ? t('git.unstageAll') : t('git.stageAll')}
             </TooltipContent>
           </Tooltip>
         </span>

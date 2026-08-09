@@ -22,11 +22,15 @@ export interface SessionStoreState {
   scope: ProjectScope | null;
   /** insertion-ordered */
   sessions: SessionInfo[];
-  /** Session shown in the right pane (null = none). */
-  activeSessionId: string | null;
+  /** Sticky user selection per document/workspace anchor. */
+  selectedSessionIdByAnchor: Readonly<Record<string, string>>;
 }
 
-let state: SessionStoreState = { scope: null, sessions: [], activeSessionId: null };
+let state: SessionStoreState = {
+  scope: null,
+  sessions: [],
+  selectedSessionIdByAnchor: {},
+};
 const subscribers = new Set<() => void>();
 
 function emit(): void {
@@ -36,6 +40,23 @@ function emit(): void {
 function setState(patch: Partial<SessionStoreState>): void {
   state = { ...state, ...patch };
   emit();
+}
+
+function reconcileSelections(
+  sessions: SessionInfo[],
+  previous: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const selections = { ...previous };
+  for (const [anchorKey, sessionId] of Object.entries(selections)) {
+    const selected = sessions.find((session) => session.id === sessionId);
+    if (!selected || sessionAnchorKey(selected) !== anchorKey) delete selections[anchorKey];
+  }
+  for (let index = sessions.length - 1; index >= 0; index -= 1) {
+    const session = sessions[index]!;
+    const anchorKey = sessionAnchorKey(session);
+    if (!selections[anchorKey]) selections[anchorKey] = session.id;
+  }
+  return selections;
 }
 
 export const sessionStore = {
@@ -52,16 +73,35 @@ export const sessionStore = {
     ) {
       return;
     }
+    const sessions = [...state.sessions.filter((s) => s.id !== info.id), info];
     setState({
       scope,
-      sessions: [...state.sessions.filter((s) => s.id !== info.id), info],
-      activeSessionId: info.id, // a fresh session takes the stage
+      sessions,
+      selectedSessionIdByAnchor: reconcileSelections(
+        sessions,
+        state.selectedSessionIdByAnchor,
+      ),
     });
   },
 
   handlePatch(sessionId: string, patch: Partial<SessionInfo>): void {
+    const current = state.sessions.find((s) => s.id === sessionId);
+    const updated = current ? { ...current, ...patch } : null;
+    let selections: Record<string, string> = { ...state.selectedSessionIdByAnchor };
+    if (current && updated) {
+      const currentAnchorKey = sessionAnchorKey(current);
+      const updatedAnchorKey = sessionAnchorKey(updated);
+      if (currentAnchorKey !== updatedAnchorKey) {
+        if (selections[currentAnchorKey] === sessionId) {
+          delete selections[currentAnchorKey];
+          selections[updatedAnchorKey] = sessionId;
+        }
+      }
+    }
+    const sessions = state.sessions.map((s) => (s.id === sessionId ? { ...s, ...patch } : s));
     setState({
-      sessions: state.sessions.map((s) => (s.id === sessionId ? { ...s, ...patch } : s)),
+      sessions,
+      selectedSessionIdByAnchor: reconcileSelections(sessions, selections),
     });
   },
 
@@ -75,41 +115,29 @@ export const sessionStore = {
     const sibling = destroyedKey
       ? [...sessions].reverse().find((s) => sessionAnchorKey(s) === destroyedKey)
       : undefined;
+    const selections = { ...state.selectedSessionIdByAnchor };
+    if (destroyedKey && selections[destroyedKey] === sessionId) {
+      if (sibling) selections[destroyedKey] = sibling.id;
+      else delete selections[destroyedKey];
+    }
     setState({
       sessions,
-      activeSessionId:
-        state.activeSessionId === sessionId
-          ? (sibling?.id ?? sessions[sessions.length - 1]?.id ?? null)
-          : state.activeSessionId,
+      selectedSessionIdByAnchor: reconcileSelections(sessions, selections),
     });
   },
 
-  select(sessionId: string): void {
-    if (state.sessions.some((s) => s.id === sessionId)) {
-      setState({ activeSessionId: sessionId });
+  select(sessionId: string): boolean {
+    const session = state.sessions.find((s) => s.id === sessionId);
+    if (session) {
+      setState({
+        selectedSessionIdByAnchor: {
+          ...state.selectedSessionIdByAnchor,
+          [sessionAnchorKey(session)]: sessionId,
+        },
+      });
+      return true;
     }
-  },
-
-  /**
-   * Doc↔terminal linkage: when a doc is selected on the left, stage its
-   * best session — state priority active > idle > exited, ties go to the
-   * most recently created (sessions[] is insertion-ordered). No session
-   * under this anchor → null, which the right pane renders as the
-   * doc-anchored launcher panel. Manual select() stands until the next
-   * doc selection. (Doc sessions key by docPath — their anchor key.)
-   */
-  syncToDoc(docPath: string): void {
-    setState({ activeSessionId: bestUnderAnchor(docPath)?.id ?? null });
-  },
-
-  /** Root-node linkage: stage the best project-root hub session. */
-  syncToRoot(): void {
-    setState({ activeSessionId: bestUnderAnchor(workspaceAnchorKey('.iris'))?.id ?? null });
-  },
-
-  /** Sub-workspace hub linkage: stage the best session under that hub. */
-  syncToWorkspace(workspacePath: string): void {
-    setState({ activeSessionId: bestUnderAnchor(workspaceAnchorKey(workspacePath))?.id ?? null });
+    return false;
   },
 
   /** Replace the whole projection with a fresh main-process snapshot
@@ -118,6 +146,7 @@ export const sessionStore = {
     sessions: SessionInfo[] = [],
     scope: ProjectScope | null = projectScopeState.get(),
   ): void {
+    const scopeChanged = !scope || !sameProjectScope(state.scope, scope);
     const filtered = scope
       ? sessions.filter(
           (session) =>
@@ -125,10 +154,14 @@ export const sessionStore = {
             session.projectGeneration === scope.generation,
         )
       : [];
+    const selections = reconcileSelections(
+      filtered,
+      scopeChanged ? {} : state.selectedSessionIdByAnchor,
+    );
     setState({
       scope,
       sessions: filtered,
-      activeSessionId: filtered[filtered.length - 1]?.id ?? null,
+      selectedSessionIdByAnchor: selections,
     });
   },
 
@@ -153,15 +186,23 @@ export function workspaceAnchorKey(workspacePath: string): string {
   return `ws:${workspacePath}`;
 }
 
-/** Best session under one anchor key: active > idle > exited, ties to newest. */
-function bestUnderAnchor(anchorKey: string): SessionInfo | null {
-  const rank: Record<SessionState, number> = { active: 2, idle: 1, exited: 0 };
-  let best: SessionInfo | null = null;
-  for (const s of state.sessions) {
-    if (sessionAnchorKey(s) !== anchorKey) continue;
-    if (!best || rank[s.state] >= rank[best.state]) best = s;
+/** Sticky explicit selection, falling back to the newest session only when absent. */
+export function selectedSessionIdForAnchor(anchorKey: string): string | null {
+  const selectedSessionId = state.selectedSessionIdByAnchor[anchorKey];
+  if (
+    selectedSessionId &&
+    state.sessions.some(
+      (session) =>
+        session.id === selectedSessionId && sessionAnchorKey(session) === anchorKey,
+    )
+  ) {
+    return selectedSessionId;
   }
-  return best;
+
+  return (
+    [...state.sessions].reverse().find((session) => sessionAnchorKey(session) === anchorKey)?.id ??
+    null
+  );
 }
 
 /**

@@ -9,7 +9,11 @@ import type { SettingsManager } from './settings-manager';
 
 vi.mock('node-pty', () => ({ spawn: vi.fn() }));
 
-import { ensureFocusScriptCurrent, FOCUS_CONTEXT_SCRIPT } from './agent-injection';
+import {
+  ensureFocusScriptCurrent,
+  FOCUS_CONTEXT_SCRIPT,
+  removeIrisHookHandlers,
+} from './agent-injection';
 import { logger } from './logger';
 import { SessionManager, type CreateSessionInput, type PtySpawnFn } from './session-manager';
 
@@ -119,6 +123,83 @@ async function spawnEnvFor(
 }
 
 describe('session context environment', () => {
+  it('runs an arbitrary custom launcher command without an injection mode', async () => {
+    let capturedArgs: string[] = [];
+    const command = 'custom-agent --profile work';
+    const settingsManager = {
+      get: () => ({
+        agents: [{ id: 'custom', label: 'Custom agent', command }],
+        advanced: { activeIdleThresholdSeconds: 2 },
+      }),
+    } as unknown as SettingsManager;
+    const manager = new SessionManager(settingsManager, {
+      spawnFn: (_file, args) => {
+        capturedArgs = [...args];
+        return fakePty();
+      },
+      processTreeKillFn: null,
+      ptyExitWaitMs: 0,
+    });
+
+    const session = manager.createSession({
+      docPath: '.iris/issue/custom.md',
+      agentId: 'custom',
+      projectRoot: process.cwd(),
+      projectGeneration: 1,
+      cols: 80,
+      rows: 24,
+    });
+
+    expect(capturedArgs.some((arg) => arg.includes(command))).toBe(true);
+    if (process.platform === 'win32') {
+      expect(capturedArgs.includes('-NoExit') || capturedArgs.includes('/k')).toBe(true);
+    } else {
+      expect(capturedArgs.some((arg) => arg.includes('exec'))).toBe(true);
+    }
+    expect(session.agentId).toBe('custom');
+    expect(session.displayName).toBe('Custom agent');
+    await manager.shutdown();
+  });
+
+  it('runs a project toolbar command in a fresh root hub session', async () => {
+    let capturedArgs: string[] = [];
+    let capturedCwd = '';
+    let capturedEnv: Record<string, string> = {};
+    const manager = new SessionManager(fakeSettingsManager(), {
+      spawnFn: (_file, args, options) => {
+        capturedArgs = [...args];
+        capturedCwd = options.cwd;
+        capturedEnv = { ...options.env };
+        return fakePty();
+      },
+      processTreeKillFn: null,
+      ptyExitWaitMs: 0,
+    });
+    const command = 'npm run verify';
+    const session = manager.createCommandSession({
+      actionIndex: 2,
+      description: 'Verify project',
+      command,
+      projectRoot: process.cwd(),
+      projectGeneration: 3,
+      cols: 100,
+      rows: 30,
+    });
+
+    expect(capturedArgs.some((arg) => arg.includes(command))).toBe(true);
+    expect(capturedCwd).toBe(process.cwd());
+    expect(capturedEnv.FOCUS_DOC).toBeUndefined();
+    expect(capturedEnv.IRIS_WORKSPACE_PATH).toBe('.iris');
+    expect(session).toMatchObject({
+      docPath: null,
+      workspacePath: '.iris',
+      agentId: 'project-action:2',
+      displayName: 'Verify project',
+      projectGeneration: 3,
+    });
+    await manager.shutdown();
+  });
+
   it('injects only FOCUS_DOC for a document session', async () => {
     vi.stubEnv('IRIS_WORKSPACE_PATH', '.iris/stale-workspace');
 
@@ -307,6 +388,50 @@ describe('focus-context PowerShell contract', () => {
       }
     },
   );
+});
+
+describe('Iris hook config removal', () => {
+  it('removes only Iris handlers and preserves unrelated config', () => {
+    const otherHandler = { type: 'command', command: 'write-host keep-me' };
+    const config: Record<string, unknown> = {
+      theme: 'custom',
+      hooks: {
+        SessionStart: [
+          {
+            matcher: 'startup',
+            hooks: [
+              { type: 'command', command: 'powershell -File "C:/Users/me/.iris/focus-context.ps1"' },
+              otherHandler,
+            ],
+          },
+          {
+            matcher: 'resume',
+            hooks: [{ type: 'command', command: 'powershell -File focus-context.ps1' }],
+          },
+        ],
+        PreToolUse: [{ hooks: [{ type: 'command', command: 'audit-tool' }] }],
+      },
+    };
+
+    expect(removeIrisHookHandlers(config, 'SessionStart')).toBe(true);
+    expect(config).toEqual({
+      theme: 'custom',
+      hooks: {
+        SessionStart: [{ matcher: 'startup', hooks: [otherHandler] }],
+        PreToolUse: [{ hooks: [{ type: 'command', command: 'audit-tool' }] }],
+      },
+    });
+  });
+
+  it('does not rewrite config when no Iris handler exists', () => {
+    const config: Record<string, unknown> = {
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'keep-me' }] }] },
+    };
+    const before = structuredClone(config);
+
+    expect(removeIrisHookHandlers(config, 'SessionStart')).toBe(false);
+    expect(config).toEqual(before);
+  });
 });
 
 describe('focus-context script lifecycle', () => {

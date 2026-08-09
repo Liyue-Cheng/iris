@@ -5,20 +5,63 @@
  * Save surfaces: Ctrl+S, window blur, doc switch (project-store flushes),
  * and immediate persist on header field edits.
  */
-import { useEffect } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+} from 'react';
+import { useTranslation } from 'react-i18next';
 import { Loader2, TriangleAlert } from 'lucide-react';
 import { useEditorSession, editorStore } from '@renderer/stores/editor-store';
 import { useProject } from '@renderer/stores/project-store';
 import { useSettings } from '@renderer/stores/settings-store';
 import { Button } from '@renderer/components/ui/button';
+import {
+  governEditorPathDrop,
+  isEditorPathDrag,
+  type EditorDropAdapter,
+} from '@renderer/lib/doc-drag';
 import { TypedHeader } from './TypedHeader';
 import { CrepeEditor } from './CrepeEditor';
 import { SourceEditor } from './SourceEditor';
 
 export function DocView(): JSX.Element {
+  const { t } = useTranslation();
   const session = useEditorSession();
-  const { selectedPath, docLoading, docError } = useProject();
+  const { view, docLoading, docError } = useProject();
+  const selectedPath = view.kind === 'doc' ? view.path : null;
   const conflictPolicy = useSettings()?.behavior.editorConflictPolicy ?? 'ask';
+  const dropAdapterRef = useRef<EditorDropAdapter | null>(null);
+  const [dropError, setDropError] = useState<{ kind: 'path' | 'insert' } | null>(null);
+
+  const handleDropAdapterChange = useCallback((adapter: EditorDropAdapter | null): void => {
+    dropAdapterRef.current = adapter;
+  }, []);
+
+  const handlePathDragOver = useCallback((event: ReactDragEvent<HTMLDivElement>): void => {
+    if (!isEditorPathDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  }, []);
+
+  const handlePathDrop = useCallback((event: ReactDragEvent<HTMLDivElement>): void => {
+    const result = governEditorPathDrop(
+      event,
+      window.api.getPathForFile,
+      dropAdapterRef.current,
+    );
+    if (result === 'ignored' || result === 'inserted') {
+      if (result === 'inserted') setDropError(null);
+      return;
+    }
+    if (result === 'path-unavailable') {
+      setDropError({ kind: 'path' });
+      return;
+    }
+    setDropError({ kind: 'insert' });
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
@@ -33,10 +76,20 @@ export function DocView(): JSX.Element {
     };
   }, []);
 
+  useEffect(() => {
+    if (!dropError) return;
+    const timer = window.setTimeout(() => setDropError(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [dropError]);
+
+  useEffect(() => {
+    setDropError(null);
+  }, [session?.path, session?.mode]);
+
   if (!selectedPath) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        从左栏选择一篇文档
+        {t('editor.selectDocument')}
       </div>
     );
   }
@@ -44,7 +97,7 @@ export function DocView(): JSX.Element {
   if (docError) {
     return (
       <div className="flex h-full items-center justify-center text-xs text-destructive">
-        读取失败：{docError}
+        {t('editor.readFailed', { error: docError })}
       </div>
     );
   }
@@ -64,7 +117,7 @@ export function DocView(): JSX.Element {
         <div className="flex shrink-0 items-center gap-2 border-y border-[var(--rp-gold)]/35 bg-[var(--rp-gold)]/10 px-4 py-2 text-xs">
           <TriangleAlert className="size-4 shrink-0 text-[var(--rp-gold)]" />
           <span className="min-w-0 flex-1">
-            磁盘版本已变化，自动保存已暂停。选择保留本地草稿或重新载入外部版本。
+            {t('editor.diskChanged')}
           </span>
           <Button
             size="sm"
@@ -72,7 +125,7 @@ export function DocView(): JSX.Element {
             className="h-7 shrink-0"
             onClick={() => editorStore.reloadConflict()}
           >
-            载入外部版本
+            {t('editor.reloadExternal')}
           </Button>
           <Button
             size="sm"
@@ -81,12 +134,28 @@ export function DocView(): JSX.Element {
             disabled={session.saving}
             onClick={() => void editorStore.overwriteConflict()}
           >
-            保留本地并覆盖
+            {t('editor.keepLocal')}
           </Button>
+        </div>
+      )}
+      {dropError && (
+        <div
+          role="alert"
+          className="flex shrink-0 items-center gap-2 border-y border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive"
+        >
+          <TriangleAlert className="size-4 shrink-0" />
+          <span>
+            {dropError.kind === 'path'
+              ? t('editor.fileDropPathFailed')
+              : t('editor.fileDropInsertFailed')}
+          </span>
         </div>
       )}
       <div
         className="min-h-0 flex-1"
+        onDragEnterCapture={handlePathDragOver}
+        onDragOverCapture={handlePathDragOver}
+        onDropCapture={handlePathDrop}
         onBlur={(event) => {
           const next = event.relatedTarget;
           if (!(next instanceof Node) || !event.currentTarget.contains(next)) {
@@ -99,12 +168,14 @@ export function DocView(): JSX.Element {
             path={session.path}
             generation={session.generation}
             body={session.originalBody}
+            onDropAdapterChange={handleDropAdapterChange}
           />
         ) : (
           <SourceEditor
             path={session.path}
             generation={session.generation}
             text={session.sourceText}
+            onDropAdapterChange={handleDropAdapterChange}
           />
         )}
       </div>

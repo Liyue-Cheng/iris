@@ -18,7 +18,10 @@
  * the editor's preserved selection.
  */
 import { useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Crepe } from '@milkdown/crepe';
+import { editorViewCtx } from '@milkdown/kit/core';
+import { TextSelection } from '@milkdown/kit/prose/state';
 import { languages } from '@codemirror/language-data';
 import { rosePineCodeMirror } from '@renderer/styles/codemirror-theme';
 import { CHANNELS } from '@shared/protocol';
@@ -30,6 +33,8 @@ import { renderMermaidPreview } from '@renderer/lib/mermaid-preview';
 import { importAsset } from '@renderer/lib/asset-actions';
 import { attachScrollMemory, type ScrollMemoryHandle } from '@renderer/lib/scroll-memory';
 import { stableCodeBlockView } from '@renderer/lib/stable-code-block';
+import { safeHtmlDecorations, safeHtmlView } from '@renderer/lib/safe-html';
+import type { EditorDropAdapter } from '@renderer/lib/doc-drag';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -47,11 +52,14 @@ export function CrepeEditor({
   path,
   generation,
   body,
+  onDropAdapterChange,
 }: {
   path: string;
   generation: number;
   body: string;
+  onDropAdapterChange: (adapter: EditorDropAdapter | null) => void;
 }): JSX.Element {
+  const { t, i18n } = useTranslation();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const settings = useSettings();
   const blockEdit = settings?.behavior.editorBlockEdit ?? false;
@@ -80,24 +88,25 @@ export function CrepeEditor({
         [Crepe.Feature.CodeMirror]: {
           languages,
           extensions: [rosePineCodeMirror],
-          copyText: '复制',
+          copyText: t('common.copy'),
           renderPreview: renderMermaidPreview,
           previewOnlyByDefault: true,
-          previewLabel: '预览',
-          previewLoading: '渲染中…',
+          previewLabel: t('editor.preview'),
+          previewLoading: t('editor.rendering'),
         },
         [Crepe.Feature.ImageBlock]: {
           onUpload: async (file) => (await importAsset(path, file)).markdownUrl,
           proxyDomURL: (source) => resolveMarkdownImage(path, source),
           onImageLoadError: markImageLoadFailure,
-          inlineUploadButton: '上传',
-          blockUploadButton: '上传图片',
-          inlineUploadPlaceholderText: '或粘贴链接',
-          blockUploadPlaceholderText: '或粘贴链接',
+          inlineUploadButton: t('editor.upload'),
+          blockUploadButton: t('editor.uploadImage'),
+          inlineUploadPlaceholderText: t('editor.pasteLink'),
+          blockUploadPlaceholderText: t('editor.pasteLink'),
         },
       },
     });
     crepe.editor.use(stableCodeBlockView);
+    crepe.editor.use(safeHtmlView).use(safeHtmlDecorations);
 
     crepe.on((listener) => {
       listener.markdownUpdated((_ctx, md) => {
@@ -111,6 +120,21 @@ export function CrepeEditor({
       label: `wysiwyg:${path}`,
       onCreated: () => {
         if (stopped) return;
+        const view = crepe.editor.action((ctx) => ctx.get(editorViewCtx));
+        onDropAdapterChange({
+          insertTextAtPoint: (text, point) => {
+            const position = view.posAtCoords({ left: point.x, top: point.y });
+            if (!position) return false;
+            view.dispatch(
+              view.state.tr.setSelection(
+                TextSelection.near(view.state.doc.resolve(position.pos)),
+              ),
+            );
+            const inserted = view.pasteText(text);
+            if (inserted) view.focus();
+            return inserted;
+          },
+        });
         scrollMemory = attachScrollMemory({
           key: `wysiwyg:${path}`,
           scroller: el,
@@ -136,6 +160,7 @@ export function CrepeEditor({
 
     return () => {
       stopped = true;
+      onDropAdapterChange(null);
       if (hydrationFrame !== null) cancelAnimationFrame(hydrationFrame);
       scrollMemory?.stop();
       lifecycle.stop();
@@ -146,7 +171,7 @@ export function CrepeEditor({
     // which replaces the three-pane body, so the editor is never mounted
     // when the flag actually flips.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, generation, blockEdit]);
+  }, [path, generation, blockEdit, i18n.resolvedLanguage, onDropAdapterChange]);
 
   const editAction = (action: EditAction): void => {
     // Radix closes the menu and juggles focus on select; wait a beat, put
@@ -170,11 +195,11 @@ export function CrepeEditor({
         />
       </ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onClick={() => editAction('cut')}>剪切</ContextMenuItem>
-        <ContextMenuItem onClick={() => editAction('copy')}>复制</ContextMenuItem>
-        <ContextMenuItem onClick={() => editAction('paste')}>粘贴</ContextMenuItem>
+        <ContextMenuItem onClick={() => editAction('cut')}>{t('common.cut')}</ContextMenuItem>
+        <ContextMenuItem onClick={() => editAction('copy')}>{t('common.copy')}</ContextMenuItem>
+        <ContextMenuItem onClick={() => editAction('paste')}>{t('common.paste')}</ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem onClick={() => editAction('selectAll')}>全选</ContextMenuItem>
+        <ContextMenuItem onClick={() => editAction('selectAll')}>{t('common.selectAll')}</ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   );

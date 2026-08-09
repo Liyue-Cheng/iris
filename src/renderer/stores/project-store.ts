@@ -14,10 +14,11 @@ import type {
   ProjectOpenResult,
   ProjectScope,
   RawTreeNode,
+  SessionInfo,
 } from '@shared/types';
 import { CHANNELS } from '@shared/protocol';
 import { editorStore } from './editor-store';
-import { sessionStore } from './session-store';
+import { sessionAnchorKey, sessionStore, workspaceAnchorKey } from './session-store';
 import { projectScopeState, sameProjectScope } from './project-scope-state';
 
 export type ProjectPhase = 'idle' | 'opening' | 'ready' | 'error';
@@ -28,7 +29,7 @@ export type ProjectPhase = 'idle' | 'opening' | 'ready' | 'error';
  *  the terminal the full width. Collections are optionally scoped to one
  *  workspace. */
 export type MiddleView =
-  | { kind: 'doc' }
+  | { kind: 'doc'; path: string | null }
   | { kind: 'collection'; type: DocType; workspacePath: string | null }
   | { kind: 'todos'; workspacePath: string | null }
   | { kind: 'root' }
@@ -42,7 +43,6 @@ export interface ProjectState {
   scan: IrisScanResult | null;
   rawMode: boolean;
   rawTree: RawTreeNode | null;
-  selectedPath: string | null;
   docLoading: boolean;
   docError: string | null;
   view: MiddleView;
@@ -55,10 +55,9 @@ let state: ProjectState = {
   scan: null,
   rawMode: false,
   rawTree: null,
-  selectedPath: null,
   docLoading: false,
   docError: null,
-  view: { kind: 'doc' },
+  view: { kind: 'doc', path: null },
 };
 
 const subscribers = new Set<() => void>();
@@ -72,6 +71,7 @@ function setState(patch: Partial<ProjectState>): void {
 // trigger exactly one follow-up scan (no unbounded pile-up).
 let scanInFlight = false;
 let scanDirty = false;
+let navigationIntent = 0;
 
 /** A view change may discard the only mounted draft, so it waits for the
  * unified save decision. Conflict-policy "ask" and write failures keep the
@@ -80,18 +80,130 @@ async function canLeaveEditor(): Promise<boolean> {
   return editorStore.flushBeforeSwitch('view-switch');
 }
 
+function beginNavigationIntent(): number {
+  navigationIntent += 1;
+  return navigationIntent;
+}
+
+function isCurrentIntent(intent: number): boolean {
+  return intent === navigationIntent;
+}
+
+async function mayCommitNavigation(intent: number): Promise<boolean> {
+  return (await canLeaveEditor()) && isCurrentIntent(intent);
+}
+
+function currentAnchorKey(): string | null {
+  if (state.view.kind === 'doc') return state.view.path;
+  if (state.view.kind === 'root') return workspaceAnchorKey('.iris');
+  if (state.view.kind === 'workspace') return workspaceAnchorKey(state.view.path);
+  return null;
+}
+
+function sessionStillMatches(sessionId: string, anchorKey: string): SessionInfo | null {
+  const scope = state.scope;
+  const session = sessionStore.get().sessions.find((candidate) => candidate.id === sessionId);
+  if (
+    !scope ||
+    !session ||
+    session.projectRoot !== scope.root ||
+    session.projectGeneration !== scope.generation ||
+    sessionAnchorKey(session) !== anchorKey
+  ) {
+    return null;
+  }
+  return session;
+}
+
+function selectPreparedSession(sessionId: string | undefined, anchorKey: string): boolean {
+  if (!sessionId) return true;
+  return sessionStillMatches(sessionId, anchorKey) !== null && sessionStore.select(sessionId);
+}
+
+async function navigateToHub(
+  intent: number,
+  workspacePath: string,
+  sessionId?: string,
+): Promise<boolean> {
+  const anchorKey = workspaceAnchorKey(workspacePath);
+  if (currentAnchorKey() === anchorKey) {
+    return isCurrentIntent(intent) && selectPreparedSession(sessionId, anchorKey);
+  }
+  if (!(await mayCommitNavigation(intent))) return false;
+  if (!selectPreparedSession(sessionId, anchorKey)) return false;
+
+  editorStore.closeSession();
+  setState({
+    docLoading: false,
+    docError: null,
+    view:
+      workspacePath === '.iris'
+        ? { kind: 'root' }
+        : { kind: 'workspace', path: workspacePath },
+  });
+  return true;
+}
+
+async function navigateToDoc(
+  intent: number,
+  path: string,
+  sessionId?: string,
+): Promise<boolean> {
+  if (state.view.kind === 'doc' && state.view.path === path && state.docError === null) {
+    return isCurrentIntent(intent) && selectPreparedSession(sessionId, path);
+  }
+  if (!(await mayCommitNavigation(intent))) return false;
+  if (!selectPreparedSession(sessionId, path)) return false;
+
+  const scope = state.scope;
+  if (!scope) return false;
+  setState({ docLoading: true, docError: null, view: { kind: 'doc', path } });
+  try {
+    const content = await window.api.invoke<
+      { path: string; expectedScope: ProjectScope },
+      DocContent
+    >(CHANNELS.DOC_READ, { path, expectedScope: scope });
+    if (
+      !isCurrentIntent(intent) ||
+      state.view.kind !== 'doc' ||
+      state.view.path !== path ||
+      !sameProjectScope(scope, state.scope)
+    ) {
+      return false;
+    }
+    editorStore.openSession(content);
+    setState({ docLoading: false });
+    return true;
+  } catch (err) {
+    if (
+      isCurrentIntent(intent) &&
+      state.view.kind === 'doc' &&
+      state.view.path === path &&
+      sameProjectScope(scope, state.scope)
+    ) {
+      editorStore.closeSession();
+      setState({
+        docLoading: false,
+        docError: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return false;
+  }
+}
+
 export const projectStore = {
   get(): ProjectState {
     return state;
   },
 
   markOpening(): void {
+    beginNavigationIntent();
     projectScopeState.setSwitching(true);
     setState({ phase: 'opening', error: null });
   },
 
   /** Commit hook of project.open. */
-  handleOpened(result: ProjectOpenResult): void {
+  handleOpened(result: Omit<ProjectOpenResult, 'projectSettings'>): void {
     const { scan, scope } = result;
     const idempotent = sameProjectScope(scope, state.scope);
     if (idempotent) {
@@ -100,6 +212,7 @@ export const projectStore = {
       setState({ phase: 'ready', error: null, scope, scan });
       return;
     }
+    beginNavigationIntent();
     editorStore.closeSession();
     projectScopeState.set(scope);
     projectScopeState.setSwitching(false);
@@ -109,7 +222,8 @@ export const projectStore = {
       scope,
       scan,
       rawTree: null,
-      selectedPath: null,
+      view: { kind: 'doc', path: null },
+      docLoading: false,
       docError: null,
     });
     if (state.rawMode) void this.refreshRawTree();
@@ -174,42 +288,65 @@ export const projectStore = {
     // reload, conflict flag, unlink) is handled by editorStore via the ISR
     // in cpu/interrupts.ts — not here. But if the selected doc vanished,
     // clear the selection.
-    const sel = state.selectedPath;
-    if (sel && event.changes.some((c) => c.kind === 'unlink' && c.path === sel)) {
-      setState({ selectedPath: null });
+    const selectedPath = state.view.kind === 'doc' ? state.view.path : null;
+    if (
+      selectedPath &&
+      event.changes.some((change) => change.kind === 'unlink' && change.path === selectedPath)
+    ) {
+      beginNavigationIntent();
+      editorStore.closeSession();
+      setState({ view: { kind: 'doc', path: null }, docLoading: false, docError: null });
     }
   },
 
   /** Open a type-level collection view (issue panel etc.). */
-  async openCollection(type: DocType, workspacePath: string | null): Promise<void> {
-    if (!(await canLeaveEditor())) return;
+  async openCollection(type: DocType, workspacePath: string | null): Promise<boolean> {
+    const intent = beginNavigationIntent();
+    if (!(await mayCommitNavigation(intent))) return false;
     setState({ view: { kind: 'collection', type, workspacePath } });
+    return true;
   },
 
   /** Open the todo panel (unchecked tasks across active issues). */
-  async openTodos(workspacePath: string | null): Promise<void> {
-    if (!(await canLeaveEditor())) return;
+  async openTodos(workspacePath: string | null): Promise<boolean> {
+    const intent = beginNavigationIntent();
+    if (!(await mayCommitNavigation(intent))) return false;
     setState({ view: { kind: 'todos', workspacePath } });
+    return true;
   },
 
   /** The special root node (E-4): middle shows the project README (or a
    *  placeholder), right shows the project-root sessions (terminal-only view,
    *  so focus goes to the terminal). */
-  async selectRoot(): Promise<void> {
-    if (!(await canLeaveEditor())) return;
-    editorStore.closeSession();
-    setState({ selectedPath: null, view: { kind: 'root' }, docError: null });
-    sessionStore.syncToRoot();
+  async selectRoot(): Promise<boolean> {
+    return navigateToHub(beginNavigationIntent(), '.iris');
   },
 
   /** A sub-workspace hub (terminal parity with the root node): like
    *  selectRoot, the middle pane yields to a full-width terminal and the
    *  right pane stages this workspace's hub sessions. */
-  async selectWorkspace(path: string): Promise<void> {
-    if (!(await canLeaveEditor())) return;
-    editorStore.closeSession();
-    setState({ selectedPath: null, view: { kind: 'workspace', path }, docError: null });
-    sessionStore.syncToWorkspace(path);
+  async selectWorkspace(path: string): Promise<boolean> {
+    return navigateToHub(beginNavigationIntent(), path);
+  },
+
+  /** One user intent: navigate to a session's anchor and select it there. */
+  async activateSession(sessionId: string): Promise<boolean> {
+    const session = sessionStore.get().sessions.find((candidate) => candidate.id === sessionId);
+    const scope = state.scope;
+    if (
+      !session ||
+      !scope ||
+      session.projectRoot !== scope.root ||
+      session.projectGeneration !== scope.generation
+    ) {
+      return false;
+    }
+
+    const intent = beginNavigationIntent();
+    if (session.docPath !== null) {
+      return navigateToDoc(intent, session.docPath, sessionId);
+    }
+    return navigateToHub(intent, session.workspacePath ?? '.iris', sessionId);
   },
 
   /** Explicit re-projection (used by init/workspace commits). */
@@ -230,42 +367,9 @@ export const projectStore = {
     }
   },
 
-  /** Select a doc: flush the previous editing session, open a new one.
-   *  Also re-stages the right pane onto this doc's best session (or the
-   *  launcher panel when it has none) — pure projection-level linkage.
-   */
-  async selectDoc(path: string): Promise<void> {
-    // Re-selecting the doc already shown in the doc view is a no-op: re-reading
-    // would flash the loading spinner and remount Crepe (generation bump) for
-    // zero information — that's the "repeated click flicker". A prior read
-    // error still allows a retry.
-    if (state.view.kind === 'doc' && state.selectedPath === path && state.docError === null) {
-      return;
-    }
-    if (!(await canLeaveEditor())) return;
-    setState({ selectedPath: path, docLoading: true, docError: null, view: { kind: 'doc' } });
-    sessionStore.syncToDoc(path);
-    const scope = state.scope;
-    if (!scope) return;
-    try {
-      const content = await window.api.invoke<
-        { path: string; expectedScope: ProjectScope },
-        DocContent
-      >(CHANNELS.DOC_READ, { path, expectedScope: scope });
-      // Ignore stale responses after a quick re-selection.
-      if (state.selectedPath === path && sameProjectScope(scope, state.scope)) {
-        editorStore.openSession(content);
-        setState({ docLoading: false });
-      }
-    } catch (err) {
-      if (state.selectedPath === path && sameProjectScope(scope, state.scope)) {
-        editorStore.closeSession();
-        setState({
-          docLoading: false,
-          docError: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
+  /** Select a document without altering that document's remembered terminal. */
+  async selectDoc(path: string): Promise<boolean> {
+    return navigateToDoc(beginNavigationIntent(), path);
   },
 
   async toggleRawMode(): Promise<void> {

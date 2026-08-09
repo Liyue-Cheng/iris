@@ -3,10 +3,10 @@
  * issue 是重头戏). Rebuilt round-5:
  *   - CSS-grid rows (not an auto <table>): title is the dominant column and
  *     everything truncates to a single line — no more撑宽/换行 (issue 三).
- *   - group-by (status/workspace/label/none) with sticky collapsible
+ *   - group-by (status/workspace/none) with sticky collapsible
  *     headers + counts; sort + order via the Display popover.
  *   - leading status glyph (click to edit) like Linear.
- *   - text search + active/resolved/all + label/workspace filter chips.
+ *   - text search + active/resolved/all + workspace filtering.
  *   - keyboard nav (j/k · Enter/o open · c new · x select · Esc clear) and
  *     multi-select with a bulk action bar.
  *
@@ -14,7 +14,16 @@
  * only writes are the existing per-doc frontmatter surgeries.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, CheckSquare, FileWarning, Plus, Search, Square, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import {
+  Archive,
+  CheckSquare,
+  FileWarning,
+  Plus,
+  Search,
+  Square,
+  X,
+} from 'lucide-react';
 import type { IrisWorkspace } from '@shared/types';
 import { ISSUE_STATUSES } from '@shared/document-status';
 import { cn } from '@renderer/lib/utils';
@@ -23,7 +32,7 @@ import { docDisplayTitle, isActiveIssue } from '@renderer/lib/doc-utils';
 import { setDocDragData } from '@renderer/lib/doc-drag';
 import { setDocsStatus, setDocStatus } from '@renderer/lib/issue-actions';
 import { useViewPref } from '@renderer/lib/view-prefs';
-import { LabelChip } from '@renderer/components/ui/label-chip';
+import { compareDisplayText } from '@renderer/lib/locale';
 import { StatusBadge } from '@renderer/components/ui/status-badge';
 import { projectStore } from '@renderer/stores/project-store';
 import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
@@ -46,15 +55,17 @@ import {
 
 type Filter = 'active' | 'resolved' | 'all';
 
-const FILTER_LABEL: Record<Filter, string> = {
-  active: '活动中',
-  resolved: '已解决',
-  all: '全部',
+const FILTER_LABEL: Record<Filter, 'collection.active' | 'collection.resolved' | 'collection.all'> = {
+  active: 'collection.active',
+  resolved: 'collection.resolved',
+  all: 'collection.all',
 };
+
+const NO_STATUS = '__no_status__';
 
 /**
  * Column track shared by every issue row. Order: select · title · status ·
- * labels · workspace · date. The title is content-sized but capped at 400px
+ * workspace · date. The title is content-sized but capped at 400px
  * (short titles → narrow column, long titles truncate); STATUS is the single
  * flexible 1fr column, so it absorbs the row's slack — with its badge left-
  * aligned the badge hugs the title's right edge and naturally drifts left for
@@ -62,16 +73,17 @@ const FILTER_LABEL: Record<Filter, string> = {
  * edge (the 1fr to their left keeps them aligned across rows, each row being
  * its own grid). All cells min-w-0 + single-line truncate.
  */
-const GRID = '18px minmax(0,400px) minmax(0,1fr) minmax(0,132px) 88px 72px';
+const GRID = '18px minmax(0,400px) minmax(0,1fr) 88px 72px';
 
 // ── inline status editor (the status badge doubles as an edit trigger) ────
 
 function StatusEditor({ item }: { item: CollectedDoc }): JSX.Element {
+  const { t } = useTranslation();
   const editable = !item.archived && !item.doc.frontmatterBroken;
   const badge = item.doc.status ? (
     <StatusBadge value={item.doc.status} chevron={editable} />
   ) : (
-    <span className="text-[11px] text-muted-foreground">{editable ? '设状态…' : '—'}</span>
+    <span className="text-[11px] text-muted-foreground">{editable ? t('collection.setStatus') : '—'}</span>
   );
   if (!editable)
     return <span className="flex items-center justify-self-start">{badge}</span>;
@@ -81,7 +93,7 @@ function StatusEditor({ item }: { item: CollectedDoc }): JSX.Element {
         <button
           type="button"
           className="flex items-center justify-self-start"
-          title={item.doc.status ?? '无状态'}
+          title={item.doc.status ?? t('collection.noStatus')}
           onClick={(e) => e.stopPropagation()}
         >
           {badge}
@@ -124,7 +136,7 @@ function compare(a: CollectedDoc, b: CollectedDoc, sortBy: SortBy): number {
     case 'date':
       return docDate(a.doc).localeCompare(docDate(b.doc));
     case 'title':
-      return docDisplayTitle(a.doc).localeCompare(docDisplayTitle(b.doc));
+      return compareDisplayText(docDisplayTitle(a.doc), docDisplayTitle(b.doc));
     case 'status':
       return statusRank(a.doc.status) - statusRank(b.doc.status);
   }
@@ -141,20 +153,14 @@ function buildGroups(rows: CollectedDoc[], groupBy: GroupBy): Group[] {
   };
 
   for (const item of rows) {
-    if (groupBy === 'status') add(item.doc.status ?? '无状态', item);
+    if (groupBy === 'status') add(item.doc.status ?? NO_STATUS, item);
     else if (groupBy === 'workspace') add(item.workspaceName, item);
-    else if (groupBy === 'label') {
-      if (item.doc.labels.length === 0) add('无标签', item);
-      else for (const l of item.doc.labels) add(l, item);
-    }
   }
 
   const keys = [...map.keys()];
   keys.sort((x, y) => {
-    if (groupBy === 'status') return statusRank(x === '无状态' ? null : x) - statusRank(y === '无状态' ? null : y);
-    // workspace / label: placeholder buckets last, otherwise alpha.
-    const placeholder = (s: string): number => (s.startsWith('无') ? 1 : 0);
-    return placeholder(x) - placeholder(y) || x.localeCompare(y);
+    if (groupBy === 'status') return statusRank(x === NO_STATUS ? null : x) - statusRank(y === NO_STATUS ? null : y);
+    return compareDisplayText(x, y);
   });
 
   return keys.map((key) => ({
@@ -172,8 +178,8 @@ export function IssuePanel({
   root: IrisWorkspace;
   workspacePath: string | null;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [filter, setFilter] = useState<Filter>('active');
-  const [labelFilter, setLabelFilter] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [prefs, setPrefs] = useViewPref('issue', {
     groupBy: 'status' as GroupBy,
@@ -187,9 +193,8 @@ export function IssuePanel({
 
   const q = query.trim().toLowerCase();
   const all = collectDocs(root, 'issue', workspacePath).filter((item) => {
-    if (labelFilter !== null && !item.doc.labels.includes(labelFilter)) return false;
     if (q) {
-      const hay = `${docDisplayTitle(item.doc)} ${item.doc.labels.join(' ')} ${item.doc.name}`.toLowerCase();
+      const hay = `${docDisplayTitle(item.doc)} ${item.doc.name}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -280,25 +285,15 @@ export function IssuePanel({
       onKeyDown={onKeyDown}
     >
       <div className={PANEL_BAR}>
-        <h2 className="shrink-0 text-sm font-semibold">Issue</h2>
+        <h2 className="shrink-0 text-sm font-semibold">issue</h2>
         {workspacePath && (
           <button
             type="button"
-            title="清除工作区过滤"
+            title={t('collection.clearWorkspaceFilter')}
             className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent"
             onClick={() => projectStore.openCollection('issue', null)}
           >
             {workspacePath} ✕
-          </button>
-        )}
-        {labelFilter && (
-          <button
-            type="button"
-            title="清除标签过滤"
-            className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent"
-            onClick={() => setLabelFilter(null)}
-          >
-            标签: {labelFilter} ✕
           </button>
         )}
         <div className="flex shrink-0 items-center gap-0.5 rounded-md bg-muted/60 p-0.5">
@@ -314,7 +309,7 @@ export function IssuePanel({
                   : 'text-muted-foreground hover:text-foreground',
               )}
             >
-              {FILTER_LABEL[f]}
+              {t(FILTER_LABEL[f])}
               <span className="ml-1 text-muted-foreground/60">{counts[f]}</span>
             </button>
           ))}
@@ -324,7 +319,7 @@ export function IssuePanel({
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索…"
+            placeholder={t('collection.searchPlaceholder')}
             className="h-7 w-full rounded-md border border-input bg-transparent pl-7 pr-2 text-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
         </div>
@@ -340,7 +335,7 @@ export function IssuePanel({
           className="h-7 shrink-0"
           onClick={() => openCreateDialog({ workspacePath: workspacePath ?? '.iris', type: 'issue' })}
         >
-          <Plus /> 新建
+          <Plus /> {t('collection.new')}
         </Button>
       </div>
 
@@ -349,7 +344,7 @@ export function IssuePanel({
           <div key={g.key}>
             {prefs.groupBy !== 'none' && (
               <GroupHeader
-                label={g.label}
+                label={g.key === NO_STATUS ? t('collection.noStatus') : g.label}
                 count={g.items.length}
                 collapsed={collapsed.has(g.key)}
                 onToggle={() => toggleCollapse(g.key)}
@@ -391,7 +386,7 @@ export function IssuePanel({
                     >
                       <button
                         type="button"
-                        title="选择"
+                        title={t('collection.select')}
                         onClick={(e) => {
                           e.stopPropagation();
                           toggleSelect(item.doc.path);
@@ -417,20 +412,6 @@ export function IssuePanel({
                         )}
                       </span>
                       <StatusEditor item={item} />
-                      <span className="flex min-w-0 items-center gap-1 overflow-hidden">
-                        {item.doc.labels.slice(0, 2).map((l) => (
-                          <LabelChip
-                            key={l}
-                            label={l}
-                            onClick={() => setLabelFilter(labelFilter === l ? null : l)}
-                          />
-                        ))}
-                        {item.doc.labels.length > 2 && (
-                          <span className="shrink-0 text-[10px] text-muted-foreground">
-                            +{item.doc.labels.length - 2}
-                          </span>
-                        )}
-                      </span>
                       <span className="min-w-0 truncate text-[11px] text-muted-foreground">
                         {item.workspaceName}
                       </span>
@@ -445,18 +426,18 @@ export function IssuePanel({
         ))}
         {flat.length === 0 && (
           <div className="px-4 py-10 text-center text-xs text-muted-foreground">
-            这个过滤下没有 issue
+            {t('collection.noIssues')}
           </div>
         )}
       </div>
 
       {selected.size > 0 && (
         <div className="flex shrink-0 items-center gap-2 border-t border-subtle bg-card px-3 py-1.5 text-xs">
-          <span className="text-muted-foreground">{selected.size} 选中</span>
+          <span className="text-muted-foreground">{t('collection.selectedCount', { count: selected.size })}</span>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]">
-                设状态
+                {t('collection.changeStatus')}
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
@@ -475,7 +456,7 @@ export function IssuePanel({
             onClick={() => setSelected(new Set())}
             className="ml-auto flex items-center gap-1 text-muted-foreground hover:text-foreground"
           >
-            <X className="h-3.5 w-3.5" /> 取消
+            <X className="h-3.5 w-3.5" /> {t('common.cancel')}
           </button>
         </div>
       )}

@@ -6,6 +6,7 @@
  * watcher echoes the write back through the next scan.
  */
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Loader2, Square } from 'lucide-react';
 import type { IrisWorkspace } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
@@ -51,6 +52,7 @@ export function TodoPanel({
   root: IrisWorkspace;
   workspacePath: string | null;
 }): JSX.Element {
+  const { t } = useTranslation();
   // Lines with a write in flight: render checked+spinner until the rescan
   // removes the row (or the surgery refuses and the key is dropped).
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
@@ -81,11 +83,11 @@ export function TodoPanel({
     <div className="flex h-full flex-col">
       <div className="flex h-11 shrink-0 items-center gap-2 bg-card/30 px-4">
         <h2 className="text-sm font-semibold">
-          待办
+          {t('collection.todos')}
           {workspacePath && (
             <button
               type="button"
-              title="清除工作区过滤"
+              title={t('collection.clearWorkspaceFilter')}
               className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[11px] font-normal text-muted-foreground hover:bg-accent"
               onClick={() => projectStore.openTodos(null)}
             >
@@ -95,7 +97,7 @@ export function TodoPanel({
         </h2>
         <span className="text-[11px] text-muted-foreground">{todos.length}</span>
         <span className="ml-auto text-[11px] text-muted-foreground/60">
-          来自活动 issue 的未勾选任务项
+          {t('collection.todoDescription')}
         </span>
       </div>
 
@@ -132,7 +134,7 @@ export function TodoPanel({
                 >
                   <button
                     type="button"
-                    title="勾选（写回源文档）"
+                    title={t('collection.checkTodo')}
                     disabled={isPending}
                     onClick={() => void onCheck(item)}
                     className="mt-0.5 shrink-0 text-muted-foreground hover:text-[var(--rp-pine)]"
@@ -159,7 +161,7 @@ export function TodoPanel({
         ))}
         {groups.length === 0 && (
           <div className="px-4 py-8 text-center text-xs text-muted-foreground">
-            没有未完成的待办——活动 issue 正文里的 <code>- [ ]</code> 任务项会出现在这里
+            {t('collection.noTodos')}
           </div>
         )}
       </div>

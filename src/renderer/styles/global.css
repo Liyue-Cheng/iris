@@ -1352,6 +1352,71 @@
   fill: var(--rp-text);
 }
 
+/* Raw HTML stays an atom in Milkdown so its Markdown round-trips exactly;
+   this view only exposes a sanitized, non-editable rendering. */
+.crepe-host .milkdown .milkdown-html-preview {
+  max-width: 100%;
+}
+.crepe-host .milkdown .milkdown-html-preview-block {
+  display: block;
+  margin: 0.75em 0;
+}
+.crepe-host .milkdown .milkdown-html-preview-empty,
+.crepe-host .milkdown .milkdown-html-boundary {
+  display: none;
+}
+.crepe-host .milkdown .milkdown-html-inline-kbd,
+.crepe-host .milkdown .milkdown-html-preview kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 0.08em 0.38em;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--rp-surface);
+  color: var(--rp-text);
+  font-family: var(--crepe-font-code);
+  font-size: 0.86em;
+  line-height: 1.35;
+  text-align: center;
+}
+.crepe-host .milkdown .milkdown-html-inline-mark,
+.crepe-host .milkdown .milkdown-html-preview mark {
+  padding: 0.04em 0.16em;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--rp-gold) 35%, transparent);
+  color: inherit;
+}
+.crepe-host .milkdown .milkdown-html-preview details {
+  padding: 0.55em 0.75em;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--rp-surface);
+}
+.crepe-host .milkdown .milkdown-html-preview summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.crepe-host .milkdown .milkdown-html-preview details[open] > summary {
+  margin-bottom: 0.45em;
+}
+.crepe-host .milkdown .milkdown-html-preview table {
+  display: table;
+  width: 100%;
+  border-collapse: collapse;
+  overflow-wrap: anywhere;
+}
+.crepe-host .milkdown .milkdown-html-preview th,
+.crepe-host .milkdown .milkdown-html-preview td {
+  padding: 0.4em 0.55em;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+.crepe-host .milkdown .milkdown-html-preview th {
+  background: var(--rp-surface);
+  font-weight: 600;
+}
+
 /* ──────────────────────────────────────────────────────────────────
  * Scrollbars.
  *

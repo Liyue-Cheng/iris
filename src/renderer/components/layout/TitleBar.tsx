@@ -1,15 +1,15 @@
 /**
- * Top bar: app identity + theme switcher + pipeline debug button. Doubles as
- * the frameless window's drag region (frame:false) and hosts the Windows
- * caption buttons; window verbs go through the window:* UI-helper channels.
+ * Top bar: app identity + appearance/settings shortcuts. Doubles as the
+ * frameless window's drag region (frame:false) and hosts the Windows caption
+ * buttons; window verbs go through the window:* UI-helper channels.
  */
 import { useEffect, useState } from 'react';
-import { Moon, Sun, MoonStar, Palette, Activity, Minus, Square, Copy, X, Cog } from 'lucide-react';
-import type { DeepPartial, PingResult, Settings, ThemeId } from '@shared/types';
+import { useTranslation } from 'react-i18next';
+import { Moon, Sun, MoonStar, Palette, Minus, Square, Copy, X, Cog } from 'lucide-react';
+import type { DeepPartial, Settings, ThemeId } from '@shared/types';
 import { CHANNELS, EVENTS } from '@shared/protocol';
 import { cn } from '@renderer/lib/utils';
 import { openSettingsView } from '@renderer/components/settings/SettingsView';
-import { IrisMark } from '@renderer/components/layout/IrisMark';
 import { pipeline } from '@renderer/cpu';
 import { useSettings } from '@renderer/stores/settings-store';
 import { useProject } from '@renderer/stores/project-store';
@@ -57,6 +57,7 @@ function ProjectCrumb(): JSX.Element | null {
 
 /** Windows-layout caption buttons (minimize / maximize-restore / close). */
 function WindowControls(): JSX.Element {
+  const { t } = useTranslation();
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -75,7 +76,7 @@ function WindowControls(): JSX.Element {
     <div className="app-region-no-drag ml-1 flex shrink-0 self-start">
       <button
         type="button"
-        title="最小化"
+        title={t('layout.minimize')}
         className={cn(caption, 'hover:bg-muted')}
         onClick={() => void window.api.invoke(CHANNELS.WINDOW_MINIMIZE)}
       >
@@ -83,7 +84,7 @@ function WindowControls(): JSX.Element {
       </button>
       <button
         type="button"
-        title={maximized ? '还原' : '最大化'}
+        title={maximized ? t('layout.restore') : t('layout.maximize')}
         className={cn(caption, 'hover:bg-muted')}
         onClick={() => void window.api.invoke(CHANNELS.WINDOW_MAXIMIZE_TOGGLE)}
       >
@@ -95,7 +96,7 @@ function WindowControls(): JSX.Element {
       </button>
       <button
         type="button"
-        title="关闭"
+        title={t('layout.closeWindow')}
         className={cn(caption, 'hover:bg-[var(--rp-love)] hover:text-[var(--rp-base)]')}
         onClick={() => void window.api.invoke(CHANNELS.WINDOW_CLOSE)}
       >
@@ -106,8 +107,8 @@ function WindowControls(): JSX.Element {
 }
 
 export function TitleBar(): JSX.Element {
+  const { t } = useTranslation();
   const settings = useSettings();
-  const [pingState, setPingState] = useState<string | null>(null);
 
   const theme = settings?.appearance.theme ?? 'rose-pine';
 
@@ -118,40 +119,12 @@ export function TitleBar(): JSX.Element {
     void pipeline.dispatch('settings.update', partial);
   }
 
-  async function ping(): Promise<void> {
-    setPingState('…');
-    try {
-      const result = (await pipeline.dispatch('app.ping', {
-        from: 'renderer',
-        sentAt: new Date().toISOString(),
-      })) as PingResult;
-      setPingState(`pong ← main pid ${result.pid} @ ${result.time.slice(11, 19)}`);
-    } catch (err) {
-      setPingState(`failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
   return (
     <div className="app-region-drag flex h-10 shrink-0 items-center gap-2 bg-card pl-3">
-      <IrisMark className="h-4 w-4 shrink-0" />
       <span className="text-sm font-semibold tracking-wide text-primary">Iris</span>
       <ProjectCrumb />
 
       <div className="app-region-no-drag ml-auto flex items-center gap-1.5">
-        {pingState && (
-          <span className="text-xs text-muted-foreground" data-testid="ping-result">
-            {pingState}
-          </span>
-        )}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon" onClick={() => void ping()}>
-              <Activity />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>app.ping — 流水线 → IPC → 主进程往返</TooltipContent>
-        </Tooltip>
-
         <DropdownMenu>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -161,7 +134,7 @@ export function TitleBar(): JSX.Element {
                 </Button>
               </DropdownMenuTrigger>
             </TooltipTrigger>
-            <TooltipContent>主题</TooltipContent>
+            <TooltipContent>{t('layout.theme')}</TooltipContent>
           </Tooltip>
           <DropdownMenuContent align="end" className="max-h-[70vh] overflow-y-auto">
             <DropdownMenuRadioGroup value={theme} onValueChange={switchTheme}>
@@ -184,7 +157,7 @@ export function TitleBar(): JSX.Element {
               <Cog />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>设置</TooltipContent>
+          <TooltipContent>{t('layout.settings')}</TooltipContent>
         </Tooltip>
       </div>
 

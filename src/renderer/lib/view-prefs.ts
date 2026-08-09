@@ -6,9 +6,9 @@
  */
 import { useCallback, useSyncExternalStore } from 'react';
 
-// v2: dropped the `priority` group/sort options — discard any persisted
-// `priority` value so stale prefs can't select a now-removed branch.
-const KEY = 'iris.view-prefs.v2';
+// v3: dropped the `label` group option. A versioned key prevents stale
+// preferences from selecting a branch that no longer exists.
+const KEY = 'iris.view-prefs.v3';
 
 type PrefBag = Record<string, unknown>;
 let store: Record<string, PrefBag> = load();

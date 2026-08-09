@@ -37,6 +37,7 @@
  * (ConPTY shreds early progress-bar lines on that reflow).
  */
 import { useCallback, useEffect, useRef, useState, type WheelEvent as ReactWheelEvent } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
@@ -51,7 +52,12 @@ import type {
   SessionOutputPayload,
   SessionReplaySnapshot,
 } from '@shared/types';
-import { composeDocPasteBlock, getDocDragPath, isDocDrag } from '@renderer/lib/doc-drag';
+import {
+  composeDocPasteBlock,
+  getDocDragPath,
+  isDocDrag,
+  resolveSystemFilePaths,
+} from '@renderer/lib/doc-drag';
 import { matchKeybinding } from '@shared/terminal-keybindings';
 import { attachImeCompositionEndCleaner } from '@shared/ime-textarea-workaround';
 import { attachImeCompositionPositionLock } from '@shared/ime-composition-position-lock';
@@ -117,6 +123,7 @@ function openTerminalLink(_event: MouseEvent, uri: string): void {
 }
 
 export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element {
+  const { t } = useTranslation();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const safeFitRef = useRef<(() => void) | null>(null);
@@ -179,9 +186,9 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
         const mb = (new Blob([text]).size / 1024 / 1024).toFixed(2);
         if (
           !(await confirmDialog({
-            title: '粘贴大量内容',
-            message: `即将粘贴 ${mb} MB 内容到终端。\n过大的粘贴可能让 shell 长时间无响应。继续？`,
-            confirmText: '继续粘贴',
+            title: t('terminal.largePasteTitle'),
+            message: t('terminal.largePasteMessage', { mb }),
+            confirmText: t('terminal.continuePaste'),
           }))
         ) {
           return;
@@ -194,10 +201,9 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       if (text.includes('\x1b')) {
         if (
           !(await confirmDialog({
-            title: '剪贴板含 ESC 控制字符',
-            message:
-              '剪贴板内容包含 ESC 控制字符（可能改终端状态/清屏/改标题）。\n常见于恶意网页内容。仍要粘贴？',
-            confirmText: '仍要粘贴',
+            title: t('terminal.escTitle'),
+            message: t('terminal.escMessage'),
+            confirmText: t('terminal.pasteAnyway'),
             tone: 'destructive',
           }))
         ) {
@@ -216,9 +222,9 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
         if (lines.length > 1) {
           if (
             !(await confirmDialog({
-              title: '多行粘贴',
-              message: `即将粘贴 ${lines.length} 行内容。\n当前程序未启用 bracketed paste，多行会被逐行立即执行。继续？`,
-              confirmText: '继续粘贴',
+              title: t('terminal.multilineTitle'),
+              message: t('terminal.multilineMessage', { count: lines.length }),
+              confirmText: t('terminal.continuePaste'),
               tone: 'destructive',
             }))
           ) {
@@ -235,7 +241,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       // CPB-P1: focus back no matter what (the confirm dialog took focus).
       termRef.current?.focus();
     }
-  }, []);
+  }, [t]);
 
   const handlePaste = useCallback(async () => {
     const text = await readClipboardText();
@@ -259,9 +265,9 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       if (dangerous.length > 0) {
         if (
           !(await confirmDialog({
-            title: '文件路径含 shell 元字符',
-            message: `拖入的文件路径含 shell 元字符（; & \` $ | < > 等）。\n某些 shell 会把它们当成命令分隔符或子命令，可能意外执行。\n\n${dangerous.join('\n')}\n\n仍要粘贴？`,
-            confirmText: '仍要粘贴',
+            title: t('terminal.shellMetaTitle'),
+            message: t('terminal.shellMetaMessage', { paths: dangerous.join('\n') }),
+            confirmText: t('terminal.pasteAnyway'),
             tone: 'destructive',
           }))
         ) {
@@ -286,13 +292,17 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
         termRef.current?.focus();
       }
     },
-    [sessionId],
+    [sessionId, t],
   );
 
-  /** Drop of a doc row: read the file fresh and paste header + snapshot. */
+  /** Drop of a doc row: paste its relative path or a fresh content snapshot. */
   const handleDocDrop = useCallback(
     async (docPath: string) => {
       try {
+        if ((getSettings()?.behavior.terminalDocDrop ?? 'content') === 'path') {
+          await handleFileDrop([docPath]);
+          return;
+        }
         const scope = scopeForSession(sessionId);
         if (!scope) return;
         const content = await window.api.invoke<
@@ -308,7 +318,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
         termRef.current?.focus();
       }
     },
-    [pasteText, sessionId],
+    [handleFileDrop, pasteText, sessionId],
   );
 
   const handleClear = useCallback(() => {
@@ -951,13 +961,10 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
               return;
             }
             // OS file drop: paste the (quoted) paths as a command argument.
-            // Electron 31 still exposes File.path; 32+ needs webUtils.getPathForFile.
             const files = Array.from(e.dataTransfer.files);
             if (files.length > 0) {
               e.preventDefault();
-              const paths = files
-                .map((f) => (f as File & { path?: string }).path)
-                .filter((p): p is string => !!p && p.length > 0);
+              const paths = resolveSystemFilePaths(files, window.api.getPathForFile);
               if (paths.length > 0) void handleFileDrop(paths);
             }
           }}
@@ -965,26 +972,26 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
         </ContextMenuTrigger>
         <ContextMenuContent>
           <ContextMenuItem disabled={!ctxHasSelection} onClick={handleCopy}>
-            复制
+            {t('terminal.copy')}
           </ContextMenuItem>
-          <ContextMenuItem onClick={() => void handlePaste()}>粘贴</ContextMenuItem>
+          <ContextMenuItem onClick={() => void handlePaste()}>{t('terminal.paste')}</ContextMenuItem>
           <ContextMenuSeparator />
-          <ContextMenuItem onClick={handleClear}>清屏</ContextMenuItem>
-          <ContextMenuItem onClick={handleOpenSearch}>搜索…</ContextMenuItem>
+          <ContextMenuItem onClick={handleClear}>{t('terminal.clear')}</ContextMenuItem>
+          <ContextMenuItem onClick={handleOpenSearch}>{t('terminal.search')}</ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
 
       {searchVisible && (
         <div
           role="search"
-          aria-label="终端搜索"
+          aria-label={t('terminal.searchAria')}
           className="absolute right-4 top-2 z-50 flex items-center gap-1 rounded-md border bg-popover px-1.5 py-1 text-popover-foreground shadow-md"
         >
           <input
             ref={searchInputRef}
             type="text"
             className="h-6 w-56 rounded-sm border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
-            placeholder="搜索 (Enter 下一个 / Shift+Enter 上一个 / Esc 关闭)"
+            placeholder={t('terminal.searchPlaceholder')}
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
             onKeyDown={(e) => {
@@ -1003,15 +1010,15 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
             {searchText
               ? searchResults.matches > 0
                 ? `${searchResults.current}/${searchResults.matches}`
-                : '无匹配'
+                : t('common.noMatches')
               : '—'}
           </span>
           <button
             type="button"
             className="flex h-6 w-6 items-center justify-center rounded-sm border text-xs hover:bg-accent disabled:opacity-40"
             onClick={() => performSearch('previous')}
-            title="上一个 (Shift+Enter)"
-            aria-label="上一个匹配"
+            title={t('terminal.previous')}
+            aria-label={t('terminal.previousAria')}
             disabled={!searchText || searchResults.matches === 0}
           >
             ↑
@@ -1020,8 +1027,8 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
             type="button"
             className="flex h-6 w-6 items-center justify-center rounded-sm border text-xs hover:bg-accent disabled:opacity-40"
             onClick={() => performSearch('next')}
-            title="下一个 (Enter)"
-            aria-label="下一个匹配"
+            title={t('terminal.next')}
+            aria-label={t('terminal.nextAria')}
             disabled={!searchText || searchResults.matches === 0}
           >
             ↓
@@ -1032,8 +1039,8 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
               searchCaseSensitive ? 'bg-accent text-accent-foreground' : ''
             }`}
             onClick={() => setSearchCaseSensitive((v) => !v)}
-            title="区分大小写"
-            aria-label="区分大小写"
+            title={t('terminal.matchCase')}
+            aria-label={t('terminal.matchCase')}
             aria-pressed={searchCaseSensitive}
           >
             Aa
@@ -1042,8 +1049,8 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
             type="button"
             className="flex h-6 w-6 items-center justify-center rounded-sm border text-xs hover:bg-destructive hover:text-destructive-foreground"
             onClick={handleCloseSearch}
-            title="关闭 (Esc)"
-            aria-label="关闭搜索"
+            title={t('terminal.closeSearch')}
+            aria-label={t('terminal.closeSearchAria')}
           >
             ×
           </button>

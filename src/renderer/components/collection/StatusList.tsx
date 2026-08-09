@@ -6,6 +6,7 @@
  * freshness column simply goes quiet.
  */
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Archive, FileWarning, Plus } from 'lucide-react';
 import type { IrisWorkspace } from '@shared/types';
 import { CHANNELS } from '@shared/protocol';
@@ -36,8 +37,9 @@ function reflectsOf(doc: { frontmatter: Record<string, unknown> | null }): strin
 }
 
 function Freshness({ reflects, head }: { reflects: string | null; head: string | null }): JSX.Element {
+  const { t } = useTranslation();
   if (!reflects) {
-    return <span className="text-[11px] text-muted-foreground/50">未标注</span>;
+    return <span className="text-[11px] text-muted-foreground/50">{t('collection.unmarked')}</span>;
   }
   const short = reflects.slice(0, 7);
   if (!head) {
@@ -59,7 +61,7 @@ function Freshness({ reflects, head }: { reflects: string | null; head: string |
       )}
     >
       <span className="h-1.5 w-1.5 rounded-full bg-current" />
-      {fresh ? '最新' : '已落后'}
+      {fresh ? t('collection.current') : t('collection.stale')}
     </span>
   );
 }
@@ -71,6 +73,7 @@ export function StatusList({
   root: IrisWorkspace;
   workspacePath: string | null;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [head, setHead] = useState<string | null>(null);
   const scope = projectStore.get().scope;
 
@@ -109,12 +112,12 @@ export function StatusList({
   return (
     <div className="flex h-full flex-col">
       <div className={PANEL_BAR}>
-        <h2 className="text-sm font-semibold">Status</h2>
-        <span className="text-[11px] text-muted-foreground">当前真相</span>
+        <h2 className="text-sm font-semibold">status</h2>
+        <span className="text-[11px] text-muted-foreground">{t('collection.currentTruth')}</span>
         {workspacePath && (
           <button
             type="button"
-            title="清除工作区过滤"
+            title={t('collection.clearWorkspaceFilter')}
             className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent"
             onClick={() => projectStore.openCollection('status', null)}
           >
@@ -128,7 +131,7 @@ export function StatusList({
           className="ml-auto h-7"
           onClick={() => openCreateDialog({ workspacePath: workspacePath ?? '.iris', type: 'status' })}
         >
-          <Plus /> 新建
+          <Plus /> {t('collection.new')}
         </Button>
       </div>
 
@@ -162,7 +165,7 @@ export function StatusList({
           </DocContextMenu>
         ))}
         {rows.length === 0 && (
-          <div className="px-4 py-10 text-center text-xs text-muted-foreground">空</div>
+          <div className="px-4 py-10 text-center text-xs text-muted-foreground">{t('common.empty')}</div>
         )}
       </div>
     </div>

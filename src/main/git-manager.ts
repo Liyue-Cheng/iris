@@ -4,8 +4,26 @@ import { promisify } from 'node:util';
 import { relative, resolve, sep } from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
 import type { GitBranchInfo, GitResource, GitResourceGroup, GitSnapshot } from '@shared/types';
+import { mainT } from './i18n';
 
 const execFileP = promisify(execFile);
+
+export class GitError extends Error {
+  constructor(
+    public readonly code:
+      | 'NoProject'
+      | 'NoPaths'
+      | 'InvalidPath'
+      | 'OutsideProject'
+      | 'InvalidBranch'
+      | 'EmptyCommitMessage',
+    message: string,
+  ) {
+    super(`[GitManager] ${code}: ${message}`);
+    this.name = 'GitError';
+  }
+}
+
 function empty(root: string | null, error: string | null = null): GitSnapshot {
   return { available: false, root, branch: null, head: null, detached: false, ahead: 0, behind: 0, branches: [], groups: { merge: [], index: [], workingTree: [], untracked: [] }, error };
 }
@@ -38,17 +56,23 @@ export class GitManager extends EventEmitter {
   }
 
   private async git(args: string[]): Promise<{ stdout: string; stderr: string }> {
-    if (!this.root) throw new Error('没有打开项目');
+    if (!this.root) throw new GitError('NoProject', mainT('error.gitNoProject'));
     return execFileP('git', args, { cwd: this.root, timeout: 5000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
   }
 
   private paths(paths: string[]): string[] {
-    if (!this.root || paths.length === 0) throw new Error('请选择至少一个文件');
+    if (!this.root || paths.length === 0) {
+      throw new GitError('NoPaths', mainT('error.gitSelectFiles'));
+    }
     return paths.map((p) => {
-      if (typeof p !== 'string' || p.length === 0 || p.includes('\0')) throw new Error('无效 Git 文件路径');
+      if (typeof p !== 'string' || p.length === 0 || p.includes('\0')) {
+        throw new GitError('InvalidPath', mainT('error.gitInvalidPath'));
+      }
       const abs = resolve(this.root!, p);
       const rel = relative(this.root!, abs);
-      if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`)) throw new Error('文件路径超出项目范围');
+      if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`)) {
+        throw new GitError('OutsideProject', mainT('error.gitPathOutsideProject'));
+      }
       return rel;
     });
   }
@@ -90,12 +114,16 @@ export class GitManager extends EventEmitter {
   async stage(paths: string[]): Promise<void> { await this.git(['add', '--', ...this.paths(paths)]); this.invalidate(); }
   async unstage(paths: string[]): Promise<void> { await this.git(['reset', 'HEAD', '--', ...this.paths(paths)]); this.invalidate(); }
   async switchBranch(branch: string): Promise<void> {
-    if (typeof branch !== 'string' || branch.trim() === '' || branch.includes('\0')) throw new Error('无效 Git 分支名');
+    if (typeof branch !== 'string' || branch.trim() === '' || branch.includes('\0')) {
+      throw new GitError('InvalidBranch', mainT('error.gitInvalidBranch'));
+    }
     await this.git(['switch', '--', branch]);
     this.invalidate();
   }
   async commit(message: string): Promise<void> {
-    if (typeof message !== 'string' || message.trim() === '') throw new Error('请输入提交信息');
+    if (typeof message !== 'string' || message.trim() === '') {
+      throw new GitError('EmptyCommitMessage', mainT('error.gitCommitMessageRequired'));
+    }
     await this.git(['commit', '-m', message.trim()]);
     this.invalidate();
   }

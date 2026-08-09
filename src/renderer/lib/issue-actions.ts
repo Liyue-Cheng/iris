@@ -5,12 +5,18 @@
  * session when the target doc happens to be open (otherwise the panel
  * write and the editor would race).
  */
-import { setFrontmatterKey, splitFrontmatter } from '@shared/markdown-utils';
+import {
+  checkAllTaskCheckboxes,
+  setFrontmatterKey,
+  splitFrontmatter,
+} from '@shared/markdown-utils';
 import { pipeline } from '@renderer/cpu';
 import { confirmDialog } from '@renderer/components/ui/confirm-dialog';
 import { editorStore, readDocFromDisk } from '@renderer/stores/editor-store';
 import { sessionStore } from '@renderer/stores/session-store';
 import { isResolvedIssueStatus } from '@renderer/lib/doc-utils';
+import { translate } from '@renderer/i18n';
+import { getSettings } from '@renderer/stores/settings-store';
 
 export async function setDocField(path: string, key: string, value: string): Promise<void> {
   const session = editorStore.get();
@@ -52,6 +58,31 @@ export async function setDocStatus(path: string, status: string): Promise<void> 
   await setDocsStatus([path], status);
 }
 
+async function setDocStatusField(
+  path: string,
+  status: string,
+  checkTodos: boolean,
+): Promise<void> {
+  if (!checkTodos) {
+    await setDocField(path, 'status', status);
+    return;
+  }
+  if (editorStore.get()?.path === path) {
+    if (!(await editorStore.flushBeforeSwitch('before-external-action'))) return;
+  }
+  const content = await readDocFromDisk(path);
+  if (content.frontmatterBroken) return;
+  const { fmBlock, body } = splitFrontmatter(content.raw);
+  const nextFm = setFrontmatterKey(fmBlock, 'status', status);
+  const nextRaw = checkAllTaskCheckboxes(nextFm + body);
+  if (nextRaw === content.raw) return;
+  await pipeline.dispatch('doc.save', {
+    path,
+    content: nextRaw,
+    expectedContent: content.raw,
+  });
+}
+
 /**
  * Move one or more documents to a status. Closing states first settle every
  * terminal anchored to those documents, so a hidden issue/report never keeps
@@ -66,11 +97,17 @@ export async function setDocsStatus(paths: readonly string[], status: string): P
 
   if (anchored.length > 0) {
     const documentCount = new Set(anchored.map((session) => session.docPath)).size;
-    const subject = documentCount === 1 ? '该文档' : `这些文档中的 ${documentCount} 篇`;
+    const subject = documentCount === 1
+      ? translate('collection.oneDocument')
+      : translate('collection.manyDocuments', { count: documentCount });
     const confirmed = await confirmDialog({
-      title: '关闭关联终端？',
-      message: `${subject}仍挂着 ${anchored.length} 个终端。切换到「${status}」会将文档移出活动视图；继续将先关闭所有关联终端。`,
-      confirmText: '关闭终端并切换',
+      title: translate('collection.closeLinkedTitle'),
+      message: translate('collection.closeLinkedMessage', {
+        documents: subject,
+        sessions: anchored.length,
+        status,
+      }),
+      confirmText: translate('collection.closeAndChange'),
       tone: 'destructive',
     });
     if (!confirmed) return;
@@ -87,5 +124,12 @@ export async function setDocsStatus(paths: readonly string[], status: string): P
     );
   }
 
-  await Promise.all(uniquePaths.map((path) => setDocField(path, 'status', status)));
+  const shouldCheckTodos =
+    status.trim().toLowerCase() === 'done' &&
+    (getSettings()?.behavior.autoCheckTodosOnDone ?? false);
+  await Promise.all(
+    uniquePaths.map((path) =>
+      setDocStatusField(path, status, shouldCheckTodos && typedFolder(path) === 'issue'),
+    ),
+  );
 }

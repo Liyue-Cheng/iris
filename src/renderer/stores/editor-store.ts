@@ -11,7 +11,6 @@ import type { DocContent, EditorConflictPolicy } from '@shared/types';
 import {
   getFrontmatterKey,
   setFrontmatterKey,
-  setFrontmatterRawKey,
   splitFrontmatter,
 } from '@shared/markdown-utils';
 import { pipeline } from '@renderer/cpu';
@@ -31,6 +30,7 @@ import {
 } from '@renderer/lib/editor-session';
 import { getSettings } from './settings-store';
 import { projectScopeState, sameProjectScope } from './project-scope-state';
+import { translate } from '@renderer/i18n';
 
 export type { EditorMode };
 
@@ -327,13 +327,6 @@ export const editorStore = {
     await applyFmBlock(setFrontmatterKey(fmBlock, key, value));
   },
 
-  async setFrontmatterFieldRaw(key: string, rawValue: string): Promise<void> {
-    if (!session) return;
-    const fmBlock =
-      session.mode === 'source' ? splitFrontmatter(session.sourceText).fmBlock : session.fmBlock;
-    await applyFmBlock(setFrontmatterRawKey(fmBlock, key, rawValue));
-  },
-
   getFrontmatterField(key: string): string | null {
     if (!session) return null;
     const fmBlock =
@@ -404,7 +397,7 @@ export const editorStore = {
 
   async flushBeforeProjectSwitch(): Promise<void> {
     const result = await this.save('project-switch');
-    if (result.status === 'blocked') throw new Error('文档存在外部修改冲突，请先处理');
+    if (result.status === 'blocked') throw new Error(translate('error.externalConflict'));
     if (result.status === 'failed') throw new Error(result.error);
   },
 

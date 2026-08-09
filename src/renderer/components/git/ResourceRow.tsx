@@ -1,4 +1,5 @@
 import { Minus, Plus } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@renderer/lib/utils';
 import { Button } from '@renderer/components/ui/button';
 import {
@@ -24,6 +25,7 @@ export function ResourceRow({
   group: GitResourceGroup;
   pending: boolean;
 }): JSX.Element {
+  const { t } = useTranslation();
   const staged = group === 'index';
   const char = effectiveChar(resource.status, group);
   const color = statusColor(resource.status, group);
@@ -78,7 +80,7 @@ export function ResourceRow({
             </Button>
           </TooltipTrigger>
           <TooltipContent side="left" className="text-xs">
-            {staged ? '取消暂存' : '暂存'}
+            {staged ? t('git.unstage') : t('git.stage')}
           </TooltipContent>
         </Tooltip>
       </span>

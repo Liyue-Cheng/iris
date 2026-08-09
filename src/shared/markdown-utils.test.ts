@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  checkAllTaskCheckboxes,
   extractTodos,
   getFrontmatterKey,
-  parseYamlFlowSeq,
   setFrontmatterKey,
   setFrontmatterRawKey,
   slugify,
   splitFrontmatter,
-  yamlFlowSeq,
   yamlScalar,
 } from './markdown-utils';
 
@@ -76,29 +75,25 @@ describe('getFrontmatterKey', () => {
   });
 });
 
-describe('setFrontmatterRawKey + yamlFlowSeq', () => {
-  it('writes an unquoted flow sequence as a single key line', () => {
+describe('setFrontmatterRawKey', () => {
+  it('writes a preformatted value as a single key line', () => {
     const fm = '---\ntitle: x\n---\n';
-    expect(setFrontmatterRawKey(fm, 'labels', yamlFlowSeq(['bug', 'ui'])))
-      .toBe('---\ntitle: x\nlabels: [bug, ui]\n---\n');
+    expect(setFrontmatterRawKey(fm, 'owners', '[alice, bob]'))
+      .toBe('---\ntitle: x\nowners: [alice, bob]\n---\n');
   });
 
-  it('quotes individual items that need it', () => {
-    expect(yamlFlowSeq(['a: b', '中文'])).toBe('["a: b", 中文]');
-  });
-});
-
-describe('parseYamlFlowSeq', () => {
-  it('round-trips what yamlFlowSeq writes', () => {
-    const cases = [['bug', 'ui'], ['a: b', '中文'], [], ["it's", 'x,y']];
-    for (const items of cases) {
-      expect(parseYamlFlowSeq(yamlFlowSeq(items))).toEqual(items);
-    }
+  it('replaces a multiline YAML value without leaving orphaned child lines', () => {
+    const fm = '---\ntitle: x\nowners:\n  - alice\n  - bob\n\nstatus: Todo\n---\n';
+    expect(setFrontmatterRawKey(fm, 'owners', '[]')).toBe(
+      '---\ntitle: x\nowners: []\n\nstatus: Todo\n---\n',
+    );
   });
 
-  it('treats a lone scalar as a singleton (mirror of the scanner)', () => {
-    expect(parseYamlFlowSeq('bug')).toEqual(['bug']);
-    expect(parseYamlFlowSeq('')).toEqual([]);
+  it('preserves CRLF while replacing a multiline YAML value', () => {
+    const fm = '---\r\ntitle: x\r\nowners:\r\n  - alice\r\nstatus: Todo\r\n---\r\n';
+    expect(setFrontmatterRawKey(fm, 'owners', '[]')).toBe(
+      '---\r\ntitle: x\r\nowners: []\r\nstatus: Todo\r\n---\r\n',
+    );
   });
 });
 
@@ -129,6 +124,22 @@ describe('extractTodos', () => {
   it('handles CRLF and docs without frontmatter', () => {
     const todos = extractTodos('# t\r\n- [X] caps\r\n');
     expect(todos).toEqual([{ line: 1, checked: true, text: 'caps', raw: '- [X] caps' }]);
+  });
+});
+
+describe('checkAllTaskCheckboxes', () => {
+  it('checks bullet, ordered, nested, and empty tasks while preserving line endings', () => {
+    const raw = '---\r\ntitle: x\r\n---\r\n- [ ] one\r\n1) [ ] two\r\n  * [ ]\r\n- [x] done\r\n';
+    expect(checkAllTaskCheckboxes(raw)).toBe(
+      '---\r\ntitle: x\r\n---\r\n- [x] one\r\n1) [x] two\r\n  * [x]\r\n- [x] done\r\n',
+    );
+  });
+
+  it('leaves task examples inside fenced code unchanged', () => {
+    const raw = '- [ ] real\n```md\n- [ ] example\n```\n- [ ] real again\n';
+    expect(checkAllTaskCheckboxes(raw)).toBe(
+      '- [x] real\n```md\n- [ ] example\n```\n- [x] real again\n',
+    );
   });
 });
 

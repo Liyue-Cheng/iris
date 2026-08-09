@@ -4,6 +4,7 @@
  * right pane instead of this context menu.
  */
 import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -27,13 +28,14 @@ export function DocContextMenu({
   docName: string;
   children: ReactNode;
 }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuLabel className="max-w-56 truncate">{docName}</ContextMenuLabel>
         <ContextMenuItem onClick={() => void writeClipboardText(docPath)}>
-          复制路径
+          {t('common.copyPath')}
         </ContextMenuItem>
         <ContextMenuItem
           onClick={() =>
@@ -44,7 +46,7 @@ export function DocContextMenu({
               )
           }
         >
-          用默认程序打开
+          {t('common.openDefault')}
         </ContextMenuItem>
         <ContextMenuItem
           onClick={() =>
@@ -55,14 +57,14 @@ export function DocContextMenu({
               )
           }
         >
-          在资源管理器中显示
+          {t('common.reveal')}
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
           className="text-destructive focus:text-destructive"
           onClick={() => openDeleteDialog({ docPath, docName })}
         >
-          删除文件…
+          {t('common.deleteFile')}
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>

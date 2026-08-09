@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { GitBranch, Loader2, RefreshCw } from 'lucide-react';
 import { cn } from '@renderer/lib/utils';
 import { Button } from '@renderer/components/ui/button';
@@ -23,6 +24,7 @@ export function SourceControlPanel({
   mode?: 'panel' | 'view';
   refreshOnReady?: boolean;
 }): JSX.Element | null {
+  const { t } = useTranslation();
   const { phase } = useProject();
   const { snapshot, loading, pending, error } = useGit();
   const [collapsed, setCollapsed] = useState(false);
@@ -64,7 +66,7 @@ export function SourceControlPanel({
       {/* ── Toolbar ── */}
       {isView ? (
         <div className={PANEL_BAR}>
-          <h2 className="shrink-0 text-sm font-semibold">Source Control</h2>
+          <h2 className="shrink-0 text-sm font-semibold">{t('git.sourceControl')}</h2>
           {snapshot?.available && (
             <BranchSwitcher snapshot={snapshot} pending={!!pending} />
           )}
@@ -94,7 +96,7 @@ export function SourceControlPanel({
                   />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent className="text-xs">刷新</TooltipContent>
+              <TooltipContent className="text-xs">{t('git.refresh')}</TooltipContent>
             </Tooltip>
           </div>
         </div>
@@ -102,7 +104,7 @@ export function SourceControlPanel({
         <div className="flex h-9 shrink-0 items-center gap-1 px-2">
           <button
             type="button"
-            aria-label={collapsed ? '展开 Git 面板' : '折叠 Git 面板'}
+            aria-label={collapsed ? t('git.expandPanel') : t('git.collapsePanel')}
             className="flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
             onClick={() => setCollapsed((c) => !c)}
           >
@@ -141,7 +143,7 @@ export function SourceControlPanel({
                 />
               </Button>
             </TooltipTrigger>
-            <TooltipContent className="text-xs">刷新</TooltipContent>
+            <TooltipContent className="text-xs">{t('git.refresh')}</TooltipContent>
           </Tooltip>
         </div>
       )}
@@ -153,14 +155,14 @@ export function SourceControlPanel({
           {loading && !snapshot && (
             <div className="flex items-center gap-2 px-3 py-6 text-xs text-muted-foreground">
               <Loader2 className="size-3.5 animate-spin" />
-              正在读取 Git 状态…
+              {t('git.reading')}
             </div>
           )}
 
           {/* Not a git repo */}
           {!loading && !snapshot?.available && (
             <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-              {snapshot?.error ?? error ?? '不是 Git 仓库'}
+              {snapshot?.error ?? error ?? t('git.notRepository')}
             </div>
           )}
 
@@ -186,7 +188,7 @@ export function SourceControlPanel({
                 ))
               ) : (
                 <div className="px-3 py-8 text-center text-xs text-muted-foreground">
-                  工作区干净，没有待提交的更改
+                  {t('git.clean')}
                 </div>
               )}
             </>

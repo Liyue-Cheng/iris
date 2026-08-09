@@ -8,6 +8,7 @@
  * the agent's write-back behavior; this is the human's UI gesture.
  */
 import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Trash2 } from 'lucide-react';
 import { pipeline } from '@renderer/cpu';
 import { useSessions } from '@renderer/stores/session-store';
@@ -48,6 +49,7 @@ function useTarget(): DeleteTarget | null {
 
 export function DeleteDocDialog(): JSX.Element | null {
   const t = useTarget();
+  const { t: tr } = useTranslation();
   const { sessions } = useSessions();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -110,27 +112,25 @@ export function DeleteDocDialog(): JSX.Element | null {
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Trash2 className="h-4 w-4 text-destructive" />
-            删除 {t.docName}
+            {tr('project.deleteDocument', { name: t.docName })}
           </DialogTitle>
         </DialogHeader>
 
         <p className="text-sm text-muted-foreground">
-          将把 <code className="rounded bg-muted px-1 text-xs">{t.docPath}</code>
+          {tr('project.trashPrefix')}<code className="rounded bg-muted px-1 text-xs">{t.docPath}</code>
           {assetCount === null
-            ? ' 及其受管资产'
+            ? tr('project.trashManagedAssets')
             : assetCount > 0
-              ? ` 及 companion 目录中的 ${assetCount} 个资产`
+              ? tr('project.trashAssetCount', { count: assetCount })
               : ''}
-          移入系统回收站。
+          {tr('project.trashDestination')}
         </p>
 
         {anchored.length > 0 && (
-          <p className="text-sm">
-            该文档还挂着{' '}
-            <span className="font-semibold">{anchored.length}</span> 个终端会话（
-            {anchored.map((s) => s.displayName).join('、')}
-            ）——选择如何处理它们：
-          </p>
+          <p className="text-sm">{tr('project.anchoredSessions', {
+            count: anchored.length,
+            sessions: anchored.map((s) => s.displayName).join(', '),
+          })}</p>
         )}
 
         {error && <p className="text-xs text-destructive">{error}</p>}
@@ -145,32 +145,32 @@ export function DeleteDocDialog(): JSX.Element | null {
               disabled={busy || assetCount === null}
               onClick={() => void run('close-sessions')}
             >
-              关闭这些终端并删除
+              {tr('project.closeAndDelete')}
             </Button>
             <Button
               variant="secondary"
               className="w-full"
               disabled={busy || assetCount === null}
-              title="会话保留，锚点改为项目根"
+              title={tr('project.reanchorHint')}
               onClick={() => void run('reanchor-root')}
             >
-              重新锚定到项目根并删除
+              {tr('project.reanchorAndDelete')}
             </Button>
             <Button variant="ghost" className="w-full" onClick={close} disabled={busy}>
-              取消
+              {tr('common.cancel')}
             </Button>
           </div>
         ) : (
           <DialogFooter>
             <Button variant="ghost" onClick={close} disabled={busy}>
-              取消
+              {tr('common.cancel')}
             </Button>
             <Button
               variant="destructive"
               disabled={busy || assetCount === null}
               onClick={() => void run('close-sessions')}
             >
-              删除
+              {tr('common.delete')}
             </Button>
           </DialogFooter>
         )}

@@ -47,6 +47,7 @@ import type {
 import type { SettingsManager } from './settings-manager';
 import { buildSpawnEnv, injectTerminalHintEnv, validateDimensions } from './pty-utils';
 import { logger } from './logger';
+import { mainT } from './i18n';
 // @xterm/headless is plain CommonJS (no ESM exports map) — default-import
 // the module and destructure (Marina's lesson; named imports throw under
 // the Electron main ESM loader).
@@ -171,16 +172,21 @@ export interface CreateSessionInput {
   rows: number;
 }
 
+export interface CreateCommandSessionInput
+  extends Omit<CreateSessionInput, 'agentId' | 'docPath' | 'workspacePath'> {
+  actionIndex: number;
+  description: string;
+  command: string;
+}
+
 /**
  * Locate the shell that hosts agent commands. Windows: pwsh → powershell →
  * cmd, probed on PATH via the spawn env. POSIX: $SHELL → /bin/bash.
  */
-function resolveHostShell(env: Record<string, string>): {
+export function resolveHostShell(env: Record<string, string>): {
   file: string;
-  /** keepShell: when the command exits, drop back to an interactive shell
-   *  instead of letting the host exit (AgentConfig.onExit). Ignored for the
-   *  bare shell (empty command), which already is the interactive shell. */
-  buildArgs: (command: string, keepShell: boolean) => string[];
+  /** Agent commands always return to an interactive shell when they exit. */
+  buildArgs: (command: string) => string[];
 } {
   if (process.platform === 'win32') {
     // PATH probing via where.exe is slow; node-pty resolves bare names
@@ -192,11 +198,9 @@ function resolveHostShell(env: Record<string, string>): {
         if (d && existsSync(`${d.replace(/[\\/]+$/, '')}\\${c}`)) {
           return {
             file: c,
-            buildArgs: (command, keepShell) =>
+            buildArgs: (command) =>
               command
-                ? keepShell
-                  ? ['-NoLogo', '-NoExit', '-Command', command]
-                  : ['-NoLogo', '-Command', command]
+                ? ['-NoLogo', '-NoExit', '-Command', command]
                 : ['-NoLogo'],
           };
         }
@@ -204,8 +208,7 @@ function resolveHostShell(env: Record<string, string>): {
     }
     return {
       file: 'cmd.exe',
-      buildArgs: (command, keepShell) =>
-        command ? [keepShell ? '/k' : '/c', command] : [],
+      buildArgs: (command) => (command ? ['/k', command] : []),
     };
   }
   const shell = process.env.SHELL || '/bin/bash';
@@ -213,11 +216,9 @@ function resolveHostShell(env: Record<string, string>): {
     file: shell,
     // After the command, re-exec an interactive login shell so the prompt
     // returns instead of the PTY dying.
-    buildArgs: (command, keepShell) =>
+    buildArgs: (command) =>
       command
-        ? keepShell
-          ? ['-lc', `${command}; exec "${shell}" -il`]
-          : ['-lc', command]
+        ? ['-lc', `${command}; exec "${shell}" -il`]
         : ['-l'],
   };
 }
@@ -253,17 +254,53 @@ export class SessionManager extends EventEmitter {
     const settings = this.settingsManager.get();
     const agent: AgentConfig | undefined = settings.agents.find((a) => a.id === input.agentId);
     if (!agent) {
-      throw new SessionManagerError('AgentNotFound', `agentId="${input.agentId}" 不在设置的 agents 清单里`);
+      throw new SessionManagerError(
+        'AgentNotFound',
+        mainT('error.agentNotFound', { agentId: input.agentId }),
+      );
     }
+    return this.createConfiguredSession(input, agent);
+  }
+
+  /** Start one project toolbar command as a fresh project-root hub PTY. */
+  createCommandSession(input: CreateCommandSessionInput): SessionInfo {
+    const launcher: AgentConfig = {
+      id: `project-action:${input.actionIndex}`,
+      label: input.description,
+      command: input.command,
+    };
+    return this.createConfiguredSession(
+      {
+        docPath: null,
+        workspacePath: '.iris',
+        agentId: launcher.id,
+        projectRoot: input.projectRoot,
+        projectGeneration: input.projectGeneration,
+        cols: input.cols,
+        rows: input.rows,
+      },
+      launcher,
+    );
+  }
+
+  private createConfiguredSession(input: CreateSessionInput, agent: AgentConfig): SessionInfo {
     const dims = validateDimensions(input.cols, input.rows);
     const cwd = input.projectRoot;
     try {
       if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
-        throw new SessionManagerError('CwdNotAccessible', `项目根 "${cwd}" 不存在或不是目录`, { cwd });
+        throw new SessionManagerError(
+          'CwdNotAccessible',
+          mainT('error.projectRootInvalid', { cwd }),
+          { cwd },
+        );
       }
     } catch (err) {
       if (err instanceof SessionManagerError) throw err;
-      throw new SessionManagerError('CwdNotAccessible', `读取项目根 "${cwd}" 失败`, { cwd });
+      throw new SessionManagerError(
+        'CwdNotAccessible',
+        mainT('error.projectRootReadFailed', { cwd }),
+        { cwd },
+      );
     }
 
     const env = buildSpawnEnv(process.env, SPAWN_ENV_SKIP);
@@ -280,9 +317,7 @@ export class SessionManager extends EventEmitter {
     }
 
     const host = resolveHostShell(env);
-    // keep-shell is the default (drop back to a prompt rather than a dead
-    // terminal); only 'close' lets the host exit with the command.
-    const args = host.buildArgs(agent.command, agent.onExit !== 'close');
+    const args = host.buildArgs(agent.command);
 
     let pty: IPty;
     try {
@@ -303,9 +338,12 @@ export class SessionManager extends EventEmitter {
     } catch (err) {
       throw new SessionManagerError(
         'PtySpawnFailed',
-        `无法启动 "${host.file}" (agent=${agent.id}) cwd="${cwd}": ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        mainT('error.ptySpawnFailed', {
+          shellPath: host.file,
+          agentId: agent.id,
+          cwd,
+          error: err instanceof Error ? err.message : String(err),
+        }),
         { shellPath: host.file, cwd },
       );
     }

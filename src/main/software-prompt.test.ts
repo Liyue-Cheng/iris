@@ -6,6 +6,7 @@ import {
   classifySoftwareBlock,
   docSkeleton,
   parseProjectBlock,
+  parseProjectBlocks,
   parseSoftwareBlock,
   upsertProjectBlock,
   upsertSoftwareBlock,
@@ -49,6 +50,12 @@ describe('software prompt block', () => {
 });
 
 describe('project prompt block', () => {
+  it('ignores tag-shaped prose that is not a standalone managed block', () => {
+    const source = 'Do not edit `<iris-project>` blocks.\n';
+    expect(parseProjectBlock(source)).toBeNull();
+    expect(parseProjectBlock(upsertProjectBlock(source, 'Rule').text)?.body).toBe('Rule');
+  });
+
   it('creates, updates, and removes the block without touching user prose', () => {
     const source = '# Entry\n\nuser prose\n';
     const created = upsertProjectBlock(source, 'First rule');
@@ -74,6 +81,12 @@ describe('project prompt block', () => {
     expect(parseProjectBlock(removed.text)).toBeNull();
     expect(removed.text).toBe(source);
   });
+
+  it('reports duplicate blocks instead of updating only one copy', () => {
+    const source = '<iris-project>\nOne\n</iris-project>\n<iris-project>\nTwo\n</iris-project>\n';
+    expect(parseProjectBlocks(source).map((block) => block.body)).toEqual(['One', 'Two']);
+    expect(() => upsertProjectBlock(source, 'Canonical')).toThrow('Multiple <iris-project> blocks');
+  });
 });
 
 describe('software prompt invariants', () => {
@@ -95,6 +108,12 @@ describe('software prompt invariants', () => {
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('<name>.assets/');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('Never delete an asset merely because');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('entry file');
+    expect(SOFTWARE_PROMPT_TEMPLATE).toContain(
+      'The `labels:` frontmatter field is reserved and is not currently enabled.',
+    );
+    expect(SOFTWARE_PROMPT_TEMPLATE).toContain('Do not add, populate, edit, normalize, or remove it');
+    expect(SOFTWARE_PROMPT_TEMPLATE).toContain('Preserve an existing valid');
+    expect(SOFTWARE_PROMPT_TEMPLATE).not.toContain('feeds the filter chips');
     expect(SOFTWARE_PROMPT_TEMPLATE).not.toContain('iris-user');
     expect(SOFTWARE_PROMPT_TEMPLATE).not.toContain('~/.iris/CONVENTIONS.md');
   });

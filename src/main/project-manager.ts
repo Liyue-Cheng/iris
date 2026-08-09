@@ -28,7 +28,9 @@ import type {
   FsIrisChangedEvent,
   IrisScanResult,
   ProjectInitResult,
+  ProjectPromptEntryStatus,
   ProjectPromptConflict,
+  ProjectToolbarAction,
   RawTreeNode,
   SoftwareEntryStatus,
   SoftwarePromptState,
@@ -37,19 +39,35 @@ import { DOC_TYPES } from '@shared/types';
 import { slugify } from '@shared/markdown-utils';
 import { parseFrontmatter, scanProject, scanRawTree } from './iris-scanner';
 import { FOREIGN_AGENT_ENTRIES } from './iris-templates';
-import { assembleContextPreview, syncEntryFile } from './agent-injection';
+import {
+  assembleContextPreview,
+  removePromptEntryBlocks,
+  syncEntryFile,
+  syncPromptEntryFile,
+} from './agent-injection';
 import {
   classifySoftwareBlock,
+  buildSoftwareBlock,
   docSkeleton,
   normalizePromptBody,
-  parseProjectBlock,
-  upsertProjectBlock,
+  parseProjectBlocks,
 } from './software-prompt';
 import { logger } from './logger';
 import { AssetManager } from './asset-manager';
+import { mainT } from './i18n';
+import {
+  MISSING_PROJECT_SETTINGS_REVISION,
+  readProjectSettings,
+  initializeProjectSettingsFile,
+  SUPPORTED_PROJECT_ENTRY_PATHS,
+  updateProjectEntries,
+  updateProjectPrompt,
+  updateProjectToolbar,
+  type ProjectSettingsFileSnapshot,
+} from './project-settings';
 
 /** Entry files Iris may write the `<iris-software>` block into. */
-const WRITABLE_ENTRIES: readonly string[] = ['AGENTS.md', ...FOREIGN_AGENT_ENTRIES];
+const WRITABLE_ENTRIES: readonly string[] = SUPPORTED_PROJECT_ENTRY_PATHS;
 
 const DEBOUNCE_MS = 150;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -92,8 +110,9 @@ export class ProjectManager extends EventEmitter {
   private pendingPromptChanges: FsIrisChangedEvent['changes'] = [];
   private flushTimer: NodeJS.Timeout | null = null;
   private promptReconcileTail: Promise<void> = Promise.resolve();
-  private projectPromptBaseline = '';
   private projectPromptConflicts: ProjectPromptConflict[] = [];
+  private readonly projectPromptWriteErrors = new Map<string, string>();
+  private projectSettingsError: string | null = null;
 
   /** Absolute root of the currently open project (null when none). */
   getRoot(): string | null {
@@ -112,10 +131,10 @@ export class ProjectManager extends EventEmitter {
       canonicalRoot = normalize(await fs.realpath(abs));
       stat = await fs.stat(canonicalRoot);
     } catch {
-      throw new ProjectError('NotADirectory', `cannot access ${abs}`);
+      throw new ProjectError('NotADirectory', mainT('error.projectCannotAccess', { path: abs }));
     }
     if (!stat.isDirectory()) {
-      throw new ProjectError('NotADirectory', `${canonicalRoot} is not a directory`);
+      throw new ProjectError('NotADirectory', mainT('error.projectNotDirectory', { path: canonicalRoot }));
     }
 
     return { root: canonicalRoot, scan: await scanProject(canonicalRoot) };
@@ -131,7 +150,7 @@ export class ProjectManager extends EventEmitter {
     // services, so failures here degrade the opened project instead of
     // stranding main on B while renderer rolls back to A.
     try {
-      await this.reconcileProjectPromptInitial(prepared.root);
+      if (prepared.scan.hasIris) await this.initializeProjectSettings(prepared.root);
     } catch (err) {
       logger.warn('project', `initial project prompt reconciliation failed for ${prepared.root}`, err);
     }
@@ -164,8 +183,9 @@ export class ProjectManager extends EventEmitter {
       this.watcher = null;
     }
     this.projectRoot = null;
-    this.projectPromptBaseline = '';
     this.projectPromptConflicts = [];
+    this.projectPromptWriteErrors.clear();
+    this.projectSettingsError = null;
   }
 
   /** Rescan the open project (projection query). */
@@ -189,7 +209,10 @@ export class ProjectManager extends EventEmitter {
     } catch (err) {
       throw new ProjectError(
         'ReadFailed',
-        `cannot read ${relPath}: ${err instanceof Error ? err.message : String(err)}`,
+        mainT('error.projectReadFailed', {
+          path: relPath,
+          error: err instanceof Error ? err.message : String(err),
+        }),
       );
     }
     const { frontmatter, broken } = parseFrontmatter(raw);
@@ -236,6 +259,22 @@ export class ProjectManager extends EventEmitter {
     }
   }
 
+  /** Read the active project's App settings. Missing files project as defaults. */
+  projectSettings(): Promise<ProjectSettingsFileSnapshot> {
+    return readProjectSettings(this.requireRoot());
+  }
+
+  /** Replace only toolbar.actions, preserving future/unknown project settings. */
+  updateProjectToolbar(
+    actions: readonly ProjectToolbarAction[],
+    expectedRevision: string,
+  ): Promise<ProjectSettingsFileSnapshot> {
+    if (this.projectPromptConflicts.length > 0) {
+      throw new ProjectError('WriteConflict', 'Resolve the project prompt migration conflict first');
+    }
+    return updateProjectToolbar(this.requireRoot(), actions, expectedRevision);
+  }
+
   async listAssets(docPath: string): Promise<AssetInventory> {
     return this.assetManager.list(this.requireRoot(), docPath);
   }
@@ -266,7 +305,7 @@ export class ProjectManager extends EventEmitter {
   ): Promise<{ path: string }> {
     const root = this.requireRoot();
     if (typeof content !== 'string' || (expectedContent !== null && typeof expectedContent !== 'string')) {
-      throw new ProjectError('InvalidPayload', 'content and expectedContent must be strings (or null)');
+      throw new ProjectError('InvalidPayload', mainT('error.projectWritePayload'));
     }
     const abs = this.resolveInside(root, relPath);
     let current: string;
@@ -275,12 +314,15 @@ export class ProjectManager extends EventEmitter {
     } catch (err) {
       throw new ProjectError(
         'WriteConflict',
-        `cannot compare ${relPath}: ${err instanceof Error ? err.message : String(err)}`,
+        mainT('error.projectCompareFailed', {
+          path: relPath,
+          error: err instanceof Error ? err.message : String(err),
+        }),
       );
     }
     if (current === content) return { path: relPath };
     if (expectedContent !== null && current !== expectedContent) {
-      throw new ProjectError('WriteConflict', `${relPath} changed since the editor baseline`);
+      throw new ProjectError('WriteConflict', mainT('error.projectChanged', { path: relPath }));
     }
 
     const tmp = `${abs}.tmp.${process.pid}.${Date.now()}`;
@@ -292,7 +334,10 @@ export class ProjectManager extends EventEmitter {
       await fs.unlink(tmp).catch(() => {});
       throw new ProjectError(
         'WriteFailed',
-        `cannot write ${relPath}: ${err instanceof Error ? err.message : String(err)}`,
+        mainT('error.projectWriteFailed', {
+          path: relPath,
+          error: err instanceof Error ? err.message : String(err),
+        }),
       );
     }
     return { path: relPath };
@@ -311,7 +356,7 @@ export class ProjectManager extends EventEmitter {
     const root = this.requireRoot();
     const { workspacePath, type, title } = payload;
     if (!workspacePath || !type || typeof title !== 'string') {
-      throw new ProjectError('InvalidPayload', 'workspacePath, type and title are required');
+      throw new ProjectError('InvalidPayload', mainT('error.projectCreatePayload'));
     }
     const slug = slugify(title);
     const today = new Date();
@@ -343,7 +388,10 @@ export class ProjectManager extends EventEmitter {
     } catch (err) {
       throw new ProjectError(
         'WriteFailed',
-        `cannot create ${relPath}: ${err instanceof Error ? err.message : String(err)}`,
+        mainT('error.projectCreateFailed', {
+          path: relPath,
+          error: err instanceof Error ? err.message : String(err),
+        }),
       );
     }
     return { path: relPath };
@@ -361,7 +409,7 @@ export class ProjectManager extends EventEmitter {
   ): Promise<{ path: string; assetCount: number }> {
     const root = this.requireRoot();
     if (!/\.md$/i.test(relPath) || !relPath.replace(/\\/g, '/').startsWith('.iris/')) {
-      throw new ProjectError('InvalidPayload', `refusing to delete non-iris file: ${relPath}`);
+      throw new ProjectError('InvalidPayload', mainT('error.projectDeleteRefused', { path: relPath }));
     }
     const abs = this.resolveInside(root, relPath);
     const companionRel = this.assetManager.companionPath(relPath);
@@ -369,7 +417,10 @@ export class ProjectManager extends EventEmitter {
     const assetCount = await this.assetManager.managedFileCount(root, relPath);
     const companionStat = await fs.lstat(companionAbs).catch(() => null);
     if (companionStat && (!companionStat.isDirectory() || companionStat.isSymbolicLink())) {
-      throw new ProjectError('InvalidPayload', `unsafe companion directory: ${companionRel}`);
+      throw new ProjectError(
+        'InvalidPayload',
+        mainT('error.projectUnsafeCompanion', { path: companionRel }),
+      );
     }
 
     // Stage the aggregate in its current filesystem before trashing it. If
@@ -394,7 +445,10 @@ export class ProjectManager extends EventEmitter {
       await fs.rmdir(stage).catch(() => {});
       throw new ProjectError(
         'WriteFailed',
-        `cannot delete ${relPath}: ${err instanceof Error ? err.message : String(err)}`,
+        mainT('error.projectDeleteFailed', {
+          path: relPath,
+          error: err instanceof Error ? err.message : String(err),
+        }),
       );
     }
     return { path: relPath, assetCount };
@@ -422,9 +476,18 @@ export class ProjectManager extends EventEmitter {
       }
     }
 
-    // AGENTS.md — the standard entry Iris owns and always writes.
-    const agentsAbs = join(root, 'AGENTS.md');
-    const a = await syncEntryFile(agentsAbs);
+    await this.initializeProjectSettings(root);
+    const settings = await readProjectSettings(root);
+    const participants = settings.settings.agentContext.entries;
+
+    // A migration conflict has no project-layer truth yet. Preserve every
+    // candidate and initialize only the software layer until the user chooses.
+    const syncOne = (rel: string) =>
+      this.projectPromptConflicts.length > 0
+        ? syncEntryFile(join(root, rel))
+        : syncPromptEntryFile(join(root, rel), settings.settings.prompts.project);
+
+    const a = await syncOne('AGENTS.md');
     const agentsMd: ProjectInitResult['agentsMd'] = !a.existed
       ? 'created'
       : a.action === 'unchanged'
@@ -433,15 +496,16 @@ export class ProjectManager extends EventEmitter {
           ? 'updated'
           : 'appended';
 
-    // Vendor entries: maintain the block in any that already exist; never
-    // create an absent one. foreignEntries keeps the detected superset.
+    // Only the explicit project list participates. Initialization recreates a
+    // missing selected entry, but never enrolls an unrelated vendor file.
     const vendorEntries: ProjectInitResult['vendorEntries'] = [];
     const foreignEntries: string[] = [];
     for (const rel of FOREIGN_AGENT_ENTRIES) {
-      if (!(await exists(join(root, rel)))) continue;
-      foreignEntries.push(rel);
-      const { action } = await syncEntryFile(join(root, rel));
-      vendorEntries.push({ path: rel, action });
+      if (await exists(join(root, rel))) foreignEntries.push(rel);
+      if (participants.includes(rel)) {
+        const { action } = await syncOne(rel);
+        vendorEntries.push({ path: rel, action });
+      }
     }
 
     logger.info(
@@ -466,21 +530,40 @@ export class ProjectManager extends EventEmitter {
    */
   async softwarePromptState(): Promise<SoftwarePromptState> {
     const root = this.requireRoot();
-    const entries: SoftwareEntryStatus[] = [await this.entryStatus(root, 'AGENTS.md', true)];
-    for (const rel of FOREIGN_AGENT_ENTRIES) {
-      if (await exists(join(root, rel))) entries.push(await this.entryStatus(root, rel, false));
-    }
-
+    const settings = await readProjectSettings(root);
+    const participants = settings.settings.agentContext.entries;
+    const entries = await Promise.all(
+      participants.map((rel) => this.entryStatus(root, rel, rel === 'AGENTS.md')),
+    );
+    const desired = settings.settings.prompts.project;
+    const projectEntries = await this.projectPromptEntryStatuses(root, desired, participants);
+    const hasPartial = projectEntries.some(
+      (entry) => entry.state === 'duplicate' || entry.state === 'write-failed',
+    );
+    const hasDrift = projectEntries.some(
+      (entry) => entry.state === 'drifted' || entry.state === 'missing',
+    );
+    const error = settings.error ?? this.projectSettingsError;
     return {
+      softwareText: buildSoftwareBlock().trimEnd(),
       entries,
+      availableEntries: WRITABLE_ENTRIES.filter((entry) => !participants.includes(entry)),
       project: {
         state: this.projectPromptConflicts.length > 0
           ? 'conflict'
-          : this.projectPromptBaseline === ''
-            ? 'missing'
-            : 'synced',
-        text: this.projectPromptBaseline,
+          : error
+            ? 'invalid-settings'
+            : hasPartial
+              ? 'partial'
+              : hasDrift
+                ? 'drifted'
+                : desired === ''
+                  ? 'missing'
+                  : 'synced',
+        text: desired,
         conflicts: this.projectPromptConflicts,
+        entries: projectEntries,
+        error,
       },
     };
   }
@@ -508,37 +591,144 @@ export class ProjectManager extends EventEmitter {
     }
   }
 
-  /**
-   * Write/refresh the `<iris-software>` block in one entry file (user-confirmed
-   * in the settings UI). AGENTS.md may be
-   * created; a vendor entry is refused if it does not already exist (Iris never
-   * grows a vendor zoo). Returns the fresh state for the UI to re-render.
-   */
+  /** Reconcile both managed layers in one participating entry file. */
   async syncSoftwareEntry(relPath: string): Promise<SoftwarePromptState> {
     const root = this.requireRoot();
-    if (!WRITABLE_ENTRIES.includes(relPath)) {
-      throw new ProjectError('InvalidPayload', `refusing to write the block into ${relPath}`);
+    const settings = await readProjectSettings(root);
+    if (!settings.exists || settings.error) {
+      throw new ProjectError('WriteFailed', settings.error ?? 'Project settings is missing');
     }
-    const abs = this.resolveInside(root, relPath);
-    if (relPath !== 'AGENTS.md' && !(await exists(abs))) {
-      throw new ProjectError('InvalidPayload', `vendor entry ${relPath} does not exist (Iris does not create it)`);
+    if (!settings.settings.agentContext.entries.includes(relPath)) {
+      throw new ProjectError('InvalidPayload', `Entry is not participating: ${relPath}`);
     }
-    await syncEntryFile(abs);
+    await this.syncPromptEntry(root, relPath, settings.settings.prompts.project);
+    this.emit('promptChanged');
     return this.softwarePromptState();
   }
 
-  /** User-edited project prompt becomes the new disk truth and is mirrored. */
-  async syncProjectPrompt(text: string): Promise<SoftwarePromptState> {
+  /** Reconcile every participating entry from the two canonical sources. */
+  async syncAllPromptEntries(): Promise<SoftwarePromptState> {
+    const root = this.requireRoot();
+    const settings = await readProjectSettings(root);
+    if (!settings.exists || settings.error) {
+      throw new ProjectError('WriteFailed', settings.error ?? 'Project settings is missing');
+    }
+    for (const rel of settings.settings.agentContext.entries) {
+      await this.syncPromptEntry(root, rel, settings.settings.prompts.project);
+    }
+    this.emit('promptChanged');
+    return this.softwarePromptState();
+  }
+
+  /** Enroll an entry in project settings first, then materialize both layers. */
+  async addPromptEntry(
+    relPath: string,
+    expectedRevision: string,
+  ): Promise<{ snapshot: ProjectSettingsFileSnapshot; prompt: SoftwarePromptState['project'] }> {
+    if (!WRITABLE_ENTRIES.includes(relPath)) {
+      throw new ProjectError('InvalidPayload', `Unsupported prompt entry: ${relPath}`);
+    }
+    const root = this.requireRoot();
+    const current = await readProjectSettings(root);
+    if (!current.exists || current.error) {
+      throw new ProjectError('WriteFailed', current.error ?? 'Project settings is missing');
+    }
+    const snapshot = await updateProjectEntries(
+      root,
+      [...current.settings.agentContext.entries, relPath],
+      expectedRevision,
+    );
+    await this.syncPromptEntry(root, relPath, snapshot.settings.prompts.project);
+    this.emit('promptChanged');
+    return { snapshot, prompt: (await this.softwarePromptState()).project };
+  }
+
+  /** Remove both blocks before removing the entry from the desired target set. */
+  async removePromptEntry(
+    relPath: string,
+    expectedRevision: string,
+  ): Promise<{ snapshot: ProjectSettingsFileSnapshot; prompt: SoftwarePromptState['project'] }> {
+    if (relPath === 'AGENTS.md') {
+      throw new ProjectError('InvalidPayload', 'AGENTS.md is the required Iris entry');
+    }
+    const root = this.requireRoot();
+    const current = await readProjectSettings(root);
+    if (!current.exists || current.error) {
+      throw new ProjectError('WriteFailed', current.error ?? 'Project settings is missing');
+    }
+    if (!current.settings.agentContext.entries.includes(relPath)) {
+      throw new ProjectError('InvalidPayload', `Entry is not participating: ${relPath}`);
+    }
+    await removePromptEntryBlocks(this.resolveInside(root, relPath));
+    let snapshot: ProjectSettingsFileSnapshot;
+    try {
+      snapshot = await updateProjectEntries(
+        root,
+        current.settings.agentContext.entries.filter((entry) => entry !== relPath),
+        expectedRevision,
+      );
+    } catch (err) {
+      await this.syncPromptEntry(root, relPath, current.settings.prompts.project).catch(() => {});
+      throw err;
+    }
+    this.projectPromptWriteErrors.delete(relPath);
+    this.emit('promptChanged');
+    return { snapshot, prompt: (await this.softwarePromptState()).project };
+  }
+
+  /** Commit the canonical JSON value with CAS, then project it to entry files. */
+  async syncProjectPrompt(
+    text: string,
+    expectedRevision: string,
+  ): Promise<{ snapshot: ProjectSettingsFileSnapshot; prompt: SoftwarePromptState['project'] }> {
     if (typeof text !== 'string') {
-      throw new ProjectError('InvalidPayload', 'project prompt must be a string');
+      throw new ProjectError('InvalidPayload', mainT('error.projectPromptPayload'));
     }
     const root = this.requireRoot();
     const normalized = normalizePromptBody(text);
-    await this.writeProjectPrompt(root, normalized);
-    this.projectPromptBaseline = normalized;
+    const current = await readProjectSettings(root);
+    const snapshot = !current.exists && this.projectPromptConflicts.length > 0
+      ? await initializeProjectSettingsFile(
+          root,
+          normalized,
+          ['AGENTS.md', ...(await this.existingEntryPaths(root)).filter((path) => path !== 'AGENTS.md')],
+          expectedRevision,
+        )
+      : await updateProjectPrompt(root, normalized, expectedRevision);
     this.projectPromptConflicts = [];
+    this.projectSettingsError = null;
+    for (const rel of snapshot.settings.agentContext.entries) {
+      await this.syncPromptEntry(root, rel, normalized);
+    }
     this.emit('promptChanged');
-    return this.softwarePromptState();
+    return { snapshot, prompt: (await this.softwarePromptState()).project };
+  }
+
+  /** Back-compatible alias: a repair now restores both managed layers. */
+  async restoreProjectPromptEntry(relPath: string): Promise<SoftwarePromptState> {
+    return this.syncSoftwareEntry(relPath);
+  }
+
+  /** Sessions only start after settings validation/migration and projection. */
+  async assertProjectSettingsReady(): Promise<void> {
+    const root = this.requireRoot();
+    if (!(await exists(join(root, '.iris')))) return;
+    const settings = await readProjectSettings(root);
+    if (this.projectPromptConflicts.length > 0) {
+      throw new ProjectError('WriteConflict', 'Resolve the project settings migration conflict before starting a terminal');
+    }
+    if (!settings.exists || settings.error) {
+      throw new ProjectError('ReadFailed', settings.error ?? 'Project settings is missing');
+    }
+    const state = await this.softwarePromptState();
+    const softwareReady = state.entries.every((entry) => entry.state === 'ok');
+    const projectReady = state.project.state === 'synced' || state.project.state === 'missing';
+    if (!softwareReady || !projectReady) {
+      throw new ProjectError(
+        'WriteFailed',
+        'Synchronize the participating agent entry files before starting a terminal',
+      );
+    }
   }
 
   /**
@@ -555,17 +745,20 @@ export class ProjectManager extends EventEmitter {
     const { parentPath, name, template } = payload;
     const trimmed = (name ?? '').trim();
     if (!trimmed || /[\\/:*?"<>|]/.test(trimmed) || trimmed.startsWith('.')) {
-      throw new ProjectError('InvalidPayload', `工作区名不合法: "${name}"`);
+      throw new ProjectError('InvalidPayload', mainT('error.workspaceInvalidName', { name }));
     }
     if ((DOC_TYPES as readonly string[]).includes(trimmed)) {
       throw new ProjectError(
         'InvalidPayload',
-        `"${trimmed}" 是类型文件夹的保留名（名字即类型），不能用作工作区名`,
+        mainT('error.workspaceReservedName', { name: trimmed }),
       );
     }
     const wsAbs = this.resolveInside(root, `${parentPath}/${trimmed}`);
     if (await exists(wsAbs)) {
-      throw new ProjectError('WriteFailed', `"${parentPath}/${trimmed}" 已存在`);
+      throw new ProjectError(
+        'WriteFailed',
+        mainT('error.workspaceExists', { path: `${parentPath}/${trimmed}` }),
+      );
     }
     await fs.mkdir(wsAbs, { recursive: true });
     if (template === 'standard') {
@@ -579,7 +772,7 @@ export class ProjectManager extends EventEmitter {
   // ──────────────────────────────────────────────────────────────────
 
   private requireRoot(): string {
-    if (!this.projectRoot) throw new ProjectError('NoProject', 'no project is open');
+    if (!this.projectRoot) throw new ProjectError('NoProject', mainT('error.projectNoProject'));
     return this.projectRoot;
   }
 
@@ -587,7 +780,7 @@ export class ProjectManager extends EventEmitter {
   private resolveInside(root: string, relPath: string): string {
     const abs = normalize(resolve(root, relPath));
     if (abs !== root && !abs.startsWith(root + sep)) {
-      throw new ProjectError('OutsideProject', `${relPath} escapes the project root`);
+      throw new ProjectError('OutsideProject', mainT('error.projectOutsideRoot', { path: relPath }));
     }
     return abs;
   }
@@ -603,35 +796,53 @@ export class ProjectManager extends EventEmitter {
   private async readProjectPrompt(
     root: string,
     rel: string,
-  ): Promise<{ path: string; text: string; hasBlock: boolean }> {
+  ): Promise<{ path: string; blocks: ReturnType<typeof parseProjectBlocks> }> {
     try {
       const source = await fs.readFile(this.resolveInside(root, rel), 'utf8');
-      const block = parseProjectBlock(source);
-      return { path: rel, text: block?.body ?? '', hasBlock: block !== null };
+      return { path: rel, blocks: parseProjectBlocks(source) };
     } catch {
-      return { path: rel, text: '', hasBlock: false };
+      return { path: rel, blocks: [] };
     }
   }
 
-  private async reconcileProjectPromptInitial(root: string): Promise<void> {
-    const paths = await this.existingEntryPaths(root);
-    const snapshots = await Promise.all(paths.map((rel) => this.readProjectPrompt(root, rel)));
-    const bodies = [...new Set(snapshots.filter((item) => item.hasBlock && item.text !== '').map((item) => item.text))];
+  private async initializeProjectSettings(root: string): Promise<void> {
+    const settings = await readProjectSettings(root);
+    this.projectSettingsError = settings.error;
+    this.projectPromptConflicts = [];
+    this.projectPromptWriteErrors.clear();
 
-    if (bodies.length > 1) {
-      this.projectPromptBaseline = '';
-      this.projectPromptConflicts = snapshots
-        .filter((item) => item.hasBlock && item.text !== '')
-        .map(({ path, text }) => ({ path, text }));
+    if (settings.exists) {
+      if (!settings.error && !settings.entryListExplicit) {
+        const entries = [
+          'AGENTS.md',
+          ...(await this.existingEntryPaths(root)).filter((path) => path !== 'AGENTS.md'),
+        ];
+        await updateProjectEntries(root, entries, settings.revision);
+      }
       this.emit('promptChanged');
       return;
     }
 
-    this.projectPromptBaseline = bodies[0] ?? '';
-    this.projectPromptConflicts = [];
-    if (bodies.length === 1 || snapshots.some((item) => item.hasBlock)) {
-      await this.writeProjectPrompt(root, this.projectPromptBaseline);
+    const paths = await this.existingEntryPaths(root);
+    const snapshots = await Promise.all(paths.map((rel) => this.readProjectPrompt(root, rel)));
+    const candidates = snapshots.flatMap(({ path, blocks }) =>
+      blocks.filter((block) => block.body !== '').map((block) => ({ path, text: block.body })),
+    );
+    const bodies = [...new Set(candidates.map((item) => item.text))];
+    const hasDuplicate = snapshots.some((item) => item.blocks.length > 1);
+
+    if (bodies.length > 1 || hasDuplicate) {
+      this.projectPromptConflicts = candidates;
+      this.emit('promptChanged');
+      return;
     }
+
+    await initializeProjectSettingsFile(
+      root,
+      bodies[0] ?? '',
+      ['AGENTS.md', ...paths.filter((path) => path !== 'AGENTS.md')],
+      MISSING_PROJECT_SETTINGS_REVISION,
+    );
     this.emit('promptChanged');
   }
 
@@ -640,57 +851,69 @@ export class ProjectManager extends EventEmitter {
     changes: FsIrisChangedEvent['changes'],
   ): Promise<void> {
     if (this.projectRoot !== root) return;
-    if (this.projectPromptConflicts.length > 0) {
-      await this.reconcileProjectPromptInitial(root);
-      return;
-    }
-
-    const candidates: ProjectPromptConflict[] = [];
-    const changedPaths = [...new Set(changes.filter((change) => change.kind === 'add' || change.kind === 'change').map((change) => change.path))];
-    for (const rel of changedPaths) {
-      const snapshot = await this.readProjectPrompt(root, rel);
-      // Creating an unrelated vendor entry without a project block is not a
-      // request to clear the current project prompt.
-      const wasAdded = changes.some((change) => change.path === rel && change.kind === 'add');
-      if (wasAdded && !snapshot.hasBlock) continue;
-      if (snapshot.text !== this.projectPromptBaseline) {
-        candidates.push({ path: rel, text: snapshot.text });
-      }
-    }
-
-    const distinct = [...new Set(candidates.map((item) => item.text))];
-    if (distinct.length === 0) return;
-    if (distinct.length > 1) {
-      this.projectPromptConflicts = candidates;
-      this.emit('promptChanged');
-      return;
-    }
-
-    const nextBaseline = distinct[0] ?? '';
-    await this.writeProjectPrompt(root, nextBaseline);
-    if (this.projectRoot !== root) return;
-    this.projectPromptBaseline = nextBaseline;
-    this.projectPromptConflicts = [];
+    for (const change of changes) this.projectPromptWriteErrors.delete(change.path);
+    const settings = await readProjectSettings(root);
+    this.projectSettingsError = settings.error;
     this.emit('promptChanged');
   }
 
-  private async writeProjectPrompt(root: string, body: string): Promise<void> {
-    const targets = new Set(await this.existingEntryPaths(root));
-    if (body !== '') targets.add('AGENTS.md');
-    for (const rel of targets) {
-      const abs = this.resolveInside(root, rel);
-      let source = '';
-      try {
-        source = await fs.readFile(abs, 'utf8');
-      } catch {
-        // A non-empty prompt may create the standard entry below.
-      }
-      const result = upsertProjectBlock(source, body === '' ? null : body);
-      if (result.action === 'unchanged') continue;
-      await fs.mkdir(dirname(abs), { recursive: true });
-      await fs.writeFile(abs, result.text, 'utf8');
-      logger.info('project', `project prompt ${result.action} in ${abs}`);
+  private async reconcileProjectSettingsChange(root: string): Promise<void> {
+    if (this.projectRoot !== root) return;
+    const settings = await readProjectSettings(root);
+    this.projectSettingsError = settings.error ?? (!settings.exists ? 'Project settings is missing' : null);
+    if (settings.exists && !settings.error) {
+      this.projectPromptConflicts = [];
     }
+    this.emit('promptChanged');
+  }
+
+  private async syncPromptEntry(root: string, rel: string, body: string): Promise<void> {
+    if (!WRITABLE_ENTRIES.includes(rel)) {
+      throw new ProjectError('InvalidPayload', `Unsupported prompt entry: ${rel}`);
+    }
+    const abs = this.resolveInside(root, rel);
+    try {
+      await syncPromptEntryFile(abs, body);
+      this.projectPromptWriteErrors.delete(rel);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.projectPromptWriteErrors.set(rel, message);
+      logger.warn('project', `prompt projection failed for ${abs}`, err);
+    }
+  }
+
+  private async projectPromptEntryStatuses(
+    root: string,
+    desired: string,
+    participants: readonly string[],
+  ): Promise<ProjectPromptEntryStatus[]> {
+    const statuses: ProjectPromptEntryStatus[] = [];
+    for (const path of participants) {
+      const isStandard = path === 'AGENTS.md';
+      let source: string | null = null;
+      try {
+        source = await fs.readFile(this.resolveInside(root, path), 'utf8');
+      } catch {
+        // A participating entry remains visible when its file is missing.
+      }
+      const blocks = source === null ? [] : parseProjectBlocks(source);
+      const writeError = this.projectPromptWriteErrors.get(path) ?? null;
+      let state: ProjectPromptEntryStatus['state'];
+      if (writeError) state = 'write-failed';
+      else if (blocks.length > 1) state = 'duplicate';
+      else if (desired === '' && blocks.length === 0) state = 'synced';
+      else if (blocks.length === 0) state = 'missing';
+      else if (blocks[0]?.body === desired && !blocks[0].hasAttributes) state = 'synced';
+      else state = 'drifted';
+      statuses.push({
+        path,
+        isStandard,
+        state,
+        text: blocks[0]?.body ?? null,
+        error: writeError ?? (blocks.length > 1 ? 'Multiple <iris-project> blocks' : null),
+      });
+    }
+    return statuses;
   }
 
   private startWatcher(root: string): void {
@@ -738,9 +961,17 @@ export class ProjectManager extends EventEmitter {
       if (irisChanges.length > 0) {
         this.emit('irisChanged', { projectRoot: root, changes: irisChanges } satisfies FsIrisChangedEvent);
       }
-      if (promptChanges.length > 0) {
+      const settingsChanged = irisChanges.some(
+        (change) => change.path === '.iris/settings.json',
+      );
+      if (promptChanges.length > 0 || settingsChanged) {
         this.promptReconcileTail = this.promptReconcileTail
-          .then(() => this.reconcileProjectPromptChanges(root, promptChanges))
+          .then(async () => {
+            if (settingsChanged) await this.reconcileProjectSettingsChange(root);
+            if (promptChanges.length > 0) {
+              await this.reconcileProjectPromptChanges(root, promptChanges);
+            }
+          })
           .catch((err) => logger.warn('project', 'project prompt reconciliation failed', err));
       }
     }, DEBOUNCE_MS);

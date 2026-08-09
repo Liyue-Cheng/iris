@@ -1,6 +1,11 @@
 import { normalize, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import type { IrisScanResult, ProjectScope, SessionInfo } from '@shared/types';
+import type {
+  IrisScanResult,
+  ProjectScope,
+  ProjectSettingsSnapshot,
+  SessionInfo,
+} from '@shared/types';
 import type { WindowContext } from './window-context';
 import type { ProjectManager, PreparedProject } from './project-manager';
 import type { GitManager } from './git-manager';
@@ -35,6 +40,24 @@ function session(scope: ProjectScope): SessionInfo {
   };
 }
 
+function projectSettings(description = 'toolbar action'): ProjectSettingsSnapshot {
+  return {
+    settings: {
+      version: 1,
+    prompts: { project: '' },
+    agentContext: { entries: ['AGENTS.md'] },
+    toolbar: {
+        actions: [{ icon: 'rocket', description, command: 'run', terminal: 'iris' }],
+      },
+    },
+    revision: 'a'.repeat(64),
+    exists: true,
+    diagnostics: [],
+    error: null,
+    trusted: false,
+  };
+}
+
 function harness(initial: ProjectScope | null, sessions: SessionInfo[] = []) {
   let managerRoot = initial?.root ?? null;
   const prepareOpen = vi.fn(async (root: string): Promise<PreparedProject> => ({
@@ -58,6 +81,7 @@ function harness(initial: ProjectScope | null, sessions: SessionInfo[] = []) {
   } as unknown as SessionManager;
   const gitOpen = vi.fn(async () => undefined);
   const gitManager = { open: gitOpen } as unknown as GitManager;
+  const readProjectSettings = vi.fn(async () => projectSettings());
   const ctx = {
     win: {} as WindowContext['win'],
     projectManager,
@@ -69,7 +93,14 @@ function harness(initial: ProjectScope | null, sessions: SessionInfo[] = []) {
     projectSwitchTail: Promise.resolve(),
     unwire: () => undefined,
   } satisfies WindowContext;
-  return { ctx, prepareOpen, activatePrepared, closeProject, gitOpen };
+  return {
+    ctx,
+    prepareOpen,
+    activatePrepared,
+    closeProject,
+    gitOpen,
+    readProjectSettings,
+  };
 }
 
 describe('window project switching', () => {
@@ -82,12 +113,14 @@ describe('window project switching', () => {
       h.ctx,
       { root: target, expectedScope: null },
       committed,
+      h.readProjectSettings,
     );
 
     expect(result.scope).toEqual({ root: target, generation: 1 });
     expect(h.closeProject).not.toHaveBeenCalled();
     expect(h.ctx.projectScope).toEqual(result.scope);
     expect(committed).toHaveBeenCalledWith(result.scope);
+    expect(result.projectSettings.settings.toolbar.actions[0]?.description).toBe('toolbar action');
   });
 
   it('drains A before activating B and increments the generation', async () => {
@@ -106,14 +139,19 @@ describe('window project switching', () => {
     h.gitOpen.mockImplementation(async () => {
       order.push('git');
     });
+    h.readProjectSettings.mockImplementation(async () => {
+      order.push('settings');
+      return projectSettings();
+    });
 
     const result = await enqueueProjectSwitch(
       h.ctx,
       { root: rootB, expectedScope: scopeA },
       () => order.push('commit'),
+      h.readProjectSettings,
     );
 
-    expect(order).toEqual(['sessions', 'project', 'git', 'commit']);
+    expect(order).toEqual(['sessions', 'project', 'git', 'commit', 'settings']);
     expect(result.scope).toEqual({ root: rootB, generation: 5 });
     expect(result.sessions).toEqual([]);
   });
@@ -128,6 +166,7 @@ describe('window project switching', () => {
       h.ctx,
       { root, expectedScope: scope },
       vi.fn(),
+      h.readProjectSettings,
     );
 
     expect(result.scope).toEqual(scope);
@@ -148,6 +187,7 @@ describe('window project switching', () => {
       h.ctx,
       { root: resolve('project-a-link'), expectedScope: scope },
       vi.fn(),
+      h.readProjectSettings,
     );
 
     expect(result.scope).toEqual(scope);
@@ -168,6 +208,7 @@ describe('window project switching', () => {
         h.ctx,
         { root: resolve('project-b'), expectedScope: scope },
         vi.fn(),
+        h.readProjectSettings,
       ),
     ).rejects.toThrow('cannot scan B');
 
@@ -187,11 +228,13 @@ describe('window project switching', () => {
       h.ctx,
       { root: rootB, expectedScope: scopeA },
       () => undefined,
+      h.readProjectSettings,
     );
     const staleSecond = enqueueProjectSwitch(
       h.ctx,
       { root: rootC, expectedScope: scopeA },
       () => undefined,
+      h.readProjectSettings,
     );
 
     await expect(first).resolves.toMatchObject({
@@ -214,6 +257,7 @@ describe('window project switching', () => {
       () => {
         throw new Error('settings persistence unavailable');
       },
+      h.readProjectSettings,
     );
 
     expect(h.closeProject).toHaveBeenCalledWith(scopeA);

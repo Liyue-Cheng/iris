@@ -8,11 +8,12 @@
  */
 import type { SessionState } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
+import { useTranslation } from 'react-i18next';
 
-const DOT: Record<SessionState, { cls: string; label: string }> = {
-  active: { cls: 'bg-[var(--rp-foam)]', label: '工作中' },
-  idle: { cls: 'bg-[var(--rp-gold)]', label: '空闲/等输入' },
-  exited: { cls: 'bg-muted-foreground/50', label: '已退出' },
+const DOT: Record<SessionState, { cls: string; labelKey: 'session.active' | 'session.idle' | 'session.exited' }> = {
+  active: { cls: 'bg-[var(--rp-foam)]', labelKey: 'session.active' },
+  idle: { cls: 'bg-[var(--rp-gold)]', labelKey: 'session.idle' },
+  exited: { cls: 'bg-muted-foreground/50', labelKey: 'session.exited' },
 };
 
 export function SessionDot({
@@ -22,12 +23,13 @@ export function SessionDot({
   state: SessionState | null;
   className?: string;
 }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <span className={cn('flex w-3 shrink-0 items-center justify-center', className)}>
       {state && (
         <span
           className={cn('size-2 rounded-full', DOT[state].cls)}
-          title={DOT[state].label}
+          title={t(DOT[state].labelKey)}
         />
       )}
     </span>

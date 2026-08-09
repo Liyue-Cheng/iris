@@ -13,7 +13,14 @@
 import { EventEmitter } from 'node:events';
 import { homedir } from 'node:os';
 import { isAbsolute, join, normalize, resolve } from 'node:path';
-import type { DeepPartial, Settings, ThemeId } from '@shared/types';
+import {
+  AGENT_PRESETS,
+  type AgentConfig,
+  type DeepPartial,
+  type LocalePreference,
+  type Settings,
+  type ThemeId,
+} from '@shared/types';
 import { getBuildType } from './build-type';
 import { JsonStore } from './persistence';
 
@@ -45,6 +52,7 @@ export const MAX_RECENT_ROOTS = 10;
 
 export const DEFAULT_SETTINGS: Settings = {
   version: 1,
+  locale: 'system',
   appearance: {
     theme: 'rose-pine',
     uiFontFamily: "'LXGW WenKai', system-ui, sans-serif",
@@ -58,6 +66,8 @@ export const DEFAULT_SETTINGS: Settings = {
     restoreProjectsOnStartup: false,
     selectOnCopy: true,
     terminalRightClick: 'menu',
+    terminalDocDrop: 'content',
+    autoCheckTodosOnDone: false,
     confirmOnQuit: true,
     editorBlockEdit: false,
     editorBodyAlign: 'center',
@@ -71,13 +81,11 @@ export const DEFAULT_SETTINGS: Settings = {
     lastRoot: null,
     openRoots: [],
     recentRoots: [],
+    commandTrust: {},
   },
-  agents: [
-    { id: 'claude', label: 'claude', command: 'claude', injection: 'hook', onExit: 'keep-shell' },
-    { id: 'codex', label: 'codex', command: 'codex', injection: 'hook', onExit: 'keep-shell' },
-    { id: 'gemini', label: 'gemini', command: 'gemini', injection: 'hook', onExit: 'keep-shell' },
-    { id: 'shell', label: '终端', command: '', injection: 'none' },
-  ],
+  agents: AGENT_PRESETS.filter((preset) =>
+    ['claude', 'codex', 'gemini', 'shell'].includes(preset.id),
+  ).map((preset) => ({ ...preset })),
   advanced: {
     activeIdleThresholdSeconds: 2,
     terminalRenderer: 'auto',
@@ -102,6 +110,8 @@ const VALID_THEMES: ThemeId[] = [
   'fairyfloss',
 ];
 
+const VALID_LOCALES: LocalePreference[] = ['system', 'zh-CN', 'en-US'];
+
 export class SettingsError extends Error {
   constructor(
     public readonly code: 'InvalidSettings' | 'IncompatibleVersion',
@@ -124,7 +134,16 @@ export class SettingsManager extends EventEmitter {
    *  files written by older versions gain new fields automatically. */
   async initialize(): Promise<'main' | 'bak' | 'default'> {
     const result = await this.store.load(DEFAULT_SETTINGS);
-    const merged = deepMerge(DEFAULT_SETTINGS, result.value as DeepPartial<Settings>);
+    const loaded = deepMerge(DEFAULT_SETTINGS, result.value as DeepPartial<Settings>);
+    const hadLegacyAgentFields =
+      Array.isArray(loaded.agents) &&
+      loaded.agents.some(
+        (agent) =>
+          agent &&
+          typeof agent === 'object' &&
+          ('injection' in agent || 'onExit' in agent),
+      );
+    const merged = normalizeAgentSettings(loaded);
     if (merged.version !== 1) {
       throw new SettingsError(
         'IncompatibleVersion',
@@ -134,6 +153,9 @@ export class SettingsManager extends EventEmitter {
     }
     validateSettings(merged);
     this.settings = merged;
+    if (hadLegacyAgentFields && result.source === 'main') {
+      this.store.set(structuredClone(merged));
+    }
     return result.source;
   }
 
@@ -153,7 +175,7 @@ export class SettingsManager extends EventEmitter {
         `partial must be an object, got: ${typeof partial}${Array.isArray(partial) ? ' (Array)' : ''}`,
       );
     }
-    const next = deepMerge(this.settings, partial);
+    const next = normalizeAgentSettings(deepMerge(this.settings, partial));
     validateSettings(next);
 
     const changedKeys = diffKeys('', this.settings, next);
@@ -176,6 +198,11 @@ export class SettingsManager extends EventEmitter {
     this.update({
       project: { recentRoots: removeRecentRoot(this.settings.project.recentRoots, root) },
     });
+  }
+
+  /** Approve one exact revision of executable project settings on this machine. */
+  trustProjectCommands(root: string, revision: string): void {
+    this.update({ project: { commandTrust: { [root]: revision } } });
   }
 
   /** Wait for pending writes (call before quit). */
@@ -216,6 +243,28 @@ export function deepMerge<T>(target: T, partial: DeepPartial<T> | undefined): T 
     }
   }
   return result as T;
+}
+
+/**
+ * Strip legacy/inert launcher properties while preserving the stable fields
+ * and array order. Invalid values are left structurally invalid so the normal
+ * settings validator can report them instead of silently repairing data.
+ */
+export function normalizeAgentSettings(settings: Settings): Settings {
+  if (!Array.isArray(settings.agents)) return settings;
+  const agents = settings.agents.map((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return value as AgentConfig;
+    }
+    const source = value as AgentConfig;
+    const launcher: AgentConfig = {
+      id: source.id,
+      label: source.label,
+      command: source.command,
+    };
+    return launcher;
+  });
+  return { ...settings, agents };
 }
 
 /** Normalize for storage while preserving the filesystem's display casing. */
@@ -282,6 +331,13 @@ export function diffKeys<T>(prefix: string, a: T, b: T): string[] {
 
 /** @throws SettingsError on any out-of-range / invalid-enum field. */
 export function validateSettings(s: Settings): void {
+  if (!VALID_LOCALES.includes(s.locale)) {
+    throw new SettingsError(
+      'InvalidSettings',
+      `locale="${s.locale}" invalid, allowed: ${VALID_LOCALES.join(', ')}`,
+      { field: 'locale', got: s.locale, allowed: VALID_LOCALES },
+    );
+  }
   if (!VALID_THEMES.includes(s.appearance.theme)) {
     throw new SettingsError(
       'InvalidSettings',
@@ -329,6 +385,15 @@ export function validateSettings(s: Settings): void {
       'InvalidSettings',
       `behavior.terminalRightClick="${s.behavior.terminalRightClick}" must be menu or paste`,
     );
+  }
+  if (!['path', 'content'].includes(s.behavior.terminalDocDrop)) {
+    throw new SettingsError(
+      'InvalidSettings',
+      `behavior.terminalDocDrop="${s.behavior.terminalDocDrop}" must be path or content`,
+    );
+  }
+  if (typeof s.behavior.autoCheckTodosOnDone !== 'boolean') {
+    throw new SettingsError('InvalidSettings', 'behavior.autoCheckTodosOnDone must be a boolean');
   }
   if (typeof s.behavior.confirmOnQuit !== 'boolean') {
     throw new SettingsError('InvalidSettings', 'behavior.confirmOnQuit must be a boolean');
@@ -404,6 +469,19 @@ export function validateSettings(s: Settings): void {
       `project.recentRoots must be an absolute string[] with at most ${MAX_RECENT_ROOTS} entries`,
     );
   }
+  if (
+    !s.project.commandTrust ||
+    typeof s.project.commandTrust !== 'object' ||
+    Array.isArray(s.project.commandTrust) ||
+    Object.entries(s.project.commandTrust).some(
+      ([root, revision]) => !isAbsolute(root) || !/^[a-f\d]{64}$/.test(revision),
+    )
+  ) {
+    throw new SettingsError(
+      'InvalidSettings',
+      'project.commandTrust must map absolute project roots to SHA-256 revisions',
+    );
+  }
   if (!Array.isArray(s.agents) || s.agents.length === 0) {
     throw new SettingsError('InvalidSettings', 'agents must be a non-empty array');
   }
@@ -413,18 +491,6 @@ export function validateSettings(s: Settings): void {
     }
     if (typeof a.command !== 'string') {
       throw new SettingsError('InvalidSettings', `agent "${a.id}" command must be a string`);
-    }
-    if (a.injection !== undefined && !['hook', 'flag', 'none'].includes(a.injection)) {
-      throw new SettingsError(
-        'InvalidSettings',
-        `agent "${a.id}" injection must be hook / flag / none (or absent)`,
-      );
-    }
-    if (a.onExit !== undefined && !['keep-shell', 'close'].includes(a.onExit)) {
-      throw new SettingsError(
-        'InvalidSettings',
-        `agent "${a.id}" onExit must be keep-shell / close (or absent)`,
-      );
     }
   }
   const ids = new Set<string>();
