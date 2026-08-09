@@ -51,8 +51,12 @@ ignored, and a misspelled key silently drops the field):
 
 - `title:` — display title; falls back to the filename when absent.
 - `status:` — drives the issue/report lenses and uses the state machine below.
-- `labels:` — optional list; feeds the filter chips.
 - `reflects:` — status docs only: the git commit sha the doc reflects.
+
+The `labels:` frontmatter field is reserved and is not currently enabled.
+Do not add, populate, edit, normalize, or remove it unless the user explicitly
+asks to repair or migrate existing label metadata. Preserve an existing valid
+`labels:` field verbatim.
 
 A new issue starts as (a report starts with `status: Active`; a status doc
 carries `reflects:` instead of `status:`):

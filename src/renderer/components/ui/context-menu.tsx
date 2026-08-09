@@ -3,6 +3,19 @@ import * as ContextMenuPrimitive from '@radix-ui/react-context-menu';
 
 import { cn } from '@renderer/lib/utils';
 
+type ContextMenuSchedule = (callback: () => void, delay: number) => unknown;
+
+export function runAfterContextMenuClose(
+  restoreFocus: () => void,
+  action: () => void,
+  schedule: ContextMenuSchedule = (callback, delay) => globalThis.setTimeout(callback, delay),
+): void {
+  schedule(() => {
+    restoreFocus();
+    schedule(action, 0);
+  }, 50);
+}
+
 const ContextMenu = ({
   modal = false,
   ...props

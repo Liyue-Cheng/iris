@@ -13,7 +13,7 @@ import { stat } from 'node:fs/promises';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { CHANNELS, EVENTS } from '@shared/protocol';
+import { CHANNELS, EVENTS, type WindowEditAction } from '@shared/protocol';
 import { mainT } from './i18n';
 import type {
   AssetImportPayload,
@@ -494,7 +494,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
 
   ipcMain.handle(
     CHANNELS.WINDOW_EDIT_ACTION,
-    (event, payload: { action: 'cut' | 'copy' | 'paste' | 'selectAll' }): void => {
+    (event, payload: { action: WindowEditAction }): void => {
       const wc = senderWindow(event)?.webContents;
       if (!wc) return;
       // Whitelist dispatch — never call arbitrary method names off the wire.

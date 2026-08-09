@@ -14,14 +14,23 @@ import {
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2, TriangleAlert } from 'lucide-react';
+import { CHANNELS, type WindowEditAction } from '@shared/protocol';
 import { useEditorSession, editorStore } from '@renderer/stores/editor-store';
 import { useProject } from '@renderer/stores/project-store';
 import { useSettings } from '@renderer/stores/settings-store';
 import { Button } from '@renderer/components/ui/button';
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+  runAfterContextMenuClose,
+} from '@renderer/components/ui/context-menu';
+import {
   governEditorPathDrop,
   isEditorPathDrag,
-  type EditorDropAdapter,
+  type EditorAdapter,
 } from '@renderer/lib/doc-drag';
 import { TypedHeader } from './TypedHeader';
 import { CrepeEditor } from './CrepeEditor';
@@ -33,11 +42,22 @@ export function DocView(): JSX.Element {
   const { view, docLoading, docError } = useProject();
   const selectedPath = view.kind === 'doc' ? view.path : null;
   const conflictPolicy = useSettings()?.behavior.editorConflictPolicy ?? 'ask';
-  const dropAdapterRef = useRef<EditorDropAdapter | null>(null);
+  const editorAdapterRef = useRef<EditorAdapter | null>(null);
   const [dropError, setDropError] = useState<{ kind: 'path' | 'insert' } | null>(null);
 
-  const handleDropAdapterChange = useCallback((adapter: EditorDropAdapter | null): void => {
-    dropAdapterRef.current = adapter;
+  const handleEditorAdapterChange = useCallback((adapter: EditorAdapter | null): void => {
+    editorAdapterRef.current = adapter;
+  }, []);
+
+  const handleEditAction = useCallback((action: WindowEditAction): void => {
+    const adapter = editorAdapterRef.current;
+    if (!adapter) return;
+    runAfterContextMenuClose(
+      () => adapter.focus(),
+      () => {
+        void window.api.invoke(CHANNELS.WINDOW_EDIT_ACTION, { action });
+      },
+    );
   }, []);
 
   const handlePathDragOver = useCallback((event: ReactDragEvent<HTMLDivElement>): void => {
@@ -50,7 +70,7 @@ export function DocView(): JSX.Element {
     const result = governEditorPathDrop(
       event,
       window.api.getPathForFile,
-      dropAdapterRef.current,
+      editorAdapterRef.current,
     );
     if (result === 'ignored' || result === 'inserted') {
       if (result === 'inserted') setDropError(null);
@@ -151,34 +171,53 @@ export function DocView(): JSX.Element {
           </span>
         </div>
       )}
-      <div
-        className="min-h-0 flex-1"
-        onDragEnterCapture={handlePathDragOver}
-        onDragOverCapture={handlePathDragOver}
-        onDropCapture={handlePathDrop}
-        onBlur={(event) => {
-          const next = event.relatedTarget;
-          if (!(next instanceof Node) || !event.currentTarget.contains(next)) {
-            editorStore.handleEditorBlur();
-          }
-        }}
-      >
-        {session.mode === 'wysiwyg' ? (
-          <CrepeEditor
-            path={session.path}
-            generation={session.generation}
-            body={session.originalBody}
-            onDropAdapterChange={handleDropAdapterChange}
-          />
-        ) : (
-          <SourceEditor
-            path={session.path}
-            generation={session.generation}
-            text={session.sourceText}
-            onDropAdapterChange={handleDropAdapterChange}
-          />
-        )}
-      </div>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <div
+            className="min-h-0 flex-1"
+            onDragEnterCapture={handlePathDragOver}
+            onDragOverCapture={handlePathDragOver}
+            onDropCapture={handlePathDrop}
+            onBlur={(event) => {
+              const next = event.relatedTarget;
+              if (!(next instanceof Node) || !event.currentTarget.contains(next)) {
+                editorStore.handleEditorBlur();
+              }
+            }}
+          >
+            {session.mode === 'wysiwyg' ? (
+              <CrepeEditor
+                path={session.path}
+                generation={session.generation}
+                body={session.originalBody}
+                onEditorAdapterChange={handleEditorAdapterChange}
+              />
+            ) : (
+              <SourceEditor
+                path={session.path}
+                generation={session.generation}
+                text={session.sourceText}
+                onEditorAdapterChange={handleEditorAdapterChange}
+              />
+            )}
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onClick={() => handleEditAction('cut')}>
+            {t('common.cut')}
+          </ContextMenuItem>
+          <ContextMenuItem onClick={() => handleEditAction('copy')}>
+            {t('common.copy')}
+          </ContextMenuItem>
+          <ContextMenuItem onClick={() => handleEditAction('paste')}>
+            {t('common.paste')}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onClick={() => handleEditAction('selectAll')}>
+            {t('common.selectAll')}
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
     </div>
   );
 }

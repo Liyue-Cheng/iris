@@ -1331,7 +1331,8 @@
 .crepe-host .milkdown .milkdown-code-block .list-wrapper {
   border-radius: 6px;
 }
-.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .copy-button {
+.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .copy-button,
+.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .preview-toggle-button {
   width: 28px;
   height: 28px;
   padding: 0;
@@ -1342,14 +1343,67 @@
   border-radius: 0;
   font-size: 0;
 }
-.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .copy-button:hover {
+.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .preview-toggle-button {
+  order: -1;
+}
+.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .copy-button:hover,
+.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .preview-toggle-button:hover {
   background: transparent;
 }
-.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .copy-button svg {
+.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .copy-button svg,
+.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .preview-toggle-button svg {
   fill: var(--rp-muted);
 }
-.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .copy-button:hover svg {
+.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .copy-button:hover svg,
+.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .preview-toggle-button:hover svg {
   fill: var(--rp-text);
+}
+.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .copy-button[data-copy-feedback='copied'] {
+  color: var(--success);
+}
+.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .copy-button[data-copy-feedback='copied'] .milkdown-icon {
+  position: relative;
+}
+.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .copy-button[data-copy-feedback='copied'] .milkdown-icon svg {
+  visibility: hidden;
+}
+.crepe-host .milkdown .milkdown-code-block .tools .tools-button-group > .copy-button[data-copy-feedback='copied'] .milkdown-icon::after {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: currentColor;
+  content: '\2713';
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* Crepe renders inline code as inline-block, which makes a long token an
+   indivisible box. Inside tables it must be allowed to wrap before the cell
+   can enforce the editor column width. Keep horizontal scrolling as a final
+   fallback for genuinely wide tables. */
+.crepe-host .milkdown .milkdown-table-block,
+.crepe-host .milkdown .milkdown-table-block .table-wrapper {
+  min-width: 0;
+  max-width: 100%;
+}
+.crepe-host .milkdown .milkdown-table-block .table-wrapper {
+  overflow-x: auto;
+}
+.crepe-host .milkdown .milkdown-table-block th,
+.crepe-host .milkdown .milkdown-table-block td {
+  overflow-wrap: anywhere;
+}
+.crepe-host .milkdown .milkdown-table-block th code,
+.crepe-host .milkdown .milkdown-table-block td code {
+  display: inline;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 
 /* Raw HTML stays an atom in Milkdown so its Markdown round-trips exactly;

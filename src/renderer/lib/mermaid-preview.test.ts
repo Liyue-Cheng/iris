@@ -1,5 +1,6 @@
 /** @vitest-environment jsdom */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import DOMPurify from 'dompurify';
 
 const mermaidMock = vi.hoisted(() => ({
   initialize: vi.fn(),
@@ -35,6 +36,28 @@ describe('Mermaid preview', () => {
     expect(preview.current?.querySelector('foreignObject')).not.toBeNull();
     expect(preview.current?.querySelector('style')).not.toBeNull();
     expect(preview.current?.querySelector('script')).toBeNull();
+  });
+
+  it('submits a new final value after Milkdown installs its async loading state', async () => {
+    mermaidMock.render.mockResolvedValue({
+      svg: '<svg><text>Completed diagram</text></svg>',
+      bindFunctions: vi.fn(),
+    });
+    const screen = document.createElement('div');
+    let previewValue: null | string | HTMLElement = null;
+    const applyPreview = (value: null | string | HTMLElement): void => {
+      if (Object.is(previewValue, value)) return;
+      previewValue = value;
+      screen.innerHTML = value ? DOMPurify(window).sanitize(value) : '';
+    };
+
+    const result = renderMermaidPreview('mermaid', 'flowchart LR\nA-->B', applyPreview);
+    if (result === undefined && previewValue === null) {
+      screen.textContent = 'Milkdown loading';
+    }
+
+    expect(screen.textContent).toBe('Milkdown loading');
+    await vi.waitFor(() => expect(screen.textContent).toContain('Completed diagram'));
   });
 
   it('returns null for other code block languages', () => {

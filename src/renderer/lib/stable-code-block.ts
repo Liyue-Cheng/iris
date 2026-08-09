@@ -7,8 +7,53 @@ import { codeBlockSchema } from '@milkdown/kit/preset/commonmark';
 import { $view } from '@milkdown/kit/utils';
 
 const RETAINED_CODE_BLOCK = Symbol('iris.retained-code-block');
+const COPY_FEEDBACK_ATTRIBUTE = 'data-copy-feedback';
+
+export const CODE_BLOCK_COPY_FEEDBACK_MS = 1500;
 
 type LanguageDescription = CodeBlockConfig['languages'][number];
+
+/**
+ * Milkdown owns the copy button markup, so keep the transient success state
+ * outside its Vue component and address each code block button independently.
+ */
+export function attachCodeBlockCopyFeedback(
+  root: HTMLElement,
+  resetAfterMs = CODE_BLOCK_COPY_FEEDBACK_MS,
+): () => void {
+  const timers = new Map<HTMLButtonElement, ReturnType<typeof setTimeout>>();
+
+  const handleClick = (event: MouseEvent): void => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+
+    const button = target.closest<HTMLButtonElement>(
+      '.milkdown-code-block .copy-button',
+    );
+    if (!button || !root.contains(button)) return;
+
+    const previousTimer = timers.get(button);
+    if (previousTimer !== undefined) clearTimeout(previousTimer);
+
+    button.setAttribute(COPY_FEEDBACK_ATTRIBUTE, 'copied');
+    const timer = setTimeout(() => {
+      button.removeAttribute(COPY_FEEDBACK_ATTRIBUTE);
+      timers.delete(button);
+    }, resetAfterMs);
+    timers.set(button, timer);
+  };
+
+  root.addEventListener('click', handleClick);
+
+  return () => {
+    root.removeEventListener('click', handleClick);
+    timers.forEach((timer, button) => {
+      clearTimeout(timer);
+      button.removeAttribute(COPY_FEEDBACK_ATTRIBUTE);
+    });
+    timers.clear();
+  };
+}
 
 /**
  * Milkdown does not export the loader used by CodeMirrorBlock. Keep the small
@@ -38,16 +83,20 @@ class LanguageLoader {
 
 /**
  * Retain one initialized CodeMirror instance until its ProseMirror NodeView is
- * destroyed. Milkdown still controls the initial lazy mount through its
- * IntersectionObserver; Iris controls whether an initialized editor is later
- * replaced by a placeholder.
+ * destroyed, and keep selection offsets inside the current code document.
+ * Milkdown still controls the initial lazy mount through its IntersectionObserver;
+ * Iris controls later teardown and guards its unbounded selection bridge.
  */
 export function retainInitializedCodeBlock(block: object): void {
   if (Reflect.get(block, RETAINED_CODE_BLOCK) === true) return;
 
   const scheduleTeardown = Reflect.get(block, 'scheduleTeardown');
+  const setSelection = Reflect.get(block, 'setSelection');
   if (typeof scheduleTeardown !== 'function') {
     throw new Error('Unsupported Milkdown code-block lifecycle: scheduleTeardown is missing');
+  }
+  if (typeof setSelection !== 'function') {
+    throw new Error('Unsupported Milkdown code-block lifecycle: setSelection is missing');
   }
 
   Object.defineProperty(block, 'scheduleTeardown', {
@@ -55,6 +104,18 @@ export function retainInitializedCodeBlock(block: object): void {
     enumerable: false,
     writable: false,
     value: (): void => {},
+  });
+  Object.defineProperty(block, 'setSelection', {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value(this: object, anchor: number, head: number): void {
+      const node = Reflect.get(this, 'node');
+      const text = Reflect.get(node ?? {}, 'textContent');
+      const length = typeof text === 'string' ? text.length : 0;
+      const clamp = (position: number): number => Math.max(0, Math.min(position, length));
+      Reflect.apply(setSelection, this, [clamp(anchor), clamp(head)]);
+    },
   });
   Object.defineProperty(block, RETAINED_CODE_BLOCK, {
     configurable: false,

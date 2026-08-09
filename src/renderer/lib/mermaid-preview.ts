@@ -12,11 +12,6 @@ export function renderMermaidPreview(
 ): void | null {
   if (language.trim().toLowerCase() !== 'mermaid') return null;
 
-  const container = document.createElement('div');
-  container.className = 'mermaid-preview';
-  container.textContent = translate('editor.diagramRendering');
-  applyPreview(container);
-
   void import('mermaid')
     .then(async ({ default: mermaid }) => {
       if (!initialized) {
@@ -31,7 +26,8 @@ export function renderMermaidPreview(
       }
       const id = `iris-mermaid-${Date.now()}-${renderSequence++}`;
       const { svg, bindFunctions } = await mermaid.render(id, source);
-      container.replaceChildren();
+      const container = document.createElement('div');
+      container.className = 'mermaid-preview';
       container.innerHTML = purifier.sanitize(svg, {
         // Mermaid uses sanitized HTML labels inside SVG foreignObject nodes.
         // DOMPurify's default profile keeps HTML + SVG but excludes that one
@@ -39,14 +35,18 @@ export function renderMermaidPreview(
         ADD_TAGS: ['foreignObject'],
         HTML_INTEGRATION_POINTS: { foreignobject: true },
       });
+      applyPreview(container);
       bindFunctions?.(container);
     })
     .catch((error: unknown) => {
-      container.classList.add('mermaid-preview-error');
+      const container = document.createElement('div');
+      container.className = 'mermaid-preview mermaid-preview-error';
       const message = error instanceof Error ? error.message.split('\n')[0] : translate('common.unknownError');
       container.textContent = translate('editor.mermaidFailed', { error: message });
+      applyPreview(container);
     });
 
-  // `undefined` is Milkdown's async-preview contract. Returning `null` here
-  // clears the container that was just passed to applyPreview.
+  // `undefined` makes Milkdown install previewLoading. Submit the final value
+  // only once: Vue refs ignore a later applyPreview call with the same element
+  // identity, and Milkdown sanitizes/copies elements instead of mounting them.
 }

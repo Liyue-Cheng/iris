@@ -104,6 +104,7 @@ describe('editor path drop governance', () => {
   it('prevents default file semantics without blocking indicator cleanup propagation', () => {
     const preventDefault = vi.fn();
     const stopPropagation = vi.fn();
+    const focus = vi.fn();
     const insertTextAtPoint = vi.fn(() => true);
     const event = {
       dataTransfer: dataTransfer({
@@ -117,7 +118,7 @@ describe('editor path drop governance', () => {
     };
 
     expect(
-      governEditorPathDrop(event, vi.fn(), { insertTextAtPoint }),
+      governEditorPathDrop(event, vi.fn(), { focus, insertTextAtPoint }),
     ).toBe('inserted');
     expect(preventDefault).toHaveBeenCalledOnce();
     expect(stopPropagation).not.toHaveBeenCalled();

@@ -131,6 +131,8 @@ export const CHANNELS = {
   SESSION_SCROLLBACK: 'session:scrollback',
 } as const;
 
+export type WindowEditAction = 'cut' | 'copy' | 'paste' | 'selectAll';
+
 export const EVENTS = {
   SETTINGS_CHANGED: 'evt:settings:changed',
   /** Main → renderer: window is closing, flush unsaved editor work now. */

@@ -1,5 +1,63 @@
-import { describe, expect, it } from 'vitest';
-import { retainInitializedCodeBlock } from './stable-code-block';
+// @vitest-environment jsdom
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  attachCodeBlockCopyFeedback,
+  retainInitializedCodeBlock,
+} from './stable-code-block';
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe('attachCodeBlockCopyFeedback', () => {
+  it('shows feedback only on the clicked copy button, then restores it', () => {
+    vi.useFakeTimers();
+    const root = document.createElement('div');
+    root.innerHTML = `
+      <div class="milkdown-code-block"><button class="copy-button"><span>copy</span></button></div>
+      <div class="milkdown-code-block"><button class="copy-button">copy</button></div>
+    `;
+    const buttons = root.querySelectorAll<HTMLButtonElement>('.copy-button');
+    const first = buttons[0];
+    const second = buttons[1];
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+
+    const detach = attachCodeBlockCopyFeedback(root, 1500);
+    first!.querySelector('span')!.click();
+
+    expect(first!.getAttribute('data-copy-feedback')).toBe('copied');
+    expect(second!.hasAttribute('data-copy-feedback')).toBe(false);
+
+    vi.advanceTimersByTime(1499);
+    expect(first!.getAttribute('data-copy-feedback')).toBe('copied');
+    vi.advanceTimersByTime(1);
+    expect(first!.hasAttribute('data-copy-feedback')).toBe(false);
+
+    detach();
+  });
+
+  it('restarts the timer on another click and clears pending state on detach', () => {
+    vi.useFakeTimers();
+    const root = document.createElement('div');
+    root.innerHTML =
+      '<div class="milkdown-code-block"><button class="copy-button">copy</button></div>';
+    const button = root.querySelector<HTMLButtonElement>('.copy-button')!;
+    const detach = attachCodeBlockCopyFeedback(root, 1000);
+
+    button.click();
+    vi.advanceTimersByTime(800);
+    button.click();
+    vi.advanceTimersByTime(800);
+    expect(button.getAttribute('data-copy-feedback')).toBe('copied');
+
+    detach();
+    expect(button.hasAttribute('data-copy-feedback')).toBe(false);
+    vi.runAllTimers();
+    expect(button.hasAttribute('data-copy-feedback')).toBe(false);
+  });
+});
 
 describe('retainInitializedCodeBlock', () => {
   it('disables off-screen teardown only on the Iris-owned NodeView instance', () => {
@@ -8,6 +66,7 @@ describe('retainInitializedCodeBlock', () => {
       scheduleTeardown(): void {
         scheduled += 1;
       },
+      setSelection(): void {},
     };
     const first = Object.create(prototype) as object;
     const second = Object.create(prototype) as object;
@@ -29,5 +88,23 @@ describe('retainInitializedCodeBlock', () => {
 
   it('fails loudly when a Milkdown upgrade removes the lifecycle hook', () => {
     expect(() => retainInitializedCodeBlock({})).toThrow(/scheduleTeardown is missing/);
+  });
+
+  it('clamps ProseMirror selection offsets to the CodeMirror document', () => {
+    const selections: Array<[number, number]> = [];
+    const prototype = {
+      scheduleTeardown(): void {},
+      setSelection(anchor: number, head: number): void {
+        selections.push([anchor, head]);
+      },
+    };
+    const block = Object.assign(Object.create(prototype) as object, {
+      node: { textContent: 'abc' },
+    });
+
+    retainInitializedCodeBlock(block);
+    Reflect.apply(Reflect.get(block, 'setSelection'), block, [-2, 8]);
+
+    expect(selections).toEqual([[0, 3]]);
   });
 });

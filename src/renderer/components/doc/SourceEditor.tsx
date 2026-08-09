@@ -10,18 +10,18 @@ import { markdown } from '@codemirror/lang-markdown';
 import { rosePineCodeMirror } from '@renderer/styles/codemirror-theme';
 import { editorStore } from '@renderer/stores/editor-store';
 import { attachScrollMemory } from '@renderer/lib/scroll-memory';
-import type { EditorDropAdapter } from '@renderer/lib/doc-drag';
+import type { EditorAdapter } from '@renderer/lib/doc-drag';
 
 export function SourceEditor({
   path,
   generation,
   text,
-  onDropAdapterChange,
+  onEditorAdapterChange,
 }: {
   path: string;
   generation: number;
   text: string;
-  onDropAdapterChange: (adapter: EditorDropAdapter | null) => void;
+  onEditorAdapterChange: (adapter: EditorAdapter | null) => void;
 }): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null);
 
@@ -57,7 +57,8 @@ export function SourceEditor({
       scroller: view.scrollDOM,
       focusRoot: host,
     });
-    onDropAdapterChange({
+    onEditorAdapterChange({
+      focus: () => view.focus(),
       insertTextAtPoint: (insertedText, point) => {
         const position = view.posAtCoords(point, false);
         if (position === null) return false;
@@ -73,12 +74,12 @@ export function SourceEditor({
     });
 
     return () => {
-      onDropAdapterChange(null);
+      onEditorAdapterChange(null);
       scrollMemory.stop();
       view.destroy();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, generation, onDropAdapterChange]);
+  }, [path, generation, onEditorAdapterChange]);
 
   return <div ref={hostRef} className="cm-host h-full overflow-hidden" />;
 }

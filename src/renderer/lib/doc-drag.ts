@@ -16,7 +16,8 @@ export interface EditorDropPoint {
   y: number;
 }
 
-export interface EditorDropAdapter {
+export interface EditorAdapter {
+  focus(): void;
   insertTextAtPoint(text: string, point: EditorDropPoint): boolean;
 }
 
@@ -100,7 +101,7 @@ export function formatDroppedPaths(paths: readonly string[]): string {
 export function governEditorPathDrop(
   event: EditorPathDropEvent,
   resolvePath: FilePathResolver,
-  adapter: EditorDropAdapter | null,
+  adapter: EditorAdapter | null,
 ): EditorPathDropResult {
   const drop = resolveEditorPathDrop(event.dataTransfer, resolvePath);
   if (!drop) return 'ignored';
