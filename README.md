@@ -1,322 +1,378 @@
-# Iris
+<p align="center">
+  <img src="build/wordmark.svg" alt="Iris" width="220">
+</p>
 
-> An AI-native, document-centric, terminal-driven project manager.
-> It doesn't replace Jira — it replaces VS Code as the layer you live in when you're *not* looking at code.
+<p align="center">
+  A local-first Agent Development Environment for human-agent software work.
+</p>
 
-Iris is a deliberately thin shell wrapped around two things you already have: **a pile of markdown files** and **a pool of terminal sessions**. It outsources all intelligence to the agent CLIs you've already installed and logged in to (`claude`, `codex`, `gemini`, `aider`, …), and keeps all of your data as plain text on disk. Open source, no account, no subscription, agent-agnostic.
+Iris brings project documents, interactive agent terminals, Git state, and human attention into one desktop workspace. It does not embed a model or replace your agent CLI. Instead, it gives the tools you already use a durable project memory and a visible place to work together.
 
-In the AI era, programming *is* project management: you don't need to stare at code all the time, and when you do, the code editor is right there. Iris is the coordinating skin for everything that happens when you're not in the editor.
+Your project state stays in ordinary Markdown under `.iris/`. Your agents run in real PTYs at the project root. Git remains the collaboration and delivery layer. There is no Iris account, cloud database, API key, or proprietary project format.
 
----
+> Current release line: `0.1.0-beta`. Iris is Windows-first and currently ships for Windows x64.
 
-## Protocol first
+<!--
+README SCREENSHOT 1: Main workspace overview
+Suggested file: docs/images/readme-overview.png
+Show: lens tree on the left, an issue document in the middle, and an active Codex or Claude session on the right.
+Suggested crop: 16:9, 1600x900 or larger.
+Insert here as: ![Iris workspace](docs/images/readme-overview.png)
+-->
 
-**Iris is a protocol, not an app.** The protocol is a directory convention (`.iris/`) plus a short prose constitution — and it works without the app present: hand-make the folders, drop in the constitution, point a bare terminal at it, and you're running. The application is just the protocol's *reference implementation*: a **viewer** and a **summoner**.
+## Why Iris
 
-That means everything below works whether or not you ever launch the GUI. The app makes the protocol pleasant; it does not make it *real*. Delete `.iris/` and your project is untouched — that's roughly equivalent to uninstalling Iris.
+Agentic development changes the bottleneck. Producing code is faster, but the surrounding work is still fragmented:
 
----
+- Context is repeatedly copied into short-lived chats and terminals.
+- Progress is hidden inside several concurrent sessions.
+- An agent waiting for input looks the same as one still working.
+- Decisions and results often remain in conversation history instead of the project.
+- Traditional project managers describe work but do not share state with local agents.
 
-## Two first-class citizens
+Iris treats those as one coordination problem. Documents are long-term memory. Terminal sessions are working memory. The filesystem is the contract between humans, agents, editors, and Git.
 
-Everything in Iris orbits **documents** (markdown) and **terminals** (PTY). The rest of the design follows from keeping those two central.
+## The Design Bet
 
-### The filesystem is the database
+Iris assumes that as agents make code production cheaper, the scarce work moves elsewhere: expressing intent, preserving constraints, tracking unresolved questions, evaluating evidence, and continuously refining what the project knows about itself. Running more agents is useful, but execution throughput is not the highest-level problem if nobody can reliably recover why the work exists or decide whether the result is correct.
 
-All project data lives as `.md` files in folders. No proprietary format, no database, no cloud. **git** is your version control, your sync, and your collaboration layer. Data outlives software.
+Most agent tools make the agent or its conversation the unit of continuity. Iris makes the project the unit of continuity instead. Agents are interchangeable execution resources, and terminal sessions are disposable contexts. A session may end, its context window may fill, or one agent CLI may be replaced by another without taking the project's memory with it. Anything worth keeping must be externalized as an issue, status, report, task, code change, test, or Git history rather than remaining trapped in a transcript.
 
-### Hard keys, soft values
+This makes Iris an intent-oriented programming environment. Issues describe the gap between current reality and desired reality; disposable agent sessions interpret and act on that intent; code and tests provide implementation evidence; reports preserve dated findings; and status documents restate the current system after reality changes. The loop is durable even when every agent that participated in it is gone.
 
-All project configuration lives as *prose* (written in the constitution file), not as code.
-
-- **Keys are hard** — the rendering layer parses them literally (`status:` present → task view; folder named `issue/` → issue type).
-- **Values are soft** — agents fill them per a loose convention and are allowed to deviate.
-
-Names are hard; tree shape is free.
-
-### Types as lenses, not schemas
-
-Types are navigation lenses, not enforced validation. There is **no schema validation, no manifest, no registry** — structure is inferred entirely from the filesystem (the name is the type; the workspace is inferred). Constraints live in the convention layer, not in the type system. The constitution is kept deliberately short, because every extra rule lowers the compliance rate of *all* rules (context rot).
-
-### Dumb shell, outsourced intelligence
-
-The app itself is nearly zero-intelligence. There is **no embedded agent, no SDK, no API key**. Intelligence comes from the CLI you already run on your own machine, on your own billing. (This doesn't forbid *your* BYOK automations — the shell carries no intelligence of its own, but it won't reject the intelligence you bring.)
-
-### Agent-agnostic — files are the contract
-
-Any agent that speaks through a CLI works. Iris **never parses an agent's terminal output**; it watches files instead. **Files are the contract.** Adding support for a new agent therefore needs almost no adapter code.
-
-### Optional at every layer
-
-Close the app and the folders are still usable plain text. Forget to inject `$FOCUS_DOC` and a human can just say one sentence. Forget the constitution and a doc lands in the wrong folder, nothing more. Drop the protocol entirely and `rm -rf .iris/` leaves the project whole.
-
----
-
-## The protocol: data model
-
-### Project structure
-
+```text
+intent and constraints -> disposable agent execution -> code and evidence
+          ^                                               |
+          `----- reports and current project state <------'
 ```
+
+## The Core Workflow
+
+1. Open a local project in Iris.
+2. Initialize the Iris protocol, or use an existing `.iris/` tree.
+3. Create or select an issue, status document, report, or workspace hub.
+4. Launch Claude Code, Codex, Gemini, another CLI, or a plain shell from that context.
+5. Give the agent an instruction. Iris has already supplied the document or workspace context when the configured CLI supports it.
+6. Let the agent edit code and Markdown on disk.
+7. Iris watches the files and re-projects the interface from the new disk state.
+8. Review the result, update the issue, and commit through Git.
+
+Launching a session is not dispatching a background job. The agent starts interactively and waits for you. You can leave, work elsewhere, and return when the session state indicates that it may need attention.
+
+<!--
+README SCREENSHOT 2: Document-to-agent workflow
+Suggested file: docs/images/readme-focused-session.png
+Show: one issue selected, its typed header and body, plus the right-pane launch menu or a focused agent session.
+Suggested crop: 3:2, at least 1400px wide.
+Insert here as: ![A document-focused agent session](docs/images/readme-focused-session.png)
+-->
+
+## Three Product Layers
+
+Iris separates a portable protocol from its desktop implementation and its agent adapters.
+
+### The `.iris/` protocol
+
+The protocol is a filesystem convention plus agent guidance. It can be read and edited without the Iris application.
+
+```text
 my-project/
-├── AGENTS.md                 # Standard project entry (NOT owned by Iris). One appended guidance section.
-├── .iris/                    # Iris's project-level namespace (the root workspace)
-│   ├── CONVENTIONS.md        # The constitution. Hand-written once. App reads it; agents must not touch it.
-│   ├── status/               # Current truth. Maintained live by the AI. Carries a commit stamp.
-│   ├── issue/                # Things to do and known problems.
-│   │   ├── auth.md
-│   │   └── auth.assets/      # Assets owned by auth.md; opaque to PM scanning.
-│   ├── report/               # One-shot snapshots; append-only archive.
-│   ├── misc/                 # Human scratch space. Outside the system.
-│   └── spike-auth/           # ← a sub-workspace (any name; contains typed folders)
-│       ├── status/
-│       ├── issue/
-│       └── report/
-└── (your code and everything else)
+|-- AGENTS.md
+|-- .iris/
+|   |-- status/
+|   |   `-- architecture.md
+|   |-- issue/
+|   |   |-- 2026-08-08-fix-auth.md
+|   |   `-- 2026-08-08-fix-auth.assets/
+|   |-- report/
+|   |   `-- 2026-08-08-auth-review.md
+|   |-- misc/
+|   `-- spike-new-parser/
+|       |-- status/
+|       |-- issue/
+|       `-- report/
+`-- src/
 ```
 
-### One recursive rule: the name is the type
+Four folder names have built-in meaning wherever they appear inside `.iris/`:
 
-The protocol's load-bearing rule, applied recursively: **a folder named `status/`, `issue/`, `report/`, or `misc/` — at any depth in the `.iris/` tree — is parsed, rendered, and classified as that type.** Each markdown file's type is decided by its *nearest* typed folder.
+| Folder | Time orientation | Purpose |
+| --- | --- | --- |
+| `status/` | Now | A current mirror of the codebase, stamped with the Git commit it reflects |
+| `issue/` | Future and active work | Problems, tasks, decisions, and their working record |
+| `report/` | Dated past | Reviews, analyses, summaries, and other deliverables |
+| `misc/` | Outside the workflow | Human scratch space with no freshness contract |
 
-### Workspaces are inferred, not declared
+The nearest typed folder decides a document's type. Any directory that directly contains a typed folder is inferred as a workspace. There is no workspace manifest or database.
 
-**Any folder containing a typed folder is automatically a workspace.** No registry, no manifest — the structure is read straight from the filesystem. `.iris/` is the default root workspace; sub-folder workspaces exist for independent exploration, time-boxed spikes, and other sub-project scenarios.
+Frontmatter keys are literal interfaces, while values remain flexible:
 
-- **Creating one is a human gesture** (via a wizard; templates: standard four-folder / empty custom). Agents don't create workspaces unprompted.
-- **Lexical scope:** when an agent writes back, it writes into the *nearest enclosing workspace* of `$FOCUS_DOC`. That path encodes both the document's type and its scope.
-- **Live and die together:** a failed spike is `rm -rf`'d as one folder; a successful one promotes its valuable docs up to the parent.
-- **Archiving trick:** move a finished workspace into the parent's `report/` — the "frozen past" contract makes the UI gray it out wholesale. Zero new concepts.
-
-### Four freshness contracts
-
-| Typed folder | Time semantics | Maintainer | Freshness contract | git merge behavior |
-|--------------|----------------|-----------|--------------------|--------------------|
-| `status/`    | Now            | AI        | Must equal *now* (strongest)   | Worst (a derived view) |
-| `issue/`     | Future         | Human + AI| Valid until resolved           | Good (one file per thing) |
-| `report/`    | Past           | AI        | Frozen at birth; append-only   | Perfect (grow-only set) |
-| `misc/`      | Outside time   | Human     | No contract                    | Irrelevant |
-
-**Event-sourcing reading:** `report/` is an append-only event log, `status/` is a materialized view, `issue/` is a pending queue. If `status/` drifts, it can be rebuilt from `report/` + the code — reports are the sedimentary ground truth, status is just their cache. The constitution asks the agent to append a session journal to `report/` after every task ("what I did and why"), which doubles as the project's searchable institutional memory.
-
-### frontmatter and naming
-
-```yaml
+```markdown
 ---
-title: Service boundary design
-status: In Progress        # a soft, recommended value — deviation allowed
-reflects: a1b3c2           # agent-side stamp: which commit this doc reflects
-labels: [auth, backend]    # soft values, passed through verbatim
+title: Harden session replay
+status: In Progress
 ---
 ```
 
-- **Keys** are recognized literally (`status:` present → task view; `reflects:` → reserved for staleness calculation).
-- **Values** are filled by the agent per the constitution; deviation is allowed.
-- **File naming:** new files in `issue/` and `report/` carry a date prefix (`2026-06-10-auth-refactor.md`) so concurrent creation by multiple humans/agents never collides.
+Issue states default to `Todo`, `In Progress`, `In Review`, `Blocked`, `Done`, or `Canceled`. Reports use `Active` and `Backlog`. Iris preserves exceptional values instead of rejecting the document.
 
-### Document assets
+The `labels:` frontmatter field is reserved but not currently enabled. Iris
+preserves valid legacy metadata, but the application and its managed agent
+guidance do not create, edit, display, group, or filter by labels.
 
-An Iris document owns an optional sibling directory named after it: `auth.md`
-owns `auth.assets/`. The body uses ordinary relative Markdown links such as
-`![flow](./auth.assets/flow--c34ab87d2e10.png)`, so the aggregate remains usable
-without Iris and moves cleanly between machines. There is no manifest,
-frontmatter registry, or global asset database.
+Every GFM task item in an active issue is also projected into the Todo panel:
 
-Imported names combine a readable sanitized stem with a SHA-256 prefix. The
-same bytes are reused within one document; referenced assets are immutable and
-replacement creates a new file. Iris audits four disk-derived states:
-`referenced`, `orphan`, `missing`, and `unmanaged`. Orphans are never deleted
-automatically. The document and companion directory move to the system trash
-together after human confirmation. Legacy project-relative and HTTPS links
-continue to render as unmanaged references; `blob:` URLs are never persisted.
-
-### The convention scope chain
-
-Conventions resolve nearest-scope-first, inner to outer: **workspace ⊂ project ⊂ machine.**
-
-- **Project layer** — `.iris/CONVENTIONS.md` (committed to git, shared by the team). Describes the *work itself*: folder semantics, stamping rules, write-back scope. Anything a collaborator needs to know to interpret these files lives here.
-- **Machine layer** — `~/.iris/CONVENTIONS.md` (not in git, travels with the machine). Describes the *environment the work happens in*: corporate encryption software (name, how it interferes, whitelisted dirs, workaround), network proxy, VM constraints, resource limits, toolchain quirks.
-
-The portability litmus test: *"this sentence stops being true on another machine"* → machine layer; *"this must hold on any checkout, anywhere"* → project layer. A senior engineer carries two kinds of knowledge — about the project, and about this machine. Externalize the first into the project layer and the second into the machine layer, and the agent reads like "someone who has worked on this box before."
-
-`~/.iris/` and `.iris/` are isomorphic: each holds a `CONVENTIONS.md` (read by the **agent** — part of the protocol) and `settings` / `templates` (read by the **app** — software config). Neither parses the other.
-
-### The injection chain and protocol version
-
-Root `AGENTS.md` (one guidance section) → `.iris/CONVENTIONS.md` → `~/.iris/CONVENTIONS.md` (if present). Three hops, each with some compliance decay — so the machine layer should be the shortest of the three. The constitution's frontmatter carries `protocol: 1`; on a version mismatch the software only **prompts** with a diff — upgrading the constitution is a human gesture.
-
----
-
-## The core gesture
-
-**Select a document → right-click → "Open with X".**
-
-This opens a new terminal session with:
-
-- working directory = the project root,
-- environment variable `FOCUS_DOC=<relative path of the selected doc>`,
-- the agent launched **bare** (no task prompt injected).
-
-The agent reads the constitution via the injection chain → reads `$FOCUS_DOC` per the protocol → has its context → and **stops, waiting for your instruction.** Opening is not dispatching: with no user message, there is no task. The whole point of this gesture is to kill the friction of manually pasting context every time you open an agent.
-
-### Context injection is a rendering-layer adaptation, not the protocol
-
-The shell only ever sets `FOCUS_DOC`. Turning that pointer into actual context is optional and layered:
-
-- Agents with a **SessionStart hook** use the hook to expand the pointer into content (zero extra turns — the content enters context without the model being invoked). Iris ships a generated machine-level focus-context script (`~/.iris/focus-context.ps1`); it **detects, suggests, and — only after your explicit confirmation — writes** the hook into the agent's own config file (with a `.bak` backup). Out of the box it knows about Claude Code, Gemini CLI, Qwen Code, Cursor CLI, and Codex. For Codex, Iris writes the user-level `~/.codex/hooks.json`; Codex then requires the user to review and trust the hook through `/hooks`.
-- Agents with a launch **flag** carry the pointer on the command line (e.g. `aider --read $env:FOCUS_DOC`).
-- Agents with **neither** degrade gracefully to "read the AGENTS.md guidance and fetch the doc yourself" — which the protocol allows anyway.
-
-Dynamic focus rides an environment variable (born and dies with the process); the static contract rides the constitution file. Two lifecycles, two pipelines.
-
-### The session model: multiple sessions, detach not dispatch
-
-- **Many concurrent sessions per project is the norm:** one anchored to an architecture doc, one to an issue, one to the project root. Sessions are anchored to documents; the root session is the unfocused fallback.
-- **The anchoring model is borrowed from [Marina](#reuse-and-lineage):** the doc↔session binding is fixed at session creation and never changes; **one document can carry any number of sessions** (e.g. a `claude` and a `codex` side by side). Want to refocus mid-session? Just say so in the conversation — the protocol adds no mechanism for it.
-- **Sessions are working memory; documents are long-term memory.** Sessions are cheap, disposable, re-openable; documents are permanent and accrete each session's output through write-back. A document is served by many sessions over its life; when a session dies, the document remembers.
-- **Detach, not dispatch.** There is no headless dispatch. Sessions stay interactive and conversational — you simply aren't chained to the window: leave, come back, pick up. An agent's question waits, lit up, in the "waiting for input" state. Throughput comes from parallel sessions, not from surrendering the conversational control plane — so a review point always exists.
-
----
-
-## The interface
-
-Three panes.
-
-- **Left — the lens tree.** Documents organized by lens: workspaces are the grouping level, types are the categories within. The `issue/` group shows only *active* issues — resolved ones don't take up your field of view. A **session status dot** sits next to each document (● working / ◐ idle-or-awaiting-input), turning the left pane into an attention scheduler that tells you *which thing is waiting on you*. A raw file-tree is a toggle-out escape hatch.
-- **Middle — two levels.** Click a *type header* → the **collection view** (issues get a Linear-style management panel; other types get a simple one-file-per-row list). Click a *single document* → the **single-doc view**: a typed header (badges, fields) plus the body, edited Typora-style in WYSIWYG, with a source mode as the escape hatch for precise edits. **frontmatter never enters the body editor** — the header owns it.
-- **Right — the terminal pane.** The vertical AI conversation panel. Clicking a doc in the left pane switches to its session; when a doc carries multiple sessions, the right pane includes a session list and switcher.
-
-**The status dot** is decided by a pure PTY byte-stream activity heuristic — recent output = working, silence past a threshold = idle / possibly awaiting input. It only ever looks at whether bytes flowed, never at their content. The thresholds (2s silence, plus anti-flicker quiet windows for startup banners, resize echoes, and keystroke echo) are inherited from Marina, where they were already tuned.
-
----
-
-## Collaboration, via git
-
-The protocol holds up under multi-person git use, and the four folders' merge behavior is inversely proportional to their freshness contract (stronger contract → more painful merge):
-
-- **`report/`** — grow-only set, near-zero conflicts; the date prefix all but guarantees no name clashes.
-- **`issue/`** — one file per thing, so new files never interfere; a frontmatter conflict on the *same* issue is small, readable, and surfaces a real human disagreement — letting it surface is correct.
-- **`misc/`** — everyone writes their own.
-- **`status/`** — **a derived view is not merged, it's rebuilt** (the lockfile pattern). After a merge, just say "code just merged, refresh the affected status docs."
-- **Self-healing fallback:** even if nobody refreshes, the constitution's trust-calibration rule tells the agent to treat a suspicious `status/` doc as a weak prior and verify against the code. The system doesn't go *wrong* from laziness — it just slows down, then heals.
-
-Multi-person collaboration needs no new design; it just makes existing mechanisms (especially "the constitution is in git") matter more.
-
----
-
-## What Iris deliberately doesn't do
-
-These are current trade-offs with reasons, not identity commitments. When a reason stops holding, that one gets reopened.
-
-- **No embedded agent, SDK, or API key** — you bring the CLI and the billing; the shell stays dumb. (This does not exclude *your* BYOK automations.)
-- **No accounts, subscriptions, cloud, or telemetry** — your data stays in your hands.
-- **No headless dispatch** — detach, not dispatch; the conversational control plane stays with the human.
-- **No plugin system (yet)** — view extensions go through declarative config; truly custom logic means fork / PR. (You clone untrusted repos daily — executable code inside a repo would be "open = run a stranger's code.")
-- **No note vault, no orchestration kanban, no code editor** — things others already do well aren't redone.
-- **No parsing of agent output** — files are the contract.
-- **No schema validation, no workspace manifest** — constraints stay in the convention layer.
-- **The app never writes the constitution** — both constitution layers are hand-authored; the app only reads.
-
----
-
-## Tech stack
-
-The primary selection criterion is **AI readability**: React + Tailwind + shadcn is the highest-density frontend stack in training corpora, so an AI-written codebase has the lowest rework rate. For a codebase written largely by agents, a stack's popularity is itself a productivity feature.
-
-| Layer | Choice | Notes |
-|-------|--------|-------|
-| Desktop shell | **Electron** (electron-vite) | Same stack as Marina, so the session layer is reused directly |
-| Language / framework | **TypeScript + React 18** | |
-| Business-logic layer | **front-cpu** (FrontCPU ISA) | Instruction pipeline with an interrupt system, pluggable executors, lifecycle guarantees |
-| Components | **shadcn/ui + Tailwind** (Radix primitives) | Copy-in components; source lives in this repo |
-| Render pipeline | **remark / unified** | Parse to AST, then interpret per type via a default config table |
-| Body editor | **Crepe** (the Milkdown distribution) | Typora-style WYSIWYG |
-| Source editor | **CodeMirror 6** | The raw-toggle escape hatch |
-| File watching | **chokidar** | In the Electron main process |
-| PTY | **node-pty + xterm.js** (webgl / fit / serialize / search / headless addons) | The session layer, reused from Marina |
-| frontmatter | **gray-matter** | |
-| License | **MIT** | |
-
-**Design language:** inherited from its sister project Marina — **Rose Pine** color palette + **LXGW WenKai** (霞鹜文楷) typeface. v1 ships the three Rose Pine variants (dark `rose-pine`, light `dawn`, medium `moon`). The xterm.js theme and the Tailwind CSS variables are aligned to the same palette.
-
-**Editor red line:** never build a bespoke CodeMirror live-preview — that ecosystem's history is a string of abandoned ships (HyperMD, MarkText). The polishing cost of tables/images/lists is exactly "the part that needs a lot of code," so it's bought off the shelf via Crepe.
-
----
-
-## Architecture notes
-
-### front-cpu: every side effect is one instruction
-
-The business-logic layer doesn't roll its own side-effect channel. Every operation with a side effect is **registered as one instruction** (`registerISA`, named `{domain}.{operation}`); the UI only ever calls `pipeline.dispatch('doc.save', payload)`. Instructions flow through a five-stage pipeline (fetch → schedule → execute → respond → write-back); the schedule stage auto-detects resource conflicts by `resourceIdentifier` and supports several scheduling strategies (out-of-order / serial / latest / read-write).
-
-This is the *one correct answer* given to agents writing the codebase: a new feature = a new instruction. The central instruction registry is an anti-entropy device — uniform, auditable diffs. ISA is to the codebase what `.iris/` is to the project: "hard keys" applied to the code itself.
-
-Iris-specific usage:
-
-- **The instruction body goes through an `ipc` executor**, staying declarative. There's no backend, so a ~10-line `ipc` executor (`registerExecutor('ipc', (config, payload) => ipcRenderer.invoke(config.channel, payload))`) gives the same declarative experience as an HTTP one.
-- **No optimistic updates** — a local disk write has no network latency, so there's nothing to be optimistic about.
-- **`doc.save` is serial per file path** (`resourceIdentifier: doc:{path}` + explicit `serial`), so rapid saves to the same doc never interleave; everything else is out-of-order by default.
-- **Write-to-disk instructions get no cancellation** — front-cpu's cancellation is cooperative (it drops the *result*, not the side effect), and a "canceled" save may have already written, so write instructions simply opt out.
-
-### CQRS boundary
-
-The ISA only ever admits *verbs that change the world*. The projection from filesystem → render is a **reactive pure function** and does **not** go through the pipeline.
-
-### External events go through the interrupt system
-
-chokidar file events enter via `pipeline.interrupts.raise()` and an ISR updates the projection — they do **not** go through `dispatch`. Echo de-duplication inside the ISR uses a **deterministic state comparison only**, zero heuristics: the on-disk content hash equals the in-memory document state → no information gain → skip; mismatch → a genuine external edit → re-project. Because the editor is the source of truth and the in-memory state is already current before dispatch, there's no registration step and no timing race — the comparison is correct whether the file event arrives before or after the write completes.
-
-```typescript
-// main process watches .iris/ → IPC push to renderer → renderer raises the interrupt
-ipcRenderer.on('fs:changed', (_evt, { path, content }) => {
-  pipeline.interrupts.raise({ type: 'fs.doc.changed', source: 'file-watcher', data: { path, content } })
-})
-
-// projection ISR: state-compare de-dup — disk == memory → skip; else re-project
-pipeline.interrupts.register({
-  name: 'doc-projection',
-  events: 'fs.doc.*',
-  onInterrupt: (e) => {
-    const { path, content } = e.data
-    if (hash(content) === hash(docStore.get(path)?.content)) return // echo or equivalent edit
-    reproject(path, content)
-  },
-})
+```markdown
+- [ ] Reproduce the failure in the packaged build
+- [ ] Verify the fix with Codex and Claude Code
 ```
 
-### Zero-diff discipline
+Checking a task in the panel writes back to that exact line in the source document.
 
-Serialization uses fixed remark defaults: **open-then-save must produce zero diff.** This is rule #9 the constitution asks of agents — and the app holds itself to it first. The editor store does frontmatter as line-level surgery, only re-serializes the body through Crepe when it actually changed, and skips the write entirely when nothing was edited; echo de-dup is an exact comparison against the last-written content.
+### The desktop application
 
-### Reuse and lineage
+The Electron app is the reference implementation and operational control plane for the protocol. It provides:
 
-The entire session layer is copied from the sister project **Marina** (a terminal/session manager by the same author) and lightly adapted, rather than rewritten: the PTY pool and `idle ↔ active → exited` state machine, the anti-flicker parameters, the anchoring model (rebased from path↔session to doc↔session), settings persistence (relocated to `~/.iris/`), the electron-vite scaffold, the Rose Pine palette, and the `XTERM_THEMES` object. The LLM-based status re-check and the SSH machinery were dropped — the dumb-shell principle forbids the former.
+- Recursive `.iris/` scanning and live filesystem projection
+- Project initialization and inferred sub-workspaces
+- Type-specific collection views
+- WYSIWYG Markdown editing with a source-mode escape hatch
+- Managed document assets
+- Multiple interactive PTY sessions per document or workspace
+- Git status, staging, unstaging, commits, and local branch switching
+- Multiple project windows with isolated session and watcher state
+- Machine-level themes, editor behavior, terminal behavior, and agent configuration
 
----
+The protocol preserves portability. The app provides efficiency, safety, and concurrency control.
 
-## Getting started
+### Agent adapters
 
-> Iris is Windows-first (terminal integration is built on ConPTY, with anti-flicker parameters already tuned for Windows). POSIX support is a later milestone.
+Iris runs agent commands that are already installed and authenticated on your machine. Default entries include Claude Code, Codex, Gemini, and a plain terminal; the list and command lines are editable.
 
-```bash
-npm install        # front-cpu is currently a local file: link; see package.json
-npm run dev        # Vite HMR + Electron
-npm run typecheck  # tsc --noEmit across the three process tsconfigs
-npm run build      # typecheck + electron-vite build (output in out/)
-npm run smoke      # startup smoke test against the out/ build (build first)
-npm test           # vitest
-npm run dist       # build + electron-builder (Windows portable, x64)
+A document session receives:
+
+```text
+FOCUS_DOC=.iris/issue/2026-08-08-fix-auth.md
 ```
 
-### Cold start (the protocol bootstraps itself)
+A workspace hub session receives `IRIS_WORKSPACE_PATH` and deliberately has no focused document.
 
-No special feature needed. Once the scaffold exists, open a session on the project root and say one sentence:
+On Windows, Iris can install a generated SessionStart context script at `~/.iris/focus-context.ps1` and, after explicit confirmation, connect supported CLI hook configurations. The current hook adapter recognizes Claude Code, Codex CLI, Gemini CLI, Qwen Code, and Cursor CLI. CLIs without hook support can still read the environment pointer and project guidance directly.
 
-> "Read this codebase and, following `.iris/CONVENTIONS.md`, generate the initial status docs and stamp them with HEAD."
+Static project rules live in entry files such as `AGENTS.md`. Dynamic focus lives in the session environment. The two have different lifetimes and are intentionally kept separate.
 
-The protocol self-bootstraps from there.
+## The Interface
 
----
+### Left: work and attention
+
+The lens tree groups documents by workspace and type. Active issues and reports remain prominent, while resolved work leaves the default lens. Session state dots show whether an anchored terminal is producing output, quiet and possibly waiting, or exited.
+
+The left pane also provides project switching, recent projects, new windows, workspace creation, search, sorting, the Todo panel, and Git source control.
+
+### Middle: documents and collections
+
+Single-document views separate structured frontmatter from the Markdown body. The typed header owns title, status, save state, and assets. The body uses a Crepe/Milkdown WYSIWYG editor with GFM, LaTeX, syntax-highlighted code blocks, Mermaid previews, image upload, and a CodeMirror source mode.
+
+Each document type has a different collection view:
+
+- Issues support activity filters, search, workspace filters, grouping, sorting, keyboard navigation, multi-selection, and bulk state changes.
+- Todo aggregates unchecked tasks from active issues.
+- Status compares each document's `reflects` commit with the current Git HEAD.
+- Reports are arranged as a dated timeline.
+- Misc stays intentionally simple.
+
+### Right: real terminals
+
+The right pane is xterm.js connected to a real local PTY, not a chat transcript. A document or workspace may own multiple sessions. Terminals support search, clipboard integration, file drop, document drop, resize-aware geometry, and full-state replay when remounted.
+
+Project and workspace hubs give the terminal the full work area. A selected document uses a resizable editor-and-terminal split. Collection views use the full area for management work.
+
+<!--
+README SCREENSHOT 3: Collection and attention views
+Suggested file: docs/images/readme-issue-panel.png
+Show: grouped Issue panel or Todo panel, including status, workspace, and counts.
+Suggested crop: 16:9, 1600x900 or larger.
+Insert here as: ![Issue management in Iris](docs/images/readme-issue-panel.png)
+-->
+
+## Files Are the Contract
+
+Iris never interprets an agent's prose output to decide whether work is complete. It observes durable state instead:
+
+- Agent edits arrive through filesystem events.
+- The renderer rescans and projects the current disk state.
+- Editor writes use compare-and-swap baselines so an external edit is not silently overwritten.
+- Dirty drafts block view changes, Git actions, project switches, and application close until they are saved or resolved.
+- Project operations carry a canonical root and generation so late events from an old project cannot affect the new one.
+- Discrete mutations are serialized by resource through the FrontCPU instruction pipeline.
+
+This is what makes plain files viable with several simultaneous writers.
+
+## Sessions as Working Memory
+
+Sessions are anchored when created. One document can have several sessions, while root and nested workspaces can have unfocused hub sessions. Iris does not continuously retarget a running agent.
+
+The main process owns the PTY pool. A headless xterm mirror tracks the complete terminal state, including alternate-screen TUIs. When a renderer remounts a terminal, Iris serializes that state and then resumes live output without double-writing the replay boundary.
+
+Sessions survive renderer reloads and interface switches while the owning window remains open. They are intentionally not durable across application exit, window close, or project replacement. Documents are long-term memory; sessions are disposable working memory.
+
+## Document Assets
+
+A document may own a sibling companion directory:
+
+```text
+2026-08-08-auth-review.md
+2026-08-08-auth-review.assets/
+```
+
+Imports use content hashes for stable, portable names. The asset panel derives four health states from Markdown references and disk contents: referenced, orphan, missing, and unmanaged. It can adopt legacy local images or data URLs, copy Markdown links, reveal files, and move unreferenced managed assets to the system trash.
+
+Iris does not automatically download remote assets or delete orphans. Deleting a document moves the Markdown file and its companion directory to the system trash as one aggregate.
+
+## Git Integration
+
+The built-in Git view is deliberately small and local:
+
+- Repository status and branch information
+- Merge, staged, working-tree, and untracked groups
+- Stage and unstage selected paths
+- Commit staged changes
+- Switch local branches
+- Ahead and behind indicators when Git provides them
+
+Iris currently does not provide diff editing, fetch, pull, push, remote account integration, or a merge-conflict editor. Use your existing Git tools for those operations.
+
+## Install
+
+### System requirements
+
+- Windows 10 or Windows 11, x64
+- Git available on `PATH` for source control features
+- At least one agent CLI installed and authenticated, or use the plain terminal
+- PowerShell for the current zero-turn SessionStart hook adapter
+
+### Release builds
+
+Pre-release builds are published on the [GitHub Releases](https://github.com/Liyue-Cheng/iris/releases) page in two forms:
+
+- `Iris-<version>-setup.exe`: per-user installer with Start menu and optional desktop shortcuts
+- `Iris-<version>-portable.exe`: single-file portable build
+
+Iris is not currently code-signed. Windows SmartScreen may display an unrecognized publisher warning. Verify that the file came from this repository's GitHub Releases page before running it.
+
+The installer and portable build share machine-level settings under `~/.iris/`. Uninstalling the application does not delete those settings or any project `.iris/` data.
+
+## Quick Start
+
+1. Launch Iris and choose **Open Project Folder**.
+2. If the project has no `.iris/`, review and confirm **Initialize Iris Protocol**.
+3. Open **Settings > Agents** and configure the CLI commands you use.
+4. Optionally install the SessionStart hook for zero-turn focus injection.
+5. Create an issue or select an existing document in the lens tree.
+6. Use the right-pane launcher to open an agent under that document.
+7. Give the agent a concrete instruction and review its changes on disk and in Git.
+
+Initialization creates the four typed directories and adds or refreshes an Iris-owned `<iris-software>` block in `AGENTS.md`. Existing vendor entry files such as `CLAUDE.md` are synchronized only when they already exist; Iris does not create a collection of vendor files. An optional `<iris-project>` block can hold project-specific guidance and is synchronized across existing entry files.
+
+<!--
+README SCREENSHOT 4: Agent and prompt settings
+Suggested file: docs/images/readme-agent-settings.png
+Show: configured agent commands and context-injection state.
+Suggested crop: 16:9 or 3:2, at least 1400px wide.
+Insert here as: ![Agent configuration and context injection](docs/images/readme-agent-settings.png)
+-->
+
+## What Iris Does Not Do
+
+These are current product boundaries, not hidden roadmap promises:
+
+- No embedded model, model SDK, API key, or model subscription
+- No account, cloud database, hosted sync, permission system, or telemetry
+- No headless agent dispatch or autonomous orchestration queue
+- No parsing of agent terminal output as business state
+- No built-in code editor
+- No persistent PTY sessions after the owning window closes
+- No custom document types in the current protocol
+- No complete Git client
+- No full POSIX context-injection adapter yet
+
+Iris coordinates local tools instead of replacing them.
+
+## Development
+
+### Prerequisites
+
+- Node.js 20 or newer
+- npm
+- Windows build environment capable of running Electron and the bundled `node-pty` prebuild
+
+`front-cpu` is installed from the npm registry, so a clean checkout does not require a sibling repository.
+
+### Commands
+
+```powershell
+npm install
+npm run dev
+```
+
+Quality checks:
+
+```powershell
+npm test -- --run
+npm run typecheck
+npm run build
+npm run licenses:check
+```
+
+Create Windows x64 installer and portable artifacts:
+
+```powershell
+npm run dist
+```
+
+Artifacts are written to:
+
+```text
+dist/release/<version>/
+```
+
+`npm run dist` refuses to package a stale third-party notice file. After changing dependencies, run `npm run licenses:generate` and review the generated diff.
+
+The development build uses separate app data and a separate Electron single-instance profile, so it can run alongside an installed build without sharing settings or locks.
+
+## Architecture
+
+```text
+src/main/       Electron lifecycle, project scanning, file watchers, PTYs,
+                assets, Git, persistence, prompt governance, IPC
+src/preload/    Narrow context-isolated renderer bridge
+src/renderer/   React interface, projection stores, editors, terminal view,
+                FrontCPU instruction definitions and interrupts
+src/shared/     Cross-process models, IPC channel names, Markdown utilities,
+                status definitions, terminal keybindings
+```
+
+The main process is authoritative for project scope, disk access, PTY lifetime, and Git operations. The renderer keeps read-side projections and sends mutations through the instruction pipeline. Continuous terminal I/O bypasses that pipeline to avoid per-keystroke scheduling overhead.
+
+Key technologies include Electron, TypeScript, React 18, Tailwind CSS, Radix UI, Milkdown/Crepe, CodeMirror 6, node-pty, xterm.js, chokidar, gray-matter, remark, Mermaid, Vitest, and FrontCPU.
+
+## Current Status
+
+Iris is beta software being developed through daily dogfooding on its own repository. The most mature areas are the filesystem protocol, document editing consistency, project scoping, and terminal state recovery. The current release target is a trustworthy Windows beta for technical users already comfortable with local agent CLIs and Git.
+
+Bug reports and focused design discussions are welcome through [GitHub Issues](https://github.com/Liyue-Cheng/iris/issues).
+
+## Data and Privacy
+
+- Project artifacts remain in the project repository as ordinary files.
+- Machine settings are stored locally under `~/.iris/` (`~/.iris-dev/` for development builds).
+- Agent authentication and billing remain with each agent CLI.
+- Iris does not send telemetry.
+- External links open in the system browser only for allowed web and mail protocols.
+- Local document and asset reads are constrained to the active project boundary.
+
+Review agent-generated changes with the same care you would use in a standalone terminal. Iris improves context and visibility; it does not sandbox the commands your local agents can run.
 
 ## License
 
-[MIT](LICENSE).
+Iris is released under the [MIT License](LICENSE). Windows distributions also include the generated [third-party software notices](THIRD_PARTY_NOTICES.txt), Electron's license, and Chromium's notices.
