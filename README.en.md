@@ -18,13 +18,7 @@ Your project state stays in ordinary Markdown under `.iris/`. Your agents run in
 
 > This is the English product overview. Active development records and maintainer discussions are currently written primarily in Simplified Chinese. English bug reports and pull requests are welcome, but contributors may need translation support when following the live `.iris/` project record.
 
-<!--
-README SCREENSHOT 1: Main workspace overview
-Suggested file: docs/images/readme-overview.png
-Show: lens tree on the left, an issue document in the middle, and an active Codex or Claude session on the right.
-Suggested crop: 16:9, 1600x900 or larger.
-Insert here as: ![Iris workspace](docs/images/readme-overview.png)
--->
+![Iris workspace](docs/images/readme-overview.png)
 
 ## Why Iris
 
@@ -71,13 +65,7 @@ Features and regressions are worked from focused documents in Iris, implemented 
 
 Launching a session is not dispatching a background job. The agent starts interactively and waits for you. You can leave, work elsewhere, and return when the session state indicates that it may need attention.
 
-<!--
-README SCREENSHOT 2: Document-to-agent workflow
-Suggested file: docs/images/readme-focused-session.png
-Show: one issue selected, its typed header and body, plus the right-pane launch menu or a focused agent session.
-Suggested crop: 3:2, at least 1400px wide.
-Insert here as: ![A document-focused agent session](docs/images/readme-focused-session.png)
--->
+![Document-to-agent workflow](docs/images/readme-focused-session.gif)
 
 ## Three Product Layers
 
@@ -199,13 +187,7 @@ The right pane is xterm.js connected to a real local PTY, not a chat transcript.
 
 Project and workspace hubs give the terminal the full work area. A selected document uses a resizable editor-and-terminal split. Collection views use the full area for management work.
 
-<!--
-README SCREENSHOT 3: Collection and attention views
-Suggested file: docs/images/readme-issue-panel.png
-Show: grouped Issue panel or Todo panel, including status, workspace, and counts.
-Suggested crop: 16:9, 1600x900 or larger.
-Insert here as: ![Issue management in Iris](docs/images/readme-issue-panel.png)
--->
+![Issue management in Iris](docs/images/readme-issue-panel.png)
 
 ## Files Are the Contract
 
@@ -288,14 +270,6 @@ The installer and portable build share machine-level settings under `~/.iris/`. 
 7. Give the agent a concrete instruction and review its changes on disk and in Git.
 
 Initialization creates the four typed directories and adds or refreshes an Iris-owned `<iris-software>` block in `AGENTS.md`. Existing vendor entry files such as `CLAUDE.md` are synchronized only when they already exist; Iris does not create a collection of vendor files. An optional `<iris-project>` block can hold project-specific guidance and is synchronized across existing entry files.
-
-<!--
-README SCREENSHOT 4: Agent and prompt settings
-Suggested file: docs/images/readme-agent-settings.png
-Show: configured agent commands and context-injection state.
-Suggested crop: 16:9 or 3:2, at least 1400px wide.
-Insert here as: ![Agent configuration and context injection](docs/images/readme-agent-settings.png)
--->
 
 ## What Iris Does Not Do
 

@@ -16,13 +16,7 @@ Iris 将项目文档、交互式 Agent 终端、Git 状态和人的注意力整�
 
 > 当前发布线：`0.1.0-beta`。Iris 以 Windows 为优先平台，目前提供 Windows x64 版本。
 
-<!--
-README 截图 1：主工作区概览
-建议文件：docs/images/readme-overview.png
-内容：左侧 Lens Tree、中间 issue 文档、右侧活跃的 Codex 或 Claude 会话。
-建议裁剪：16:9，1600x900 或更高。
-插入方式：![Iris 工作区](docs/images/readme-overview.png)
--->
+![Iris 工作区](docs/images/readme-overview.png)
 
 ## 为什么是 Iris
 
@@ -69,13 +63,7 @@ Iris 完全通过自身工作流进行开发。本仓库的 [`.iris/`](./.iris/)
 
 启动会话并不等于分派后台任务。Agent 会以交互方式启动并等待你的指令。你可以离开当前会话处理其他工作，在会话状态显示可能需要注意时再返回。
 
-<!--
-README 截图 2：文档到 Agent 的工作流
-建议文件：docs/images/readme-focused-session.png
-内容：选中的 issue、结构化表头、正文，以及右侧启动菜单或焦点会话。
-建议裁剪：3:2，至少 1400px 宽。
-插入方式：![文档焦点会话](docs/images/readme-focused-session.png)
--->
+![文档到 Agent 的工作流](docs/images/readme-focused-session.gif)
 
 ## 三层产品结构
 
@@ -195,13 +183,7 @@ Lens Tree 按工作区和类型组织文档。活跃的 issue 和 report 保持�
 
 项目和 workspace hub 会让终端占用完整工作区；选择文档后，界面使用可调整大小的编辑器与终端分栏；集合视图则使用完整区域进行管理。
 
-<!--
-README 截图 3：集合与注意力视图
-建议文件：docs/images/readme-issue-panel.png
-内容：分组后的 Issue 面板或 Todo 面板，包括状态、工作区和数量。
-建议裁剪：16:9，1600x900 或更高。
-插入方式：![Issue 管理](docs/images/readme-issue-panel.png)
--->
+![Issue 管理](docs/images/readme-issue-panel.png)
 
 ## 文件是契约
 
@@ -284,14 +266,6 @@ Iris 当前没有代码签名。Windows SmartScreen 可能显示“未知发布�
 7. 给出具体指令，并审查 Agent 在磁盘和 Git 中产生的变更。
 
 初始化会创建四个 typed directory，并在 `AGENTS.md` 中添加或刷新 Iris 拥有的 `<iris-software>` block。`CLAUDE.md` 等已有 vendor entry file 只有在已经存在时才会同步；Iris 不会主动创建一组 vendor 文件。可选的 `<iris-project>` block 可以保存项目级指引，并在已有入口文件之间同步。
-
-<!--
-README 截图 4：Agent 与提示词设置
-建议文件：docs/images/readme-agent-settings.png
-内容：已配置的 Agent 命令和上下文注入状态。
-建议裁剪：16:9 或 3:2，至少 1400px 宽。
-插入方式：![Agent 配置与上下文注入](docs/images/readme-agent-settings.png)
--->
 
 ## Iris 不做什么
 
