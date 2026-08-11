@@ -221,6 +221,6 @@ describe('project settings', () => {
       updateProjectPrompt(root, 'Interrupted value', initial.revision),
     ).rejects.toMatchObject({ code: 'WriteFailed' } satisfies Partial<ProjectSettingsError>);
     expect(await fs.readFile(path, 'utf8')).toBe(before);
-    expect((await fs.readdir(join(root, '.iris'))).filter((name) => name.includes('.tmp-'))).toEqual([]);
+    expect((await fs.readdir(join(root, '.iris'))).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 });

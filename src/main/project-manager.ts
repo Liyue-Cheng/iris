@@ -55,6 +55,7 @@ import {
 import { logger } from './logger';
 import { AssetManager } from './asset-manager';
 import { mainT } from './i18n';
+import { writeFileAtomic } from './atomic-write';
 import {
   MISSING_PROJECT_SETTINGS_REVISION,
   readProjectSettings,
@@ -325,13 +326,9 @@ export class ProjectManager extends EventEmitter {
       throw new ProjectError('WriteConflict', mainT('error.projectChanged', { path: relPath }));
     }
 
-    const tmp = `${abs}.tmp.${process.pid}.${Date.now()}`;
     try {
-      await fs.mkdir(dirname(abs), { recursive: true });
-      await fs.writeFile(tmp, content, 'utf8');
-      await fs.rename(tmp, abs);
+      await writeFileAtomic(abs, content);
     } catch (err) {
-      await fs.unlink(tmp).catch(() => {});
       throw new ProjectError(
         'WriteFailed',
         mainT('error.projectWriteFailed', {

@@ -15,9 +15,8 @@
  * powershell.exe. POSIX variants are a later milestone.
  */
 import { promises as fs } from 'node:fs';
-import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import type { ContextPreview, HookCliInfo, HookCliState, InjectionState } from '@shared/types';
 import { irisHomeDir } from './settings-manager';
 import {
@@ -31,6 +30,7 @@ import {
 } from './software-prompt';
 import { logger } from './logger';
 import { mainT } from './i18n';
+import { writeFileAtomic } from './atomic-write';
 
 /** ~/.iris/focus-context.ps1 — always the REAL ~/.iris (hooks written into
  *  agent configs must keep working whether Iris runs as dev or packaged). */
@@ -219,8 +219,7 @@ async function focusScriptState(
 }
 
 async function writeFocusScript(path: string): Promise<void> {
-  await fs.mkdir(dirname(path), { recursive: true });
-  await fs.writeFile(path, UTF8_BOM + FOCUS_CONTEXT_SCRIPT, 'utf8');
+  await writeFileAtomic(path, UTF8_BOM + FOCUS_CONTEXT_SCRIPT);
   logger.info('agent', `focus-context script written: ${path}`);
 }
 
@@ -272,8 +271,7 @@ export async function syncEntryFile(absPath: string): Promise<EntrySyncResult> {
   }
   const { text, action } = upsertSoftwareBlock(current);
   if (action !== 'unchanged') {
-    await fs.mkdir(dirname(absPath), { recursive: true });
-    await fs.writeFile(absPath, text, 'utf8');
+    await writeFileAtomic(absPath, text);
     logger.info('agent', `software block ${action} in ${absPath}`);
   }
   return { existed, action };
@@ -333,21 +331,7 @@ export async function assembleContextPreview(
 }
 
 async function writeEntryFileAtomic(absPath: string, text: string): Promise<void> {
-  const temp = `${absPath}.tmp-${process.pid}-${randomUUID()}`;
-  await fs.mkdir(dirname(absPath), { recursive: true });
-  try {
-    const handle = await fs.open(temp, 'wx');
-    try {
-      await handle.writeFile(text, 'utf8');
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await fs.rename(temp, absPath);
-  } catch (err) {
-    await fs.unlink(temp).catch(() => {});
-    throw err;
-  }
+  await writeFileAtomic(absPath, text);
 }
 
 /** Reconcile both static prompt layers in one entry-file replacement. */
@@ -443,8 +427,7 @@ export async function installHook(cliId: string): Promise<HookCliInfo> {
   }
   if (!updated) entries.push({ hooks: [{ type: 'command', command: hookCommand() }] });
 
-  await fs.mkdir(cli.dir, { recursive: true });
-  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  await writeFileAtomic(configPath, `${JSON.stringify(config, null, 2)}\n`);
   logger.info('agent', `SessionStart hook written: ${configPath}`);
   return { id: cli.id, label: cli.label, configPath, state: 'configured' };
 }
@@ -517,7 +500,7 @@ export async function removeHook(cliId: string): Promise<HookCliInfo> {
     return { id: cli.id, label: cli.label, configPath, state: 'not-configured' };
   }
 
-  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  await writeFileAtomic(configPath, `${JSON.stringify(config, null, 2)}\n`);
   logger.info('agent', `SessionStart hook removed: ${configPath}`);
   return { id: cli.id, label: cli.label, configPath, state: 'not-configured' };
 }

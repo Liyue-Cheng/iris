@@ -21,14 +21,15 @@
  * import it without pulling in the native backend.
  */
 import { app } from 'electron';
-import { appendFileSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { appendFileSync, mkdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { rotateFileOnce } from './atomic-write';
 
 type Level = 'info' | 'warn' | 'error';
 
 /** Cap the on-disk log so it can't grow without bound across long sessions. At
- *  the cap we rotate once (…log → …log.1, overwriting any prior .1), bounding
+ *  the cap we rotate once (…log → ….1.log, overwriting the prior rotation), bounding
  *  total disk use to ~2× this. */
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 
@@ -82,11 +83,8 @@ function writeFileSink(level: Level, tag: string, message: string, detail?: unkn
     const line = `${ts} [pid ${process.pid}] [${level}] [${tag}] ${message}${detailToString(detail)}\n`;
     const bytes = Buffer.byteLength(line);
     if (bytesWritten + bytes > MAX_LOG_BYTES) {
-      // Rotate, keeping one previous file. rmSync(force) tolerates a missing
-      // target; renameSync on Windows would otherwise fail if .1 already exists.
       try {
-        rmSync(`${file}.1`, { force: true });
-        renameSync(file, `${file}.1`);
+        rotateFileOnce(file);
       } catch {
         /* best effort — fall through and keep appending to the current file */
       }

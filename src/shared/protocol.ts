@@ -9,6 +9,12 @@
 
 export const CHANNELS = {
   APP_PING: 'app:ping',
+  /** Machine-level product/runtime facts for the About panel. */
+  APP_INFO: 'app:info',
+  /** Product-scoped helpers. Payloads contain only fixed document/link ids. */
+  APP_OPEN_LEGAL_DOCUMENT: 'app:open-legal-document',
+  APP_OPEN_EXTERNAL_LINK: 'app:open-external-link',
+  APP_REVEAL_USER_DATA: 'app:reveal-user-data',
   /** Renderer → main result of the close-time editor flush. `{ ok: false }`
    *  cancels close when a conflict or write failure still owns the draft. */
   APP_FLUSH_DONE: 'app:flush-done',

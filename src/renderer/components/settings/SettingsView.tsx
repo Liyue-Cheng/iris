@@ -20,10 +20,15 @@ import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } fr
 import { useTranslation } from 'react-i18next';
 import {
   Bot,
+  Check,
   ChevronDown,
   ChevronUp,
+  Code2,
   Copy,
+  ExternalLink,
+  FileText,
   FolderCog,
+  FolderOpen,
   Info,
   Moon,
   MoonStar,
@@ -40,6 +45,9 @@ import {
 } from 'lucide-react';
 import {
   AGENT_PRESETS,
+  type AppExternalLinkId,
+  type AppInfo,
+  type AppLegalDocumentId,
   type AgentConfig,
   type DeepPartial,
   type HookCliInfo,
@@ -62,6 +70,13 @@ import { Button } from '@renderer/components/ui/button';
 import { Input } from '@renderer/components/ui/input';
 import { cn } from '@renderer/lib/utils';
 import { confirmDialog } from '@renderer/components/ui/confirm-dialog';
+import { IrisMark } from '@renderer/components/layout/IrisMark';
+import { writeClipboardText } from '@renderer/lib/clipboard';
+import {
+  APP_BUILD_TYPE_KEYS,
+  appDiagnostics,
+  formatAppPlatform,
+} from '@renderer/lib/app-info';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -1863,34 +1878,243 @@ function AdvancedPanel({ setError }: { setError: (m: string | null) => void }): 
 
 function AboutPanel(): JSX.Element {
   const { t } = useTranslation();
+  const [info, setInfo] = useState<AppInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [actionError, setActionError] = useState(false);
+  const [copied, setCopied] = useState<'data' | 'diagnostics' | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(false);
+    window.api
+      .invoke<undefined, AppInfo>(CHANNELS.APP_INFO)
+      .then((result) => {
+        if (!cancelled) setInfo(result);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setInfo(null);
+          setLoadError(true);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadToken]);
+
+  const openLegalDocument = async (id: AppLegalDocumentId): Promise<void> => {
+    setActionError(false);
+    try {
+      await window.api.invoke(CHANNELS.APP_OPEN_LEGAL_DOCUMENT, { id });
+    } catch {
+      setActionError(true);
+    }
+  };
+
+  const openExternalLink = async (id: AppExternalLinkId): Promise<void> => {
+    setActionError(false);
+    try {
+      await window.api.invoke(CHANNELS.APP_OPEN_EXTERNAL_LINK, { id });
+    } catch {
+      setActionError(true);
+    }
+  };
+
+  const revealUserData = async (): Promise<void> => {
+    setActionError(false);
+    try {
+      await window.api.invoke(CHANNELS.APP_REVEAL_USER_DATA);
+    } catch {
+      setActionError(true);
+    }
+  };
+
+  const copyText = async (text: string, kind: 'data' | 'diagnostics'): Promise<void> => {
+    setActionError(false);
+    if (await writeClipboardText(text)) {
+      setCopied(kind);
+    } else {
+      setActionError(true);
+    }
+  };
+
   return (
     <section>
       <PanelTitle>{t('settings.about')}</PanelTitle>
 
-      <div className="mb-6 flex items-center gap-4 rounded-lg border bg-card/50 px-5 py-5">
-        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-primary/10">
-          <Palette className="h-7 w-7 text-primary" />
-        </div>
-        <div>
-          <h3 className="text-base font-semibold">Iris</h3>
-          <p className="mt-0.5 text-[13px] text-muted-foreground">
+      <div className="mb-6 flex items-center gap-4 px-1 py-2">
+        <IrisMark className="h-14 w-14 shrink-0" />
+        <div className="min-w-0">
+          <h3 className="text-base font-semibold">{info?.name ?? 'Iris'}</h3>
+          <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">
             {t('settings.aboutDescription')}
           </p>
-          <p className="mt-1 text-xs text-muted-foreground/70">
-            {t('settings.aboutPlaceholder')}
-          </p>
+          {info && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              v{info.version} · {t(APP_BUILD_TYPE_KEYS[info.buildType])}
+            </p>
+          )}
         </div>
       </div>
 
-      <SettingGroup>
-        <SettingRow label={t('settings.fileContract')} hint={t('settings.fileContractHint')}>
-          <span className="text-[13px] text-muted-foreground">{t('settings.noVersionMetadata')}</span>
-        </SettingRow>
+      {loadError && (
+        <div role="alert" className="mb-5 flex items-center gap-3 border-l-2 border-destructive px-3 py-2 text-[13px] text-destructive">
+          <span>{t('settings.aboutLoadError')}</span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto shrink-0"
+            onClick={() => setReloadToken((value) => value + 1)}
+          >
+            <RefreshCw />
+            {t('settings.aboutRetry')}
+          </Button>
+        </div>
+      )}
 
-        <SettingRow label="License">
-          <span className="text-[13px] text-muted-foreground">AGPL-3.0</span>
-        </SettingRow>
-      </SettingGroup>
+      {actionError && (
+        <p role="alert" className="mb-4 text-[13px] text-destructive">
+          {t('settings.aboutActionError')}
+        </p>
+      )}
+
+      {loading && (
+        <SettingGroup title={t('settings.aboutRuntime')}>
+          <SettingRow label={t('settings.aboutVersion')}>
+            <span className="text-[13px] text-muted-foreground">{t('settings.aboutLoading')}</span>
+          </SettingRow>
+        </SettingGroup>
+      )}
+
+      {info && !loading && (
+        <>
+          <SettingGroup title={t('settings.aboutRuntime')}>
+            <SettingRow label={t('settings.aboutVersion')}>
+              <span className="text-[13px] text-muted-foreground">v{info.version}</span>
+            </SettingRow>
+
+            <SettingRow label={t('settings.aboutBuildType')}>
+              <span className="text-[13px] text-muted-foreground">
+                {t(APP_BUILD_TYPE_KEYS[info.buildType])}
+              </span>
+            </SettingRow>
+
+            <SettingRow label={t('settings.aboutPlatform')}>
+              <span className="text-[13px] text-muted-foreground">
+                {formatAppPlatform(info.platform, info.arch)}
+              </span>
+            </SettingRow>
+
+            <SettingRow label={t('settings.aboutRuntimeVersions')}>
+              <span className="text-[13px] leading-relaxed text-muted-foreground">
+                Electron {info.electronVersion} · Chromium {info.chromiumVersion}
+              </span>
+            </SettingRow>
+
+            <SettingRow label={t('settings.aboutDataDirectory')}>
+              <div className="flex min-w-0 items-start gap-1">
+                <code
+                  className="min-w-0 flex-1 break-all pt-2 text-xs leading-relaxed text-muted-foreground"
+                  title={info.userDataPath}
+                >
+                  {info.userDataPath}
+                </code>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0"
+                  title={copied === 'data' ? t('settings.aboutCopied') : t('settings.aboutCopyDataDirectory')}
+                  aria-label={copied === 'data' ? t('settings.aboutCopied') : t('settings.aboutCopyDataDirectory')}
+                  onClick={() => void copyText(info.userDataPath, 'data')}
+                >
+                  {copied === 'data' ? <Check /> : <Copy />}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0"
+                  title={t('settings.aboutOpenDataDirectory')}
+                  aria-label={t('settings.aboutOpenDataDirectory')}
+                  onClick={() => void revealUserData()}
+                >
+                  <FolderOpen />
+                </Button>
+              </div>
+            </SettingRow>
+          </SettingGroup>
+
+          <SettingGroup title={t('settings.aboutLegal')}>
+            <SettingRow label={t('settings.aboutLicense')}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void openLegalDocument('license')}
+              >
+                <FileText />
+                {info.license} License
+              </Button>
+            </SettingRow>
+
+            <SettingRow label={t('settings.aboutThirdPartyNotices')}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void openLegalDocument('thirdPartyNotices')}
+              >
+                <FileText />
+                {t('settings.aboutViewNotices')}
+              </Button>
+            </SettingRow>
+
+            <SettingRow label={t('settings.aboutCopyright')}>
+              <span className="text-[13px] text-muted-foreground">{info.copyright}</span>
+            </SettingRow>
+          </SettingGroup>
+
+          <SettingGroup title={t('settings.aboutProjectLinks')}>
+            <SettingRow label={t('settings.aboutProject')}>
+              <div className="flex flex-wrap gap-1">
+                <Button variant="ghost" size="sm" onClick={() => void openExternalLink('source')}>
+                  <Code2 />
+                  {t('settings.aboutSource')}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => void openExternalLink('releases')}>
+                  <ExternalLink />
+                  {t('settings.aboutReleases')}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => void openExternalLink('issues')}>
+                  <ExternalLink />
+                  {t('settings.aboutReportIssue')}
+                </Button>
+              </div>
+            </SettingRow>
+          </SettingGroup>
+
+          <SettingGroup>
+            <SettingRow
+              label={t('settings.aboutDiagnostics')}
+              hint={t('settings.aboutDiagnosticsHint')}
+            >
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void copyText(appDiagnostics(info), 'diagnostics')}
+              >
+                {copied === 'diagnostics' ? <Check /> : <Copy />}
+                {copied === 'diagnostics'
+                  ? t('settings.aboutCopied')
+                  : t('settings.aboutCopyDiagnostics')}
+              </Button>
+            </SettingRow>
+          </SettingGroup>
+        </>
+      )}
     </section>
   );
 }

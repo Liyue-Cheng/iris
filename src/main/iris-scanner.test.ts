@@ -188,3 +188,28 @@ describe('companion asset isolation', () => {
     expect(paths).toContain('.iris/issue/owner.assets/attachment.md');
   });
 });
+
+describe('atomic-write residue isolation', () => {
+  let temp: string | null = null;
+
+  afterEach(async () => {
+    if (temp) await removeTempDataDir(temp).catch(() => {});
+    temp = null;
+  });
+
+  it('does not project an interrupted Markdown temp file as a business document', async () => {
+    temp = await createTempDataDir('iris-scanner-temp-');
+    const issueDir = join(temp, '.iris', 'issue');
+    await fs.mkdir(issueDir, { recursive: true });
+    await fs.writeFile(join(issueDir, 'kept.md'), '# kept\n', 'utf8');
+    await fs.writeFile(
+      join(issueDir, 'interrupted.md.123.01234567-89ab-cdef-0123-456789abcdef.tmp'),
+      '# incomplete\n',
+      'utf8',
+    );
+
+    const result = await scanProject(temp);
+
+    expect(result.root?.docs.map((doc) => doc.path)).toEqual(['.iris/issue/kept.md']);
+  });
+});

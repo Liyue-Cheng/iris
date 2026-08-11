@@ -16,6 +16,7 @@ import type {
   AssetKind,
 } from '@shared/types';
 import { mainT } from './i18n';
+import { writeFileAtomic } from './atomic-write';
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -220,18 +221,9 @@ export class AssetManager {
       throw new AssetError('WriteFailed', mainT('error.assetUniqueName', { name: payload.name }));
     }
 
-    const temp = join(directoryAbs, `.iris-asset-${process.pid}-${Date.now()}.tmp`);
-    let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
     try {
-      handle = await fs.open(temp, 'wx');
-      await handle.writeFile(bytes);
-      await handle.sync();
-      await handle.close();
-      handle = null;
-      await fs.rename(temp, target);
+      await writeFileAtomic(target, bytes);
     } catch (err) {
-      await handle?.close().catch(() => {});
-      await fs.unlink(temp).catch(() => {});
       if (!directoryExisted) await fs.rmdir(directoryAbs).catch(() => {});
       throw new AssetError(
         'WriteFailed',
@@ -327,12 +319,9 @@ export class AssetManager {
     if (current !== raw) {
       throw new AssetError('WriteFailed', mainT('error.assetDocumentChanged', { path: docPath }));
     }
-    const temp = `${doc.abs}.tmp.${process.pid}.${Date.now()}`;
     try {
-      await fs.writeFile(temp, next, 'utf8');
-      await fs.rename(temp, doc.abs);
+      await writeFileAtomic(doc.abs, next);
     } catch (err) {
-      await fs.unlink(temp).catch(() => {});
       throw new AssetError(
         'WriteFailed',
         messageFor(mainT('error.assetDocumentUpdate', { path: docPath }), err),

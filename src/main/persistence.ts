@@ -17,9 +17,10 @@
  * - No file locking (Electron single-instance lock guarantees one writer)
  */
 import { promises as fs } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { logger } from './logger';
+import { writeFileAtomic } from './atomic-write';
 
 /**
  * Storage abstraction for a single JSON file. One JsonStore instance per
@@ -124,37 +125,22 @@ export class JsonStore<T> {
   }
 
   private async atomicWrite(value: T): Promise<void> {
-    const dir = dirname(this.filePath);
-    await fs.mkdir(dir, { recursive: true });
-
     const json = JSON.stringify(value, null, 2);
-    const tmpPath = `${this.filePath}.tmp.${process.pid}.${Date.now()}`;
-
-    // 1) write tmp file + fsync
-    const fh = await fs.open(tmpPath, 'w');
     try {
-      await fh.writeFile(json, 'utf8');
-      await fh.sync();
-    } finally {
-      await fh.close();
-    }
-
-    // 2) copy existing target to .bak (ENOENT on first write is fine)
-    try {
-      await fs.copyFile(this.filePath, this.bakPath());
-    } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        logger.warn('JsonStore', `backup copy failed for ${this.filePath}`, err);
-      }
-    }
-
-    // 3) rename tmp → target (rename overwrites on Windows since Node 18)
-    try {
-      await fs.rename(tmpPath, this.filePath);
+      await writeFileAtomic(this.filePath, json, {
+        beforeReplace: async () => {
+          try {
+            await fs.copyFile(this.filePath, this.bakPath());
+          } catch (err: unknown) {
+            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+              logger.warn('JsonStore', `backup copy failed for ${this.filePath}`, err);
+            }
+          }
+        },
+      });
     } catch (err) {
-      await fs.unlink(tmpPath).catch(() => {});
       throw new Error(
-        `[JsonStore] atomic rename failed: ${tmpPath} -> ${this.filePath}: ${
+        `[JsonStore] atomic write failed for ${this.filePath}: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );

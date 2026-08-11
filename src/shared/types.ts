@@ -289,6 +289,28 @@ export interface PingResult {
   pid: number;
 }
 
+export type AppBuildType = 'dev' | 'portable' | 'installed';
+
+export type AppLegalDocumentId = 'license' | 'thirdPartyNotices';
+
+export type AppExternalLinkId = 'source' | 'releases' | 'issues';
+
+/** Trusted product and runtime facts assembled by the main process. */
+export interface AppInfo {
+  name: string;
+  version: string;
+  buildType: AppBuildType;
+  platform: string;
+  arch: string;
+  electronVersion: string;
+  chromiumVersion: string;
+  nodeVersion: string;
+  userDataPath: string;
+  license: 'MIT';
+  copyright: string;
+  links: Record<AppExternalLinkId, string>;
+}
+
 // ──────────────────────────────────────────────────────────────────
 // Protocol data model (software-definition.md §3) — read side, M1
 // ──────────────────────────────────────────────────────────────────

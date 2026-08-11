@@ -9,8 +9,7 @@
 # renderer 侧全部被 vite 打进 out/renderer，留在 dependencies 只会增加包体积。
 
 appId: com.liyue-cheng.iris
-productName: Iris
-copyright: Copyright (c) 2026
+copyright: Copyright (c) 2026 程璃月
 
 directories:
   # dist/ 在 .gitignore 内。输出按版本号分目录；重打同一版本前由

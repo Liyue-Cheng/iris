@@ -1,6 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { LUCIDE_ICON_NAMES } from '@shared/lucide-icon-names';
 import type {
   ProjectSettings,
@@ -8,6 +8,7 @@ import type {
   ProjectToolbarAction,
 } from '@shared/types';
 import { FOREIGN_AGENT_ENTRIES } from './iris-templates';
+import { writeFileAtomic } from './atomic-write';
 
 export const PROJECT_SETTINGS_RELATIVE_PATH = '.iris/settings.json';
 export const MISSING_PROJECT_SETTINGS_REVISION = 'missing';
@@ -425,19 +426,9 @@ async function updateProjectSettings(
   const next = mutate(raw);
   const text = `${JSON.stringify(next, null, 2)}\n`;
   const target = settingsPath(root);
-  const temp = `${target}.tmp-${process.pid}-${randomUUID()}`;
   try {
-    await fs.mkdir(dirname(target), { recursive: true });
-    const handle = await fs.open(temp, 'wx');
-    try {
-      await handle.writeFile(text, 'utf8');
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await fs.rename(temp, target);
+    await writeFileAtomic(target, text);
   } catch (err) {
-    await fs.unlink(temp).catch(() => {});
     throw new ProjectSettingsError(
       'WriteFailed',
       err instanceof Error ? err.message : String(err),

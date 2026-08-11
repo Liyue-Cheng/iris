@@ -1,9 +1,23 @@
 {
   "name": "iris-app",
+  "productName": "Iris",
   "version": "0.1.0-beta.5",
   "private": true,
   "description": "Iris — AI-native, document-centric, terminal-driven project management. The app is a reference implementation of the .iris/ protocol.",
-  "author": "liyue-cheng",
+  "author": {
+    "name": "程璃月",
+    "email": "liyue_cheng@163.com",
+    "url": "https://github.com/Liyue-Cheng"
+  },
+  "copyright": "Copyright (c) 2026 程璃月",
+  "homepage": "https://github.com/Liyue-Cheng/iris#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Liyue-Cheng/iris.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Liyue-Cheng/iris/issues"
+  },
   "license": "MIT",
   "main": "out/main/index.js",
   "type": "module",
@@ -16,13 +30,14 @@
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.preload.json && tsc --noEmit -p tsconfig.web.json",
     "smoke": "node scripts/smoke-launch.mjs",
+    "metadata:check": "node scripts/check-product-metadata.mjs",
     "gen:icons": "node scripts/gen-icons.mjs",
     "gen:lucide-icon-names": "node scripts/generate-lucide-icon-names.mjs",
     "licenses:generate": "node scripts/generate-third-party-notices.mjs",
     "licenses:check": "node scripts/generate-third-party-notices.mjs --check",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dist": "npm run build && npm run licenses:check && node scripts/clean-release.mjs && electron-builder --win --x64"
+    "dist": "npm run build && npm run metadata:check && npm run licenses:check && node scripts/clean-release.mjs && electron-builder --win --x64"
   },
   "dependencies": {
     "@xterm/addon-search": "^0.17.0-beta.256",
@@ -66,6 +81,7 @@
     "electron-builder": "^26.15.2",
     "electron-vite": "^2.2.0",
     "front-cpu": "^0.3.0",
+    "js-yaml": "^4.3.1",
     "jsdom": "^26.1.0",
     "lucide-react": "^1.14.0",
     "mermaid": "^11.16.1",

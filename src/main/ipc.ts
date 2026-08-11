@@ -8,7 +8,7 @@
  * `ipc` executor (instructions declare `config: { channel }`); the query
  * channels are projection reads called directly by stores/ISRs.
  */
-import { BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
 import { stat } from 'node:fs/promises';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -19,6 +19,9 @@ import type {
   AssetImportPayload,
   AssetImportResult,
   AssetInventory,
+  AppExternalLinkId,
+  AppInfo,
+  AppLegalDocumentId,
   DeepPartial,
   DocContent,
   FsIrisChangedEvent,
@@ -58,6 +61,8 @@ import {
 import { logger } from './logger';
 import { enqueueProjectSwitch } from './project-switch';
 import { launchSystemTerminal } from './system-terminal';
+import { buildAppInfo, externalLink, legalDocumentPath, readProductManifest } from './app-info';
+import { getBuildType } from './build-type';
 
 const execFileP = promisify(execFile);
 
@@ -140,6 +145,55 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       time: new Date().toISOString(),
       pid: process.pid,
     };
+  });
+
+  const currentAppInfo = (): AppInfo =>
+    buildAppInfo(
+      {
+        version: app.getVersion(),
+        buildType: getBuildType(),
+        platform: process.platform,
+        arch: process.arch,
+        electronVersion: process.versions.electron ?? '',
+        chromiumVersion: process.versions.chrome ?? '',
+        nodeVersion: process.versions.node,
+        userDataPath: app.getPath('userData'),
+      },
+      readProductManifest(app.getAppPath()),
+    );
+
+  ipcMain.handle(CHANNELS.APP_INFO, (): AppInfo => currentAppInfo());
+
+  ipcMain.handle(
+    CHANNELS.APP_OPEN_LEGAL_DOCUMENT,
+    async (_event, payload: { id: AppLegalDocumentId }): Promise<void> => {
+      const target = legalDocumentPath(
+        {
+          appPath: app.getAppPath(),
+          resourcesPath: process.resourcesPath,
+          packaged: app.isPackaged,
+        },
+        payload?.id,
+      );
+      const metadata = await stat(target).catch(() => null);
+      if (!metadata?.isFile()) {
+        throw new Error(`[${CHANNELS.APP_OPEN_LEGAL_DOCUMENT}] document is unavailable`);
+      }
+      const error = await shell.openPath(target);
+      if (error) throw new Error(`[${CHANNELS.APP_OPEN_LEGAL_DOCUMENT}] ${error}`);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.APP_OPEN_EXTERNAL_LINK,
+    async (_event, payload: { id: AppExternalLinkId }): Promise<void> => {
+      await shell.openExternal(externalLink(currentAppInfo(), payload?.id));
+    },
+  );
+
+  ipcMain.handle(CHANNELS.APP_REVEAL_USER_DATA, async (): Promise<void> => {
+    const error = await shell.openPath(app.getPath('userData'));
+    if (error) throw new Error(`[${CHANNELS.APP_REVEAL_USER_DATA}] ${error}`);
   });
 
   ipcMain.handle(CHANNELS.SETTINGS_GET, (): Settings => settingsManager.get());

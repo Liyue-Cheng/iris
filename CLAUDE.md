@@ -274,4 +274,5 @@ protocol.
 <iris-project>
 围绕一个issue工作的时候，详细方案设计、结果应该默认写回issue，而不是打在控制台
 面对“给我一个方案”类的指令，给出方案即可，不要立刻开始改代码
+不要运行 npm run dist之类的打包命令
 </iris-project>

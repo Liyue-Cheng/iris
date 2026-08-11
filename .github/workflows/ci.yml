@@ -35,6 +35,9 @@ jobs:
       - name: Check third-party notices
         run: npm run licenses:check
 
+      - name: Check product metadata
+        run: npm run metadata:check
+
       - name: Run tests
         run: npm test -- --run
 
