@@ -13,15 +13,19 @@ function sumColumns(width: ReturnType<typeof issueColumnWidthsForWidth>): number
 
 describe('badge semantics', () => {
   it('keeps canonical status emphasis product-owned', () => {
-    expect(statusTemplate(ISSUE_STATUS.todo)).toEqual({ variant: 'soft', color: 'gray' });
-    expect(statusTemplate(ISSUE_STATUS.blocked)).toEqual({ variant: 'soft', color: 'love' });
-    expect(statusTemplate(ISSUE_STATUS.onHold)).toEqual({ variant: 'outline', color: 'gold' });
-    expect(statusTemplate(ISSUE_STATUS.done)).toEqual({ variant: 'solid', color: 'pine' });
-    expect(statusTemplate(REPORT_STATUS.backlog)).toEqual({ variant: 'dot', color: 'gray' });
+    expect(statusTemplate(ISSUE_STATUS.todo)).toEqual({ variant: 'soft', color: 'status-neutral' });
+    expect(statusTemplate(ISSUE_STATUS.inProgress)).toEqual({ variant: 'soft', color: 'status-progress' });
+    expect(statusTemplate(ISSUE_STATUS.inReview)).toEqual({ variant: 'soft', color: 'status-review' });
+    expect(statusTemplate(ISSUE_STATUS.blocked)).toEqual({ variant: 'soft', color: 'status-blocked' });
+    expect(statusTemplate(ISSUE_STATUS.onHold)).toEqual({ variant: 'soft', color: 'status-hold' });
+    expect(statusTemplate(ISSUE_STATUS.done)).toEqual({ variant: 'soft', color: 'status-done' });
+    expect(statusTemplate(ISSUE_STATUS.canceled)).toEqual({ variant: 'soft', color: 'status-neutral' });
+    expect(statusTemplate(REPORT_STATUS.active)).toEqual({ variant: 'soft', color: 'status-progress' });
+    expect(statusTemplate(REPORT_STATUS.backlog)).toEqual({ variant: 'soft', color: 'status-neutral' });
   });
 
   it('degrades exceptional statuses to the neutral template', () => {
-    expect(statusTemplate('Custom')).toEqual({ variant: 'soft', color: 'gray' });
+    expect(statusTemplate('Custom')).toEqual({ variant: 'soft', color: 'status-neutral' });
   });
 });
 

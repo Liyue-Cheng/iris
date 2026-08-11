@@ -1,19 +1,31 @@
 /**
- * One carefully-designed status badge with four visual variants:
+ * A compact badge primitive with four visual variants:
  *   solid   — filled pill, base-colored text (strong emphasis: Done / urgent)
  *   soft    — tinted pill + leading dot (the workhorse status look)
  *   outline — hairline ring, transparent fill (muted / not-started)
  *   dot     — colored dot + plain text, no fill
  *
- * Color comes through CSS vars by inline style (so any of the 7 palette
- * slots works without Tailwind needing every dynamic class at build time);
- * structure/spacing is Tailwind. gray resolves to the muted tone.
+ * Color comes through CSS vars by inline style so palette and product-level
+ * semantic tones work without dynamic Tailwind classes.
  */
 import { ChevronDown } from 'lucide-react';
 import { cn } from '@renderer/lib/utils';
 
 export type BadgeVariant = 'solid' | 'soft' | 'outline' | 'dot';
-export type BadgeColor = 'gray' | 'love' | 'gold' | 'rose' | 'pine' | 'foam' | 'iris';
+export type BadgeColor =
+  | 'gray'
+  | 'love'
+  | 'gold'
+  | 'rose'
+  | 'pine'
+  | 'foam'
+  | 'iris'
+  | 'status-neutral'
+  | 'status-progress'
+  | 'status-review'
+  | 'status-blocked'
+  | 'status-hold'
+  | 'status-done';
 
 export interface BadgeTemplate {
   variant: BadgeVariant;
@@ -21,25 +33,8 @@ export interface BadgeTemplate {
 }
 
 export function colorVar(color: BadgeColor): string {
+  if (color.startsWith('status-')) return `var(--${color})`;
   return color === 'gray' ? 'var(--rp-muted)' : `var(--rp-${color})`;
-}
-
-/** Background/border/text styles for the pill itself (not the dot). */
-function pillStyle(t: BadgeTemplate): React.CSSProperties {
-  const c = colorVar(t.color);
-  switch (t.variant) {
-    case 'solid':
-      return { backgroundColor: c, color: 'var(--rp-base)' };
-    case 'soft':
-      return { backgroundColor: `color-mix(in srgb, ${c} 16%, transparent)`, color: c };
-    case 'outline':
-      return {
-        border: `1px solid color-mix(in srgb, ${c} 45%, transparent)`,
-        color: c,
-      };
-    case 'dot':
-      return {}; // plain text; color lives in the dot + inherited foreground
-  }
 }
 
 function hasDot(t: BadgeTemplate): boolean {
@@ -63,12 +58,12 @@ export function Badge({
   return (
     <span
       className={cn(
-        'inline-flex min-w-0 max-w-44 items-center gap-1 overflow-hidden rounded-full font-medium leading-none',
-        size === 'md' ? 'px-2 py-1 text-xs' : 'px-1.5 py-0.5 text-[11px]',
-        template.variant === 'dot' && 'text-foreground/85',
+        'iris-badge inline-flex min-w-0 max-w-44 items-center gap-1 overflow-hidden rounded-full font-medium leading-none',
+        size === 'md' ? 'h-[22px] px-2 text-xs' : 'h-[19px] px-1.5 text-[11px]',
         className,
       )}
-      style={pillStyle(template)}
+      data-variant={template.variant}
+      style={{ '--badge-color': colorVar(template.color) } as React.CSSProperties}
     >
       {hasDot(template) && (
         <span
@@ -76,7 +71,7 @@ export function Badge({
           style={{ backgroundColor: colorVar(template.color) }}
         />
       )}
-      <span className="min-w-0 truncate">{text}</span>
+      <span className="min-w-0 truncate" title={text}>{text}</span>
       {chevron && <ChevronDown className="h-2.5 w-2.5 shrink-0 opacity-60" />}
     </span>
   );

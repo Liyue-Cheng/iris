@@ -19,6 +19,49 @@
 @tailwind components;
 @tailwind utilities;
 
+[data-theme] {
+  --status-neutral: var(--rp-muted);
+  --status-progress: var(--rp-foam);
+  --status-review: var(--rp-iris);
+  --status-blocked: var(--rp-love);
+  --status-hold: var(--rp-gold);
+  --status-done: var(--rp-pine);
+}
+
+.iris-badge {
+  --badge-color: var(--status-neutral);
+}
+
+.iris-badge[data-variant='soft'] {
+  background: color-mix(in srgb, var(--badge-color) 14%, transparent);
+  color: color-mix(in srgb, var(--badge-color) 72%, var(--foreground));
+}
+
+.iris-badge[data-variant='solid'] {
+  background: var(--badge-color);
+  color: var(--background);
+}
+
+.iris-badge[data-variant='outline'] {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--badge-color) 45%, transparent);
+  color: var(--badge-color);
+}
+
+.iris-badge[data-variant='dot'] {
+  color: color-mix(in srgb, var(--foreground) 85%, transparent);
+}
+
+button:hover > .iris-status-badge,
+button:hover .iris-status-badge {
+  background: color-mix(in srgb, var(--badge-color) 20%, transparent);
+}
+
+button:focus-visible > .iris-status-badge,
+button:focus-visible .iris-status-badge {
+  outline: 2px solid color-mix(in srgb, var(--badge-color) 50%, transparent);
+  outline-offset: 2px;
+}
+
 @keyframes iris-dialog-fade-in {
   from {
     opacity: 0;

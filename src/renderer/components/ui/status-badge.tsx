@@ -6,18 +6,18 @@
 import { ISSUE_STATUS, REPORT_STATUS } from '@shared/document-status';
 import { Badge, type BadgeTemplate } from '@renderer/components/ui/badge';
 
-const NEUTRAL_TEMPLATE: BadgeTemplate = { variant: 'soft', color: 'gray' };
+const NEUTRAL_TEMPLATE: BadgeTemplate = { variant: 'soft', color: 'status-neutral' };
 
 const STATUS_TEMPLATES: Readonly<Record<string, BadgeTemplate>> = {
-  [ISSUE_STATUS.todo]: NEUTRAL_TEMPLATE,
-  [ISSUE_STATUS.inProgress]: { variant: 'soft', color: 'foam' },
-  [ISSUE_STATUS.inReview]: { variant: 'soft', color: 'gold' },
-  [ISSUE_STATUS.blocked]: { variant: 'soft', color: 'love' },
-  [ISSUE_STATUS.onHold]: { variant: 'outline', color: 'gold' },
-  [ISSUE_STATUS.done]: { variant: 'solid', color: 'pine' },
-  [ISSUE_STATUS.canceled]: { variant: 'outline', color: 'gray' },
-  [REPORT_STATUS.active]: { variant: 'soft', color: 'foam' },
-  [REPORT_STATUS.backlog]: { variant: 'dot', color: 'gray' },
+  [ISSUE_STATUS.todo]: { variant: 'soft', color: 'status-neutral' },
+  [ISSUE_STATUS.inProgress]: { variant: 'soft', color: 'status-progress' },
+  [ISSUE_STATUS.inReview]: { variant: 'soft', color: 'status-review' },
+  [ISSUE_STATUS.blocked]: { variant: 'soft', color: 'status-blocked' },
+  [ISSUE_STATUS.onHold]: { variant: 'soft', color: 'status-hold' },
+  [ISSUE_STATUS.done]: { variant: 'soft', color: 'status-done' },
+  [ISSUE_STATUS.canceled]: { variant: 'soft', color: 'status-neutral' },
+  [REPORT_STATUS.active]: { variant: 'soft', color: 'status-progress' },
+  [REPORT_STATUS.backlog]: { variant: 'soft', color: 'status-neutral' },
 };
 
 export function statusTemplate(value: string): BadgeTemplate {
@@ -43,7 +43,7 @@ export function StatusBadge({
       text={value}
       size={size}
       chevron={chevron}
-      className={className}
+      className={`iris-status-badge${className ? ` ${className}` : ''}`}
     />
   );
 }
