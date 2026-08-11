@@ -566,7 +566,7 @@ export function IssuePanel({
 
   return (
     <div
-      className="flex h-full flex-col outline-none"
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden outline-none"
       tabIndex={0}
       onKeyDown={onKeyDown}
     >

@@ -171,7 +171,7 @@ export function CrepeEditor({
     <div
       ref={rootRef}
       data-body-align={bodyAlign}
-      className="crepe-host h-full overflow-y-auto"
+      className="crepe-host h-full min-w-0 w-full overflow-y-auto"
     />
   );
 }

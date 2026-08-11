@@ -1277,11 +1277,19 @@
   --crepe-font-default: var(--ui-font-family, 'LXGW WenKai', system-ui, sans-serif);
   --crepe-font-code: 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
   height: 100%;
+  min-width: 0;
+  width: 100%;
 }
 .crepe-host .milkdown .ProseMirror {
+  box-sizing: border-box;
   max-width: var(--editor-max-width, 48rem);
   margin: 0 auto;
   padding: 1rem 1.5rem 4rem;
+}
+.doc-view[data-pane-layout='fluid'] .crepe-host .milkdown .ProseMirror {
+  width: 100%;
+  max-width: none;
+  margin: 0;
 }
 /* 'left' alignment (behavior.editorBodyAlign): hug the reading column to the
    left. The both-edges gutter stays, so the left edge sits at the reserved

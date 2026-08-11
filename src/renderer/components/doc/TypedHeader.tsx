@@ -166,9 +166,11 @@ function StatusEditor({
 export function TypedHeader({
   session,
   onOpenInDefaultView,
+  fluid = false,
 }: {
   session: EditorSession;
   onOpenInDefaultView?: () => void;
+  fluid?: boolean;
 }): JSX.Element {
   const { t } = useTranslation();
   const [assetsOpen, setAssetsOpen] = useState(false);
@@ -189,8 +191,13 @@ export function TypedHeader({
   const showConflict =
     session.conflict !== null && (settings?.behavior.editorConflictPolicy ?? 'ask') === 'ask';
   const column = cn(
-    'max-w-[var(--editor-max-width,48rem)] px-6',
-    bodyAlign === 'left' ? 'mr-auto' : 'mx-auto',
+    'px-6',
+    fluid
+      ? 'w-full'
+      : cn(
+          'max-w-[var(--editor-max-width,48rem)]',
+          bodyAlign === 'left' ? 'mr-auto' : 'mx-auto',
+        ),
   );
 
   return (

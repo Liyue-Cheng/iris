@@ -13,6 +13,7 @@
  * manager (collection/todos). The issue browser is a separate two-pane shell
  * so the global tree and terminal do not compete with its list and editor.
  */
+import type { ReactNode } from 'react';
 import {
   ResizableHandle,
   ResizablePanel,
@@ -22,7 +23,25 @@ import { LeftPane } from '@renderer/components/layout/LeftPane';
 import { MiddlePane } from '@renderer/components/layout/MiddlePane';
 import { RightPane } from '@renderer/components/layout/RightPane';
 import { DocView } from '@renderer/components/doc/DocView';
+import { cn } from '@renderer/lib/utils';
 import { useProject, type MiddleView } from '@renderer/stores/project-store';
+
+function PaneViewport({
+  children,
+  className,
+}: {
+  children: ReactNode;
+  className?: string;
+}): JSX.Element {
+  return (
+    <div
+      data-pane-viewport
+      className={cn('h-full min-h-0 min-w-0 overflow-hidden', className)}
+    >
+      {children}
+    </div>
+  );
+}
 
 /** The right area — its content depends on the view, but the left pane's
  *  width never does (the left lives in the stable outer group above). */
@@ -64,13 +83,21 @@ export function ThreePane(): JSX.Element {
 
   if (view.kind === 'collection' && view.type === 'issue') {
     return (
-      <ResizablePanelGroup direction="horizontal" autoSaveId="iris-issue-browser">
+      <ResizablePanelGroup
+        direction="horizontal"
+        autoSaveId="iris-issue-browser"
+        className="min-w-0 overflow-hidden"
+      >
         <ResizablePanel id="issue-list" order={1} defaultSize={40} minSize={28} maxSize={58}>
-          <MiddlePane />
+          <PaneViewport className="pr-1">
+            <MiddlePane />
+          </PaneViewport>
         </ResizablePanel>
         <ResizableHandle />
         <ResizablePanel id="issue-document" order={2} defaultSize={60} minSize={38}>
-          <DocView />
+          <PaneViewport>
+            <DocView />
+          </PaneViewport>
         </ResizablePanel>
       </ResizablePanelGroup>
     );
