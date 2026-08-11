@@ -1,28 +1,22 @@
-/**
- * Lens-layer helpers. The one place the renderer interprets a SOFT value:
- * deciding whether an issue counts as "active" for the left-pane lens
- * (resolved issues stay out of sight; the M4 collection view still shows
- * them). Fixed literal set — deterministic, documented, no heuristics
- * beyond it.
- */
+/** Lens-layer helpers over the shared document status semantics. */
 import type { IrisDoc, IrisWorkspace } from '@shared/types';
+import {
+  isActiveIssueStatus,
+  isInactiveOpenIssueStatus,
+  isResolvedIssueStatus,
+} from '@shared/document-status';
 
-const RESOLVED_STATUSES = new Set([
-  'done',
-  'resolved',
-  'closed',
-  'cancelled',
-  'canceled',
-  'wontfix',
-]);
-
-export function isResolvedIssueStatus(status: string | null): boolean {
-  return status !== null && RESOLVED_STATUSES.has(status.trim().toLowerCase());
+/** Unknown/missing/deviant soft values stay visible by shared fallback policy. */
+export function isActiveIssue(doc: IrisDoc): boolean {
+  return isActiveIssueStatus(doc.status);
 }
 
-/** Active = not clearly resolved. Unknown/missing/deviant values stay visible. */
-export function isActiveIssue(doc: IrisDoc): boolean {
-  return !isResolvedIssueStatus(doc.status);
+export function isInactiveOpenIssue(doc: IrisDoc): boolean {
+  return isInactiveOpenIssueStatus(doc.status);
+}
+
+export function isResolvedIssue(doc: IrisDoc): boolean {
+  return isResolvedIssueStatus(doc.status);
 }
 
 export function docDisplayTitle(doc: IrisDoc): string {

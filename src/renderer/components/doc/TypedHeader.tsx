@@ -13,7 +13,7 @@
  * Row 1 is h-11 to line up with the left/right pane headers (三栏第一行对齐).
  *
  * `status:` is a SOFT value: the menu shows the canonical state machine for
- * the doc's type (issues six states, reports two) PLUS a free-text input —
+ * the doc's type (issues seven states, reports two) PLUS a free-text input —
  * 键是硬的，值是软的. The stored value is the displayed value; the badge
  * styles come from the configurable status → style table.
  */
@@ -26,6 +26,7 @@ import {
   FileWarning,
   Loader2,
   Paperclip,
+  PanelsTopLeft,
   Pencil,
   TriangleAlert,
 } from 'lucide-react';
@@ -162,7 +163,13 @@ function StatusEditor({
   );
 }
 
-export function TypedHeader({ session }: { session: EditorSession }): JSX.Element {
+export function TypedHeader({
+  session,
+  onOpenInDefaultView,
+}: {
+  session: EditorSession;
+  onOpenInDefaultView?: () => void;
+}): JSX.Element {
   const { t } = useTranslation();
   const [assetsOpen, setAssetsOpen] = useState(false);
   const type = typeOfPath(session.path);
@@ -251,6 +258,23 @@ export function TypedHeader({ session }: { session: EditorSession }): JSX.Elemen
             </Tooltip>
           ) : (
             <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
+          )}
+
+          {onOpenInDefaultView && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 shrink-0"
+                  aria-label={t('editor.openInDefaultView')}
+                  onClick={onOpenInDefaultView}
+                >
+                  <PanelsTopLeft className="!size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t('editor.openInDefaultView')}</TooltipContent>
+            </Tooltip>
           )}
 
           <Tooltip>

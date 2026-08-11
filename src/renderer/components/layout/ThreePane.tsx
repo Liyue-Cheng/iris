@@ -4,12 +4,14 @@
  *   middle — collection views / single-doc editor (M2/M4)
  *   right  — session panel, vertical AI conversations (M3)
  *
- * The LEFT pane lives in ONE stable outer panel group (autoSaveId
+ * Outside the dedicated issue browser, the LEFT pane lives in ONE stable
+ * outer panel group (autoSaveId
  * "iris-shell") that never remounts on a view switch — otherwise每切一次
  * view.kind 就换一整个 PanelGroup，左栏被迫套用那个组自己的宽度，点终端条
  * （root 视图）左宽就会跳。Only the RIGHT area's content swaps by view:
- * full-width terminal (root), editor+terminal split (doc), or the manager
- * (collection/todos).
+ * full-width terminal (root), editor+terminal split (doc), or a full-width
+ * manager (collection/todos). The issue browser is a separate two-pane shell
+ * so the global tree and terminal do not compete with its list and editor.
  */
 import {
   ResizableHandle,
@@ -19,13 +21,13 @@ import {
 import { LeftPane } from '@renderer/components/layout/LeftPane';
 import { MiddlePane } from '@renderer/components/layout/MiddlePane';
 import { RightPane } from '@renderer/components/layout/RightPane';
+import { DocView } from '@renderer/components/doc/DocView';
 import { useProject, type MiddleView } from '@renderer/stores/project-store';
 
 /** The right area — its content depends on the view, but the left pane's
  *  width never does (the left lives in the stable outer group above). */
 function RightArea({ view }: { view: MiddleView }): JSX.Element {
-  // Collection / todo views (Round-4 E3): the manager takes the full width,
-  // no terminal area at all.
+  // Collection / todo views keep the manager at full width.
   if (view.kind === 'collection' || view.kind === 'todos') {
     return <MiddlePane />;
   }
@@ -59,6 +61,21 @@ function RightArea({ view }: { view: MiddleView }): JSX.Element {
 
 export function ThreePane(): JSX.Element {
   const { view } = useProject();
+
+  if (view.kind === 'collection' && view.type === 'issue') {
+    return (
+      <ResizablePanelGroup direction="horizontal" autoSaveId="iris-issue-browser">
+        <ResizablePanel id="issue-list" order={1} defaultSize={40} minSize={28} maxSize={58}>
+          <MiddlePane />
+        </ResizablePanel>
+        <ResizableHandle />
+        <ResizablePanel id="issue-document" order={2} defaultSize={60} minSize={38}>
+          <DocView />
+        </ResizablePanel>
+      </ResizablePanelGroup>
+    );
+  }
+
   return (
     <ResizablePanelGroup direction="horizontal" autoSaveId="iris-shell">
       <ResizablePanel defaultSize={25} minSize={12} maxSize={40}>

@@ -277,6 +277,21 @@ export const editorStore = {
     emit();
   },
 
+  /** Preserve the current WYSIWYG draft when the same document moves to a
+   * different layout shell and its Crepe instance must mount again. */
+  prepareForRemount(): void {
+    if (!session || session.mode !== 'wysiwyg') return;
+    const currentBody = session.bodyCurrent ?? session.originalBody;
+    replace({
+      ...session,
+      originalBody: currentBody,
+      bodyBaseline: null,
+      bodyCurrent: null,
+      generation: session.generation + 1,
+      bodyHydrating: true,
+    });
+  },
+
   /** Crepe initialization is explicitly non-user state. Stale lifecycle
    * callbacks are rejected by path + generation. */
   finishBodyHydration(path: string, generation: number, markdown: string): void {

@@ -41,6 +41,7 @@ import { docDisplayTitle, isActiveIssue } from '@renderer/lib/doc-utils';
 import { useLensPrefs, type LensSort } from '@renderer/stores/lens-prefs';
 import { useSettings } from '@renderer/stores/settings-store';
 import { closeSession, openWorkspaceSession } from '@renderer/lib/session-actions';
+import { isActiveReportStatus } from '@shared/document-status';
 import { StatusBadge } from '@renderer/components/ui/status-badge';
 import { SessionDot } from '@renderer/components/ui/session-dot';
 import { LauncherMenuItems } from '@renderer/components/layout/RightPane';
@@ -147,10 +148,10 @@ function TypeSection({
   const { sessions } = useSessions();
   const { label, icon: Icon } = TYPE_META[type];
 
-  // Lens filters: issues show active ones plus any resolved issue that still
+  // Lens filters: issues show active ones plus any inactive issue that still
   // anchors a terminal. Exited sessions count too: their scrollback remains
-  // available until the user explicitly closes the session. Reports hide
-  // `Backlog` (literal match — the two-state report machine, C 条). Archived
+  // available until the user explicitly closes the session. Reports use the
+  // same shared activity semantics. Archived
   // sections freeze whole and show everything. Then sort + text filter apply.
   const lensDocs =
     type === 'issue' && !archived
@@ -159,7 +160,7 @@ function TypeSection({
             isActiveIssue(doc) || sessions.some((session) => session.docPath === doc.path),
         )
       : type === 'report' && !archived
-        ? docs.filter((d) => d.status !== 'Backlog')
+        ? docs.filter((d) => isActiveReportStatus(d.status))
         : docs;
   const visibleDocs = sortDocs(
     lensDocs.filter((d) => matchesFilter(d, filter)),

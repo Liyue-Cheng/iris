@@ -30,7 +30,12 @@ export type ProjectPhase = 'idle' | 'opening' | 'ready' | 'error';
  *  workspace. */
 export type MiddleView =
   | { kind: 'doc'; path: string | null }
-  | { kind: 'collection'; type: DocType; workspacePath: string | null }
+  | {
+      kind: 'collection';
+      type: DocType;
+      workspacePath: string | null;
+      selectedPath: string | null;
+    }
   | { kind: 'todos'; workspacePath: string | null }
   | { kind: 'root' }
   | { kind: 'workspace'; path: string };
@@ -72,6 +77,11 @@ function setState(patch: Partial<ProjectState>): void {
 let scanInFlight = false;
 let scanDirty = false;
 let navigationIntent = 0;
+const issueSelectionByWorkspace = new Map<string, string>();
+
+function issueWorkspaceKey(workspacePath: string | null): string {
+  return `${state.scope?.root ?? ''}\u0000${workspacePath ?? ''}`;
+}
 
 /** A view change may discard the only mounted draft, so it waits for the
  * unified save decision. Conflict-policy "ask" and write failures keep the
@@ -191,6 +201,66 @@ async function navigateToDoc(
   }
 }
 
+async function loadCollectionDoc(intent: number, path: string): Promise<boolean> {
+  const scope = state.scope;
+  if (!scope) return false;
+  try {
+    const content = await window.api.invoke<
+      { path: string; expectedScope: ProjectScope },
+      DocContent
+    >(CHANNELS.DOC_READ, { path, expectedScope: scope });
+    if (
+      !isCurrentIntent(intent) ||
+      state.view.kind !== 'collection' ||
+      state.view.type !== 'issue' ||
+      state.view.selectedPath !== path ||
+      !sameProjectScope(scope, state.scope)
+    ) {
+      return false;
+    }
+    editorStore.openSession(content);
+    setState({ docLoading: false });
+    return true;
+  } catch (err) {
+    if (
+      isCurrentIntent(intent) &&
+      state.view.kind === 'collection' &&
+      state.view.type === 'issue' &&
+      state.view.selectedPath === path &&
+      sameProjectScope(scope, state.scope)
+    ) {
+      editorStore.closeSession();
+      setState({
+        docLoading: false,
+        docError: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return false;
+  }
+}
+
+async function navigateToCollectionDoc(intent: number, path: string): Promise<boolean> {
+  if (
+    state.view.kind === 'collection' &&
+    state.view.type === 'issue' &&
+    state.view.selectedPath === path &&
+    state.docError === null
+  ) {
+    return isCurrentIntent(intent);
+  }
+  if (!(await mayCommitNavigation(intent))) return false;
+  if (state.view.kind !== 'collection' || state.view.type !== 'issue') return false;
+
+  issueSelectionByWorkspace.set(issueWorkspaceKey(state.view.workspacePath), path);
+  editorStore.closeSession();
+  setState({
+    docLoading: true,
+    docError: null,
+    view: { ...state.view, selectedPath: path },
+  });
+  return loadCollectionDoc(intent, path);
+}
+
 export const projectStore = {
   get(): ProjectState {
     return state;
@@ -213,6 +283,7 @@ export const projectStore = {
       return;
     }
     beginNavigationIntent();
+    issueSelectionByWorkspace.clear();
     editorStore.closeSession();
     projectScopeState.set(scope);
     projectScopeState.setSwitching(false);
@@ -288,22 +359,95 @@ export const projectStore = {
     // reload, conflict flag, unlink) is handled by editorStore via the ISR
     // in cpu/interrupts.ts — not here. But if the selected doc vanished,
     // clear the selection.
-    const selectedPath = state.view.kind === 'doc' ? state.view.path : null;
+    const unlinkedPaths = new Set(
+      event.changes.filter((change) => change.kind === 'unlink').map((change) => change.path),
+    );
+    for (const [key, path] of issueSelectionByWorkspace) {
+      if (unlinkedPaths.has(path)) issueSelectionByWorkspace.delete(key);
+    }
+
+    const selectedPath =
+      state.view.kind === 'doc'
+        ? state.view.path
+        : state.view.kind === 'collection' && state.view.type === 'issue'
+          ? state.view.selectedPath
+          : null;
     if (
       selectedPath &&
       event.changes.some((change) => change.kind === 'unlink' && change.path === selectedPath)
     ) {
       beginNavigationIntent();
       editorStore.closeSession();
-      setState({ view: { kind: 'doc', path: null }, docLoading: false, docError: null });
+      if (state.view.kind === 'collection' && state.view.type === 'issue') {
+        issueSelectionByWorkspace.delete(issueWorkspaceKey(state.view.workspacePath));
+        setState({
+          view: { ...state.view, selectedPath: null },
+          docLoading: false,
+          docError: null,
+        });
+      } else {
+        setState({ view: { kind: 'doc', path: null }, docLoading: false, docError: null });
+      }
     }
   },
 
   /** Open a type-level collection view (issue panel etc.). */
   async openCollection(type: DocType, workspacePath: string | null): Promise<boolean> {
+    if (
+      state.view.kind === 'collection' &&
+      state.view.type === type &&
+      state.view.workspacePath === workspacePath
+    ) {
+      return true;
+    }
     const intent = beginNavigationIntent();
     if (!(await mayCommitNavigation(intent))) return false;
-    setState({ view: { kind: 'collection', type, workspacePath } });
+
+    if (type === 'issue') {
+      const selectedPath = issueSelectionByWorkspace.get(issueWorkspaceKey(workspacePath)) ?? null;
+      const reuseSession =
+        selectedPath !== null && editorStore.get()?.path === selectedPath;
+      if (reuseSession) editorStore.prepareForRemount();
+      else editorStore.closeSession();
+      setState({
+        view: { kind: 'collection', type, workspacePath, selectedPath },
+        docLoading: selectedPath !== null && !reuseSession,
+        docError: null,
+      });
+      if (selectedPath !== null && !reuseSession) {
+        return loadCollectionDoc(intent, selectedPath);
+      }
+      return true;
+    }
+
+    editorStore.closeSession();
+    setState({
+      view: { kind: 'collection', type, workspacePath, selectedPath: null },
+      docLoading: false,
+      docError: null,
+    });
+    return true;
+  },
+
+  /** Select an issue for the collection's right-hand detail pane. */
+  async selectCollectionDoc(path: string): Promise<boolean> {
+    return navigateToCollectionDoc(beginNavigationIntent(), path);
+  },
+
+  /** Move the selected issue into the normal tree + editor + terminal shell. */
+  openIssueInDefaultView(): boolean {
+    if (
+      state.view.kind !== 'collection' ||
+      state.view.type !== 'issue' ||
+      !state.view.selectedPath ||
+      editorStore.get()?.path !== state.view.selectedPath
+    ) {
+      return false;
+    }
+    beginNavigationIntent();
+    const path = state.view.selectedPath;
+    editorStore.prepareForRemount();
+    setState({ view: { kind: 'doc', path }, docLoading: false, docError: null });
     return true;
   },
 

@@ -13,6 +13,7 @@ const STATUS_TEMPLATES: Readonly<Record<string, BadgeTemplate>> = {
   [ISSUE_STATUS.inProgress]: { variant: 'soft', color: 'foam' },
   [ISSUE_STATUS.inReview]: { variant: 'soft', color: 'gold' },
   [ISSUE_STATUS.blocked]: { variant: 'soft', color: 'love' },
+  [ISSUE_STATUS.onHold]: { variant: 'outline', color: 'gold' },
   [ISSUE_STATUS.done]: { variant: 'solid', color: 'pine' },
   [ISSUE_STATUS.canceled]: { variant: 'outline', color: 'gray' },
   [REPORT_STATUS.active]: { variant: 'soft', color: 'foam' },

@@ -96,6 +96,7 @@ describe('software prompt invariants', () => {
       'In Progress',
       'In Review',
       'Blocked',
+      'On Hold',
       'Done',
       'Canceled',
     ]);

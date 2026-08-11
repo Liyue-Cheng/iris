@@ -14,7 +14,11 @@ import { pipeline } from '@renderer/cpu';
 import { confirmDialog } from '@renderer/components/ui/confirm-dialog';
 import { editorStore, readDocFromDisk } from '@renderer/stores/editor-store';
 import { sessionStore } from '@renderer/stores/session-store';
-import { isResolvedIssueStatus } from '@renderer/lib/doc-utils';
+import {
+  planDocumentStatusTransition,
+  type StatusDocumentType,
+  type StatusTransitionPlan,
+} from '@shared/document-status';
 import { translate } from '@renderer/i18n';
 import { getSettings } from '@renderer/stores/settings-store';
 
@@ -35,7 +39,7 @@ export async function setDocField(path: string, key: string, value: string): Pro
   });
 }
 
-function typedFolder(path: string): 'issue' | 'report' | null {
+function typedFolder(path: string): StatusDocumentType | null {
   const segments = path.replace(/\\/g, '/').split('/');
   for (let i = segments.length - 2; i >= 0; i--) {
     const segment = segments[i];
@@ -45,13 +49,13 @@ function typedFolder(path: string): 'issue' | 'report' | null {
   return null;
 }
 
-/** A status that removes the document from its active lens. */
-export function statusClosesDocument(path: string, status: string): boolean {
-  const normalized = status.trim().toLowerCase();
-  const type = typedFolder(path);
-  return type === 'issue'
-    ? isResolvedIssueStatus(status)
-    : type === 'report' && normalized === 'backlog';
+/** Pure plan for the side effects Iris owns when it initiates a status change. */
+export function planStatusTransition(
+  path: string,
+  status: string,
+  autoCheckTodosOnDone: boolean,
+): StatusTransitionPlan {
+  return planDocumentStatusTransition(typedFolder(path), status, autoCheckTodosOnDone);
 }
 
 export async function setDocStatus(path: string, status: string): Promise<void> {
@@ -90,7 +94,16 @@ async function setDocStatusField(
  */
 export async function setDocsStatus(paths: readonly string[], status: string): Promise<void> {
   const uniquePaths = [...new Set(paths)];
-  const closingPaths = new Set(uniquePaths.filter((path) => statusClosesDocument(path, status)));
+  const autoCheckTodosOnDone = getSettings()?.behavior.autoCheckTodosOnDone ?? false;
+  const plans = new Map(
+    uniquePaths.map((path) => [
+      path,
+      planStatusTransition(path, status, autoCheckTodosOnDone),
+    ]),
+  );
+  const closingPaths = new Set(
+    uniquePaths.filter((path) => plans.get(path)?.closeSessions ?? false),
+  );
   const anchored = sessionStore
     .get()
     .sessions.filter((session) => session.docPath !== null && closingPaths.has(session.docPath));
@@ -124,12 +137,9 @@ export async function setDocsStatus(paths: readonly string[], status: string): P
     );
   }
 
-  const shouldCheckTodos =
-    status.trim().toLowerCase() === 'done' &&
-    (getSettings()?.behavior.autoCheckTodosOnDone ?? false);
   await Promise.all(
     uniquePaths.map((path) =>
-      setDocStatusField(path, status, shouldCheckTodos && typedFolder(path) === 'issue'),
+      setDocStatusField(path, status, plans.get(path)?.checkTodos ?? false),
     ),
   );
 }

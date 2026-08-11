@@ -96,13 +96,16 @@ The stored \`status:\` value is also the displayed value; write canonical values
 exactly as shown unless reality requires an exceptional value.
 
 - Issues: \`${ISSUE_STATUS.todo}\` -> \`${ISSUE_STATUS.inProgress}\` -> \`${ISSUE_STATUS.inReview}\` -> \`${ISSUE_STATUS.done}\`, with
-  \`${ISSUE_STATUS.blocked}\` / \`${ISSUE_STATUS.canceled}\` as side states.
+  \`${ISSUE_STATUS.blocked}\` as an active side state, \`${ISSUE_STATUS.onHold}\` as an inactive but unresolved
+  state, and \`${ISSUE_STATUS.canceled}\` as a terminal side state.
 - Reports: \`${REPORT_STATUS.active}\` / \`${REPORT_STATUS.backlog}\`.
 
-Never resolve an issue unprompted. A transition to \`Done\` or \`Canceled\`
-(and a report to \`Backlog\`) removes it from the active lens and may close
-attached terminal sessions; those transitions are the user's call. Advance up
-to \`In Review\` on your own when reality warrants.
+Never make an issue inactive unprompted. A transition to \`On Hold\`, \`Done\`,
+or \`Canceled\` (and a report to \`Backlog\`) removes it from the active lens
+and may close attached terminal sessions; those transitions are the user's
+call. \`On Hold\` remains unresolved and can return to \`Todo\`; only \`Done\`
+and \`Canceled\` are resolved. Advance up to \`In Review\` on your own when
+reality warrants.
 
 The app also collects every GFM task checkbox (\`- [ ] …\`) across \`.iris/\`
 docs into a todo panel, where the user tracks open items and checks them

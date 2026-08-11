@@ -72,13 +72,16 @@ The stored `status:` value is also the displayed value; write canonical values
 exactly as shown unless reality requires an exceptional value.
 
 - Issues: `Todo` -> `In Progress` -> `In Review` -> `Done`, with
-  `Blocked` / `Canceled` as side states.
+  `Blocked` as an active side state, `On Hold` as an inactive but unresolved
+  state, and `Canceled` as a terminal side state.
 - Reports: `Active` / `Backlog`.
 
-Never resolve an issue unprompted. A transition to `Done` or `Canceled`
-(and a report to `Backlog`) removes it from the active lens and may close
-attached terminal sessions; those transitions are the user's call. Advance up
-to `In Review` on your own when reality warrants.
+Never make an issue inactive unprompted. A transition to `On Hold`, `Done`,
+or `Canceled` (and a report to `Backlog`) removes it from the active lens
+and may close attached terminal sessions; those transitions are the user's
+call. `On Hold` remains unresolved and can return to `Todo`; only `Done`
+and `Canceled` are resolved. Advance up to `In Review` on your own when
+reality warrants.
 
 The app also collects every GFM task checkbox (`- [ ] …`) across `.iris/`
 docs into a todo panel, where the user tracks open items and checks them
@@ -132,3 +135,8 @@ match them to keep diffs quiet. Follow the entry file's `<iris-project>` block
 when it contains user guidance, unless it conflicts with this software
 protocol.
 </iris-software>
+
+<iris-project>
+围绕一个issue工作的时候，详细方案设计、结果应该默认写回issue，而不是打在控制台
+面对“给我一个方案”类的指令，给出方案即可，不要立刻开始改代码
+</iris-project>

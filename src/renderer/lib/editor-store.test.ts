@@ -81,6 +81,32 @@ describe('editorStore transaction coordinator', () => {
     expect(mocks.dispatch).not.toHaveBeenCalled();
   });
 
+  it('preserves a dirty WYSIWYG draft across a layout remount', () => {
+    const current = editorStore.get()!;
+    editorStore.finishBodyHydration(current.path, current.generation, 'old\n');
+    editorStore.setBodyFromEditor(current.path, current.generation, 'draft\n');
+
+    editorStore.prepareForRemount();
+
+    const prepared = editorStore.get()!;
+    expect(prepared).toMatchObject({
+      originalBody: 'draft\n',
+      bodyBaseline: null,
+      bodyCurrent: null,
+      bodyHydrating: true,
+      dirty: true,
+      generation: current.generation + 1,
+    });
+
+    editorStore.finishBodyHydration(prepared.path, prepared.generation, 'draft\n');
+    expect(editorStore.get()).toMatchObject({
+      bodyBaseline: 'draft\n',
+      bodyCurrent: 'draft\n',
+      bodyHydrating: false,
+      dirty: true,
+    });
+  });
+
   it('serializes trailing saves with compare-and-swap baselines', async () => {
     mocks.behavior.editorAutosave = false;
     const current = editorStore.get()!;

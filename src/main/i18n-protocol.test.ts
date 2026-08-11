@@ -23,6 +23,7 @@ describe('i18n protocol boundary', () => {
       'In Progress',
       'In Review',
       'Blocked',
+      'On Hold',
       'Done',
       'Canceled',
     ]);

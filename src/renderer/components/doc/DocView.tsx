@@ -16,7 +16,7 @@ import { useTranslation } from 'react-i18next';
 import { Loader2, TriangleAlert } from 'lucide-react';
 import { CHANNELS, type WindowEditAction } from '@shared/protocol';
 import { useEditorSession, editorStore } from '@renderer/stores/editor-store';
-import { useProject } from '@renderer/stores/project-store';
+import { projectStore, useProject } from '@renderer/stores/project-store';
 import { useSettings } from '@renderer/stores/settings-store';
 import { Button } from '@renderer/components/ui/button';
 import {
@@ -40,7 +40,13 @@ export function DocView(): JSX.Element {
   const { t } = useTranslation();
   const session = useEditorSession();
   const { view, docLoading, docError } = useProject();
-  const selectedPath = view.kind === 'doc' ? view.path : null;
+  const selectedPath =
+    view.kind === 'doc'
+      ? view.path
+      : view.kind === 'collection' && view.type === 'issue'
+        ? view.selectedPath
+        : null;
+  const isIssueDetail = view.kind === 'collection' && view.type === 'issue';
   const conflictPolicy = useSettings()?.behavior.editorConflictPolicy ?? 'ask';
   const editorAdapterRef = useRef<EditorAdapter | null>(null);
   const [dropError, setDropError] = useState<{ kind: 'path' | 'insert' } | null>(null);
@@ -132,7 +138,12 @@ export function DocView(): JSX.Element {
 
   return (
     <div className="flex h-full flex-col">
-      <TypedHeader session={session} />
+      <TypedHeader
+        session={session}
+        {...(isIssueDetail
+          ? { onOpenInDefaultView: () => void projectStore.openIssueInDefaultView() }
+          : {})}
+      />
       {session.conflict && conflictPolicy === 'ask' && (
         <div className="flex shrink-0 items-center gap-2 border-y border-[var(--rp-gold)]/35 bg-[var(--rp-gold)]/10 px-4 py-2 text-xs">
           <TriangleAlert className="size-4 shrink-0 text-[var(--rp-gold)]" />

@@ -21,11 +21,13 @@ import { pipeline } from '@renderer/cpu';
 export function DocContextMenu({
   docPath,
   docName,
+  onOpenInDefaultView,
   children,
 }: {
   /** Project-root-relative path (what session.open and shell:reveal expect). */
   docPath: string;
   docName: string;
+  onOpenInDefaultView?: () => void;
   children: ReactNode;
 }): JSX.Element {
   const { t } = useTranslation();
@@ -37,6 +39,11 @@ export function DocContextMenu({
         <ContextMenuItem onClick={() => void writeClipboardText(docPath)}>
           {t('common.copyPath')}
         </ContextMenuItem>
+        {onOpenInDefaultView && (
+          <ContextMenuItem onClick={onOpenInDefaultView}>
+            {t('editor.openInDefaultView')}
+          </ContextMenuItem>
+        )}
         <ContextMenuItem
           onClick={() =>
             void editorStore

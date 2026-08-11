@@ -53,20 +53,29 @@ export function DisplayMenu({
   sortBy,
   order,
   groupOptions = ['status', 'workspace', 'none'],
+  compact = false,
   onChange,
 }: {
   groupBy: GroupBy;
   sortBy: SortBy;
   order: Order;
   groupOptions?: GroupBy[];
+  compact?: boolean;
   onChange: (patch: { groupBy?: GroupBy; sortBy?: SortBy; order?: Order }) => void;
 }): JSX.Element {
   const { t } = useTranslation();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs">
-          <SlidersHorizontal className="h-3.5 w-3.5" /> {t('collection.display')}
+        <Button
+          size={compact ? 'icon' : 'sm'}
+          variant="ghost"
+          className={compact ? 'h-7 w-7 shrink-0' : 'h-7 gap-1.5 px-2 text-xs'}
+          title={t('collection.display')}
+          aria-label={t('collection.display')}
+        >
+          <SlidersHorizontal className="h-3.5 w-3.5" />
+          {!compact && t('collection.display')}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-44">

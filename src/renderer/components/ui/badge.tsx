@@ -63,7 +63,7 @@ export function Badge({
   return (
     <span
       className={cn(
-        'inline-flex max-w-44 items-center gap-1 rounded-full font-medium leading-none',
+        'inline-flex min-w-0 max-w-44 items-center gap-1 overflow-hidden rounded-full font-medium leading-none',
         size === 'md' ? 'px-2 py-1 text-xs' : 'px-1.5 py-0.5 text-[11px]',
         template.variant === 'dot' && 'text-foreground/85',
         className,
@@ -76,7 +76,7 @@ export function Badge({
           style={{ backgroundColor: colorVar(template.color) }}
         />
       )}
-      <span className="truncate">{text}</span>
+      <span className="min-w-0 truncate">{text}</span>
       {chevron && <ChevronDown className="h-2.5 w-2.5 shrink-0 opacity-60" />}
     </span>
   );
