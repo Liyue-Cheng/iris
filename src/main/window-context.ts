@@ -18,6 +18,7 @@ import type { SessionManager } from './session-manager';
 import type { SettingsManager } from './settings-manager';
 import type { GitManager } from './git-manager';
 import type { ProjectScope } from '@shared/types';
+import type { TerminalOutputAttachment } from './terminal/output-attachment';
 
 export interface WindowContext {
   readonly win: BrowserWindow;
@@ -34,6 +35,7 @@ export interface WindowContext {
   projectSwitching: boolean;
   /** Main-side serialization survives renderer timeout/retry and direct IPC. */
   projectSwitchTail: Promise<void>;
+  outputAttachment: TerminalOutputAttachment | null;
   /** Detach this window's manager → renderer broadcasts (from wireBroadcasts). */
   readonly unwire: () => void;
 }

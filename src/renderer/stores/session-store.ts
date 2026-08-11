@@ -17,6 +17,7 @@ import type {
 } from '@shared/types';
 import { CHANNELS } from '@shared/protocol';
 import { projectScopeState, sameProjectScope } from './project-scope-state';
+import { healthStore } from './health-store';
 
 export interface SessionStoreState {
   scope: ProjectScope | null;
@@ -24,12 +25,15 @@ export interface SessionStoreState {
   sessions: SessionInfo[];
   /** Sticky user selection per document/workspace anchor. */
   selectedSessionIdByAnchor: Readonly<Record<string, string>>;
+  /** Sessions whose input/resize IPC has failed since the last successful I/O. */
+  disconnectedSessionIds: ReadonlySet<string>;
 }
 
 let state: SessionStoreState = {
   scope: null,
   sessions: [],
   selectedSessionIdByAnchor: {},
+  disconnectedSessionIds: new Set(),
 };
 const subscribers = new Set<() => void>();
 
@@ -123,6 +127,9 @@ export const sessionStore = {
     setState({
       sessions,
       selectedSessionIdByAnchor: reconcileSelections(sessions, selections),
+      disconnectedSessionIds: new Set(
+        [...state.disconnectedSessionIds].filter((id) => id !== sessionId),
+      ),
     });
   },
 
@@ -162,7 +169,24 @@ export const sessionStore = {
       scope,
       sessions: filtered,
       selectedSessionIdByAnchor: selections,
+      disconnectedSessionIds: new Set(
+        [...state.disconnectedSessionIds].filter((id) =>
+          filtered.some((session) => session.id === id),
+        ),
+      ),
     });
+  },
+
+  markDisconnected(sessionId: string): void {
+    if (state.disconnectedSessionIds.has(sessionId)) return;
+    setState({ disconnectedSessionIds: new Set(state.disconnectedSessionIds).add(sessionId) });
+  },
+
+  clearDisconnected(sessionId: string): void {
+    if (!state.disconnectedSessionIds.has(sessionId)) return;
+    const next = new Set(state.disconnectedSessionIds);
+    next.delete(sessionId);
+    setState({ disconnectedSessionIds: next });
   },
 
   has(sessionId: string): boolean {
@@ -213,22 +237,36 @@ export function selectedSessionIdForAnchor(anchorKey: string): string | null {
  * 会话投影丢失). Terminal content needs no extra care: TerminalView
  * replays from main's headless mirror on mount.
  */
-export async function hydrateSessions(): Promise<void> {
+async function pullSessions(scope: ProjectScope): Promise<void> {
+  const snapshot = await window.api.invoke<
+    { expectedScope: ProjectScope },
+    SessionListSnapshot
+  >(CHANNELS.SESSION_LIST, { expectedScope: scope });
+  if (!sameProjectScope(scope, projectScopeState.get())) return;
+  if (!sameProjectScope(snapshot.scope, scope)) return;
+  sessionStore.reset(snapshot.sessions, snapshot.scope);
+  healthStore.resolve('session-projection', scope);
+}
+
+export async function hydrateSessions(): Promise<boolean> {
   const scope = projectScopeState.get();
   if (!scope) {
     sessionStore.reset([], null);
-    return;
+    return true;
   }
   try {
-    const snapshot = await window.api.invoke<
-      { expectedScope: ProjectScope },
-      SessionListSnapshot
-    >(CHANNELS.SESSION_LIST, { expectedScope: scope });
-    if (!sameProjectScope(scope, projectScopeState.get())) return;
-    if (!sameProjectScope(snapshot.scope, scope)) return;
-    sessionStore.reset(snapshot.sessions, snapshot.scope);
+    await pullSessions(scope);
+    return true;
   } catch (err) {
     console.warn('[session-store] hydrate from main failed', err);
+    healthStore.degrade({
+      key: 'session-projection',
+      domain: 'session-projection',
+      cause: err,
+      scope,
+      retry: () => pullSessions(scope),
+    });
+    return false;
   }
 }
 

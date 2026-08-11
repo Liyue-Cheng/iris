@@ -66,6 +66,11 @@ import {
   updateProjectToolbar,
   type ProjectSettingsFileSnapshot,
 } from './project-settings';
+import {
+  AppError,
+  type AppErrorDomain,
+  type PromptNotReadyDetails,
+} from '@shared/app-error';
 
 /** Entry files Iris may write the `<iris-software>` block into. */
 const WRITABLE_ENTRIES: readonly string[] = SUPPORTED_PROJECT_ENTRY_PATHS;
@@ -81,7 +86,7 @@ const IMAGE_MIME = new Map([
   ['.avif', 'image/avif'],
 ]);
 
-export class ProjectError extends Error {
+export class ProjectError<TDetails = unknown> extends AppError<TDetails> {
   constructor(
     public readonly code:
       | 'NotADirectory'
@@ -90,10 +95,16 @@ export class ProjectError extends Error {
       | 'ReadFailed'
       | 'WriteConflict'
       | 'WriteFailed'
-      | 'InvalidPayload',
+      | 'InvalidPayload'
+      | 'PromptNotReady',
     message: string,
+    options: {
+      domain?: AppErrorDomain;
+      details?: TDetails;
+      retryable?: boolean;
+    } = {},
   ) {
-    super(`[ProjectManager] ${code}: ${message}`);
+    super(options.domain ?? 'project', code, `[ProjectManager] ${code}: ${message}`, options);
     this.name = 'ProjectError';
   }
 }
@@ -110,6 +121,9 @@ export class ProjectManager extends EventEmitter {
   private pendingChanges: FsIrisChangedEvent['changes'] = [];
   private pendingPromptChanges: FsIrisChangedEvent['changes'] = [];
   private flushTimer: NodeJS.Timeout | null = null;
+  private watcherRetryTimer: NodeJS.Timeout | null = null;
+  private watcherRetryAttempt = 0;
+  private watcherGeneration = 0;
   private promptReconcileTail: Promise<void> = Promise.resolve();
   private projectPromptConflicts: ProjectPromptConflict[] = [];
   private readonly projectPromptWriteErrors = new Map<string, string>();
@@ -152,16 +166,20 @@ export class ProjectManager extends EventEmitter {
     // stranding main on B while renderer rolls back to A.
     try {
       if (prepared.scan.hasIris) await this.initializeProjectSettings(prepared.root);
+      this.emit('healthChanged', { domain: 'prompt-projection', state: 'healthy' });
     } catch (err) {
       logger.warn('project', `initial project prompt reconciliation failed for ${prepared.root}`, err);
+      this.emit('healthChanged', { domain: 'prompt-projection', state: 'degraded', error: err });
     }
 
     // Watch even when .iris/ doesn't exist yet: its later creation (manual
     // mkdir or the M5 init wizard) must light the tree up without a restart.
     try {
-      this.startWatcher(prepared.root);
+      this.watcherGeneration += 1;
+      this.startWatcher(prepared.root, this.watcherGeneration);
     } catch (err) {
       logger.warn('project', `watcher setup failed for ${prepared.root}`, err);
+      this.emit('healthChanged', { domain: 'project-watcher', state: 'degraded', error: err });
     }
     logger.info('project', `opened ${prepared.root} (hasIris=${prepared.scan.hasIris})`);
     return prepared.scan;
@@ -177,6 +195,10 @@ export class ProjectManager extends EventEmitter {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
+    if (this.watcherRetryTimer) clearTimeout(this.watcherRetryTimer);
+    this.watcherRetryTimer = null;
+    this.watcherRetryAttempt = 0;
+    this.watcherGeneration += 1;
     this.pendingChanges = [];
     this.pendingPromptChanges = [];
     if (this.watcher) {
@@ -712,18 +734,79 @@ export class ProjectManager extends EventEmitter {
     if (!(await exists(join(root, '.iris')))) return;
     const settings = await readProjectSettings(root);
     if (this.projectPromptConflicts.length > 0) {
-      throw new ProjectError('WriteConflict', 'Resolve the project settings migration conflict before starting a terminal');
+      throw new ProjectError<PromptNotReadyDetails>(
+        'PromptNotReady',
+        'Resolve the project settings migration conflict before starting a terminal',
+        {
+          domain: 'prompt',
+          details: {
+            repairable: false,
+            issues: this.projectPromptConflicts.map((conflict) => ({
+              layer: 'project',
+              path: conflict.path,
+              state: 'conflict',
+            })),
+          },
+        },
+      );
     }
     if (!settings.exists || settings.error) {
-      throw new ProjectError('ReadFailed', settings.error ?? 'Project settings is missing');
+      throw new ProjectError<PromptNotReadyDetails>(
+        'PromptNotReady',
+        settings.error ?? 'Project settings is missing',
+        {
+          domain: 'prompt',
+          details: {
+            repairable: false,
+            issues: [{
+              layer: 'settings',
+              state: settings.exists ? 'invalid-settings' : 'missing',
+              message: settings.error ?? 'Project settings is missing',
+            }],
+          },
+        },
+      );
     }
     const state = await this.softwarePromptState();
     const softwareReady = state.entries.every((entry) => entry.state === 'ok');
-    const projectReady = state.project.state === 'synced' || state.project.state === 'missing';
+    const projectReady =
+      state.project.state === 'synced' || state.project.state === 'missing';
     if (!softwareReady || !projectReady) {
-      throw new ProjectError(
-        'WriteFailed',
+      const issues: PromptNotReadyDetails['issues'] = [
+        ...state.entries
+          .filter((entry) => entry.state !== 'ok')
+          .map((entry) => ({
+            layer: 'software' as const,
+            path: entry.path,
+            state: entry.state,
+          })),
+        ...state.project.entries
+          .filter((entry) => entry.state !== 'synced')
+          .map((entry) => ({
+            layer: 'project' as const,
+            path: entry.path,
+            state: entry.state,
+            ...(entry.error ? { message: entry.error } : {}),
+          })),
+      ];
+      if (!projectReady && state.project.entries.length === 0) {
+        issues.push({
+          layer: 'project',
+          state: state.project.state,
+          ...(state.project.error ? { message: state.project.error } : {}),
+        });
+      }
+      const repairable = issues.length > 0 && issues.every(
+        (issue) =>
+          issue.state === 'missing' ||
+          issue.state === 'drifted' ||
+          issue.state === 'partial' ||
+          issue.state === 'write-failed',
+      );
+      throw new ProjectError<PromptNotReadyDetails>(
+        'PromptNotReady',
         'Synchronize the participating agent entry files before starting a terminal',
+        { domain: 'prompt', details: { repairable, issues }, retryable: repairable },
       );
     }
   }
@@ -913,7 +996,7 @@ export class ProjectManager extends EventEmitter {
     return statuses;
   }
 
-  private startWatcher(root: string): void {
+  private startWatcher(root: string, generation: number): void {
     const irisAbs = join(root, '.iris');
     const entryPaths = WRITABLE_ENTRIES.map((rel) => join(root, rel));
     this.watcher = chokidar.watch([irisAbs, ...entryPaths], {
@@ -941,7 +1024,38 @@ export class ProjectManager extends EventEmitter {
       .on('unlink', push('unlink'))
       .on('addDir', push('addDir'))
       .on('unlinkDir', push('unlinkDir'))
-      .on('error', (err) => logger.warn('project', 'watcher error', err));
+      .on('ready', () => {
+        if (this.projectRoot !== root || this.watcherGeneration !== generation) return;
+        this.watcherRetryAttempt = 0;
+        this.emit('healthChanged', { domain: 'project-watcher', state: 'healthy' });
+      })
+      .on('error', (err) => this.handleWatcherError(root, generation, err));
+  }
+
+  private handleWatcherError(root: string, generation: number, error: unknown): void {
+    if (this.projectRoot !== root || this.watcherGeneration !== generation) return;
+    logger.warn('project', `watcher error for ${root}`, error);
+    this.emit('healthChanged', { domain: 'project-watcher', state: 'degraded', error });
+    if (this.watcherRetryTimer) return;
+    const delay = Math.min(30_000, 1_000 * (2 ** this.watcherRetryAttempt));
+    this.watcherRetryAttempt += 1;
+    this.watcherRetryTimer = setTimeout(() => {
+      this.watcherRetryTimer = null;
+      void this.rebuildWatcher(root, generation);
+    }, delay);
+  }
+
+  private async rebuildWatcher(root: string, generation: number): Promise<void> {
+    if (this.projectRoot !== root || this.watcherGeneration !== generation) return;
+    const previous = this.watcher;
+    this.watcher = null;
+    await previous?.close().catch(() => {});
+    if (this.projectRoot !== root || this.watcherGeneration !== generation) return;
+    try {
+      this.startWatcher(root, generation);
+    } catch (error) {
+      this.handleWatcherError(root, generation, error);
+    }
   }
 
   /** Debounce: agents touch several files per task; one batch, one rescan. */
@@ -968,8 +1082,16 @@ export class ProjectManager extends EventEmitter {
             if (promptChanges.length > 0) {
               await this.reconcileProjectPromptChanges(root, promptChanges);
             }
+            this.emit('healthChanged', { domain: 'prompt-projection', state: 'healthy' });
           })
-          .catch((err) => logger.warn('project', 'project prompt reconciliation failed', err));
+          .catch((err) => {
+            logger.warn('project', 'project prompt reconciliation failed', err);
+            this.emit('healthChanged', {
+              domain: 'prompt-projection',
+              state: 'degraded',
+              error: err,
+            });
+          });
       }
     }, DEBOUNCE_MS);
   }

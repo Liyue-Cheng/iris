@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { IPty } from 'node-pty';
-import type { SessionOutputPayload } from '@shared/types';
 import type { SettingsManager } from './settings-manager';
 
 vi.mock('node-pty', () => ({ spawn: vi.fn() }));
@@ -16,15 +15,6 @@ import {
 } from './agent-injection';
 import { logger } from './logger';
 import { SessionManager, type CreateSessionInput, type PtySpawnFn } from './session-manager';
-
-interface PendingEmitHarness {
-  info: { id: string };
-  scrollbackLastSeq: number;
-  pendingEmit: { chunks: Buffer[]; totalBytes: number; lastSeq: number } | null;
-  pendingEmitTimer: NodeJS.Timeout | null;
-}
-
-type QueueEmit = (managed: PendingEmitHarness, bytes: Buffer, seq: number) => void;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -91,6 +81,7 @@ function fakeSettingsManager(): SettingsManager {
   return {
     get: () => ({
       agents: [{ id: 'shell', label: 'shell', command: '' }],
+      appearance: { theme: 'rose-pine' },
       advanced: { activeIdleThresholdSeconds: 2 },
     }),
   } as unknown as SettingsManager;
@@ -465,42 +456,79 @@ describe('focus-context script lifecycle', () => {
   });
 });
 
-describe('session output batching', () => {
-  it('concatenates a high chunk-count batch only once when it flushes', () => {
-    vi.useFakeTimers();
-    const manager = new SessionManager({} as SettingsManager);
-    const queueEmit = (manager as unknown as { queueEmit: QueueEmit }).queueEmit.bind(manager);
-    const managed: PendingEmitHarness = {
-      info: { id: 'session-1' },
-      scrollbackLastSeq: -1,
-      pendingEmit: null,
-      pendingEmitTimer: null,
-    };
-    const emitted: SessionOutputPayload[] = [];
-    manager.on('sessionOutput', (payload: SessionOutputPayload) => emitted.push(payload));
-    const concatSpy = vi.spyOn(Buffer, 'concat');
-
-    const chunkCount = 10_000;
-    for (let seq = 0; seq < chunkCount; seq += 1) {
-      queueEmit(managed, Buffer.from('x'), seq);
-    }
-
-    expect(concatSpy).not.toHaveBeenCalled();
-    expect(emitted).toHaveLength(0);
-
-    vi.advanceTimersByTime(8);
-
-    expect(concatSpy).toHaveBeenCalledTimes(1);
-    expect(concatSpy).toHaveBeenCalledWith(expect.any(Array), chunkCount);
-    expect(emitted).toHaveLength(1);
-    const payload = emitted[0]!;
-    expect(Buffer.from(payload.data, 'base64').toString('utf8')).toBe('x'.repeat(chunkCount));
-    expect(payload.seq).toBe(chunkCount - 1);
-    expect(managed.scrollbackLastSeq).toBe(chunkCount - 1);
-  });
-});
-
 describe('terminal scrollback compatibility', () => {
+  it('emits only for the attached runtime and rejects stale detach tokens', async () => {
+    const controlled = controllablePty();
+    vi.mocked(controlled.pty.kill).mockImplementation(() => controlled.emitExit());
+    const manager = new SessionManager(fakeSettingsManager(), {
+      spawnFn: () => controlled.pty,
+      processTreeKillFn: null,
+      ptyExitWaitMs: 100,
+    });
+    const session = manager.createSession({
+      docPath: null,
+      agentId: 'shell',
+      projectRoot: process.cwd(),
+      projectGeneration: 1,
+      cols: 20,
+      rows: 5,
+    });
+    const output: string[] = [];
+    manager.on('sessionOutput', (payload: { data: string }) => {
+      output.push(Buffer.from(payload.data, 'base64').toString());
+    });
+
+    controlled.emitData('hidden');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(output).toEqual([]);
+
+    expect(manager.attachOutput(session.id, 'runtime:2')).toBe(true);
+    controlled.emitData('visible');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(output).toEqual(['visible']);
+
+    manager.detachOutput('runtime:1');
+    controlled.emitData('still-visible');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(output).toEqual(['visible', 'still-visible']);
+
+    manager.detachOutput('runtime:2');
+    controlled.emitData('hidden-again');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(output).toEqual(['visible', 'still-visible']);
+    await manager.shutdown();
+  });
+
+  it('answers OSC color queries in main and removes them from renderer output', async () => {
+    const controlled = controllablePty();
+    vi.mocked(controlled.pty.kill).mockImplementation(() => controlled.emitExit());
+    const manager = new SessionManager(fakeSettingsManager(), {
+      spawnFn: () => controlled.pty,
+      processTreeKillFn: null,
+      ptyExitWaitMs: 100,
+    });
+    const session = manager.createSession({
+      docPath: null,
+      agentId: 'shell',
+      projectRoot: process.cwd(),
+      projectGeneration: 1,
+      cols: 20,
+      rows: 5,
+    });
+
+    controlled.emitData('before\x1b]10;');
+    controlled.emitData('?\x07after');
+    const replay = await manager.prepareReplay(session.id, 20, 5);
+    const ansi = Buffer.from(replay.data, 'base64').toString('utf8');
+
+    expect(controlled.pty.write).toHaveBeenCalledWith(
+      '\x1b]10;rgb:e0e0/dede/f4f4\x07',
+    );
+    expect(ansi).toContain('beforeafter');
+    expect(ansi).not.toContain(']10;?');
+    await manager.shutdown();
+  });
+
   it('preserves history when a synchronized Codex redraw clears the display', async () => {
     const controlled = controllablePty();
     vi.mocked(controlled.pty.kill).mockImplementation(() => controlled.emitExit());

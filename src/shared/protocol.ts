@@ -57,6 +57,8 @@ export const CHANNELS = {
   SHELL_REVEAL: 'shell:reveal',
   /** UI helper: open a path with its operating-system default application. */
   SHELL_OPEN_PATH: 'shell:open-path',
+  /** UI helper: open an http(s) or mailto URL in the system handler. */
+  SHELL_OPEN_EXTERNAL_URL: 'shell:open-external-url',
   /**
    * Clipboard bridge — main-side Electron clipboard module. Marina's lesson:
    * navigator.clipboard needs web Permission API grants in the Electron
@@ -132,6 +134,9 @@ export const CHANNELS = {
    */
   SESSION_INPUT: 'session:input',
   SESSION_RESIZE: 'session:resize',
+  SESSION_OUTPUT_ATTACH: 'session:output-attach',
+  SESSION_OUTPUT_DETACH: 'session:output-detach',
+  SESSION_OUTPUT_ACK: 'session:output-ack',
   /** Queries. */
   SESSION_LIST: 'session:list',
   SESSION_SCROLLBACK: 'session:scrollback',
@@ -149,6 +154,7 @@ export const EVENTS = {
   FS_IRIS_CHANGED: 'evt:fs:iris-changed',
   PROMPT_CHANGED: 'evt:prompt:changed',
   GIT_CHANGED: 'evt:git:changed',
+  SERVICE_HEALTH_CHANGED: 'evt:service:health-changed',
   SESSION_OUTPUT: 'evt:session:output',
   SESSION_STATE_CHANGED: 'evt:session:state-changed',
   SESSION_EXITED: 'evt:session:exited',

@@ -21,6 +21,7 @@ import {
 } from '@shared/document-status';
 import { translate } from '@renderer/i18n';
 import { getSettings } from '@renderer/stores/settings-store';
+import { runUserAction } from './action-runtime';
 
 export async function setDocField(path: string, key: string, value: string): Promise<void> {
   const session = editorStore.get();
@@ -59,7 +60,13 @@ export function planStatusTransition(
 }
 
 export async function setDocStatus(path: string, status: string): Promise<void> {
-  await setDocsStatus([path], status);
+  await runUserAction(
+    {
+      title: translate('errors.statusUpdateFailed'),
+      dedupeKey: `document:status:${path}`,
+    },
+    () => setDocsStatus([path], status),
+  );
 }
 
 async function setDocStatusField(

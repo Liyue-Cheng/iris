@@ -6,6 +6,7 @@ import { alertDialog } from '@renderer/components/ui/confirm-dialog';
 import { projectScopeState, sameProjectScope } from './project-scope-state';
 import { editorStore } from './editor-store';
 import { translate } from '@renderer/i18n';
+import { healthStore } from './health-store';
 
 type State = { loading: boolean; snapshot: GitSnapshot | null; error: string | null; pending: string | null };
 let state: State = { loading: false, snapshot: null, error: null, pending: null };
@@ -26,8 +27,27 @@ export const gitStore = {
       >(CHANNELS.GIT_STATUS, { expectedScope: scope });
       if (!sameProjectScope(scope, projectScopeState.get())) return;
       set({ snapshot, loading: false });
+      healthStore.resolve('git-projection', scope);
     }
-    catch (err) { set({ loading: false, error: err instanceof Error ? err.message : String(err) }); }
+    catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ loading: false, error: message });
+      healthStore.degrade({
+        key: 'git-projection',
+        domain: 'git-projection',
+        cause: err,
+        scope,
+        retry: async () => {
+          const snapshot = await window.api.invoke<
+            { expectedScope: typeof scope },
+            GitSnapshot
+          >(CHANNELS.GIT_STATUS, { expectedScope: scope });
+          if (!sameProjectScope(scope, projectScopeState.get())) return;
+          set({ snapshot, loading: false, error: null });
+          healthStore.resolve('git-projection', scope);
+        },
+      });
+    }
   },
   reset(): void { set({ snapshot: null, loading: false, error: null, pending: null }); },
   async stage(paths: string[]): Promise<void> { await this.mutate('stage', 'git.stage', { paths }); },

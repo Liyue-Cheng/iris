@@ -35,6 +35,7 @@ import {
 import { TypedHeader } from './TypedHeader';
 import { CrepeEditor } from './CrepeEditor';
 import { SourceEditor } from './SourceEditor';
+import { runUserAction } from '@renderer/lib/action-runtime';
 
 export function DocView(): JSX.Element {
   const { t } = useTranslation();
@@ -61,10 +62,16 @@ export function DocView(): JSX.Element {
     runAfterContextMenuClose(
       () => adapter.focus(),
       () => {
-        void window.api.invoke(CHANNELS.WINDOW_EDIT_ACTION, { action });
+        void runUserAction(
+          {
+            title: t('errors.editActionFailed'),
+            dedupeKey: `window:edit:${action}`,
+          },
+          () => window.api.invoke(CHANNELS.WINDOW_EDIT_ACTION, { action }),
+        );
       },
     );
-  }, []);
+  }, [t]);
 
   const handlePathDragOver = useCallback((event: ReactDragEvent<HTMLDivElement>): void => {
     if (!isEditorPathDrag(event.dataTransfer)) return;

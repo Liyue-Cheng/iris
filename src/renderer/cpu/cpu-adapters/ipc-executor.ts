@@ -16,17 +16,22 @@ export interface IpcExecutorConfig {
   projectScoped?: boolean;
 }
 
-export const ipcExecutor: ExecutorFn = (config, payload) => {
+export const ipcExecutor: ExecutorFn = (config, payload, context) => {
   const { channel, projectScoped } = config as IpcExecutorConfig;
   if (typeof channel !== 'string' || !channel) {
     return Promise.reject(
       new Error(`[ipcExecutor] instruction config must declare a non-empty channel`),
     );
   }
-  if (!projectScoped) return window.api.invoke(channel, payload);
+  const invokeContext = { correlationId: context.correlationId };
+  if (!projectScoped) return window.api.invoke(channel, payload, invokeContext);
   const body = payload && typeof payload === 'object' ? payload : {};
-  return window.api.invoke(channel, {
-    ...body,
-    expectedScope: projectScopeState.get(),
-  });
+  return window.api.invoke(
+    channel,
+    {
+      ...body,
+      expectedScope: projectScopeState.get(),
+    },
+    invokeContext,
+  );
 };

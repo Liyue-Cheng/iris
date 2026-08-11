@@ -8,9 +8,8 @@
  * confirmation through a Radix Dialog instead: in-DOM React, no native modal,
  * no IME-context damage.
  *
- * Imperative `confirmDialog(opts)` returns a Promise<boolean>; mount one
- * `<ConfirmDialog />` near the app root (App.tsx). Module-level singleton, so
- * any caller anywhere awaits the same dialog — at most one open at a time.
+ * Imperative calls share one FIFO queue. A later request never settles or
+ * overwrites the user's earlier decision.
  */
 import { useSyncExternalStore } from 'react';
 import { Button } from '@renderer/components/ui/button';
@@ -24,6 +23,7 @@ import {
 import { translate } from '@renderer/i18n';
 
 interface ConfirmRequest {
+  kind: 'confirm';
   title: string;
   message: string;
   confirmText: string;
@@ -32,7 +32,31 @@ interface ConfirmRequest {
   resolve: (ok: boolean) => void;
 }
 
-let current: ConfirmRequest | null = null;
+type ActionDialogResult = 'primary' | 'secondary' | 'cancel';
+
+interface ActionRequest {
+  kind: 'action';
+  title: string;
+  message: string;
+  primaryText: string;
+  secondaryText?: string;
+  cancelText: string;
+  tone: 'default' | 'destructive';
+  resolve: (result: ActionDialogResult) => void;
+}
+
+interface AlertRequest {
+  kind: 'alert';
+  title: string;
+  message: string;
+  buttonText: string;
+  tone: 'default' | 'destructive';
+  resolve: () => void;
+}
+
+type DialogRequest = ConfirmRequest | AlertRequest | ActionRequest;
+
+let queue: DialogRequest[] = [];
 const subs = new Set<() => void>();
 
 function emit(): void {
@@ -48,28 +72,27 @@ export interface ConfirmOptions {
 }
 
 export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
-  // Defensive: a still-open request is superseded → resolve it as cancelled
-  // so its awaiter never hangs. Callers (paste path) await sequentially, so
-  // this normally never fires.
-  if (current) {
-    const prev = current;
-    current = null;
-    prev.resolve(false);
-  }
   return new Promise<boolean>((resolve) => {
-    current = {
+    queue = [...queue, {
+      kind: 'confirm',
       title: opts.title,
       message: opts.message,
       confirmText: opts.confirmText ?? translate('dialog.defaultConfirm'),
       cancelText: opts.cancelText ?? translate('dialog.defaultCancel'),
       tone: opts.tone ?? 'default',
       resolve,
-    };
+    }];
     emit();
   });
 }
 
-function useCurrent(): ConfirmRequest | null {
+function currentRequest(): DialogRequest | null {
+  return queue[0] ?? null;
+}
+
+function useCurrent<TKind extends DialogRequest['kind']>(
+  kind: TKind,
+): Extract<DialogRequest, { kind: TKind }> | null {
   return useSyncExternalStore(
     (cb) => {
       subs.add(cb);
@@ -77,23 +100,16 @@ function useCurrent(): ConfirmRequest | null {
         subs.delete(cb);
       };
     },
-    () => current,
+    () => {
+      const current = currentRequest();
+      return current?.kind === kind
+        ? current as Extract<DialogRequest, { kind: TKind }>
+        : null;
+    },
   );
 }
 
 // ── Alert dialog (single "OK" button, for errors / notices) ─────────────
-
-interface AlertRequest {
-  title: string;
-  message: string;
-  buttonText: string;
-  tone: 'default' | 'destructive';
-  resolve: () => void;
-}
-
-let alertCurrent: AlertRequest | null = null;
-const alertSubs = new Set<() => void>();
-function alertEmit(): void { alertSubs.forEach((cb) => cb()); }
 
 export interface AlertOptions {
   title: string;
@@ -103,38 +119,57 @@ export interface AlertOptions {
 }
 
 export function alertDialog(opts: AlertOptions): Promise<void> {
-  if (alertCurrent) {
-    const prev = alertCurrent;
-    alertCurrent = null;
-    prev.resolve();
-  }
   return new Promise<void>((resolve) => {
-    alertCurrent = {
+    queue = [...queue, {
+      kind: 'alert',
       title: opts.title,
       message: opts.message,
       buttonText: opts.buttonText ?? translate('dialog.defaultOk'),
       tone: opts.tone ?? 'destructive',
       resolve,
-    };
-    alertEmit();
+    }];
+    emit();
   });
 }
 
-function useAlertCurrent(): AlertRequest | null {
-  return useSyncExternalStore(
-    (cb) => { alertSubs.add(cb); return () => { alertSubs.delete(cb); }; },
-    () => alertCurrent,
-  );
+export interface ActionDialogOptions {
+  title: string;
+  message: string;
+  primaryText: string;
+  secondaryText?: string;
+  cancelText?: string;
+  tone?: 'default' | 'destructive';
+}
+
+export function actionDialog(opts: ActionDialogOptions): Promise<ActionDialogResult> {
+  return new Promise<ActionDialogResult>((resolve) => {
+    queue = [...queue, {
+      kind: 'action',
+      title: opts.title,
+      message: opts.message,
+      primaryText: opts.primaryText,
+      cancelText: opts.cancelText ?? translate('dialog.defaultCancel'),
+      tone: opts.tone ?? 'default',
+      resolve,
+      ...(opts.secondaryText !== undefined ? { secondaryText: opts.secondaryText } : {}),
+    }];
+    emit();
+  });
+}
+
+function removeCurrent(req: DialogRequest): void {
+  if (queue[0] !== req) return;
+  queue = queue.slice(1);
+  emit();
 }
 
 export function AlertDialog(): JSX.Element | null {
-  const req = useAlertCurrent();
+  const req = useCurrent('alert');
   if (!req) return null;
 
   const settle = (): void => {
     const resolve = req.resolve;
-    alertCurrent = null;
-    alertEmit();
+    removeCurrent(req);
     resolve();
   };
 
@@ -161,15 +196,14 @@ export function AlertDialog(): JSX.Element | null {
 }
 
 export function ConfirmDialog(): JSX.Element | null {
-  const req = useCurrent();
+  const req = useCurrent('confirm');
   if (!req) return null;
 
   // Clear state BEFORE resolving so the awaiter's continuation (which may
   // focus the terminal) runs after the dialog has begun unmounting.
   const settle = (ok: boolean): void => {
     const resolve = req.resolve;
-    current = null;
-    emit();
+    removeCurrent(req);
     resolve(ok);
   };
 
@@ -191,6 +225,46 @@ export function ConfirmDialog(): JSX.Element | null {
             onClick={() => settle(true)}
           >
             {req.confirmText}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function ActionDialog(): JSX.Element | null {
+  const req = useCurrent('action');
+  if (!req) return null;
+
+  const settle = (result: ActionDialogResult): void => {
+    const resolve = req.resolve;
+    removeCurrent(req);
+    resolve(result);
+  };
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && settle('cancel')}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{req.title}</DialogTitle>
+        </DialogHeader>
+        <p className="max-h-[55vh] overflow-y-auto whitespace-pre-wrap break-words text-sm text-muted-foreground">
+          {req.message}
+        </p>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => settle('cancel')}>
+            {req.cancelText}
+          </Button>
+          {req.secondaryText && (
+            <Button variant="outline" onClick={() => settle('secondary')}>
+              {req.secondaryText}
+            </Button>
+          )}
+          <Button
+            variant={req.tone === 'destructive' ? 'destructive' : 'default'}
+            onClick={() => settle('primary')}
+          >
+            {req.primaryText}
           </Button>
         </DialogFooter>
       </DialogContent>

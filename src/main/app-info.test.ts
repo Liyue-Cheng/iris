@@ -3,6 +3,7 @@ import type { AppBuildType } from '@shared/types';
 import {
   buildAppInfo,
   externalLink,
+  externalUrl,
   legalDocumentPath,
   type AppInfoRuntime,
 } from './app-info';
@@ -106,4 +107,21 @@ describe('About actions', () => {
       ),
     ).toThrow('unsupported document id');
   });
+});
+
+describe('external URL policy', () => {
+  it.each([
+    ['https://example.com/docs', 'https://example.com/docs'],
+    ['http://localhost:4173/path', 'http://localhost:4173/path'],
+    ['mailto:hello@example.com', 'mailto:hello@example.com'],
+  ])('allows system-handler URL %s', (input, expected) => {
+    expect(externalUrl(input)).toBe(expected);
+  });
+
+  it.each(['file:///C:/secret.txt', 'javascript:alert(1)', 'data:text/plain,hello', ''])(
+    'rejects unsafe external URL %s',
+    (input) => {
+      expect(() => externalUrl(input)).toThrow();
+    },
+  );
 });

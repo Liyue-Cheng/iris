@@ -231,8 +231,8 @@ const ROOT_WS_PATH = '.iris';
 
 /** Stage a workspace hub's terminal full-width (root → selectRoot). */
 function selectHub(workspacePath: string): void {
-  if (workspacePath === ROOT_WS_PATH) projectStore.selectRoot();
-  else projectStore.selectWorkspace(workspacePath);
+  if (workspacePath === ROOT_WS_PATH) void projectStore.selectRoot();
+  else void projectStore.selectWorkspace(workspacePath);
 }
 
 /**

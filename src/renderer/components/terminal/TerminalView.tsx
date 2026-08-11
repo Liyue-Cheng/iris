@@ -38,65 +38,42 @@
  */
 import { useCallback, useEffect, useRef, useState, type WheelEvent as ReactWheelEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Terminal } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
-import { WebglAddon } from '@xterm/addon-webgl';
-import { WebLinksAddon } from '@xterm/addon-web-links';
-import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 import { pipeline } from '@renderer/cpu';
-import { CHANNELS, EVENTS } from '@shared/protocol';
-import type {
-  DocContent,
-  ProjectScope,
-  SessionOutputPayload,
-  SessionReplaySnapshot,
-} from '@shared/types';
+import type { ProjectScope } from '@shared/types';
 import {
-  composeDocPasteBlock,
   getDocDragPath,
   isDocDrag,
   resolveSystemFilePaths,
 } from '@renderer/lib/doc-drag';
 import { matchKeybinding } from '@shared/terminal-keybindings';
-import { attachImeCompositionEndCleaner } from '@shared/ime-textarea-workaround';
-import { attachImeCompositionPositionLock } from '@shared/ime-composition-position-lock';
-import { readClipboardText, writeClipboardText } from '@renderer/lib/clipboard';
-import { confirmDialog } from '@renderer/components/ui/confirm-dialog';
-import { getXtermTheme, isLightTheme, LIGHT_THEME_MIN_CONTRAST } from '@renderer/theme/xterm-themes';
+import { isTerminalFocusReport } from '@shared/terminal/input-policy';
+import { writeClipboardText } from '@renderer/lib/clipboard';
+import { openExternalUrl } from '@renderer/lib/shell-actions';
 import { getSettings, useSettings } from '@renderer/stores/settings-store';
 import {
   sessionStore,
   setLastTerminalDims,
   terminalLayoutScope,
+  useSessions,
 } from '@renderer/stores/session-store';
-import { sameProjectScope } from '@renderer/stores/project-scope-state';
+import { runUserAction } from '@renderer/lib/action-runtime';
+import { attachTerminalImeCompatibility } from '@renderer/terminal/xterm-compat';
+import { TerminalInputController } from '@renderer/terminal/input-controller';
+import { createTerminalInputController } from '@renderer/terminal/input-operation';
+import { TerminalReplayController } from '@renderer/terminal/replay-controller';
+import { TerminalSessionRuntime } from '@renderer/terminal/terminal-runtime';
 import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-} from '@renderer/components/ui/context-menu';
-
-function b64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-/** Chunked btoa — String.fromCharCode(...bytes) overflows the arg stack on
- *  large pastes, so never spread the whole buffer. */
-function encodeStringToBase64(text: string): string {
-  const bytes = new TextEncoder().encode(text);
-  let bin = '';
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(bin);
-}
+  ElectronTerminalTransport,
+  getTerminalDroppedFilePath,
+} from '@renderer/terminal/terminal-transport';
+import { TerminalViewportController } from '@renderer/terminal/viewport-controller';
+import {
+  BrowserXtermAdapter,
+  type BrowserTerminal,
+} from '@renderer/terminal/xterm-adapter';
+import { TerminalContextMenu } from './TerminalContextMenu';
+import { TerminalSearchBar } from './TerminalSearchBar';
 
 const onWindows = navigator.platform.toLowerCase().includes('win');
 
@@ -109,7 +86,6 @@ const MIN_COLS = 20;
 const MIN_ROWS = 5;
 const RESIZE_DEBOUNCE_MS = 150;
 const REPLAY_CHUNK_BYTES = 16 * 1024;
-const LARGE_PASTE_BYTES = 1024 * 1024;
 const REPLAY_FAILSAFE_MS = 5000;
 
 /**
@@ -119,16 +95,23 @@ const REPLAY_FAILSAFE_MS = 5000;
  * rejects that empty window before the assignment can happen.
  */
 function openTerminalLink(_event: MouseEvent, uri: string): void {
-  window.open(uri, '_blank', 'noopener,noreferrer');
+  // async-boundary: handled - runUserAction reports the failure; this catch keeps link activation void.
+  void openExternalUrl(uri).catch(() => undefined);
 }
 
 export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element {
   const { t } = useTranslation();
+  const { disconnectedSessionIds } = useSessions();
+  const disconnected = disconnectedSessionIds.has(sessionId);
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const termRef = useRef<Terminal | null>(null);
+  const termRef = useRef<BrowserTerminal | null>(null);
+  const xtermAdapterRef = useRef<BrowserXtermAdapter | null>(null);
+  const inputControllerRef = useRef<TerminalInputController | null>(null);
   const safeFitRef = useRef<(() => void) | null>(null);
-  const searchRef = useRef<SearchAddon | null>(null);
+  const searchRef = useRef<BrowserXtermAdapter['search'] | null>(null);
   const settings = useSettings();
+  const tRef = useRef(t);
+  tRef.current = t;
 
   // SCROLL-1: hidden (opacity:0, NOT visibility:hidden — see P2 below) until
   // the replay has anchored bottom and the renderer has painted the final
@@ -175,78 +158,9 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
   }, []);
 
   /** The single paste body — clipboard paste and doc-drop both end here. */
-  const pasteText = useCallback(async (text: string) => {
-    const term = termRef.current;
-    if (!term) return;
-    try {
-      if (!text) return;
-
-      // CPB-P4: >1MB pre-flight — a mis-copied log file can wedge ConPTY.
-      if (new Blob([text]).size > LARGE_PASTE_BYTES) {
-        const mb = (new Blob([text]).size / 1024 / 1024).toFixed(2);
-        if (
-          !(await confirmDialog({
-            title: t('terminal.largePasteTitle'),
-            message: t('terminal.largePasteMessage', { mb }),
-            confirmText: t('terminal.continuePaste'),
-          }))
-        ) {
-          return;
-        }
-      }
-
-      // Embedded ESC can rewrite terminal state (ANSI injection from a
-      // malicious page). Bracketed paste makes it literal where supported,
-      // but the user decides (CPB-P7/P8).
-      if (text.includes('\x1b')) {
-        if (
-          !(await confirmDialog({
-            title: t('terminal.escTitle'),
-            message: t('terminal.escMessage'),
-            confirmText: t('terminal.pasteAnyway'),
-            tone: 'destructive',
-          }))
-        ) {
-          return;
-        }
-      }
-
-      // term.paste() normalizes line endings and applies bracketed-paste
-      // wrapping iff the running app enabled mode 2004 — PSReadLine and the
-      // agent CLIs do, so multi-line lands as editable literal text. When
-      // the mode is off (bare cmd.exe), multi-line would execute line by
-      // line — confirm first (Marina's no-bracketed-paste fallback).
-      if (!term.modes.bracketedPasteMode) {
-        const lines = text.split(/\r\n|\r|\n/);
-        while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
-        if (lines.length > 1) {
-          if (
-            !(await confirmDialog({
-              title: t('terminal.multilineTitle'),
-              message: t('terminal.multilineMessage', { count: lines.length }),
-              confirmText: t('terminal.continuePaste'),
-              tone: 'destructive',
-            }))
-          ) {
-            return;
-          }
-        }
-      }
-
-      // A session switch (view remount) could have disposed this term while a
-      // confirm dialog was open — don't paste into a stale terminal.
-      if (termRef.current !== term) return;
-      term.paste(text);
-    } finally {
-      // CPB-P1: focus back no matter what (the confirm dialog took focus).
-      termRef.current?.focus();
-    }
-  }, [t]);
-
   const handlePaste = useCallback(async () => {
-    const text = await readClipboardText();
-    await pasteText(text);
-  }, [pasteText]);
+    await inputControllerRef.current?.pasteClipboard();
+  }, []);
 
   /**
    * Drop of OS files (dragged from Explorer/Finder): send the (quoted)
@@ -258,67 +172,26 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
    */
   const handleFileDrop = useCallback(
     async (paths: string[]) => {
-      const term = termRef.current;
-      if (!term || paths.length === 0) return;
-      const SHELL_METAS = /[;&`$|<>(){}\\!*?\n\r]/;
-      const dangerous = paths.filter((p) => SHELL_METAS.test(p));
-      if (dangerous.length > 0) {
-        if (
-          !(await confirmDialog({
-            title: t('terminal.shellMetaTitle'),
-            message: t('terminal.shellMetaMessage', { paths: dangerous.join('\n') }),
-            confirmText: t('terminal.pasteAnyway'),
-            tone: 'destructive',
-          }))
-        ) {
-          termRef.current?.focus();
-          return;
-        }
-      }
-      // Windows paths can't contain ", so quoting only paths with whitespace
-      // is sufficient.
-      const quoted = paths.map((p) => (/\s/.test(p) ? `"${p}"` : p)).join(' ');
-      try {
-        const scope = scopeForSession(sessionId);
-        if (!scope) return;
-        await window.api.invoke(CHANNELS.SESSION_INPUT, {
-          sessionId,
-          data: encodeStringToBase64(quoted),
-          expectedScope: scope,
-        });
-      } catch (err) {
-        console.warn('[TerminalView] file drop send-input failed', err);
-      } finally {
-        termRef.current?.focus();
-      }
+      await inputControllerRef.current?.dropPaths(paths);
     },
-    [sessionId, t],
+    [],
   );
 
   /** Drop of a doc row: paste its relative path or a fresh content snapshot. */
   const handleDocDrop = useCallback(
     async (docPath: string) => {
-      try {
-        if ((getSettings()?.behavior.terminalDocDrop ?? 'content') === 'path') {
-          await handleFileDrop([docPath]);
-          return;
-        }
-        const scope = scopeForSession(sessionId);
-        if (!scope) return;
-        const content = await window.api.invoke<
-          { path: string; expectedScope: ProjectScope },
-          DocContent
-        >(
-          CHANNELS.DOC_READ,
-          { path: docPath, expectedScope: scope },
-        );
-        await pasteText(composeDocPasteBlock(content));
-      } catch (err) {
-        console.warn('[TerminalView] doc drop paste failed', err);
-        termRef.current?.focus();
-      }
+      await runUserAction(
+        {
+          title: t('errors.terminalDropFailed'),
+          dedupeKey: `terminal:doc-drop:${sessionId}`,
+        },
+        async () => {
+          await inputControllerRef.current?.dropDocument(docPath);
+        },
+      );
+      termRef.current?.focus();
     },
-    [handleFileDrop, pasteText, sessionId],
+    [sessionId, t],
   );
 
   const handleClear = useCallback(() => {
@@ -391,11 +264,24 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       const settled = pendingFontSizeRef.current;
       pendingFontSizeRef.current = null;
       if (settled == null) return;
-      void pipeline.dispatch('settings.update', {
-        appearance: { terminalFontSize: settled },
+      void runUserAction(
+        {
+          title: t('errors.settingsPersistenceFailed'),
+          dedupeKey: 'settings:terminal-font-size',
+        },
+        () => pipeline.dispatch('settings.update', {
+          appearance: { terminalFontSize: settled },
+        }),
+      ).then((outcome) => {
+        if (outcome.status !== 'failed') return;
+        const persisted = getSettings()?.appearance.terminalFontSize ?? 13;
+        const currentTerm = termRef.current;
+        if (!currentTerm) return;
+        currentTerm.options.fontSize = persisted;
+        safeFitRef.current?.();
       });
     }, 120);
-  }, []);
+  }, [t]);
 
   // The custom key handler and paste interceptor are registered once per
   // mount; route them through a ref so they always see the latest handlers.
@@ -422,40 +308,35 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
 
     const s = getSettings();
     const themeId = s?.appearance.theme;
-    const term = new Terminal({
-      scrollback: 5000, // must match main's headless mirror
-      // Codex clears inside DEC 2026 synchronized frames. Scrolling erased
-      // rows into history avoids xterm's partial-region scroll and jump-to-top
-      // failure mode. Keep this identical to SessionManager's headless xterm.
-      scrollOnEraseInDisplay: true,
+    const runtime = new TerminalSessionRuntime(sessionId, sessionScope);
+    const transport = new ElectronTerminalTransport(sessionId, sessionScope, runtime.epoch);
+    runtime.own(() => {
+      void transport.detach().catch(() => undefined);
+    });
+    const xtermAdapter = new BrowserXtermAdapter({
       fontFamily:
         s?.appearance.terminalFontFamily ??
         "'Cascadia Mono', 'JetBrains Mono', 'Consolas', monospace",
       fontSize: s?.appearance.terminalFontSize ?? 13,
       lineHeight: s?.appearance.terminalLineHeight ?? 1.2,
-      theme: getXtermTheme(themeId),
-      // Light themes turn on a WCAG-AA contrast floor so dim/256-color text
-      // (Claude Code hints, git diff context) stays readable on a pale base;
-      // dark themes keep 1 (no clamp) to preserve intentional muting (BETA-035).
-      minimumContrastRatio: isLightTheme(themeId) ? LIGHT_THEME_MIN_CONTRAST : 1,
-      // Match the app-wide 10px themed scrollbars (global.css). Side effect:
-      // setting width enables the overview ruler — its always-painted 1px
-      // outline is neutralized via theme.overviewRulerBorder = background.
-      scrollbar: { width: 10 },
-      // OSC 8 hyperlinks use xterm's built-in provider. Keep them on the same
-      // external-opening path as plain URLs instead of xterm's broken
-      // open-empty-window-then-navigate fallback.
-      linkHandler: { activate: openTerminalLink },
-      allowProposedApi: true,
-      ...(window.api.windowsBuild
-        ? { windowsPty: { backend: 'conpty' as const, buildNumber: window.api.windowsBuild } }
-        : {}),
+      themeId,
+      renderer: s?.advanced.terminalRenderer ?? 'auto',
+      windowsBuild: transport.windowsBuild,
+      openLink: openTerminalLink,
     });
+    const term = xtermAdapter.terminal;
+    xtermAdapterRef.current = xtermAdapter;
     termRef.current = term;
 
     let disposed = false;
-    let replayInProgress = true;
-    let fitDeferred = false;
+    runtime.transition({ type: 'ATTACH' });
+    const inputController = createTerminalInputController({
+      runtime,
+      transport,
+      terminal: term,
+      getTranslate: () => tRef.current,
+    });
+    inputControllerRef.current = inputController;
 
     // KBD-1: scan the shared binding table; consume matches so xterm never
     // encodes them as control bytes (unhandled Ctrl+V becomes 0x16 to the
@@ -502,15 +383,16 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       }
     });
 
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon(openTerminalLink));
+    const viewport = new TerminalViewportController(
+      { fit: () => xtermAdapter.fit.fit() },
+      RESIZE_DEBOUNCE_MS,
+    );
+    runtime.own(() => viewport.dispose());
 
     // SearchAddon (Ctrl+F). onDidChangeResults feeds the "x / N" hit counter;
     // registerDecoration (match highlight + overview-ruler markers) needs
     // allowProposedApi, already true above.
-    const searchAddon = new SearchAddon();
-    term.loadAddon(searchAddon);
+    const searchAddon = xtermAdapter.search;
     searchRef.current = searchAddon;
     const searchResultsDisposable = searchAddon.onDidChangeResults?.((results) => {
       if (!results) {
@@ -522,30 +404,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       setSearchResults({ matches: count, current: count > 0 && idx >= 0 ? idx + 1 : 0 });
     });
 
-    term.open(host);
-
-    // PER-1: WebGL after open() (needs the canvas); on GPU context loss
-    // dispose the addon and let xterm fall back to the DOM renderer.
-    // advanced.terminalRenderer 'dom' skips the addon entirely (WebGL-compat
-    // escape hatch); 'auto'/'webgl' both try-with-fallback. Mount-time
-    // decision — sessions remount on switch, so changes apply then.
-    let webglAddon: WebglAddon | null = null;
-    if ((s?.advanced.terminalRenderer ?? 'auto') !== 'dom') {
-      try {
-        webglAddon = new WebglAddon();
-        webglAddon.onContextLoss(() => {
-          try {
-            webglAddon?.dispose();
-          } catch {
-            /* ignore */
-          }
-          webglAddon = null;
-        });
-        term.loadAddon(webglAddon);
-      } catch {
-        webglAddon = null; // canvas/dom fallback, purely cosmetic
-      }
-    }
+    xtermAdapter.open(host);
 
     // PASTE-1: capture-phase paste interceptor — the only paste entry.
     // Stops xterm's bubble-phase listener from writing raw clipboard bytes
@@ -564,34 +423,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     // IME-1/IME-2 (Marina, same xterm build): compositionend backlog
     // cleaner + candidate-window position lock. Both degrade gracefully if
     // xterm's internals move.
-    let detachImeCleaner: (() => void) | null = null;
-    let detachImeLock: (() => void) | null = null;
-    if (helperTa) {
-      try {
-        detachImeCleaner = attachImeCompositionEndCleaner(helperTa);
-      } catch (err) {
-        console.warn('[TerminalView] IME-1 workaround attach failed', err);
-      }
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const core = (term as any)._core;
-        const compHelper = core?._compositionHelper;
-        const bufferService = core?._bufferService;
-        if (
-          compHelper &&
-          typeof compHelper.updateCompositionElements === 'function' &&
-          bufferService?.buffer &&
-          typeof bufferService.buffer.x === 'number' &&
-          typeof bufferService.buffer.y === 'number'
-        ) {
-          detachImeLock = attachImeCompositionPositionLock(helperTa, compHelper, bufferService);
-        } else {
-          console.warn('[TerminalView] IME-2 position lock skipped — _core shape changed?');
-        }
-      } catch (err) {
-        console.warn('[TerminalView] IME-2 position lock attach failed', err);
-      }
-    }
+    const detachImeCompatibility = attachTerminalImeCompatibility(term, helperTa);
 
     // CPB-C2: select-on-copy with a trailing debounce — drag-selecting 50
     // chars must not fire 50 clipboard writes (Windows OLE lock makes
@@ -618,255 +450,144 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       if (session) {
         setLastTerminalDims(session.projectRoot, terminalLayoutScope(session), { cols, rows });
       }
-      if (replayInProgress) return;
-      void window.api.invoke(CHANNELS.SESSION_RESIZE, {
-        sessionId,
-        cols,
-        rows,
-        expectedScope: sessionScope,
-      });
+      if (viewport.replayInProgress) return;
+      void transport.resize(cols, rows).catch(() => undefined);
     });
 
-    const safeFit = (allowDuringReplay = false): void => {
-      if (replayInProgress && !allowDuringReplay) {
-        fitDeferred = true;
-        return;
-      }
-      try {
-        fit.fit();
-      } catch {
-        /* zero-size during layout shuffles */
-      }
-    };
-    safeFitRef.current = () => safeFit();
+    safeFitRef.current = () => viewport.requestFit();
 
     // 勘误 #4: trailing debounce — dragging the pane sash fires dozens of
     // RO callbacks per second, and every one used to hit ConPTY with a
     // reflow (progress bars get shredded into junk lines).
-    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
-    const observer = new ResizeObserver(() => {
-      if (disposed) return;
-      if (resizeTimer !== null) clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => {
-        resizeTimer = null;
-        safeFit();
-      }, RESIZE_DEBOUNCE_MS);
-    });
-    observer.observe(host);
+    viewport.observe(host);
 
     // RSZ-2: maximize/restore is an instant jump, not a drag — skip the
     // debounce (one frame for the chrome layout to settle).
-    const unsubscribeMax = window.api.on<{ maximized: boolean }>(
-      EVENTS.WINDOW_MAXIMIZED_CHANGED,
-      () => {
-        if (disposed) return;
-        if (resizeTimer !== null) {
-          clearTimeout(resizeTimer);
-          resizeTimer = null;
-        }
-        requestAnimationFrame(() => {
-          if (!disposed) safeFit();
-        });
-      },
-    );
+    const unsubscribeMax = transport.onWindowMaximized(() => {
+      if (disposed) return;
+      requestAnimationFrame(() => {
+        if (!disposed) viewport.requestFit();
+      });
+    });
 
     // XTM-9: metrics measured against a fallback font are wrong until the
     // webfont (霞鹜文楷 etc.) is in; re-fit once it lands.
     if (typeof document !== 'undefined' && document.fonts?.ready) {
-      void document.fonts.ready.then(() => {
-        if (!disposed) safeFit();
-      });
+      void document.fonts.ready
+        .then(() => {
+          if (!disposed) viewport.requestFit();
+        })
+        .catch(() => {
+          // Font readiness is an optional metric refinement; the fallback font remains usable.
+        });
     }
 
-    let replayDone = false;
-    let lastSeq = -1;
-    const holdQueue: SessionOutputPayload[] = [];
-
-    // 1) subscribe FIRST (hold until replay lands)
-    const unsubscribe = window.api.on<SessionOutputPayload>(EVENTS.SESSION_OUTPUT, (payload) => {
-      if (payload.sessionId !== sessionId) return;
-      if (!sameProjectScope(payload.scope, sessionScope)) return;
-      if (!replayDone) {
-        holdQueue.push(payload);
-        return;
-      }
-      if (payload.seq <= lastSeq) return; // already inside the replay
-      lastSeq = payload.seq;
-      term.write(b64ToBytes(payload.data));
-    });
-
-    // 2) input plumbing. XTM-7: flush a pending debounced fit before any
-    // keystroke so the PTY never wraps the prompt at stale dims.
-    const dataDisposable = term.onData((data) => {
-      if (resizeTimer !== null) {
-        clearTimeout(resizeTimer);
-        resizeTimer = null;
-        safeFit();
-      }
-      void window.api.invoke(CHANNELS.SESSION_INPUT, {
-        sessionId,
-        data: encodeStringToBase64(data),
-        expectedScope: sessionScope,
+    const replayController = new TerminalReplayController(
+      runtime,
+      transport,
+      {
+        get cols() {
+          return term.cols;
+        },
+        get rows() {
+          return term.rows;
+        },
+        write: (data, callback) => term.write(data, callback),
+        scrollToBottom: () => term.scrollToBottom(),
+        beginSynchronizedReplay: () => xtermAdapter.beginSynchronizedReplay(),
+        endSynchronizedReplay: (callback) => xtermAdapter.endSynchronizedReplay(callback),
+      },
+      viewport,
+      {
+        chunkBytes: REPLAY_CHUNK_BYTES,
+        timeoutMs: REPLAY_FAILSAFE_MS,
+        reveal: () => setHostRevealed(true),
+        warn: (message, error) => console.warn(message, error),
       });
-    });
 
-    // 3) replay
-    const finishReplay = (): void => {
-      // SCROLL-1: a zero-length write is xterm's parser-drain fence — only
-      // inside it is "bottom" the real final bottom. Reveal one RAF later so
-      // the first visible frame is the final canvas.
-      let revealed = false;
-      // The fence is a Uint8Array(0), NOT write('', cb): an empty string is
-      // falsy, so a fit()/resize() landing during the fence makes
-      // WriteBuffer.flushSync() drop the chunk AND its callback (its
-      // `while (chunk = shift())` loop reads '' as end-of-queue). That would
-      // strand the reveal on the failsafe timer (持久-2026-06-25). A
-      // zero-length buffer is a truthy object flushSync calls back normally.
-      const reveal = (): void => {
-        if (disposed || revealed) return;
-        revealed = true;
-        replayInProgress = false;
-        if (fitDeferred) {
-          fitDeferred = false;
-          safeFit();
-        }
-        term.scrollToBottom();
-        requestAnimationFrame(() => {
-          if (!disposed) setHostRevealed(true);
-        });
-      };
-      const fallbackTimer = setTimeout(() => {
-        if (disposed || revealed) return;
-        console.warn('[TerminalView] replay fence timed out; revealing terminal fallback', {
-          sessionId,
-        });
-        reveal();
-      }, REPLAY_FAILSAFE_MS);
-      term.write(new Uint8Array(0), () => {
-        clearTimeout(fallbackTimer);
-        reveal();
+    // Subscribe before requesting replay so the controller can close the live-output gap.
+    const unsubscribe = transport.onOutput((payload) => replayController.onOutput(payload));
+
+    let alternateSelectionGesture = false;
+    let alternateSelectionFrozen = false;
+    const resumeAlternateSelection = (): void => {
+      if (!alternateSelectionFrozen) return;
+      alternateSelectionFrozen = false;
+      void replayController.resumeFromHistory().catch(() => undefined);
+    };
+    const beginAlternateSelection = (event: MouseEvent): void => {
+      const selectsText = term.modes.mouseTrackingMode === 'none' || event.shiftKey;
+      if (event.button !== 0 || term.buffer.active.type !== 'alternate' || !selectsText) return;
+      alternateSelectionGesture = true;
+      alternateSelectionFrozen = true;
+      replayController.freezeHistory();
+    };
+    const endAlternateSelection = (): void => {
+      if (!alternateSelectionGesture) return;
+      alternateSelectionGesture = false;
+      requestAnimationFrame(() => {
+        if (!term.hasSelection()) resumeAlternateSelection();
       });
     };
+    host.addEventListener('mousedown', beginAlternateSelection, true);
+    document.addEventListener('mouseup', endAlternateSelection, true);
 
-    void (async () => {
-      safeFit(true);
-      try {
-        const requestReplay = async (): Promise<SessionReplaySnapshot> => {
-          const scrollbackPromise = window.api.invoke<
-            {
-              sessionId: string;
-              cols: number;
-              rows: number;
-              expectedScope: ProjectScope;
-            },
-            SessionReplaySnapshot
-          >(CHANNELS.SESSION_SCROLLBACK, {
-            sessionId,
-            cols: term.cols,
-            rows: term.rows,
-            expectedScope: sessionScope,
-          });
-          let scrollbackTimer: ReturnType<typeof setTimeout> | null = null;
-          return Promise.race([
-            scrollbackPromise,
-            new Promise<SessionReplaySnapshot>((_, reject) => {
-              scrollbackTimer = setTimeout(
-                () => reject(new Error(`SESSION_SCROLLBACK timed out after ${REPLAY_FAILSAFE_MS}ms`)),
-                REPLAY_FAILSAFE_MS,
-              );
-            }),
-          ]).finally(() => {
-            if (scrollbackTimer !== null) clearTimeout(scrollbackTimer);
-          });
-        };
-
-        let replay = await requestReplay();
-        if (disposed) return;
-
-        // Font readiness and ResizeObserver callbacks can land while main is
-        // preparing the snapshot. Apply one deferred fit before writing any
-        // ANSI; if its grid changed, discard the old-size snapshot and retry
-        // exactly once. Fits arriving during the retry remain deferred until
-        // the replay fence, so the second snapshot's grid stays stable.
-        if (fitDeferred) {
-          fitDeferred = false;
-          safeFit(true);
-          if (term.cols !== replay.cols || term.rows !== replay.rows) {
-            replay = await requestReplay();
-            if (disposed) return;
-          }
-        }
-
-        if (term.cols !== replay.cols || term.rows !== replay.rows) {
-          throw new Error(
-            `SESSION_SCROLLBACK size mismatch renderer=${term.cols}x${term.rows} ` +
-              `snapshot=${replay.cols}x${replay.rows}`,
-          );
-        }
-        if (disposed) return;
-        if (replay.data) {
-          // FLK-1: chunked write + yields — a multi-MB scrollback written in
-          // one call blocks the main thread for 100-300ms.
-          const all = b64ToBytes(replay.data);
-          for (let i = 0; i < all.length; i += REPLAY_CHUNK_BYTES) {
-            if (disposed) return;
-            term.write(all.subarray(i, i + REPLAY_CHUNK_BYTES));
-            if (all.length > REPLAY_CHUNK_BYTES && i + REPLAY_CHUNK_BYTES < all.length) {
-              await new Promise((r) => setTimeout(r, 0));
-            }
-          }
-        }
-        if (disposed) return;
-        lastSeq = replay.lastSeq;
-        replayDone = true;
-        for (const payload of holdQueue) {
-          if (payload.seq <= lastSeq) {
-            continue;
-          }
-          lastSeq = payload.seq;
-          term.write(b64ToBytes(payload.data));
-        }
-        holdQueue.length = 0;
-        finishReplay();
-      } catch (err) {
-        console.warn('[TerminalView] scrollback replay failed, going live', err);
-        if (disposed) return;
-        for (const payload of holdQueue) {
-          if (payload.seq > lastSeq) {
-            lastSeq = payload.seq;
-            term.write(b64ToBytes(payload.data));
-          }
-        }
-        holdQueue.length = 0;
-        replayDone = true;
-        finishReplay(); // must still reveal, or the terminal stays invisible
+    const selectionFreezeDisposable = term.onSelectionChange(() => {
+      if (term.buffer.active.type === 'alternate' && term.hasSelection()) {
+        alternateSelectionFrozen = true;
+        replayController.freezeHistory();
+      } else if (!alternateSelectionGesture) {
+        resumeAlternateSelection();
       }
-    })();
+    });
+
+    const dataDisposable = term.onData((data) => {
+      viewport.flushBeforeInput();
+      if (
+        runtime.state.phase === 'history-frozen' &&
+        !isTerminalFocusReport(data) &&
+        !alternateSelectionGesture &&
+        !term.hasSelection()
+      ) {
+        term.scrollToBottom();
+        void replayController.resumeFromHistory().catch(() => undefined);
+      }
+      void transport.sendInput(data).catch(() => undefined);
+    });
+    const scrollDisposable = term.onScroll(() => {
+      if (term.buffer.active.type !== 'normal') return;
+      const buffer = term.buffer.active;
+      if (buffer.viewportY >= buffer.baseY) {
+        void replayController.resumeFromHistory().catch(() => undefined);
+      } else {
+        replayController.freezeHistory();
+      }
+    });
+
+    // async-boundary: handled - TerminalReplayController owns catch/fallback and epoch checks.
+    void replayController.start();
 
     return () => {
       disposed = true;
-      if (resizeTimer !== null) clearTimeout(resizeTimer);
+      runtime.dispose();
       if (selectionTimer !== null) clearTimeout(selectionTimer);
       unsubscribe();
       unsubscribeMax();
       dataDisposable.dispose();
+      scrollDisposable.dispose();
+      selectionFreezeDisposable.dispose();
       resizeDisposable.dispose();
       selectionDisposable.dispose();
-      observer.disconnect();
-      detachImeCleaner?.();
-      detachImeLock?.();
+      detachImeCompatibility();
       helperTa?.removeEventListener('paste', pasteInterceptor, true);
       host.removeEventListener('paste', pasteInterceptor, true);
+      host.removeEventListener('mousedown', beginAlternateSelection, true);
+      document.removeEventListener('mouseup', endAlternateSelection, true);
       searchResultsDisposable?.dispose();
-      searchAddon.dispose();
-      // PER-1: release the GL context before term.dispose or the handle leaks.
-      try {
-        webglAddon?.dispose();
-      } catch {
-        /* ignore */
-      }
-      term.dispose();
+      xtermAdapter.dispose();
       termRef.current = null;
+      xtermAdapterRef.current = null;
+      inputControllerRef.current = null;
       safeFitRef.current = null;
       searchRef.current = null;
     };
@@ -900,21 +621,30 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
 
   // Live theme/font switching without remount (xterm supports runtime opts).
   useEffect(() => {
-    const term = termRef.current;
-    if (!term || !settings) return;
-    term.options.theme = getXtermTheme(settings.appearance.theme);
-    term.options.minimumContrastRatio = isLightTheme(settings.appearance.theme)
-      ? LIGHT_THEME_MIN_CONTRAST
-      : 1;
-    term.options.fontFamily = settings.appearance.terminalFontFamily;
-    term.options.fontSize = settings.appearance.terminalFontSize;
-    term.options.lineHeight = settings.appearance.terminalLineHeight;
+    const adapter = xtermAdapterRef.current;
+    if (!adapter || !settings) return;
+    adapter.updateAppearance({
+      themeId: settings.appearance.theme,
+      fontFamily: settings.appearance.terminalFontFamily,
+      fontSize: settings.appearance.terminalFontSize,
+      lineHeight: settings.appearance.terminalLineHeight,
+    });
     safeFitRef.current?.(); // metrics changed → re-measure (PTY hears via onResize)
   }, [settings]);
 
   return (
     <div className="relative h-full w-full">
-      <ContextMenu
+      {disconnected && (
+        <div role="alert" className="absolute inset-x-0 top-0 z-40 border-b border-destructive/30 bg-destructive/90 px-3 py-1.5 text-xs text-destructive-foreground">
+          {t('errors.sessionDisconnected')}
+        </div>
+      )}
+      <TerminalContextMenu
+        hasSelection={ctxHasSelection}
+        onCopy={handleCopy}
+        onPaste={() => void handlePaste()}
+        onClear={handleClear}
+        onSearch={handleOpenSearch}
         onOpenChange={(open) => {
           if (open) {
             setCtxHasSelection(!!termRef.current?.getSelection());
@@ -925,8 +655,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
           }
         }}
       >
-        <ContextMenuTrigger asChild>
-          <div
+        <div
             ref={hostRef}
             className="h-full w-full px-1 pt-1"
             // P2: opacity (not visibility) keeps the host focusable while the
@@ -964,97 +693,24 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
             const files = Array.from(e.dataTransfer.files);
             if (files.length > 0) {
               e.preventDefault();
-              const paths = resolveSystemFilePaths(files, window.api.getPathForFile);
+              const paths = resolveSystemFilePaths(files, getTerminalDroppedFilePath);
               if (paths.length > 0) void handleFileDrop(paths);
             }
           }}
-          />
-        </ContextMenuTrigger>
-        <ContextMenuContent>
-          <ContextMenuItem disabled={!ctxHasSelection} onClick={handleCopy}>
-            {t('terminal.copy')}
-          </ContextMenuItem>
-          <ContextMenuItem onClick={() => void handlePaste()}>{t('terminal.paste')}</ContextMenuItem>
-          <ContextMenuSeparator />
-          <ContextMenuItem onClick={handleClear}>{t('terminal.clear')}</ContextMenuItem>
-          <ContextMenuItem onClick={handleOpenSearch}>{t('terminal.search')}</ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenu>
+        />
+      </TerminalContextMenu>
 
       {searchVisible && (
-        <div
-          role="search"
-          aria-label={t('terminal.searchAria')}
-          className="absolute right-4 top-2 z-50 flex items-center gap-1 rounded-md border bg-popover px-1.5 py-1 text-popover-foreground shadow-md"
-        >
-          <input
-            ref={searchInputRef}
-            type="text"
-            className="h-6 w-56 rounded-sm border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
-            placeholder={t('terminal.searchPlaceholder')}
-            value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') {
-                e.preventDefault();
-                e.stopPropagation();
-                handleCloseSearch();
-              } else if (e.key === 'Enter') {
-                e.preventDefault();
-                e.stopPropagation();
-                performSearch(e.shiftKey ? 'previous' : 'next');
-              }
-            }}
-          />
-          <span className="min-w-[3rem] px-1 text-center font-mono text-[11px] text-muted-foreground">
-            {searchText
-              ? searchResults.matches > 0
-                ? `${searchResults.current}/${searchResults.matches}`
-                : t('common.noMatches')
-              : '—'}
-          </span>
-          <button
-            type="button"
-            className="flex h-6 w-6 items-center justify-center rounded-sm border text-xs hover:bg-accent disabled:opacity-40"
-            onClick={() => performSearch('previous')}
-            title={t('terminal.previous')}
-            aria-label={t('terminal.previousAria')}
-            disabled={!searchText || searchResults.matches === 0}
-          >
-            ↑
-          </button>
-          <button
-            type="button"
-            className="flex h-6 w-6 items-center justify-center rounded-sm border text-xs hover:bg-accent disabled:opacity-40"
-            onClick={() => performSearch('next')}
-            title={t('terminal.next')}
-            aria-label={t('terminal.nextAria')}
-            disabled={!searchText || searchResults.matches === 0}
-          >
-            ↓
-          </button>
-          <button
-            type="button"
-            className={`flex h-6 w-6 items-center justify-center rounded-sm border text-xs hover:bg-accent ${
-              searchCaseSensitive ? 'bg-accent text-accent-foreground' : ''
-            }`}
-            onClick={() => setSearchCaseSensitive((v) => !v)}
-            title={t('terminal.matchCase')}
-            aria-label={t('terminal.matchCase')}
-            aria-pressed={searchCaseSensitive}
-          >
-            Aa
-          </button>
-          <button
-            type="button"
-            className="flex h-6 w-6 items-center justify-center rounded-sm border text-xs hover:bg-destructive hover:text-destructive-foreground"
-            onClick={handleCloseSearch}
-            title={t('terminal.closeSearch')}
-            aria-label={t('terminal.closeSearchAria')}
-          >
-            ×
-          </button>
-        </div>
+        <TerminalSearchBar
+          inputRef={searchInputRef}
+          text={searchText}
+          caseSensitive={searchCaseSensitive}
+          results={searchResults}
+          onTextChange={setSearchText}
+          onCaseSensitiveChange={setSearchCaseSensitive}
+          onSearch={performSearch}
+          onClose={handleCloseSearch}
+        />
       )}
     </div>
   );

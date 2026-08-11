@@ -5,6 +5,7 @@ import { relative, resolve, sep } from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
 import type { GitBranchInfo, GitResource, GitResourceGroup, GitSnapshot } from '@shared/types';
 import { mainT } from './i18n';
+import { logger } from './logger';
 
 const execFileP = promisify(execFile);
 
@@ -34,20 +35,72 @@ export class GitManager extends EventEmitter {
   private root: string | null = null;
   private watcher: FSWatcher | null = null;
   private timer: NodeJS.Timeout | null = null;
+  private watcherRetryTimer: NodeJS.Timeout | null = null;
+  private watcherRetryAttempt = 0;
+  private watcherGeneration = 0;
 
   async open(root: string): Promise<void> {
     await this.close();
     this.root = root;
-    this.watcher = chokidar.watch(root, { ignored: (p) => p.includes(`${sep}.git${sep}`) && (p.endsWith(`${sep}index.lock`) || p.includes(`${sep}fsmonitor--daemon`)), ignoreInitial: true, depth: 2 });
-    this.watcher.on('all', () => this.invalidate());
+    this.watcherGeneration += 1;
+    this.startWatcher(root, this.watcherGeneration);
   }
 
   async close(): Promise<void> {
     if (this.timer) clearTimeout(this.timer);
+    if (this.watcherRetryTimer) clearTimeout(this.watcherRetryTimer);
     this.timer = null;
+    this.watcherRetryTimer = null;
+    this.watcherRetryAttempt = 0;
+    this.watcherGeneration += 1;
     await this.watcher?.close().catch(() => {});
     this.watcher = null;
     this.root = null;
+  }
+
+  private startWatcher(root: string, generation: number): void {
+    const watcher = chokidar.watch(root, {
+      ignored: (path) =>
+        path.includes(`${sep}.git${sep}`) &&
+        (path.endsWith(`${sep}index.lock`) || path.includes(`${sep}fsmonitor--daemon`)),
+      ignoreInitial: true,
+      depth: 2,
+    });
+    this.watcher = watcher;
+    watcher
+      .on('all', () => this.invalidate())
+      .on('ready', () => {
+        if (this.root !== root || this.watcherGeneration !== generation) return;
+        this.watcherRetryAttempt = 0;
+        this.emit('healthChanged', { domain: 'git-watcher', state: 'healthy' });
+      })
+      .on('error', (error) => this.handleWatcherError(root, generation, error));
+  }
+
+  private handleWatcherError(root: string, generation: number, error: unknown): void {
+    if (this.root !== root || this.watcherGeneration !== generation) return;
+    logger.warn('git', `watcher error for ${root}`, error);
+    this.emit('healthChanged', { domain: 'git-watcher', state: 'degraded', error });
+    if (this.watcherRetryTimer) return;
+    const delay = Math.min(30_000, 1_000 * (2 ** this.watcherRetryAttempt));
+    this.watcherRetryAttempt += 1;
+    this.watcherRetryTimer = setTimeout(() => {
+      this.watcherRetryTimer = null;
+      void this.rebuildWatcher(root, generation);
+    }, delay);
+  }
+
+  private async rebuildWatcher(root: string, generation: number): Promise<void> {
+    if (this.root !== root || this.watcherGeneration !== generation) return;
+    const previous = this.watcher;
+    this.watcher = null;
+    await previous?.close().catch(() => {});
+    if (this.root !== root || this.watcherGeneration !== generation) return;
+    try {
+      this.startWatcher(root, generation);
+    } catch (error) {
+      this.handleWatcherError(root, generation, error);
+    }
   }
 
   private invalidate(): void {

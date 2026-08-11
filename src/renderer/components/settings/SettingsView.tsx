@@ -72,6 +72,8 @@ import { cn } from '@renderer/lib/utils';
 import { confirmDialog } from '@renderer/components/ui/confirm-dialog';
 import { IrisMark } from '@renderer/components/layout/IrisMark';
 import { writeClipboardText } from '@renderer/lib/clipboard';
+import { runUserAction } from '@renderer/lib/action-runtime';
+import { translate } from '@renderer/i18n';
 import {
   APP_BUILD_TYPE_KEYS,
   appDiagnostics,
@@ -97,17 +99,32 @@ import {
 // Open/close state — module-level store, same pattern as CreateDocDialog.
 // ──────────────────────────────────────────────────────────────────
 
+export type SettingsCategoryId =
+  | 'appearance'
+  | 'terminal'
+  | 'agents'
+  | 'project'
+  | 'prompts'
+  | 'advanced'
+  | 'about';
+
 let open = false;
+let activeCategory: SettingsCategoryId = 'appearance';
 const subs = new Set<() => void>();
 
-export function openSettingsView(): void {
+export function openSettingsView(category: SettingsCategoryId = activeCategory): void {
   // Opening settings unmounts the editor. A conflict or write failure keeps
   // the current document visible so its draft can be resolved.
-  void editorStore.flushBeforeSwitch('view-switch').then((ready) => {
-    if (!ready) return;
-    open = true;
-    subs.forEach((cb) => cb());
-  });
+  void runUserAction(
+    { title: translate('errors.settingsOpenFailed'), dedupeKey: 'settings:open' },
+    async () => {
+      const ready = await editorStore.flushBeforeSwitch('view-switch');
+      if (!ready) return;
+      activeCategory = category;
+      open = true;
+      subs.forEach((cb) => cb());
+    },
+  );
 }
 
 export function closeSettingsView(): void {
@@ -131,16 +148,7 @@ export function useSettingsViewOpen(): boolean {
 // Categories
 // ──────────────────────────────────────────────────────────────────
 
-type CategoryId =
-  | 'appearance'
-  | 'terminal'
-  | 'agents'
-  | 'project'
-  | 'prompts'
-  | 'advanced'
-  | 'about';
-
-const CATEGORIES: Array<{ id: CategoryId; icon: typeof Palette; labelKey: 'settings.appearance' | 'settings.terminal' | 'settings.agents' | 'projectSettings.title' | 'settings.prompts' | 'settings.advanced' | 'settings.about' }> = [
+const CATEGORIES: Array<{ id: SettingsCategoryId; icon: typeof Palette; labelKey: 'settings.appearance' | 'settings.terminal' | 'settings.agents' | 'projectSettings.title' | 'settings.prompts' | 'settings.advanced' | 'settings.about' }> = [
   { id: 'appearance', icon: Palette, labelKey: 'settings.appearance' },
   { id: 'terminal', icon: SquareTerminal, labelKey: 'settings.terminal' },
   { id: 'agents', icon: Bot, labelKey: 'settings.agents' },
@@ -169,7 +177,17 @@ async function updateSettings(
 
 export function SettingsView(): JSX.Element {
   const { t } = useTranslation();
-  const [active, setActive] = useState<CategoryId>('appearance');
+  const active = useSyncExternalStore(
+    (subscriber) => {
+      subs.add(subscriber);
+      return () => subs.delete(subscriber);
+    },
+    () => activeCategory,
+  );
+  const setActive = (category: SettingsCategoryId): void => {
+    activeCategory = category;
+    subs.forEach((subscriber) => subscriber());
+  };
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
@@ -234,7 +252,7 @@ function CategoryPanel({
   categoryId,
   setError,
 }: {
-  categoryId: CategoryId;
+  categoryId: SettingsCategoryId;
   setError: (msg: string | null) => void;
 }): JSX.Element {
   switch (categoryId) {

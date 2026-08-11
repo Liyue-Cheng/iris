@@ -14,11 +14,12 @@
  * index.ts (that is what fires our `second-instance` event), and we open the new
  * window here in the winning main process — VS Code's one-main-process model.
  */
-import { app, BrowserWindow, dialog, ipcMain, screen, shell } from 'electron';
+import { app, BrowserWindow, dialog, screen, shell } from 'electron';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { JsonStore } from './persistence';
 import {
   projectRootsForStartup,
@@ -29,7 +30,7 @@ import { ProjectManager } from './project-manager';
 import { GitManager } from './git-manager';
 import { SessionManager } from './session-manager';
 import { ensureFocusScriptCurrent } from './agent-injection';
-import { registerIpcHandlers, wireBroadcasts } from './ipc';
+import { registerIpcHandler, registerIpcHandlers, wireBroadcasts } from './ipc';
 import {
   allContexts,
   persistOpenRoots,
@@ -41,6 +42,9 @@ import { getBuildType } from './build-type';
 import { logger } from './logger';
 import { CHANNELS, EVENTS } from '@shared/protocol';
 import { initializeMainI18n, mainT } from './i18n';
+import { serializeIpcError } from './ipc-error';
+import { externalUrl } from './app-info';
+import type { ServiceHealthChangedEvent } from '@shared/app-error';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const isDev = !!process.env.ELECTRON_RENDERER_URL;
@@ -133,6 +137,7 @@ function createWindowContext(win: BrowserWindow, initialRoot: string | null): Wi
     gitManager,
     sessionManager,
     () => ctx.projectScope,
+    () => ctx.outputAttachment,
     win,
   );
   ctx = {
@@ -144,6 +149,7 @@ function createWindowContext(win: BrowserWindow, initialRoot: string | null): Wi
     projectScope: null,
     projectSwitching: false,
     projectSwitchTail: Promise.resolve(),
+    outputAttachment: null,
     unwire,
   };
   registerContext(ctx);
@@ -210,7 +216,7 @@ function disposeWindowContext(id: number): void {
 // APP_FLUSH_DONE once its editor flush settles. Keyed by window id so two
 // windows closing at once don't resolve each other's handshake.
 const flushResolvers = new Map<number, (ok: boolean) => void>();
-ipcMain.handle(CHANNELS.APP_FLUSH_DONE, (event, payload?: { ok?: boolean }) => {
+registerIpcHandler(CHANNELS.APP_FLUSH_DONE, (event, payload?: { ok?: boolean }) => {
   const id = BrowserWindow.fromWebContents(event.sender)?.id;
   if (id === undefined) return;
   flushResolvers.get(id)?.(payload?.ok !== false);
@@ -296,8 +302,10 @@ function createWindow(initialRoot: string | null): BrowserWindow {
   // agent could otherwise be coaxed into opening a local file). Marina
   // window-manager.ts:378.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^(https?|mailto):/i.test(url)) {
-      void shell.openExternal(url);
+    try {
+      void shell.openExternal(externalUrl(url));
+    } catch {
+      // Deny unsupported or malformed protocols below.
     }
     return { action: 'deny' };
   });
@@ -322,6 +330,18 @@ function createWindow(initialRoot: string | null): BrowserWindow {
   // Per-window managers + broadcasts. The window owns these for its lifetime;
   // 'closed' tears them down (kills this window's PTYs, closes its watcher).
   const ctx = createWindowContext(win, initialRoot);
+  win.on('unresponsive', () => {
+    logger.error(
+      'window',
+      `unresponsive terminal=${JSON.stringify(ctx.sessionManager.diagnostics())}`,
+    );
+  });
+  win.on('responsive', () => {
+    logger.info(
+      'window',
+      `responsive terminal=${JSON.stringify(ctx.sessionManager.diagnostics())}`,
+    );
+  });
   win.on('closed', () => disposeWindowContext(win.id));
 
   // uiZoom: native Chromium zoom (webContents), never CSS zoom — CSS zoom
@@ -457,7 +477,7 @@ app.whenReady().then(async () => {
 
   // "Open project in a new window" (VS Code-style). Lives here, not in ipc.ts,
   // because it creates a window. Optional root; with none, show the picker.
-  ipcMain.handle(
+  registerIpcHandler(
     CHANNELS.WINDOW_OPEN_PROJECT,
     async (event, payload?: { root?: string }): Promise<{ opened: boolean }> => {
       let root = payload?.root ?? null;
@@ -548,6 +568,21 @@ process.on('unhandledRejection', (reason) => {
     'main',
     `unhandledRejection: ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`,
   );
+  for (const ctx of allContexts()) {
+    if (ctx.win.isDestroyed()) continue;
+    const requestId = `unhandled-${randomUUID()}`;
+    ctx.win.webContents.send(EVENTS.SERVICE_HEALTH_CHANGED, {
+      domain: 'system',
+      state: 'degraded',
+      projectScope: ctx.projectScope,
+      error: serializeIpcError(
+        'service:system',
+        reason,
+        { requestId },
+        randomUUID(),
+      ),
+    } satisfies ServiceHealthChangedEvent);
+  }
 });
 app.on('child-process-gone', (_e, details) => {
   logger.error('main', `child-process-gone: type=${details.type} reason=${details.reason}`);

@@ -7,7 +7,11 @@ export {};
 declare global {
   interface Window {
     api: {
-      invoke<P, R>(channel: string, payload?: P): Promise<R>;
+      invoke<P, R>(
+        channel: string,
+        payload?: P,
+        context?: { correlationId?: string },
+      ): Promise<R>;
       on<P>(channel: string, handler: (payload: P) => void): () => void;
       /** Resolve the absolute path of a File supplied by an OS drag event. */
       getPathForFile(file: File): string;

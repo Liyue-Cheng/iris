@@ -11,7 +11,12 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['src/main/**/*.test.ts', 'src/shared/**/*.test.ts', 'src/renderer/lib/**/*.test.ts'],
+    include: [
+      'src/main/**/*.test.ts',
+      'src/shared/**/*.test.ts',
+      'src/renderer/lib/**/*.test.ts',
+      'src/renderer/terminal/**/*.test.ts',
+    ],
     server: {
       // The published ESM currently uses extensionless relative imports.
       // Let Vite resolve them instead of externalizing the package to Node.

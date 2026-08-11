@@ -20,6 +20,7 @@ import { CHANNELS } from '@shared/protocol';
 import { editorStore } from './editor-store';
 import { sessionAnchorKey, sessionStore, workspaceAnchorKey } from './session-store';
 import { projectScopeState, sameProjectScope } from './project-scope-state';
+import { healthStore } from './health-store';
 
 export type ProjectPhase = 'idle' | 'opening' | 'ready' | 'error';
 
@@ -81,6 +82,26 @@ const issueSelectionByWorkspace = new Map<string, string>();
 
 function issueWorkspaceKey(workspacePath: string | null): string {
   return `${state.scope?.root ?? ''}\u0000${workspacePath ?? ''}`;
+}
+
+async function refreshScanProjection(scope: ProjectScope): Promise<void> {
+  const scan = await window.api.invoke<
+    { expectedScope: ProjectScope },
+    IrisScanResult
+  >(CHANNELS.PROJECT_SCAN, { expectedScope: scope });
+  if (!sameProjectScope(scope, projectScopeState.get())) return;
+  setState({ scan });
+  healthStore.resolve('project-projection', scope);
+}
+
+async function refreshRawProjection(scope: ProjectScope): Promise<void> {
+  const rawTree = await window.api.invoke<
+    { expectedScope: ProjectScope },
+    RawTreeNode | null
+  >(CHANNELS.PROJECT_RAW_TREE, { expectedScope: scope });
+  if (!sameProjectScope(scope, projectScopeState.get())) return;
+  setState({ rawTree });
+  healthStore.resolve('project-raw-tree', scope);
 }
 
 /** A view change may discard the only mounted draft, so it waits for the
@@ -276,6 +297,7 @@ export const projectStore = {
   handleOpened(result: Omit<ProjectOpenResult, 'projectSettings'>): void {
     const { scan, scope } = result;
     const idempotent = sameProjectScope(scope, state.scope);
+    healthStore.resetForScope(scope);
     if (idempotent) {
       projectScopeState.set(scope);
       projectScopeState.setSwitching(false);
@@ -341,16 +363,18 @@ export const projectStore = {
     try {
       do {
         scanDirty = false;
-        const scan = await window.api.invoke<
-          { expectedScope: ProjectScope },
-          IrisScanResult
-        >(CHANNELS.PROJECT_SCAN, { expectedScope: scope });
-        if (!sameProjectScope(scope, projectScopeState.get())) return;
-        setState({ scan });
+        await refreshScanProjection(scope);
         if (state.rawMode) await this.refreshRawTree();
       } while (scanDirty);
     } catch (err) {
       console.warn('[project-store] rescan failed', err);
+      healthStore.degrade({
+        key: 'project-projection',
+        domain: 'project-projection',
+        cause: err,
+        scope,
+        retry: () => refreshScanProjection(scope),
+      });
     } finally {
       scanInFlight = false;
     }
@@ -499,15 +523,17 @@ export const projectStore = {
     const scope = state.scope;
     if (!scope) return;
     try {
-      const scan = await window.api.invoke<
-        { expectedScope: ProjectScope },
-        IrisScanResult
-      >(CHANNELS.PROJECT_SCAN, { expectedScope: scope });
-      if (!sameProjectScope(scope, projectScopeState.get())) return;
-      setState({ scan });
+      await refreshScanProjection(scope);
       if (state.rawMode) await this.refreshRawTree();
     } catch (err) {
       console.warn('[project-store] rescan failed', err);
+      healthStore.degrade({
+        key: 'project-projection',
+        domain: 'project-projection',
+        cause: err,
+        scope,
+        retry: () => refreshScanProjection(scope),
+      });
     }
   },
 
@@ -528,17 +554,16 @@ export const projectStore = {
     const scope = state.scope;
     if (!scope) return;
     try {
-      const rawTree = await window.api.invoke<
-        { expectedScope: ProjectScope },
-        RawTreeNode | null
-      >(
-        CHANNELS.PROJECT_RAW_TREE,
-        { expectedScope: scope },
-      );
-      if (!sameProjectScope(scope, projectScopeState.get())) return;
-      setState({ rawTree });
+      await refreshRawProjection(scope);
     } catch (err) {
       console.warn('[project-store] raw tree failed', err);
+      healthStore.degrade({
+        key: 'project-raw-tree',
+        domain: 'project-projection',
+        cause: err,
+        scope,
+        retry: () => refreshRawProjection(scope),
+      });
     }
   },
 };

@@ -8,6 +8,13 @@
  */
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { platform, release } from 'node:os';
+import { randomUUID } from 'node:crypto';
+import {
+  RemoteAppError,
+  isIpcResult,
+  type IpcRequest,
+  type IpcRequestMeta,
+} from '@shared/app-error';
 
 /**
  * Windows build number (e.g. 22621), null elsewhere. @xterm/xterm 6.x's
@@ -25,8 +32,20 @@ const windowsBuild = ((): number | null => {
 })();
 
 /** Invoke a main-process handler. Channel names from @shared/protocol. */
-async function invoke<P, R>(channel: string, payload?: P): Promise<R> {
-  return ipcRenderer.invoke(channel, payload) as Promise<R>;
+async function invoke<P, R>(
+  channel: string,
+  payload?: P,
+  context?: { correlationId?: string },
+): Promise<R> {
+  const meta: IpcRequestMeta = { requestId: randomUUID() };
+  if (context?.correlationId) meta.correlationId = context.correlationId;
+  const request: IpcRequest<P | undefined> = { meta, payload };
+  const result: unknown = await ipcRenderer.invoke(channel, request);
+  if (!isIpcResult(result)) {
+    throw new Error(`[preload] Invalid IPC result envelope for ${channel}`);
+  }
+  if (!result.ok) throw new RemoteAppError(result.error);
+  return result.value as R;
 }
 
 /** Subscribe to a main → renderer event. Returns an unsubscribe fn. */

@@ -50,6 +50,19 @@ export const appISA: Record<string, InstructionDefinition> = {
     config: { channel: CHANNELS.SHELL_OPEN_PATH, projectScoped: true },
   },
 
+  'shell.open-external-url': {
+    meta: {
+      description: 'Open a validated URL in the operating-system handler',
+      category: 'system',
+      resourceIdentifier: () => ['system-browser'],
+      schedulingStrategy: 'serial',
+      priority: 5,
+      timeout: 5000,
+    },
+    executor: 'ipc',
+    config: { channel: CHANNELS.SHELL_OPEN_EXTERNAL_URL },
+  },
+
   'shell.reveal-path': {
     meta: {
       description: 'Reveal an absolute machine path in the system file manager',

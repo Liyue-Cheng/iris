@@ -32,7 +32,6 @@
  */
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { spawn as defaultSpawnPty, type IPty, type IDisposable } from 'node-pty';
 import type {
@@ -48,15 +47,24 @@ import type { SettingsManager } from './settings-manager';
 import { buildSpawnEnv, injectTerminalHintEnv, validateDimensions } from './pty-utils';
 import { logger } from './logger';
 import { mainT } from './i18n';
+import { normalizedIdleThresholdMs, SessionActivityController } from './terminal/session-activity';
+import { looksLikeShellStartupGarbage, sanitizeTerminalTitle } from './terminal/terminal-title';
 // @xterm/headless is plain CommonJS (no ESM exports map) — default-import
 // the module and destructure (Marina's lesson; named imports throw under
 // the Electron main ESM loader).
-import xtermHeadless from '@xterm/headless';
-const { Terminal: HeadlessTerminal } = xtermHeadless;
-type HeadlessTerminal = InstanceType<typeof HeadlessTerminal>;
-import xtermSerialize from '@xterm/addon-serialize';
-const { SerializeAddon } = xtermSerialize;
-type SerializeAddon = InstanceType<typeof SerializeAddon>;
+import { TerminalOutputPump } from './terminal/output-pump';
+import { TerminalMirror } from './terminal/terminal-mirror';
+import { TerminalProtocol } from './terminal/terminal-protocol';
+import { TerminalFlowController } from './terminal/flow-controller';
+import { TerminalFlightRecorder } from './terminal/flight-recorder';
+import { terminalBaseColors } from '@shared/terminal/terminal-colors';
+import { reduceTerminalProcess } from '@shared/terminal/process-reducer';
+import { ReplayCoordinator } from './terminal/replay-coordinator';
+import type { SessionRecord } from './terminal/session-record';
+import {
+  defaultProcessTreeKiller,
+  type ProcessTreeKillFn,
+} from './terminal/process-tree';
 
 const SPAWN_ENV_SKIP = ['ELECTRON_RUN_AS_NODE', 'ELECTRON_RENDERER_URL'];
 
@@ -67,6 +75,8 @@ const INPUT_QUIET_MS = 200;
 /** sessionOutput IPC aggregation window (125fps — invisible, but burst
  *  output drops from hundreds of IPC/s to ~30-60). */
 const EMIT_BATCH_MS = 8;
+const OUTPUT_HIGH_WATER_BYTES = 384 * 1024;
+const OUTPUT_LOW_WATER_BYTES = 96 * 1024;
 /** Renderer xterm scrollback is 5000 — headless mirror must match so the
  *  serialized replay covers everything the user can scroll to. */
 const SCROLLBACK_LINES = 5000;
@@ -84,7 +94,6 @@ const REPLAY_NUDGE_CAP_MS = 150;
 /** After the process-tree terminator returns, allow node-pty's exit event a
  * short bounded window to close its native handles before forgetting the PTY. */
 const PTY_EXIT_WAIT_MS = 2000;
-const PROCESS_TREE_KILL_TIMEOUT_MS = 5000;
 
 interface OutputQuietResult {
   sawOutput: boolean;
@@ -112,19 +121,6 @@ export type PtySpawnFn = (
   },
 ) => IPty;
 
-export type ProcessTreeKillFn = (pid: number) => Promise<void>;
-
-function killWindowsProcessTree(pid: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      'taskkill.exe',
-      ['/pid', String(pid), '/t', '/f'],
-      { windowsHide: true, timeout: PROCESS_TREE_KILL_TIMEOUT_MS },
-      (err) => (err ? reject(err) : resolve()),
-    );
-  });
-}
-
 export class SessionManagerError extends Error {
   constructor(
     public readonly code:
@@ -139,24 +135,6 @@ export class SessionManagerError extends Error {
     super(`[SessionManager] ${code}: ${message}`);
     this.name = 'SessionManagerError';
   }
-}
-
-interface ManagedSession {
-  info: SessionInfo;
-  pty: IPty | null;
-  outputSeq: number;
-  disposables: IDisposable[];
-  /** Last seq EMITTED to the renderer (-1 = none). Replay dedup boundary. */
-  scrollbackLastSeq: number;
-  idleTimer: NodeJS.Timeout | null;
-  resizeQuietUntil: number;
-  startupGraceUntil: number;
-  inputQuietUntil: number;
-  pendingEmit: { chunks: Buffer[]; totalBytes: number; lastSeq: number } | null;
-  pendingEmitTimer: NodeJS.Timeout | null;
-  headlessTerm: HeadlessTerminal | null;
-  serializeAddon: SerializeAddon | null;
-  closePromise: Promise<void> | null;
 }
 
 export interface CreateSessionInput {
@@ -224,8 +202,8 @@ export function resolveHostShell(env: Record<string, string>): {
 }
 
 export class SessionManager extends EventEmitter {
-  private readonly sessions = new Map<string, ManagedSession>();
-  private readonly replayPreparations = new Map<string, Promise<void>>();
+  private readonly sessions = new Map<string, SessionRecord>();
+  private readonly replayCoordinator = new ReplayCoordinator();
   private readonly spawnFn: PtySpawnFn;
   private readonly processTreeKillFn: ProcessTreeKillFn | null;
   private readonly ptyExitWaitMs: number;
@@ -243,9 +221,7 @@ export class SessionManager extends EventEmitter {
     this.spawnFn = options?.spawnFn ?? (defaultSpawnPty as PtySpawnFn);
     this.processTreeKillFn =
       options?.processTreeKillFn === undefined
-        ? process.platform === 'win32'
-          ? killWindowsProcessTree
-          : null
+        ? defaultProcessTreeKiller()
         : options.processTreeKillFn;
     this.ptyExitWaitMs = options?.ptyExitWaitMs ?? PTY_EXIT_WAIT_MS;
   }
@@ -369,33 +345,75 @@ export class SessionManager extends EventEmitter {
       createdAt: Date.now(),
     };
 
-    const managed: ManagedSession = {
+    let managed: SessionRecord;
+    const recorder = new TerminalFlightRecorder();
+    recorder.record('created', { pid: info.pid, cols: info.cols, rows: info.rows });
+    const activity = new SessionActivityController(
+      info.createdAt,
+      () =>
+        normalizedIdleThresholdMs(
+          this.settingsManager.get().advanced.activeIdleThresholdSeconds,
+        ),
+      (state) => {
+        if (managed.processState !== 'running') return;
+        recorder.record('activity', { state });
+        managed.info.state = state;
+        this.emitStateChanged(managed, { state });
+      },
+      {
+        startupGraceMs: STARTUP_GRACE_MS,
+        resizeQuietMs: RESIZE_QUIET_MS,
+        inputQuietMs: INPUT_QUIET_MS,
+      },
+    );
+    const flow = new TerminalFlowController(
+      () => {
+        try {
+          pty.pause();
+          recorder.record('flow-paused');
+        } catch (err) {
+          logger.warn('session', `pty pause failed sid=${sessionId}`, err);
+        }
+      },
+      () => {
+        try {
+          pty.resume();
+          recorder.record('flow-resumed');
+        } catch (err) {
+          logger.warn('session', `pty resume failed sid=${sessionId}`, err);
+        }
+      },
+    );
+    const flowLimits = {
+      highBytes: OUTPUT_HIGH_WATER_BYTES,
+      lowBytes: OUTPUT_LOW_WATER_BYTES,
+    };
+    managed = {
       info,
       pty,
-      outputSeq: 0,
       disposables: [],
-      scrollbackLastSeq: -1,
-      idleTimer: null,
-      resizeQuietUntil: 0,
-      startupGraceUntil: Date.now() + STARTUP_GRACE_MS,
-      inputQuietUntil: 0,
-      pendingEmit: null,
-      pendingEmitTimer: null,
-      headlessTerm: new HeadlessTerminal({
-        cols: info.cols,
-        rows: info.rows,
-        scrollback: SCROLLBACK_LINES,
-        // Keep Codex's DEC 2026 + ED2 redraws in scrollback. This must match
-        // TerminalView or a remount would replay a different buffer history.
-        scrollOnEraseInDisplay: true,
-        allowProposedApi: true,
+      output: new TerminalOutputPump(
+        sessionId,
+        () => ({ root: info.projectRoot, generation: info.projectGeneration }),
+        (payload) => this.emit('sessionOutput', payload),
+        EMIT_BATCH_MS,
+        { ...flowLimits, setBlocked: (blocked) => flow.setBlocked('renderer', blocked) },
+        false,
+      ),
+      activity,
+      mirror: new TerminalMirror(info.cols, info.rows, SCROLLBACK_LINES, {
+        ...flowLimits,
+        setBlocked: (blocked) => flow.setBlocked('mirror', blocked),
       }),
-      serializeAddon: null,
+      protocol: new TerminalProtocol(() =>
+        terminalBaseColors(this.settingsManager.get().appearance.theme),
+      ),
+      flow,
+      outputAttachmentId: null,
+      recorder,
+      processState: 'running',
       closePromise: null,
     };
-    const serializeAddon = new SerializeAddon();
-    managed.headlessTerm!.loadAddon(serializeAddon);
-    managed.serializeAddon = serializeAddon;
     this.sessions.set(sessionId, managed);
 
     managed.disposables.push(
@@ -405,7 +423,7 @@ export class SessionManager extends EventEmitter {
       // so its onTitleChange fires for each title sequence. The renderer's
       // xterm only exists for the shown session — tracking it here keeps every
       // session's title live and surviving switches (Marina TIT-1).
-      managed.headlessTerm!.onTitleChange((title) => this.handleTitle(managed, title)),
+      managed.mirror.onTitleChange((title) => this.handleTitle(managed, title)),
     );
 
     this.emit('sessionCreated', { ...info });
@@ -482,14 +500,11 @@ export class SessionManager extends EventEmitter {
   ): { accepted: boolean; reason?: 'session-not-found' | 'pty-exited' | 'pty-write-failed' } {
     const managed = this.sessions.get(sessionId);
     if (!managed) return { accepted: false, reason: 'session-not-found' };
-    if (!managed.pty) return { accepted: false, reason: 'pty-exited' };
-    const text = Buffer.from(base64Data, 'base64').toString('utf8');
-    const now = Date.now();
-    if (text.includes('\r') || text.includes('\n')) {
-      managed.inputQuietUntil = 0;
-    } else {
-      managed.inputQuietUntil = now + INPUT_QUIET_MS;
+    if (!managed.pty || managed.processState !== 'running') {
+      return { accepted: false, reason: 'pty-exited' };
     }
+    const text = Buffer.from(base64Data, 'base64').toString('utf8');
+    managed.activity.noteInput(text);
     try {
       managed.pty.write(text);
     } catch (err) {
@@ -508,9 +523,11 @@ export class SessionManager extends EventEmitter {
   ): { accepted: boolean; reason?: 'session-not-found' | 'pty-exited' | 'invalid-dimensions' } {
     const managed = this.sessions.get(sessionId);
     if (!managed) return { accepted: false, reason: 'session-not-found' };
-    if (!managed.pty) return { accepted: false, reason: 'pty-exited' };
+    if (!managed.pty || managed.processState !== 'running') {
+      return { accepted: false, reason: 'pty-exited' };
+    }
     const dims = validateDimensions(cols, rows);
-    managed.resizeQuietUntil = Date.now() + RESIZE_QUIET_MS;
+    managed.activity.noteResize();
     if (dims.cols === managed.info.cols && dims.rows === managed.info.rows) {
       return { accepted: true };
     }
@@ -548,22 +565,21 @@ export class SessionManager extends EventEmitter {
     cols: number,
     rows: number,
   ): Promise<SessionReplaySnapshot> {
-    const previous = this.replayPreparations.get(sessionId) ?? Promise.resolve();
-    let release: () => void = () => undefined;
-    const current = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    this.replayPreparations.set(sessionId, current);
-    await previous;
-
-    try {
-      return await this.prepareReplayNow(sessionId, cols, rows);
-    } finally {
-      release();
-      if (this.replayPreparations.get(sessionId) === current) {
-        this.replayPreparations.delete(sessionId);
+    return this.replayCoordinator.run(sessionId, async () => {
+      const record = this.sessions.get(sessionId);
+      record?.recorder.record('replay-started', { cols, rows });
+      try {
+        const replay = await this.prepareReplayNow(sessionId, cols, rows);
+        record?.recorder.record('replay-completed', {
+          lastSeq: replay.lastSeq,
+          bytes: Buffer.byteLength(replay.data, 'base64'),
+        });
+        return replay;
+      } catch (error) {
+        record?.recorder.record('replay-failed');
+        throw error;
       }
-    }
+    });
   }
 
   private async prepareReplayNow(
@@ -572,19 +588,18 @@ export class SessionManager extends EventEmitter {
     rows: number,
   ): Promise<SessionReplaySnapshot> {
     const managed = this.sessions.get(sessionId);
-    if (!managed || !managed.headlessTerm || !managed.serializeAddon) {
+    if (!managed) {
       const dims = validateDimensions(cols, rows);
       return { data: '', lastSeq: -1, ...dims };
     }
-    const term = managed.headlessTerm;
-    const addon = managed.serializeAddon;
+    const mirror = managed.mirror;
     const dims = validateDimensions(cols, rows);
 
-    managed.resizeQuietUntil = Date.now() + RESIZE_QUIET_MS;
-    const altBufferActive = term.buffer.active.type === 'alternate';
+    managed.activity.noteResize();
+    const altBufferActive = mirror.activeBufferType === 'alternate';
     if (managed.pty && altBufferActive) {
       const redrawDeadline = Date.now() + REPLAY_REDRAW_CAP_MS;
-      managed.resizeQuietUntil = redrawDeadline + RESIZE_QUIET_MS;
+      managed.activity.suppressResizeOutputUntil(redrawDeadline + RESIZE_QUIET_MS);
       const unchanged = dims.cols === managed.info.cols && dims.rows === managed.info.rows;
 
       if (unchanged) {
@@ -623,51 +638,17 @@ export class SessionManager extends EventEmitter {
       this.applyDimensions(managed, dims.cols, dims.rows, true);
     }
 
-    if (managed.pendingEmitTimer) {
-      clearTimeout(managed.pendingEmitTimer);
-      managed.pendingEmitTimer = null;
-    }
-    this.flushPendingEmit(managed);
+    managed.output.flush();
     // Freeze the replay boundary before inserting the parser fence. Any PTY
     // bytes that arrive after this point are written behind the fence, so the
     // snapshot below cannot contain them even if their IPC batch is emitted
     // while we are waiting for the fence/serialize work.
-    const replayLastSeq = managed.scrollbackLastSeq;
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      let fenceTimer: ReturnType<typeof setTimeout> | null = null;
-      const done = (capped: boolean): void => {
-        if (settled) return;
-        settled = true;
-        if (fenceTimer) clearTimeout(fenceTimer);
-        if (capped) logger.warn('session', `replay fence capped sid=${sessionId} (callback dropped?)`);
-        resolve();
-      };
-      fenceTimer = setTimeout(() => done(true), REPLAY_FENCE_CAP_MS);
-      term.write(new Uint8Array(0), () => done(false));
+    const replayLastSeq = managed.output.replayBoundarySeq;
+    await mirror.fence(REPLAY_FENCE_CAP_MS, () => {
+      logger.warn('session', `replay fence capped sid=${sessionId} (callback dropped?)`);
     });
 
-    let ansi = addon.serialize({ scrollback: SCROLLBACK_LINES });
-
-    // xterm-serialize mode polyfill (Marina): older serializers miss cursor
-    // visibility (?25l) and DECSTBM. Harmless if the addon already emits
-    // them; vital for TUIs (hidden cursor / scroll regions) if not.
-    const core = (
-      term as unknown as {
-        _core?: {
-          coreService?: { isCursorHidden?: boolean };
-          buffer?: { scrollTop?: number; scrollBottom?: number };
-        };
-      }
-    )._core;
-    if (core?.coreService?.isCursorHidden) {
-      ansi += '\x1b[?25l';
-    }
-    const top = core?.buffer?.scrollTop;
-    const bot = core?.buffer?.scrollBottom;
-    if (typeof top === 'number' && typeof bot === 'number' && (top !== 0 || bot !== term.rows - 1)) {
-      ansi += `\x1b[${top + 1};${bot + 1}r`;
-    }
+    const ansi = mirror.serialize(SCROLLBACK_LINES);
     const data = Buffer.from(ansi, 'utf8').toString('base64');
 
     return {
@@ -679,14 +660,14 @@ export class SessionManager extends EventEmitter {
   }
 
   private applyDimensions(
-    managed: ManagedSession,
+    managed: SessionRecord,
     cols: number,
     rows: number,
     updateInfo: boolean,
   ): void {
     managed.pty?.resize(cols, rows);
     try {
-      managed.headlessTerm?.resize(cols, rows);
+      managed.mirror.resize(cols, rows);
     } catch {
       /* headless resize must never block the real one */
     }
@@ -697,7 +678,7 @@ export class SessionManager extends EventEmitter {
   }
 
   private async resizeAndWaitForOutput(
-    managed: ManagedSession,
+    managed: SessionRecord,
     cols: number,
     rows: number,
     updateInfo: boolean,
@@ -709,7 +690,12 @@ export class SessionManager extends EventEmitter {
       return { sawOutput: false, capped: false, elapsedMs: 0 };
     }
 
-    const waiter = this.createOutputQuietWaiter(managed.info.id, managed.outputSeq, quietMs, capMs);
+    const waiter = this.createOutputQuietWaiter(
+      managed.info.id,
+      managed.output.nextSeq,
+      quietMs,
+      capMs,
+    );
     try {
       this.applyDimensions(managed, cols, rows, updateInfo);
     } catch (err) {
@@ -759,79 +745,53 @@ export class SessionManager extends EventEmitter {
   // Internal: PTY data → batch → state machine
   // ──────────────────────────────────────────────────────────────────
 
-  private handlePtyData(managed: ManagedSession, data: string): void {
+  private handlePtyData(managed: SessionRecord, data: string): void {
     // ConPTY can emit one final onData after teardown started.
-    if (!this.sessions.has(managed.info.id) || !managed.pty) return;
-    const bytes = Buffer.from(data, 'utf8');
-    if (bytes.length === 0) return;
+    if (
+      !this.sessions.has(managed.info.id) ||
+      !managed.pty ||
+      managed.processState !== 'running'
+    ) {
+      return;
+    }
+    const protocol = managed.protocol.consume(data);
+    if (protocol.replies.length > 0) {
+      managed.recorder.record('protocol-reply', { count: protocol.replies.length });
+    }
+    for (const reply of protocol.replies) {
+      try {
+        managed.pty.write(reply);
+      } catch (err) {
+        logger.warn('session', `terminal protocol reply failed sid=${managed.info.id}`, err);
+      }
+    }
+    const bytes = Buffer.from(protocol.display, 'utf8');
+    if (bytes.length === 0) {
+      managed.activity.noteOutput();
+      return;
+    }
 
-    const seq = managed.outputSeq++;
-    this.queueEmit(managed, bytes, seq);
+    managed.output.enqueue(bytes);
 
     // Feed the headless mirror (async parse; replay paths drain first).
-    managed.headlessTerm?.write(data);
+    managed.mirror.write(protocol.display);
 
     // State machine: bytes mean active — unless a quiet window says these
     // bytes are echo/banner/reflow, in which case the state stays put
     // (scrollback and renderer output are unaffected either way).
-    const now = Date.now();
-    if (
-      now >= managed.resizeQuietUntil &&
-      now >= managed.startupGraceUntil &&
-      now >= managed.inputQuietUntil
-    ) {
-      this.markActive(managed);
-    }
+    managed.activity.noteOutput();
   }
 
-  /** PER-2 invariant: scrollbackLastSeq and the emitted bytes advance
-   *  together; pending bytes are invisible to the renderer. */
-  private queueEmit(managed: ManagedSession, bytes: Buffer, seq: number): void {
-    if (managed.pendingEmit === null) {
-      managed.pendingEmit = { chunks: [bytes], totalBytes: bytes.length, lastSeq: seq };
-    } else {
-      managed.pendingEmit.chunks.push(bytes);
-      managed.pendingEmit.totalBytes += bytes.length;
-      managed.pendingEmit.lastSeq = seq;
-    }
-    if (managed.pendingEmitTimer === null) {
-      managed.pendingEmitTimer = setTimeout(() => {
-        managed.pendingEmitTimer = null;
-        this.flushPendingEmit(managed);
-      }, EMIT_BATCH_MS);
-    }
+  private flushPendingEmitBeforeLifecycleChange(managed: SessionRecord): void {
+    managed.output.flush();
   }
 
-  private flushPendingEmit(managed: ManagedSession): void {
-    if (!managed.pendingEmit) return;
-    const { chunks, totalBytes, lastSeq } = managed.pendingEmit;
-    managed.pendingEmit = null;
-    const bytes = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, totalBytes);
-    managed.scrollbackLastSeq = lastSeq;
-    const payload: SessionOutputPayload = {
-      scope: this.scopeOf(managed),
-      sessionId: managed.info.id,
-      data: bytes.toString('base64'),
-      seq: lastSeq,
-    };
-    this.emit('sessionOutput', payload);
-  }
-
-  private flushPendingEmitBeforeLifecycleChange(managed: ManagedSession): void {
-    if (managed.pendingEmitTimer) {
-      clearTimeout(managed.pendingEmitTimer);
-      managed.pendingEmitTimer = null;
-    }
-    if (managed.pendingEmit) {
-      this.flushPendingEmit(managed);
-    }
-  }
-
-  private handlePtyExit(managed: ManagedSession, exitCode: number, signal: number | undefined): void {
+  private handlePtyExit(managed: SessionRecord, exitCode: number, signal: number | undefined): void {
     if (!this.sessions.has(managed.info.id)) return;
-    if (managed.info.state === 'exited') return;
+    if (managed.processState === 'exited' || managed.processState === 'disposed') return;
 
     // Causal order for the renderer: last output → exited, never reversed.
+    this.flushProtocolPending(managed);
     this.flushPendingEmitBeforeLifecycleChange(managed);
 
     const payload: SessionExitedPayload = {
@@ -843,9 +803,11 @@ export class SessionManager extends EventEmitter {
     this.emit('sessionExited', payload);
 
     managed.info.state = 'exited';
+    managed.processState = reduceTerminalProcess(managed.processState, { type: 'EXITED' });
     managed.info.exitCode = exitCode;
     managed.info.exitedAt = Date.now();
-    this.clearTimers(managed);
+    managed.recorder.record('exited', { exitCode, signal: signal ?? null });
+    managed.activity.dispose();
     managed.pty = null;
 
     this.emitStateChanged(managed, {
@@ -857,25 +819,78 @@ export class SessionManager extends EventEmitter {
   }
 
   private destroySession(
-    managed: ManagedSession,
+    managed: SessionRecord,
     reason: 'user-closed' | 'project-switched' | 'app-quit',
   ): Promise<void> {
     const sid = managed.info.id;
     if (!this.sessions.has(sid)) return Promise.resolve();
     if (managed.closePromise) return managed.closePromise;
 
+    managed.processState = reduceTerminalProcess(managed.processState, { type: 'CLOSE' });
+    managed.recorder.record('closing');
     managed.closePromise = this.destroySessionNow(managed, reason);
     return managed.closePromise;
   }
 
+  attachOutput(sessionId: string, attachmentId: string): boolean {
+    const target = this.sessions.get(sessionId);
+    if (!target) return false;
+    for (const record of this.sessions.values()) {
+      if (record === target) continue;
+      record.outputAttachmentId = null;
+      record.output.setDeliveryEnabled(false);
+    }
+    target.outputAttachmentId = attachmentId;
+    target.output.setDeliveryEnabled(true);
+    target.recorder.record('renderer-attached', { attachmentId });
+    return true;
+  }
+
+  detachOutput(attachmentId: string): void {
+    for (const record of this.sessions.values()) {
+      if (record.outputAttachmentId !== attachmentId) continue;
+      record.outputAttachmentId = null;
+      record.output.setDeliveryEnabled(false);
+      record.recorder.record('renderer-detached', { attachmentId });
+      return;
+    }
+  }
+
+  acknowledgeOutput(sessionId: string, attachmentId: string, seq: number): void {
+    const record = this.sessions.get(sessionId);
+    if (!record || record.outputAttachmentId !== attachmentId) return;
+    record.output.acknowledge(seq);
+  }
+
+  diagnostics(): Array<{
+    sessionId: string;
+    state: SessionInfo['state'];
+    processState: SessionRecord['processState'];
+    output: TerminalOutputPump['diagnostics'];
+    mirror: TerminalMirror['diagnostics'];
+    flow: TerminalFlowController['snapshot'];
+    events: ReturnType<TerminalFlightRecorder['snapshot']>;
+  }> {
+    return [...this.sessions.values()].map((record) => ({
+      sessionId: record.info.id,
+      state: record.info.state,
+      processState: record.processState,
+      output: record.output.diagnostics,
+      mirror: record.mirror.diagnostics,
+      flow: record.flow.snapshot,
+      events: record.recorder.snapshot(),
+    }));
+  }
+
   private async destroySessionNow(
-    managed: ManagedSession,
+    managed: SessionRecord,
     reason: 'user-closed' | 'project-switched' | 'app-quit',
   ): Promise<void> {
     const sid = managed.info.id;
 
+    this.flushProtocolPending(managed);
     this.flushPendingEmitBeforeLifecycleChange(managed);
-    this.clearTimers(managed);
+    managed.activity.dispose();
 
     const pty = managed.pty;
     if (pty) {
@@ -912,15 +927,14 @@ export class SessionManager extends EventEmitter {
     }
     managed.disposables = [];
     managed.pty = null;
-    if (managed.headlessTerm) {
-      try {
-        managed.headlessTerm.dispose();
-      } catch {
-        /* ignore */
-      }
-      managed.headlessTerm = null;
+    managed.output.dispose({ flush: false });
+    try {
+      managed.mirror.dispose();
+    } catch {
+      /* ignore */
     }
-    managed.serializeAddon = null;
+    managed.processState = reduceTerminalProcess(managed.processState, { type: 'DISPOSE' });
+    managed.recorder.record('disposed');
     this.sessions.delete(sid);
     this.emit('sessionDestroyed', { scope: this.scopeOf(managed), sessionId: sid, reason });
   }
@@ -953,40 +967,11 @@ export class SessionManager extends EventEmitter {
     };
   }
 
-  // ──────────────────────────────────────────────────────────────────
-  // Internal: active/idle
-  // ──────────────────────────────────────────────────────────────────
-
-  private markActive(managed: ManagedSession): void {
-    if (managed.info.state === 'exited') return;
-    if (managed.info.state !== 'active') {
-      managed.info.state = 'active';
-      this.emitStateChanged(managed, { state: 'active' });
-    }
-    this.scheduleIdleCheck(managed);
-  }
-
-  private scheduleIdleCheck(managed: ManagedSession): void {
-    if (managed.idleTimer) clearTimeout(managed.idleTimer);
-    const thresholdSec = this.settingsManager.get().advanced.activeIdleThresholdSeconds;
-    const ms = Math.max(100, thresholdSec * 1000);
-    managed.idleTimer = setTimeout(() => {
-      managed.idleTimer = null;
-      if (managed.info.state !== 'active') return;
-      managed.info.state = 'idle';
-      this.emitStateChanged(managed, { state: 'idle' });
-    }, ms);
-  }
-
-  private clearTimers(managed: ManagedSession): void {
-    if (managed.idleTimer) {
-      clearTimeout(managed.idleTimer);
-      managed.idleTimer = null;
-    }
-    if (managed.pendingEmitTimer) {
-      clearTimeout(managed.pendingEmitTimer);
-      managed.pendingEmitTimer = null;
-    }
+  private flushProtocolPending(managed: SessionRecord): void {
+    const trailing = managed.protocol.reset();
+    if (!trailing) return;
+    managed.output.enqueue(Buffer.from(trailing, 'utf8'));
+    managed.mirror.write(trailing);
   }
 
   /**
@@ -999,9 +984,9 @@ export class SessionManager extends EventEmitter {
    * CLI titles (vim …, ✻ Claude …) are verb-leading and pass the guard
    * (Marina TIT-1). De-dupe so an unchanged title never broadcasts.
    */
-  private handleTitle(managed: ManagedSession, rawTitle: string): void {
-    if (managed.info.state === 'exited') return;
-    const cleaned = sanitizeTitle(rawTitle);
+  private handleTitle(managed: SessionRecord, rawTitle: string): void {
+    if (managed.processState !== 'running') return;
+    const cleaned = sanitizeTerminalTitle(rawTitle);
     if (!cleaned) return;
     if (looksLikeShellStartupGarbage(cleaned)) return;
     if (cleaned === managed.info.terminalTitle) return;
@@ -1009,7 +994,7 @@ export class SessionManager extends EventEmitter {
     this.emitStateChanged(managed, { terminalTitle: cleaned });
   }
 
-  private emitStateChanged(managed: ManagedSession, patch: Partial<SessionInfo>): void {
+  private emitStateChanged(managed: SessionRecord, patch: Partial<SessionInfo>): void {
     const payload: SessionStateChangedPayload = {
       scope: this.scopeOf(managed),
       sessionId: managed.info.id,
@@ -1018,7 +1003,7 @@ export class SessionManager extends EventEmitter {
     this.emit('sessionStateChanged', payload);
   }
 
-  private scopeOf(managed: ManagedSession): ProjectScope {
+  private scopeOf(managed: SessionRecord): ProjectScope {
     return {
       root: managed.info.projectRoot,
       generation: managed.info.projectGeneration,
@@ -1026,54 +1011,4 @@ export class SessionManager extends EventEmitter {
   }
 }
 
-/**
- * OSC 0/2 title normalization: replace control + DEL + Unicode bidi-override
- * chars with spaces (the latter blocks RTL-override spoofing of the banner),
- * collapse runs of whitespace, trim, cap at 100 chars. Empty → '' (caller
- * skips). Ported from Marina.
- */
-const TITLE_MAX_LEN = 100;
-function sanitizeTitle(raw: string): string {
-  let s = '';
-  for (const ch of raw) {
-    const code = ch.codePointAt(0)!;
-    if (code < 0x20 || code === 0x7f) {
-      s += ' ';
-      continue;
-    }
-    if (
-      code === 0x200b ||
-      code === 0x200e ||
-      code === 0x200f ||
-      (code >= 0x202a && code <= 0x202e) ||
-      (code >= 0x2066 && code <= 0x2069)
-    ) {
-      s += ' ';
-      continue;
-    }
-    s += ch;
-  }
-  s = s.replace(/\s+/g, ' ').trim();
-  if (s.length > TITLE_MAX_LEN) s = s.slice(0, TITLE_MAX_LEN);
-  return s;
-}
-
-/**
- * Whether a title is "startup garbage" — a bare path/exe a shell sets on
- * launch, not a real program title. Real CLI titles are verb-leading
- * ("vim C:\foo", "✻ Claude …") and never start with a bare drive/UNC/`/`
- * prefix, so a `^` anchor is enough to tell them apart. Ported from Marina.
- */
-export function looksLikeShellStartupGarbage(title: string): boolean {
-  // Windows drive path — "C:\…" / "D:/…"
-  if (/^[A-Za-z]:[\\/]/.test(title)) return true;
-  // UNC path — "\\server\share\…"
-  if (/^\\\\/.test(title)) return true;
-  // Unix absolute path — "/usr/bin/bash"
-  if (title.startsWith('/')) return true;
-  // Git Bash / MSYS2 default PS1 prefix, re-sent every prompt
-  if (/^(MINGW(32|64|ARM)?|MSYS\d?):/i.test(title)) return true;
-  // Bare exe filename — "cmd.exe" / "pwsh.exe"
-  if (/^\S+\.exe$/i.test(title)) return true;
-  return false;
-}
+export { looksLikeShellStartupGarbage } from './terminal/terminal-title';

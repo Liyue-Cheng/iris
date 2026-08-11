@@ -146,6 +146,22 @@ export function externalLink(info: AppInfo, id: unknown): string {
   }
 }
 
+export function externalUrl(value: unknown): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error('[shell:open-external-url] URL must be a non-empty string');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error('[shell:open-external-url] invalid URL');
+  }
+  if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) {
+    throw new Error(`[shell:open-external-url] unsupported protocol ${parsed.protocol}`);
+  }
+  return parsed.toString();
+}
+
 export function legalDocumentPath(
   runtime: LegalDocumentRuntime,
   id: unknown,

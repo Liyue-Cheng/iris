@@ -3,7 +3,14 @@ import { TitleBar } from '@renderer/components/layout/TitleBar';
 import { ThreePane } from '@renderer/components/layout/ThreePane';
 import { CreateDocDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DeleteDocDialog } from '@renderer/components/doc/DeleteDocDialog';
-import { AlertDialog, ConfirmDialog } from '@renderer/components/ui/confirm-dialog';
+import {
+  ActionDialog,
+  AlertDialog,
+  ConfirmDialog,
+} from '@renderer/components/ui/confirm-dialog';
+import { NotificationHost } from '@renderer/components/ui/notification-host';
+import { AppErrorBoundary } from '@renderer/components/ui/error-boundary';
+import { HealthBanner } from '@renderer/components/ui/health-banner';
 import { SettingsView, useSettingsViewOpen } from '@renderer/components/settings/SettingsView';
 import { WelcomeView } from '@renderer/components/project/WelcomeView';
 import { useProject } from '@renderer/stores/project-store';
@@ -18,9 +25,11 @@ export function App(): JSX.Element {
   const { phase, scan } = useProject();
 
   return (
+    <AppErrorBoundary>
     <TooltipProvider delayDuration={400} skipDelayDuration={0} disableHoverableContent>
       <div className="flex h-full flex-col">
         <TitleBar />
+        <HealthBanner />
         <div className="min-h-0 flex-1">
           {settingsOpen ? (
             <SettingsView />
@@ -40,6 +49,9 @@ export function App(): JSX.Element {
       <DeleteDocDialog />
       <ConfirmDialog />
       <AlertDialog />
+      <ActionDialog />
+      <NotificationHost />
     </TooltipProvider>
+    </AppErrorBoundary>
   );
 }

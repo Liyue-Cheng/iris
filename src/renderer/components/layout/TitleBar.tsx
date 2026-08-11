@@ -26,6 +26,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@renderer/components/ui/tooltip';
+import { attemptAction, runUserAction } from '@renderer/lib/action-runtime';
 
 const THEME_LABELS: Record<ThemeId, { label: string; icon: typeof Moon }> = {
   'rose-pine': { label: 'Rosé Pine', icon: Moon },
@@ -61,9 +62,11 @@ function WindowControls(): JSX.Element {
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
-    void window.api
-      .invoke<undefined, boolean>(CHANNELS.WINDOW_IS_MAXIMIZED)
-      .then(setMaximized);
+    void attemptAction(() =>
+      window.api.invoke<undefined, boolean>(CHANNELS.WINDOW_IS_MAXIMIZED),
+    ).then((outcome) => {
+      if (outcome.status === 'ok') setMaximized(outcome.value);
+    });
     return window.api.on<{ maximized: boolean }>(EVENTS.WINDOW_MAXIMIZED_CHANGED, (e) =>
       setMaximized(e.maximized),
     );
@@ -78,7 +81,10 @@ function WindowControls(): JSX.Element {
         type="button"
         title={t('layout.minimize')}
         className={cn(caption, 'hover:bg-muted')}
-        onClick={() => void window.api.invoke(CHANNELS.WINDOW_MINIMIZE)}
+        onClick={() => void runUserAction(
+          { title: t('errors.windowActionFailed'), dedupeKey: 'window:minimize' },
+          () => window.api.invoke(CHANNELS.WINDOW_MINIMIZE),
+        )}
       >
         <Minus className="h-3.5 w-3.5" />
       </button>
@@ -86,7 +92,10 @@ function WindowControls(): JSX.Element {
         type="button"
         title={maximized ? t('layout.restore') : t('layout.maximize')}
         className={cn(caption, 'hover:bg-muted')}
-        onClick={() => void window.api.invoke(CHANNELS.WINDOW_MAXIMIZE_TOGGLE)}
+        onClick={() => void runUserAction(
+          { title: t('errors.windowActionFailed'), dedupeKey: 'window:maximize' },
+          () => window.api.invoke(CHANNELS.WINDOW_MAXIMIZE_TOGGLE),
+        )}
       >
         {maximized ? (
           <Copy className="h-3 w-3 -scale-x-100" />
@@ -98,7 +107,10 @@ function WindowControls(): JSX.Element {
         type="button"
         title={t('layout.closeWindow')}
         className={cn(caption, 'hover:bg-[var(--rp-love)] hover:text-[var(--rp-base)]')}
-        onClick={() => void window.api.invoke(CHANNELS.WINDOW_CLOSE)}
+        onClick={() => void runUserAction(
+          { title: t('errors.windowActionFailed'), dedupeKey: 'window:close' },
+          () => window.api.invoke(CHANNELS.WINDOW_CLOSE),
+        )}
       >
         <X className="h-3.5 w-3.5" />
       </button>
@@ -116,7 +128,10 @@ export function TitleBar(): JSX.Element {
     // Side effect → instruction. The store updates when the main process
     // broadcasts evt:settings:changed; nothing is mutated locally.
     const partial: DeepPartial<Settings> = { appearance: { theme: next as ThemeId } };
-    void pipeline.dispatch('settings.update', partial);
+    void runUserAction(
+      { title: t('errors.settingsPersistenceFailed'), dedupeKey: 'settings:theme' },
+      () => pipeline.dispatch('settings.update', partial),
+    );
   }
 
   return (
@@ -153,7 +168,7 @@ export function TitleBar(): JSX.Element {
 
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon" onClick={openSettingsView}>
+            <Button variant="ghost" size="icon" onClick={() => openSettingsView()}>
               <Cog />
             </Button>
           </TooltipTrigger>

@@ -8,8 +8,16 @@
  * `ipc` executor (instructions declare `config: { channel }`); the query
  * channels are projection reads called directly by stores/ISRs.
  */
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain as electronIpcMain,
+  shell,
+} from 'electron';
 import { stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -51,6 +59,11 @@ import type { SettingsManager } from './settings-manager';
 import type { ProjectManager } from './project-manager';
 import type { GitManager } from './git-manager';
 import type { SessionManager } from './session-manager';
+import {
+  detachTerminalOutput,
+  shouldForwardTerminalOutput,
+  type TerminalOutputAttachment,
+} from './terminal/output-attachment';
 import { injectionState, installFocusScript, installHook, removeHook } from './agent-injection';
 import {
   contextForWebContents,
@@ -61,10 +74,67 @@ import {
 import { logger } from './logger';
 import { enqueueProjectSwitch } from './project-switch';
 import { launchSystemTerminal } from './system-terminal';
-import { buildAppInfo, externalLink, legalDocumentPath, readProductManifest } from './app-info';
+import {
+  buildAppInfo,
+  externalLink,
+  externalUrl,
+  legalDocumentPath,
+  readProductManifest,
+} from './app-info';
 import { getBuildType } from './build-type';
+import type {
+  HealthDomain,
+  IpcRequest,
+  IpcRequestMeta,
+  IpcResult,
+  ServiceHealthChangedEvent,
+} from '@shared/app-error';
+import { serializeIpcError } from './ipc-error';
 
 const execFileP = promisify(execFile);
+
+type RawIpcHandler = (
+  event: Electron.IpcMainInvokeEvent,
+  ...args: any[]
+) => any;
+
+function isRequestEnvelope(value: unknown): value is IpcRequest<unknown> {
+  if (!value || typeof value !== 'object') return false;
+  const meta = (value as { meta?: unknown }).meta;
+  return Boolean(
+    meta &&
+      typeof meta === 'object' &&
+      typeof (meta as { requestId?: unknown }).requestId === 'string',
+  );
+}
+
+export function registerIpcHandler(channel: string, handler: RawIpcHandler): void {
+  electronIpcMain.handle(channel, async (event, rawRequest: unknown): Promise<IpcResult<unknown>> => {
+    const request = isRequestEnvelope(rawRequest)
+      ? rawRequest
+      : {
+          meta: { requestId: randomUUID() } satisfies IpcRequestMeta,
+          payload: rawRequest,
+        };
+    try {
+      const value: unknown = await handler(event, request.payload);
+      return { ok: true, value };
+    } catch (error) {
+      const serialized = serializeIpcError(channel, error, request.meta, randomUUID());
+      logger.error(
+        'ipc',
+        `${channel} failed request=${serialized.requestId} incident=${serialized.incidentId}` +
+          (serialized.correlationId ? ` correlation=${serialized.correlationId}` : ''),
+        error,
+      );
+      return { ok: false, error: serialized };
+    }
+  });
+}
+
+// Keep the registration call sites compact while ensuring every channel uses
+// the same serialization and logging boundary.
+const ipcMain = { handle: registerIpcHandler };
 
 type ProjectScopedPayload = { expectedScope: ProjectScope | null };
 
@@ -499,25 +569,24 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     },
   );
 
+  ipcMain.handle(
+    CHANNELS.SHELL_OPEN_EXTERNAL_URL,
+    async (_event, payload: { url: string }): Promise<void> => {
+      await shell.openExternal(externalUrl(payload?.url));
+    },
+  );
+
   // ── clipboard (Electron module — bypasses web Permission API) ──────
 
   ipcMain.handle(CHANNELS.CLIPBOARD_READ_TEXT, (): { text: string } => {
-    try {
-      return { text: clipboard.readText() };
-    } catch {
-      return { text: '' };
-    }
+    return { text: clipboard.readText() };
   });
 
   ipcMain.handle(
     CHANNELS.CLIPBOARD_WRITE_TEXT,
     (_event, payload: { text: string }): { ok: boolean } => {
-      try {
-        clipboard.writeText(payload.text);
-        return { ok: true };
-      } catch {
-        return { ok: false };
-      }
+      clipboard.writeText(payload.text);
+      return { ok: true };
     },
   );
 
@@ -803,6 +872,57 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
   );
 
   ipcMain.handle(
+    CHANNELS.SESSION_OUTPUT_ATTACH,
+    (
+      event,
+      payload: { sessionId: string; attachmentId: string } & ProjectScopedPayload,
+    ) => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_OUTPUT_ATTACH);
+      requireSessionInScope(ctx, payload.sessionId, scope, CHANNELS.SESSION_OUTPUT_ATTACH);
+      if (ctx.outputAttachment) {
+        ctx.sessionManager.detachOutput(ctx.outputAttachment.attachmentId);
+      }
+      ctx.sessionManager.attachOutput(payload.sessionId, payload.attachmentId);
+      ctx.outputAttachment = {
+        sessionId: payload.sessionId,
+        attachmentId: payload.attachmentId,
+        scope,
+      };
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.SESSION_OUTPUT_DETACH,
+    (event, payload: { attachmentId: string }) => {
+      const ctx = requireContext(event);
+      ctx.sessionManager.detachOutput(payload.attachmentId);
+      ctx.outputAttachment = detachTerminalOutput(ctx.outputAttachment, payload.attachmentId);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.SESSION_OUTPUT_ACK,
+    (
+      event,
+      payload: {
+        sessionId: string;
+        attachmentId: string;
+        seq: number;
+      } & ProjectScopedPayload,
+    ) => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_OUTPUT_ACK);
+      requireSessionInScope(ctx, payload.sessionId, scope, CHANNELS.SESSION_OUTPUT_ACK);
+      ctx.sessionManager.acknowledgeOutput(
+        payload.sessionId,
+        payload.attachmentId,
+        payload.seq,
+      );
+    },
+  );
+
+  ipcMain.handle(
     CHANNELS.DOC_IMAGE_READ,
     (event, payload: { docPath: string; source: string } & ProjectScopedPayload) => {
       const ctx = requireContext(event);
@@ -856,8 +976,14 @@ export function wireBroadcasts(
   gitManager: GitManager,
   sessionManager: SessionManager,
   getProjectScope: () => ProjectScope | null,
+  getOutputAttachment: () => TerminalOutputAttachment | null,
   window: BrowserWindow,
 ): () => void {
+  type RawHealthChange = {
+    domain: HealthDomain;
+    state: 'healthy' | 'degraded';
+    error?: unknown;
+  };
   const send = (channel: string, payload: unknown): void => {
     if (!window.isDestroyed()) {
       window.webContents.send(channel, payload);
@@ -872,7 +998,29 @@ export function wireBroadcasts(
   const onPromptChanged = (): void => send(EVENTS.PROMPT_CHANGED, undefined);
   const onGitChanged = (): void =>
     send(EVENTS.GIT_CHANGED, { projectScope: getProjectScope() } satisfies GitChangedEvent);
-  const onOutput = (e: SessionOutputPayload): void => send(EVENTS.SESSION_OUTPUT, e);
+  const onHealthChanged = (event: RawHealthChange): void => {
+    const projectScope = getProjectScope();
+    const payload: ServiceHealthChangedEvent = {
+      domain: event.domain,
+      state: event.state,
+      projectScope,
+    };
+    if (event.error !== undefined) {
+      const requestId = `service-${randomUUID()}`;
+      payload.error = serializeIpcError(
+        `service:${event.domain}`,
+        event.error,
+        { requestId },
+        randomUUID(),
+      );
+    }
+    send(EVENTS.SERVICE_HEALTH_CHANGED, payload);
+  };
+  const onOutput = (e: SessionOutputPayload): void => {
+    const attachment = getOutputAttachment();
+    if (!shouldForwardTerminalOutput(attachment, e)) return;
+    send(EVENTS.SESSION_OUTPUT, e);
+  };
   const onState = (e: SessionStateChangedPayload): void => send(EVENTS.SESSION_STATE_CHANGED, e);
   const onExited = (e: SessionExitedPayload): void => send(EVENTS.SESSION_EXITED, e);
   const onDestroyed = (e: SessionDestroyedPayload): void => send(EVENTS.SESSION_DESTROYED, e);
@@ -885,6 +1033,8 @@ export function wireBroadcasts(
   projectManager.on('irisChanged', onIrisChanged);
   projectManager.on('promptChanged', onPromptChanged);
   gitManager.on('changed', onGitChanged);
+  gitManager.on('healthChanged', onHealthChanged);
+  projectManager.on('healthChanged', onHealthChanged);
   sessionManager.on('sessionOutput', onOutput);
   sessionManager.on('sessionStateChanged', onState);
   sessionManager.on('sessionExited', onExited);
@@ -896,6 +1046,8 @@ export function wireBroadcasts(
     projectManager.off('irisChanged', onIrisChanged);
     projectManager.off('promptChanged', onPromptChanged);
     gitManager.off('changed', onGitChanged);
+    gitManager.off('healthChanged', onHealthChanged);
+    projectManager.off('healthChanged', onHealthChanged);
     sessionManager.off('sessionOutput', onOutput);
     sessionManager.off('sessionStateChanged', onState);
     sessionManager.off('sessionExited', onExited);

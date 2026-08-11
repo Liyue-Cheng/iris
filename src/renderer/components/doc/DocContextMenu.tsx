@@ -16,7 +16,7 @@ import {
 import { editorStore } from '@renderer/stores/editor-store';
 import { writeClipboardText } from '@renderer/lib/clipboard';
 import { openDeleteDialog } from '@renderer/components/doc/DeleteDocDialog';
-import { pipeline } from '@renderer/cpu';
+import { openProjectItem, revealProjectItem } from '@renderer/lib/shell-actions';
 
 export function DocContextMenu({
   docPath,
@@ -49,7 +49,7 @@ export function DocContextMenu({
             void editorStore
               .flushBeforeSwitch('before-external-action')
               .then((ready) =>
-                ready ? pipeline.dispatch('shell.open-project-item', { path: docPath }) : undefined,
+                ready ? openProjectItem(docPath) : undefined,
               )
           }
         >
@@ -60,7 +60,7 @@ export function DocContextMenu({
             void editorStore
               .flushBeforeSwitch('before-external-action')
               .then((ready) =>
-                ready ? pipeline.dispatch('shell.reveal-project-item', { path: docPath }) : undefined,
+                ready ? revealProjectItem(docPath) : undefined,
               )
           }
         >

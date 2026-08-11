@@ -170,7 +170,15 @@ describe('project prompt disk synchronization', () => {
     expect(await fs.readFile(join(dir, 'AGENTS.md'), 'utf8')).toBe(agents);
     expect(await fs.readFile(join(dir, 'CLAUDE.md'), 'utf8')).toBe(claude);
     await expect(pm.assertProjectSettingsReady()).rejects.toMatchObject({
-      code: 'WriteConflict',
+      code: 'PromptNotReady',
+      domain: 'prompt',
+      details: {
+        repairable: false,
+        issues: expect.arrayContaining([
+          expect.objectContaining({ layer: 'project', path: 'AGENTS.md', state: 'conflict' }),
+          expect.objectContaining({ layer: 'project', path: 'CLAUDE.md', state: 'conflict' }),
+        ]),
+      },
     } satisfies Partial<ProjectError>);
   });
 
@@ -207,7 +215,14 @@ describe('project prompt disk synchronization', () => {
     expect((await readProjectSettings(dir)).settings.prompts.project).toBe('Initial');
     expect(parseProjectBlock(await fs.readFile(join(dir, 'AGENTS.md'), 'utf8'))?.body).toBe('Initial');
     await expect(pm.assertProjectSettingsReady()).rejects.toMatchObject({
-      code: 'WriteFailed',
+      code: 'PromptNotReady',
+      domain: 'prompt',
+      details: {
+        repairable: true,
+        issues: expect.arrayContaining([
+          expect.objectContaining({ layer: 'project', path: 'CLAUDE.md', state: 'drifted' }),
+        ]),
+      },
     } satisfies Partial<ProjectError>);
     await pm.restoreProjectPromptEntry('CLAUDE.md');
     await expect(pm.assertProjectSettingsReady()).resolves.toBeUndefined();
@@ -256,7 +271,14 @@ describe('project prompt disk synchronization', () => {
     await new Promise((resolve) => setTimeout(resolve, 350));
     expect(parseProjectBlock(await fs.readFile(agentsPath, 'utf8'))?.body).toBe('Manual drift');
     await expect(pm.assertProjectSettingsReady()).rejects.toMatchObject({
-      code: 'ReadFailed',
+      code: 'PromptNotReady',
+      domain: 'prompt',
+      details: {
+        repairable: false,
+        issues: expect.arrayContaining([
+          expect.objectContaining({ layer: 'settings', state: 'invalid-settings' }),
+        ]),
+      },
     } satisfies Partial<ProjectError>);
   });
 
@@ -278,6 +300,23 @@ describe('project prompt disk synchronization', () => {
       expect.objectContaining({ path: 'CLAUDE.md', state: 'write-failed' }),
     ]));
     expect(await fs.readFile(join(dir, 'AGENTS.md'), 'utf8')).toBe(duplicate);
+  });
+
+  it('ignores protocol-like prose outside managed blocks', async () => {
+    await init(pm);
+    const agentsPath = join(dir, 'AGENTS.md');
+    const legacyProse = [
+      '> old pointer <iris-software>',
+      'This project is managed with Iris',
+      '## Folder semantics',
+      '## Working rules (invariant)',
+      '</iris-software>',
+      '',
+    ].join('\n');
+    await fs.appendFile(agentsPath, legacyProse, 'utf8');
+
+    await expect(pm.assertProjectSettingsReady()).resolves.toBeUndefined();
+    expect(await fs.readFile(agentsPath, 'utf8')).toContain(legacyProse);
   });
 
   it('stops syncing a vendor by removing both blocks and preserving foreign prose', async () => {

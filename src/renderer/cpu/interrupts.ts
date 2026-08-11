@@ -23,8 +23,18 @@ import { editorStore, readDocFromDisk } from '@renderer/stores/editor-store';
 import { hydrateSessions, sessionStore } from '@renderer/stores/session-store';
 import { projectScopeState, sameProjectScope } from '@renderer/stores/project-scope-state';
 import { projectSettingsStore } from '@renderer/stores/project-settings-store';
+import type { ServiceHealthChangedEvent } from '@shared/app-error';
+import { healthStore } from '@renderer/stores/health-store';
+import { refreshPromptProjectionHealth } from '@renderer/lib/project-actions';
 
 export function wireInterrupts(): void {
+  window.api.on<ServiceHealthChangedEvent>(EVENTS.SERVICE_HEALTH_CHANGED, (event) => {
+    if (!sameProjectScope(event.projectScope, projectScopeState.get())) return;
+    healthStore.handleServiceEvent(event);
+  });
+  window.api.on(EVENTS.PROMPT_CHANGED, () => {
+    void refreshPromptProjectionHealth();
+  });
   // Session lifecycle events → interrupts → projection ISR. (Output bytes
   // bypass this path entirely — they stream straight to the terminal view;
   // routing 60 batches/s through the interrupt controller buys nothing.)

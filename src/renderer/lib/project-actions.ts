@@ -12,15 +12,88 @@ import { alertDialog, confirmDialog } from '@renderer/components/ui/confirm-dial
 import { gitStore } from '@renderer/stores/git-store';
 import { translate } from '@renderer/i18n';
 import type { SoftwarePromptState } from '@shared/types';
+import type { ProjectScope } from '@shared/types';
+import { healthStore } from '@renderer/stores/health-store';
+import { attemptAction, runUserAction } from './action-runtime';
+
+async function loadPromptState(scope: ProjectScope): Promise<SoftwarePromptState> {
+  return window.api.invoke<
+    { expectedScope: ProjectScope },
+    SoftwarePromptState
+  >(CHANNELS.SOFTWARE_PROMPT_STATE, { expectedScope: scope });
+}
+
+function recordPromptHealth(scope: ProjectScope, promptState: SoftwarePromptState): void {
+  const softwareDrift = promptState.entries.filter((entry) => entry.state !== 'ok');
+  const projectDrift = promptState.project.entries.filter((entry) => entry.state !== 'synced');
+  if (softwareDrift.length === 0 && projectDrift.length === 0) {
+    healthStore.resolve('prompt-projection', scope);
+    return;
+  }
+  const repairable =
+    promptState.project.state !== 'conflict' &&
+    promptState.project.state !== 'invalid-settings';
+  const issues = [
+    ...softwareDrift.map((entry) => ({
+      layer: 'software' as const,
+      path: entry.path,
+      state: entry.state,
+    })),
+    ...projectDrift.map((entry) => ({
+      layer: 'project' as const,
+      path: entry.path,
+      state: entry.state,
+    })),
+  ];
+  const canAutoRepair = repairable;
+  healthStore.degrade({
+    key: 'prompt-projection',
+    domain: 'prompt-projection',
+    scope,
+    cause: {
+      domain: 'prompt',
+      code: 'PromptNotReady',
+      message: translate('errors.promptNotReadyTitle'),
+      retryable: canAutoRepair,
+      details: { repairable: canAutoRepair, issues },
+    },
+    ...(canAutoRepair ? {
+      retry: async () => {
+        await pipeline.dispatch('prompt.sync-all', {});
+        recordPromptHealth(scope, await loadPromptState(scope));
+      },
+    } : {}),
+  });
+}
+
+export async function refreshPromptProjectionHealth(): Promise<void> {
+  const scope = projectStore.get().scope;
+  if (!scope) return;
+  const outcome = await attemptAction(() => loadPromptState(scope));
+  if (outcome.status === 'ok') {
+    recordPromptHealth(scope, outcome.value);
+  } else if (outcome.status === 'failed') {
+    healthStore.degrade({
+      key: 'prompt-projection',
+      domain: 'prompt-projection',
+      cause: outcome.error,
+      scope,
+      retry: async () => recordPromptHealth(scope, await loadPromptState(scope)),
+    });
+  }
+}
 
 /** Audit both static projections after a project is active and offer one repair. */
 export async function offerPromptProjectionRepair(): Promise<void> {
   const scope = projectStore.get().scope;
   if (!scope) return;
-  const promptState = await window.api.invoke<
-    { expectedScope: typeof scope },
-    SoftwarePromptState
-  >(CHANNELS.SOFTWARE_PROMPT_STATE, { expectedScope: scope });
+  const outcome = await attemptAction(() => loadPromptState(scope));
+  if (outcome.status !== 'ok') {
+    await refreshPromptProjectionHealth();
+    return;
+  }
+  const promptState = outcome.value;
+  recordPromptHealth(scope, promptState);
   const softwareDrift = promptState.entries.filter((entry) => entry.state !== 'ok');
   const projectDrift = promptState.project.entries.filter((entry) => entry.state !== 'synced');
   const repairable =
@@ -40,7 +113,18 @@ export async function offerPromptProjectionRepair(): Promise<void> {
     }),
     confirmText: translate('settings.resyncAll'),
   });
-  if (confirmed) await pipeline.dispatch('prompt.sync-all', {});
+  if (confirmed) {
+    await runUserAction(
+      {
+        title: translate('errors.promptSyncFailed'),
+        dedupeKey: 'prompt:sync-all',
+      },
+      async () => {
+        await pipeline.dispatch('prompt.sync-all', {});
+        recordPromptHealth(scope, await loadPromptState(scope));
+      },
+    );
+  }
 }
 
 export async function openProject(root: string): Promise<void> {
@@ -82,8 +166,13 @@ export async function openProject(root: string): Promise<void> {
 
 /** Native folder picker → open in THIS window. No-op when the user cancels. */
 export async function pickAndOpenProject(): Promise<void> {
-  const root = await window.api.invoke<undefined, string | null>(CHANNELS.DIALOG_PICK_FOLDER);
-  if (root) await openProject(root);
+  await runUserAction(
+    { title: translate('layout.switchFailed'), dedupeKey: 'project:pick-open' },
+    async () => {
+      const root = await window.api.invoke<undefined, string | null>(CHANNELS.DIALOG_PICK_FOLDER);
+      if (root) await openProject(root);
+    },
+  );
 }
 
 /**
@@ -92,5 +181,8 @@ export async function pickAndOpenProject(): Promise<void> {
  * Pass a root to skip the picker (e.g. an in-tree "open in new window" gesture).
  */
 export async function openProjectInNewWindow(root?: string): Promise<void> {
-  await pipeline.dispatch('window.open-project', root ? { root } : {});
+  await runUserAction(
+    { title: translate('layout.switchFailed'), dedupeKey: 'project:open-new-window' },
+    () => pipeline.dispatch('window.open-project', root ? { root } : {}),
+  );
 }

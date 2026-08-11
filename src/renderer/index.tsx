@@ -11,6 +11,66 @@ import { CHANNELS, EVENTS } from '@shared/protocol';
 import type { WindowBootstrapState } from '@shared/types';
 import { projectStore } from './stores/project-store';
 import { hydrateProjectSettings } from './stores/project-settings-store';
+import { normalizeUiError } from './lib/action-runtime';
+import { notify } from './stores/notification-store';
+import { translate } from './i18n';
+
+function installGlobalErrorFallbacks(): void {
+  window.addEventListener('unhandledrejection', (event) => {
+    event.preventDefault();
+    const error = normalizeUiError(event.reason);
+    console.error('[renderer] unhandled rejection', event.reason);
+    notify({
+      dedupeKey: `renderer:unhandled:${error.message}`,
+      title: translate('errors.unhandledTitle'),
+      message: error.message,
+      sticky: true,
+      domain: error.domain,
+      ...(error.incidentId ? { incidentId: error.incidentId } : {}),
+    });
+  });
+  window.addEventListener('error', (event) => {
+    const error = normalizeUiError(event.error ?? event.message);
+    console.error('[renderer] uncaught error', event.error ?? event.message);
+    notify({
+      dedupeKey: `renderer:uncaught:${error.message}`,
+      title: translate('errors.unhandledTitle'),
+      message: error.message,
+      sticky: true,
+      domain: error.domain,
+    });
+  });
+}
+
+function renderBootstrapFailure(cause: unknown): void {
+  const error = normalizeUiError(cause);
+  console.error('[renderer] bootstrap failed', cause);
+  const container = document.getElementById('root');
+  if (!container) return;
+  container.replaceChildren();
+  const main = document.createElement('main');
+  main.setAttribute('role', 'alert');
+  main.style.cssText = 'display:flex;height:100%;align-items:center;justify-content:center;padding:24px;font-family:system-ui';
+  const section = document.createElement('section');
+  section.style.cssText = 'width:100%;max-width:520px';
+  const title = document.createElement('h1');
+  title.textContent = translate('errors.bootstrapFailedTitle');
+  title.style.cssText = 'font-size:18px;margin:0 0 10px';
+  const message = document.createElement('p');
+  message.textContent = error.message;
+  message.style.cssText = 'font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere;opacity:.75';
+  const incident = document.createElement('code');
+  incident.textContent = error.incidentId ?? crypto.randomUUID();
+  incident.style.cssText = 'display:block;margin-top:12px;font-size:12px;opacity:.65';
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.textContent = translate('errors.reload');
+  retry.style.cssText = 'margin-top:16px;padding:8px 12px;border:1px solid currentColor;border-radius:4px;background:transparent;color:inherit';
+  retry.addEventListener('click', () => window.location.reload());
+  section.append(title, message, incident, retry);
+  main.append(section);
+  container.append(main);
+}
 
 async function bootstrap(): Promise<void> {
   // Settings (theme included) load before first paint — no flash of the
@@ -56,4 +116,5 @@ async function bootstrap(): Promise<void> {
   }
 }
 
-void bootstrap();
+installGlobalErrorFallbacks();
+void bootstrap().catch(renderBootstrapFailure);

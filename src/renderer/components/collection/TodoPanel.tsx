@@ -14,6 +14,7 @@ import { collectTodos, docDate, type CollectedTodo } from '@renderer/lib/collect
 import { docDisplayTitle } from '@renderer/lib/doc-utils';
 import { checkTodo } from '@renderer/lib/todo-actions';
 import { projectStore } from '@renderer/stores/project-store';
+import { runUserAction } from '@renderer/lib/action-runtime';
 
 interface TodoGroup {
   docPath: string;
@@ -63,20 +64,22 @@ export function TodoPanel({
   const onCheck = async (item: CollectedTodo): Promise<void> => {
     const key = `${item.doc.path}#${item.todo.line}`;
     setPending((p) => new Set(p).add(key));
-    let ok = false;
-    try {
-      ok = await checkTodo(item.doc.path, item.todo);
-    } finally {
-      if (!ok) {
-        setPending((p) => {
-          const next = new Set(p);
-          next.delete(key);
-          return next;
-        });
-      }
-      // On success the key stays pending; the row (and the stale key with
-      // it) leaves the projection at the next scan.
+    const outcome = await runUserAction(
+      {
+        title: t('errors.todoUpdateFailed'),
+        dedupeKey: `todo:update:${key}`,
+      },
+      () => checkTodo(item.doc.path, item.todo),
+    );
+    const ok = outcome.status === 'ok' && outcome.value;
+    if (!ok) {
+      setPending((p) => {
+        const next = new Set(p);
+        next.delete(key);
+        return next;
+      });
     }
+    // On success the row leaves the projection at the next scan.
   };
 
   return (

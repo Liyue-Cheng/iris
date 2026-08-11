@@ -16,12 +16,12 @@ import {
 import type { AssetEntry, AssetHealth, AssetInventory } from '@shared/types';
 import { EVENTS } from '@shared/protocol';
 import { cn } from '@renderer/lib/utils';
-import { pipeline } from '@renderer/cpu';
 import { confirmDialog } from '@renderer/components/ui/confirm-dialog';
 import { Button } from '@renderer/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@renderer/components/ui/dialog';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip';
 import { writeClipboardText } from '@renderer/lib/clipboard';
+import { openProjectItem, revealProjectItem } from '@renderer/lib/shell-actions';
 import {
   adoptAsset,
   importAsset,
@@ -257,14 +257,14 @@ function AssetRow({
         <IconAction
           label={t('common.reveal')}
           disabled={!canOpen}
-          onClick={() => void pipeline.dispatch('shell.reveal-project-item', { path: asset.path })}
+          onClick={() => void revealProjectItem(asset.path)}
         >
           <FolderOpen />
         </IconAction>
         <IconAction
           label={t('common.openDefault')}
           disabled={!canOpen}
-          onClick={() => void pipeline.dispatch('shell.open-project-item', { path: asset.path })}
+          onClick={() => void openProjectItem(asset.path)}
         >
           <ExternalLink />
         </IconAction>

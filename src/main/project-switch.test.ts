@@ -91,6 +91,7 @@ function harness(initial: ProjectScope | null, sessions: SessionInfo[] = []) {
     projectScope: initial,
     projectSwitching: false,
     projectSwitchTail: Promise.resolve(),
+    outputAttachment: null,
     unwire: () => undefined,
   } satisfies WindowContext;
   return {
