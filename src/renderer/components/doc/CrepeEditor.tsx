@@ -28,6 +28,13 @@ import { useSettings } from '@renderer/stores/settings-store';
 import { markImageLoadFailure, resolveMarkdownImage } from '@renderer/lib/markdown-media';
 import { renderMermaidPreview } from '@renderer/lib/mermaid-preview';
 import { importAsset } from '@renderer/lib/asset-actions';
+import { resolveMarkdownLink, scrollToFragment } from '@renderer/lib/markdown-navigation';
+import {
+  documentNavigationStore,
+  useDocumentNavigationTarget,
+} from '@renderer/stores/document-navigation-store';
+import { projectStore } from '@renderer/stores/project-store';
+import { openExternalUrl } from '@renderer/lib/shell-actions';
 import { attachScrollMemory, type ScrollMemoryHandle } from '@renderer/lib/scroll-memory';
 import {
   attachCodeBlockCopyFeedback,
@@ -52,7 +59,9 @@ export function CrepeEditor({
 }): JSX.Element {
   const { t, i18n } = useTranslation();
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const scrollMemoryRef = useRef<ScrollMemoryHandle | null>(null);
   const settings = useSettings();
+  const navigationTarget = useDocumentNavigationTarget();
   const blockEdit = settings?.behavior.editorBlockEdit ?? false;
   const bodyAlign = settings?.behavior.editorBodyAlign ?? 'center';
 
@@ -64,6 +73,25 @@ export function CrepeEditor({
     let hydrationFrame: number | null = null;
     let scrollMemory: ScrollMemoryHandle | null = null;
     const detachCopyFeedback = attachCodeBlockCopyFeedback(el);
+    const handleLinkClick = (event: MouseEvent): void => {
+      const origin = event.target;
+      if (!(origin instanceof Element)) return;
+      const link = origin.closest<HTMLAnchorElement>('a[href]');
+      if (!link || !el.contains(link)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const target = resolveMarkdownLink(path, link.getAttribute('href') ?? '');
+      if (target.kind === 'external') {
+        void openExternalUrl(target.url).catch(() => undefined);
+      } else if (target.kind === 'document' && target.fragment) {
+        void projectStore
+          .navigateDoc({ path: target.path, fragment: target.fragment })
+          .catch(() => undefined);
+      } else if (target.kind === 'document') {
+        void projectStore.selectDoc(target.path).catch(() => undefined);
+      }
+    };
+    el.addEventListener('click', handleLinkClick);
     const crepe = new Crepe({
       root: el,
       defaultValue: body,
@@ -133,6 +161,7 @@ export function CrepeEditor({
           scroller: el,
           focusRoot: el,
         });
+        scrollMemoryRef.current = scrollMemory;
         // Crepe plugins may normalize the initial document for a frame after
         // create() resolves. Keep those transactions inside hydration, then
         // establish one stable serialization baseline.
@@ -156,7 +185,9 @@ export function CrepeEditor({
       onEditorAdapterChange(null);
       if (hydrationFrame !== null) cancelAnimationFrame(hydrationFrame);
       scrollMemory?.stop();
+      if (scrollMemoryRef.current === scrollMemory) scrollMemoryRef.current = null;
       detachCopyFeedback();
+      el.removeEventListener('click', handleLinkClick);
       lifecycle.stop();
     };
     // Remount only on a different doc, an explicit generation bump, or a
@@ -166,6 +197,38 @@ export function CrepeEditor({
     // when the flag actually flips.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, generation, blockEdit, i18n.resolvedLanguage, onEditorAdapterChange]);
+
+  useEffect(() => {
+    const el = rootRef.current;
+    if (
+      !el ||
+      !navigationTarget ||
+      navigationTarget.path !== path ||
+      navigationTarget.generation !== generation
+    ) {
+      return;
+    }
+
+    let frame: number | null = null;
+    let remaining = 18;
+    const locate = (): void => {
+      if (documentNavigationStore.get()?.id !== navigationTarget.id) return;
+      if (scrollToFragment(el, navigationTarget.fragment)) {
+        scrollMemoryRef.current?.override();
+        documentNavigationStore.consume(navigationTarget);
+        return;
+      }
+      if (remaining-- > 0) {
+        frame = requestAnimationFrame(locate);
+      } else {
+        documentNavigationStore.consume(navigationTarget);
+      }
+    };
+    frame = requestAnimationFrame(locate);
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [generation, navigationTarget, path]);
 
   return (
     <div

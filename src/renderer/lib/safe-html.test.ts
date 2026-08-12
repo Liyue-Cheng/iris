@@ -40,6 +40,19 @@ describe('safe HTML rendering', () => {
     expect(host.querySelector('img')).toBeNull();
   });
 
+  it('keeps explicit anchor ids without allowing HTML links', () => {
+    const fragment = sanitizeHtmlFragment(
+      '<a id="manual" href="https://example.com" onclick="alert(1)"></a>',
+    );
+    const host = document.createElement('div');
+    host.append(fragment);
+    const anchor = host.querySelector('a');
+
+    expect(anchor?.id).toBe('manual');
+    expect(anchor?.hasAttribute('href')).toBe(false);
+    expect(anchor?.hasAttribute('onclick')).toBe(false);
+  });
+
   it('recognizes paired kbd and mark boundaries', () => {
     expect(parseHtmlBoundary('<kbd title="shortcut">')).toEqual({ tag: 'kbd', closing: false });
     expect(parseHtmlBoundary('</KBD>')).toEqual({ tag: 'kbd', closing: true });

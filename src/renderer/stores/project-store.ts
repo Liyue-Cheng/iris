@@ -23,6 +23,7 @@ import { sessionAnchorKey, sessionStore, workspaceAnchorKey } from './session-st
 import { projectScopeState, sameProjectScope } from './project-scope-state';
 import { healthStore } from './health-store';
 import { findDocByPath } from '@renderer/lib/doc-utils';
+import { documentNavigationStore } from './document-navigation-store';
 
 export type ProjectPhase = 'idle' | 'opening' | 'ready' | 'error';
 
@@ -125,6 +126,7 @@ async function canLeaveEditor(): Promise<boolean> {
 
 function beginNavigationIntent(): number {
   navigationIntent += 1;
+  documentNavigationStore.clear();
   return navigationIntent;
 }
 
@@ -644,6 +646,17 @@ export const projectStore = {
   /** Select a document without altering that document's remembered terminal. */
   async selectDoc(path: string): Promise<boolean> {
     return navigateToDoc(beginNavigationIntent(), path);
+  },
+
+  /** Navigate to a document target without changing ordinary selection semantics. */
+  async navigateDoc(target: { path: string; fragment: string }): Promise<boolean> {
+    const intent = beginNavigationIntent();
+    const navigated = await navigateToDoc(intent, target.path);
+    if (!navigated || !isCurrentIntent(intent)) return false;
+    const session = editorStore.get();
+    if (!session || session.path !== target.path) return false;
+    documentNavigationStore.request(target.path, session.generation, target.fragment);
+    return true;
   },
 
   async toggleRawMode(): Promise<void> {

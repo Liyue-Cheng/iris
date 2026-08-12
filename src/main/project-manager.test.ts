@@ -22,6 +22,20 @@ afterEach(async () => {
 });
 
 describe('ProjectManager document compare-and-swap', () => {
+  it('rejects document reads through a directory link outside the project', async () => {
+    const outside = await createTempDataDir('iris-doc-outside-');
+    try {
+      await fs.writeFile(join(outside, 'outside.md'), 'outside\n', 'utf8');
+      await fs.symlink(outside, join(dir, '.iris', 'linked'), 'junction');
+
+      await expect(manager.readDoc('.iris/linked/outside.md')).rejects.toMatchObject({
+        code: 'ReadFailed',
+      } satisfies Partial<ProjectError>);
+    } finally {
+      await removeTempDataDir(outside).catch(() => {});
+    }
+  });
+
   it('does not touch mtime when content is identical', async () => {
     const path = join(dir, relativePath);
     const fixed = new Date('2024-01-01T00:00:00.000Z');

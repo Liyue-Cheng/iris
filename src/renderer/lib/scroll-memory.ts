@@ -1,6 +1,7 @@
 const positions = new Map<string, number>();
 
 export interface ScrollMemoryHandle {
+  override(): void;
   stop(): void;
 }
 
@@ -55,6 +56,12 @@ export function attachScrollMemory(options: {
   else restoring = false;
 
   return {
+    override(): void {
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = null;
+      restoring = false;
+      positions.set(key, scroller.scrollTop);
+    },
     stop(): void {
       if (stopped) return;
       stopped = true;

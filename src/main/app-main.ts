@@ -310,6 +310,13 @@ function createWindow(initialRoot: string | null): BrowserWindow {
     return { action: 'deny' };
   });
 
+  // A Markdown link without target=_blank can ask Chromium to replace the
+  // Iris renderer itself. Renderer-owned navigation handles valid links;
+  // deny every unhandled top-level navigation as the final safety boundary.
+  win.webContents.on('will-navigate', (event) => {
+    event.preventDefault();
+  });
+
   // F12 / Ctrl+Shift+I toggle DevTools. Packed builds ship no application
   // menu, so Chromium never binds the shortcut itself — main must intercept
   // webContents input (Marina lesson; only diagnosis channel in packed mode).

@@ -19,6 +19,7 @@ import {
 let projectISA: typeof import('@renderer/cpu/isa/project-isa').projectISA;
 let editorStore: typeof import('@renderer/stores/editor-store').editorStore;
 let projectStore: typeof import('@renderer/stores/project-store').projectStore;
+let documentNavigationStore: typeof import('@renderer/stores/document-navigation-store').documentNavigationStore;
 const invoke = vi.fn();
 let generation = 10;
 
@@ -30,6 +31,7 @@ beforeAll(async () => {
   });
   ({ editorStore } = await import('@renderer/stores/editor-store'));
   ({ projectStore } = await import('@renderer/stores/project-store'));
+  ({ documentNavigationStore } = await import('@renderer/stores/document-navigation-store'));
   ({ projectISA } = await import('@renderer/cpu/isa/project-isa'));
 });
 
@@ -66,6 +68,7 @@ beforeEach(() => {
   projectScopeState.set(null);
   projectScopeState.setSwitching(false);
   sessionStore.reset([], null);
+  documentNavigationStore.clear();
 });
 
 function docContent(path: string): DocContent {
@@ -344,6 +347,33 @@ describe('session activation transaction', () => {
     await expect(staleActivation).resolves.toBe(false);
     expect(projectStore.get().view).toEqual({ kind: 'doc', path: docPath });
     expect(selectedSessionIdForAnchor(docPath)).toBe('doc-2');
+  });
+});
+
+describe('Markdown document navigation', () => {
+  it('publishes a fragment only after the matching editor session is ready', async () => {
+    const docPath = '.iris/issue/a.md';
+    openProjectState([scanDoc(docPath, 'issue')]);
+
+    await expect(projectStore.navigateDoc({ path: docPath, fragment: 'details' })).resolves.toBe(true);
+
+    expect(documentNavigationStore.get()).toMatchObject({
+      path: docPath,
+      generation: editorStore.get()?.generation,
+      fragment: 'details',
+    });
+  });
+
+  it('clears a fragment target when a newer ordinary navigation begins', async () => {
+    const first = '.iris/issue/a.md';
+    const second = '.iris/issue/b.md';
+    openProjectState([scanDoc(first, 'issue'), scanDoc(second, 'issue')]);
+    await projectStore.navigateDoc({ path: first, fragment: 'details' });
+
+    await projectStore.selectDoc(second);
+
+    expect(documentNavigationStore.get()).toBeNull();
+    expect(editorStore.get()?.path).toBe(second);
   });
 });
 

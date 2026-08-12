@@ -9,6 +9,7 @@ const purifier = DOMPurify(window);
 
 const ALLOWED_TAGS = [
   'abbr',
+  'a',
   'b',
   'blockquote',
   'br',
@@ -61,6 +62,7 @@ const ALLOWED_ATTR = [
   'colspan',
   'dir',
   'headers',
+  'id',
   'lang',
   'open',
   'rowspan',

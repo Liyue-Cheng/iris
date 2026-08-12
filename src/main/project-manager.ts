@@ -228,6 +228,8 @@ export class ProjectManager extends EventEmitter {
     const abs = this.resolveInside(root, relPath);
     let raw: string;
     try {
+      const real = await fs.realpath(abs);
+      this.resolveInside(root, real);
       raw = await fs.readFile(abs, 'utf8');
     } catch (err) {
       throw new ProjectError(
