@@ -5,7 +5,7 @@
  * with sticky headers. Active vs 全部 mirrors the left lens (Backlog reports
  * are settled, hidden by default).
  */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Archive, FileWarning, Plus } from 'lucide-react';
 import type { IrisWorkspace } from '@shared/types';
@@ -14,7 +14,7 @@ import { collectDocs, docDate, type CollectedDoc } from '@renderer/lib/collect-d
 import { docDisplayTitle } from '@renderer/lib/doc-utils';
 import { setDocDragData } from '@renderer/lib/doc-drag';
 import { StatusBadge } from '@renderer/components/ui/status-badge';
-import { projectStore } from '@renderer/stores/project-store';
+import { projectStore, useProject } from '@renderer/stores/project-store';
 import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DocContextMenu } from '@renderer/components/doc/DocContextMenu';
 import { Button } from '@renderer/components/ui/button';
@@ -25,6 +25,14 @@ const GRID = '76px minmax(0,1fr) auto minmax(0,96px)';
 
 const BUCKETS = ['today', 'last7Days', 'last30Days', 'older', 'undated'] as const;
 type Bucket = (typeof BUCKETS)[number];
+
+interface ReportTimelineMemory {
+  showAll: boolean;
+  collapsed: ReadonlySet<string>;
+  scrollTop: number;
+}
+
+const reportTimelineMemory = new Map<string, ReportTimelineMemory>();
 
 const BUCKET_LABEL: Record<Bucket, 'collection.today' | 'collection.last7Days' | 'collection.last30Days' | 'collection.older' | 'collection.undated'> = {
   today: 'collection.today',
@@ -56,13 +64,39 @@ function isActiveReport(doc: { status: string | null }): boolean {
 export function ReportTimeline({
   root,
   workspacePath,
+  selectedPath,
 }: {
   root: IrisWorkspace;
   workspacePath: string | null;
+  selectedPath?: string | null;
 }): JSX.Element {
   const { t } = useTranslation();
-  const [showAll, setShowAll] = useState(false);
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const { scope } = useProject();
+  const memoryKey = `${scope?.root ?? ''}\u0000${workspacePath ?? ''}`;
+  const memory = reportTimelineMemory.get(memoryKey);
+  const [showAll, setShowAll] = useState(memory?.showAll ?? false);
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(
+    memory?.collapsed ?? new Set(),
+  );
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const scrollTop = reportTimelineMemory.get(memoryKey)?.scrollTop ?? 0;
+    reportTimelineMemory.set(memoryKey, { showAll, collapsed, scrollTop });
+  }, [collapsed, memoryKey, showAll]);
+
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const frame = requestAnimationFrame(() => {
+      list.scrollTop = reportTimelineMemory.get(memoryKey)?.scrollTop ?? 0;
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      const current = reportTimelineMemory.get(memoryKey);
+      if (current) reportTimelineMemory.set(memoryKey, { ...current, scrollTop: list.scrollTop });
+    };
+  }, [memoryKey]);
 
   const today = todayStr();
   const rows = collectDocs(root, 'report', workspacePath).filter(
@@ -122,13 +156,31 @@ export function ReportTimeline({
           size="sm"
           variant="secondary"
           className="ml-auto h-7"
-          onClick={() => openCreateDialog({ workspacePath: workspacePath ?? '.iris', type: 'report' })}
+          onClick={() =>
+            openCreateDialog({
+              workspacePath: workspacePath ?? '.iris',
+              type: 'report',
+              destination: 'collection',
+            })
+          }
         >
           <Plus /> {t('collection.new')}
         </Button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+      <div
+        ref={listRef}
+        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pb-14"
+        onScroll={(event) => {
+          const current = reportTimelineMemory.get(memoryKey);
+          if (current) {
+            reportTimelineMemory.set(memoryKey, {
+              ...current,
+              scrollTop: event.currentTarget.scrollTop,
+            });
+          }
+        }}
+      >
         {groups.map((g) => (
           <div key={g.key}>
             <GroupHeader
@@ -139,15 +191,26 @@ export function ReportTimeline({
             />
             {!collapsed.has(g.key) &&
               g.items.map((item) => (
-                <DocContextMenu key={item.doc.path} docPath={item.doc.path} docName={item.doc.name}>
+                <DocContextMenu
+                  key={item.doc.path}
+                  docPath={item.doc.path}
+                  docName={item.doc.name}
+                  onOpenInDefaultView={() =>
+                    void projectStore.openCollectionDocInDefaultView(item.doc.path)
+                  }
+                >
                   <div
                     role="row"
-                    onClick={() => void projectStore.selectDoc(item.doc.path)}
+                    onClick={() => void projectStore.selectCollectionDoc(item.doc.path)}
                     draggable
                     onDragStart={(e) => setDocDragData(e.dataTransfer, item.doc.path)}
                     title={item.doc.path}
                     style={{ gridTemplateColumns: GRID }}
-                    className={cn(ROW_BASE, item.archived && 'opacity-50')}
+                    className={cn(
+                      ROW_BASE,
+                      item.archived && 'opacity-50',
+                      selectedPath === item.doc.path && 'bg-accent/80',
+                    )}
                   >
                     <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
                       <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--rp-foam)]/70" />

@@ -5,7 +5,7 @@
  * HEAD is a best-effort read (project:git-head) — when git is unavailable the
  * freshness column simply goes quiet.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Archive, FileWarning, Plus } from 'lucide-react';
 import type { IrisWorkspace } from '@shared/types';
@@ -14,7 +14,7 @@ import { cn } from '@renderer/lib/utils';
 import { collectDocs, docDate } from '@renderer/lib/collect-docs';
 import { docDisplayTitle } from '@renderer/lib/doc-utils';
 import { setDocDragData } from '@renderer/lib/doc-drag';
-import { projectStore } from '@renderer/stores/project-store';
+import { projectStore, useProject } from '@renderer/stores/project-store';
 import { sameProjectScope } from '@renderer/stores/project-scope-state';
 import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DocContextMenu } from '@renderer/components/doc/DocContextMenu';
@@ -22,6 +22,7 @@ import { Button } from '@renderer/components/ui/button';
 import { PANEL_BAR, ROW_BASE } from './parts/layout';
 
 const GRID = 'minmax(0,1fr) auto minmax(0,96px) 76px';
+const statusListScroll = new Map<string, number>();
 
 /** Two shas refer to the same commit when one is a prefix of the other (≥7). */
 function shaMatch(a: string, b: string): boolean {
@@ -69,13 +70,29 @@ function Freshness({ reflects, head }: { reflects: string | null; head: string |
 export function StatusList({
   root,
   workspacePath,
+  selectedPath,
 }: {
   root: IrisWorkspace;
   workspacePath: string | null;
+  selectedPath?: string | null;
 }): JSX.Element {
   const { t } = useTranslation();
   const [head, setHead] = useState<string | null>(null);
-  const scope = projectStore.get().scope;
+  const { scope } = useProject();
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const memoryKey = `${scope?.root ?? ''}\u0000${workspacePath ?? ''}`;
+
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const frame = requestAnimationFrame(() => {
+      list.scrollTop = statusListScroll.get(memoryKey) ?? 0;
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      statusListScroll.set(memoryKey, list.scrollTop);
+    };
+  }, [memoryKey]);
 
   useEffect(() => {
     let live = true;
@@ -129,23 +146,44 @@ export function StatusList({
           size="sm"
           variant="secondary"
           className="ml-auto h-7"
-          onClick={() => openCreateDialog({ workspacePath: workspacePath ?? '.iris', type: 'status' })}
+          onClick={() =>
+            openCreateDialog({
+              workspacePath: workspacePath ?? '.iris',
+              type: 'status',
+              destination: 'collection',
+            })
+          }
         >
           <Plus /> {t('collection.new')}
         </Button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+      <div
+        ref={listRef}
+        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pb-14"
+        onScroll={(event) => statusListScroll.set(memoryKey, event.currentTarget.scrollTop)}
+      >
         {rows.map((item) => (
-          <DocContextMenu key={item.doc.path} docPath={item.doc.path} docName={item.doc.name}>
+          <DocContextMenu
+            key={item.doc.path}
+            docPath={item.doc.path}
+            docName={item.doc.name}
+            onOpenInDefaultView={() =>
+              void projectStore.openCollectionDocInDefaultView(item.doc.path)
+            }
+          >
             <div
               role="row"
-              onClick={() => void projectStore.selectDoc(item.doc.path)}
+              onClick={() => void projectStore.selectCollectionDoc(item.doc.path)}
               draggable
               onDragStart={(e) => setDocDragData(e.dataTransfer, item.doc.path)}
               title={item.doc.path}
               style={{ gridTemplateColumns: GRID }}
-              className={cn(ROW_BASE, item.archived && 'opacity-50')}
+              className={cn(
+                ROW_BASE,
+                item.archived && 'opacity-50',
+                selectedPath === item.doc.path && 'bg-accent/80',
+              )}
             >
               <span className="flex min-w-0 items-center gap-1.5">
                 <span className="truncate">{docDisplayTitle(item.doc)}</span>

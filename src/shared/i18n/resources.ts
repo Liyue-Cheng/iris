@@ -223,6 +223,7 @@ export const enUS = {
       projectOutsideRoot: '{{path}} escapes the project root.',
     },
     collection: {
+      backToMain: 'Back to main view',
       clearWorkspaceFilter: 'Clear workspace filter',
       new: 'New',
       draft: 'Draft',
@@ -874,6 +875,7 @@ export const zhCN = {
       projectOutsideRoot: '{{path}} 超出项目根。',
     },
     collection: {
+      backToMain: '返回主界面',
       clearWorkspaceFilter: '清除工作区过滤',
       new: '新建',
       draft: '草稿',

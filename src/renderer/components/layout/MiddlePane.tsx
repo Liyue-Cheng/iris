@@ -9,6 +9,25 @@ import { StatusList } from '@renderer/components/collection/StatusList';
 import { ReportTimeline } from '@renderer/components/collection/ReportTimeline';
 import { SimpleList } from '@renderer/components/collection/SimpleList';
 import { TodoPanel } from '@renderer/components/collection/TodoPanel';
+import type { ComponentType } from 'react';
+import type { DocType, IrisWorkspace } from '@shared/types';
+
+interface DocumentCollectionPanelProps {
+  root: IrisWorkspace;
+  workspacePath: string | null;
+  selectedPath: string | null;
+}
+
+function MiscPanel(props: DocumentCollectionPanelProps): JSX.Element {
+  return <SimpleList {...props} type="misc" />;
+}
+
+const DOCUMENT_COLLECTION_PANELS = {
+  issue: IssuePanel,
+  status: StatusList,
+  report: ReportTimeline,
+  misc: MiscPanel,
+} satisfies Record<DocType, ComponentType<DocumentCollectionPanelProps>>;
 
 export function MiddlePane(): JSX.Element {
   const { view, scan, phase } = useProject();
@@ -18,12 +37,14 @@ export function MiddlePane(): JSX.Element {
       return <TodoPanel root={scan.root} workspacePath={view.workspacePath} />;
     }
     if (view.kind === 'collection') {
-      const { root } = scan;
-      if (view.type === 'issue') return <IssuePanel root={root} workspacePath={view.workspacePath} />;
-      if (view.type === 'status') return <StatusList root={root} workspacePath={view.workspacePath} />;
-      if (view.type === 'report')
-        return <ReportTimeline root={root} workspacePath={view.workspacePath} />;
-      return <SimpleList root={root} type={view.type} workspacePath={view.workspacePath} />;
+      const Panel = DOCUMENT_COLLECTION_PANELS[view.type];
+      return (
+        <Panel
+          root={scan.root}
+          workspacePath={view.workspacePath}
+          selectedPath={view.selectedPath}
+        />
+      );
     }
   }
 

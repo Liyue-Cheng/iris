@@ -44,10 +44,10 @@ export function DocView(): JSX.Element {
   const selectedPath =
     view.kind === 'doc'
       ? view.path
-      : view.kind === 'collection' && view.type === 'issue'
+      : view.kind === 'collection'
         ? view.selectedPath
         : null;
-  const isIssueDetail = view.kind === 'collection' && view.type === 'issue';
+  const isCollectionDetail = view.kind === 'collection';
   const conflictPolicy = useSettings()?.behavior.editorConflictPolicy ?? 'ask';
   const editorAdapterRef = useRef<EditorAdapter | null>(null);
   const [dropError, setDropError] = useState<{ kind: 'path' | 'insert' } | null>(null);
@@ -146,13 +146,13 @@ export function DocView(): JSX.Element {
   return (
     <div
       className="doc-view flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
-      data-pane-layout={isIssueDetail ? 'fluid' : 'reading'}
+      data-pane-layout={isCollectionDetail ? 'fluid' : 'reading'}
     >
       <TypedHeader
         session={session}
-        fluid={isIssueDetail}
-        {...(isIssueDetail
-          ? { onOpenInDefaultView: () => void projectStore.openIssueInDefaultView() }
+        fluid={isCollectionDetail}
+        {...(isCollectionDetail
+          ? { onOpenInDefaultView: () => void projectStore.openCollectionDocInDefaultView() }
           : {})}
       />
       {session.conflict && conflictPolicy === 'ask' && (

@@ -4,16 +4,18 @@
  *   middle — collection views / single-doc editor (M2/M4)
  *   right  — session panel, vertical AI conversations (M3)
  *
- * Outside the dedicated issue browser, the LEFT pane lives in ONE stable
+ * Outside a document collection browser, the LEFT pane lives in ONE stable
  * outer panel group (autoSaveId
  * "iris-shell") that never remounts on a view switch — otherwise每切一次
  * view.kind 就换一整个 PanelGroup，左栏被迫套用那个组自己的宽度，点终端条
  * （root 视图）左宽就会跳。Only the RIGHT area's content swaps by view:
  * full-width terminal (root), editor+terminal split (doc), or a full-width
- * manager (collection/todos). The issue browser is a separate two-pane shell
+ * manager (todos). A document collection is a separate two-pane shell
  * so the global tree and terminal do not compete with its list and editor.
  */
 import type { ReactNode } from 'react';
+import { ArrowLeft } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import {
   ResizableHandle,
   ResizablePanel,
@@ -23,8 +25,14 @@ import { LeftPane } from '@renderer/components/layout/LeftPane';
 import { MiddlePane } from '@renderer/components/layout/MiddlePane';
 import { RightPane } from '@renderer/components/layout/RightPane';
 import { DocView } from '@renderer/components/doc/DocView';
+import { Button } from '@renderer/components/ui/button';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@renderer/components/ui/tooltip';
 import { cn } from '@renderer/lib/utils';
-import { useProject, type MiddleView } from '@renderer/stores/project-store';
+import { projectStore, useProject, type MiddleView } from '@renderer/stores/project-store';
 
 function PaneViewport({
   children,
@@ -78,29 +86,72 @@ function RightArea({ view }: { view: MiddleView }): JSX.Element {
   );
 }
 
+function DocumentCollectionShell(): JSX.Element {
+  const { t } = useTranslation();
+  const returnToMain = (): void => {
+    const view = projectStore.get().view;
+    if (view.kind !== 'collection') return;
+    const entryType = view.type;
+    const entryWorkspace = view.workspacePath ?? '.iris';
+    void projectStore.leaveCollection().then((left) => {
+      if (!left) return;
+      requestAnimationFrame(() => {
+        const entries = document.querySelectorAll<HTMLButtonElement>(
+          '[data-collection-entry-type]',
+        );
+        for (const entry of entries) {
+          if (
+            entry.dataset.collectionEntryType === entryType &&
+            entry.dataset.collectionEntryWorkspace === entryWorkspace
+          ) {
+            entry.focus();
+            break;
+          }
+        }
+      });
+    });
+  };
+  return (
+    <ResizablePanelGroup
+      direction="horizontal"
+      autoSaveId="iris-document-collection"
+      className="min-w-0 overflow-hidden"
+    >
+      <ResizablePanel id="collection-list" order={1} defaultSize={40} minSize={28} maxSize={58}>
+        <PaneViewport className="relative pr-1">
+          <MiddlePane />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="secondary"
+                size="icon"
+                className="absolute bottom-3 left-3 z-20 h-8 w-8 shadow-sm"
+                aria-label={t('collection.backToMain')}
+                onClick={returnToMain}
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="right">{t('collection.backToMain')}</TooltipContent>
+          </Tooltip>
+        </PaneViewport>
+      </ResizablePanel>
+      <ResizableHandle />
+      <ResizablePanel id="collection-document" order={2} defaultSize={60} minSize={38}>
+        <PaneViewport>
+          <DocView />
+        </PaneViewport>
+      </ResizablePanel>
+    </ResizablePanelGroup>
+  );
+}
+
 export function ThreePane(): JSX.Element {
   const { view } = useProject();
 
-  if (view.kind === 'collection' && view.type === 'issue') {
-    return (
-      <ResizablePanelGroup
-        direction="horizontal"
-        autoSaveId="iris-issue-browser"
-        className="min-w-0 overflow-hidden"
-      >
-        <ResizablePanel id="issue-list" order={1} defaultSize={40} minSize={28} maxSize={58}>
-          <PaneViewport className="pr-1">
-            <MiddlePane />
-          </PaneViewport>
-        </ResizablePanel>
-        <ResizableHandle />
-        <ResizablePanel id="issue-document" order={2} defaultSize={60} minSize={38}>
-          <PaneViewport>
-            <DocView />
-          </PaneViewport>
-        </ResizablePanel>
-      </ResizablePanelGroup>
-    );
+  if (view.kind === 'collection') {
+    return <DocumentCollectionShell />;
   }
 
   return (

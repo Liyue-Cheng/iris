@@ -22,6 +22,7 @@ import { Input } from '@renderer/components/ui/input';
 interface CreateTarget {
   workspacePath: string;
   type: DocType;
+  destination?: 'main' | 'collection';
 }
 
 let target: CreateTarget | null = null;
@@ -72,7 +73,12 @@ export function CreateDocDialog(): JSX.Element | null {
         title: title.trim(),
       })) as { path: string };
       close();
-      void projectStore.selectDoc(result.path);
+      if (t.destination === 'collection') {
+        await projectStore.rescan();
+        void projectStore.selectCollectionDoc(result.path);
+      } else {
+        void projectStore.selectDoc(result.path);
+      }
     } catch (err) {
       setBusy(false);
       setError(err instanceof Error ? err.message : String(err));

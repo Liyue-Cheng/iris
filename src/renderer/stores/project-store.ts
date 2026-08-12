@@ -11,6 +11,7 @@ import type {
   DocType,
   FsIrisChangedEvent,
   IrisScanResult,
+  IrisWorkspace,
   ProjectOpenResult,
   ProjectScope,
   RawTreeNode,
@@ -21,6 +22,7 @@ import { editorStore } from './editor-store';
 import { sessionAnchorKey, sessionStore, workspaceAnchorKey } from './session-store';
 import { projectScopeState, sameProjectScope } from './project-scope-state';
 import { healthStore } from './health-store';
+import { findDocByPath } from '@renderer/lib/doc-utils';
 
 export type ProjectPhase = 'idle' | 'opening' | 'ready' | 'error';
 
@@ -29,17 +31,22 @@ export type ProjectPhase = 'idle' | 'opening' | 'ready' | 'error';
  *  (the special root node, E-4), or a sub-workspace hub — both hubs give
  *  the terminal the full width. Collections are optionally scoped to one
  *  workspace. */
-export type MiddleView =
+export type MainView =
   | { kind: 'doc'; path: string | null }
-  | {
-      kind: 'collection';
-      type: DocType;
-      workspacePath: string | null;
-      selectedPath: string | null;
-    }
   | { kind: 'todos'; workspacePath: string | null }
   | { kind: 'root' }
   | { kind: 'workspace'; path: string };
+
+export type CollectionView = {
+  kind: 'collection';
+  type: DocType;
+  workspacePath: string | null;
+  selectedPath: string | null;
+  returnTo: MainView;
+  returnWorkspacePath: string | null;
+};
+
+export type MiddleView = MainView | CollectionView;
 
 export interface ProjectState {
   phase: ProjectPhase;
@@ -78,10 +85,15 @@ function setState(patch: Partial<ProjectState>): void {
 let scanInFlight = false;
 let scanDirty = false;
 let navigationIntent = 0;
-const issueSelectionByWorkspace = new Map<string, string>();
+const collectionSelectionByScope = new Map<string, string>();
 
-function issueWorkspaceKey(workspacePath: string | null): string {
-  return `${state.scope?.root ?? ''}\u0000${workspacePath ?? ''}`;
+function collectionScopeKey(type: DocType, workspacePath: string | null): string {
+  return `${state.scope?.root ?? ''}\u0000${type}\u0000${workspacePath ?? ''}`;
+}
+
+function workspaceExists(root: IrisWorkspace, path: string): boolean {
+  if (root.path === path) return true;
+  return root.children.some((child) => workspaceExists(child, path));
 }
 
 async function refreshScanProjection(scope: ProjectScope): Promise<void> {
@@ -175,15 +187,11 @@ async function navigateToHub(
   return true;
 }
 
-async function navigateToDoc(
+async function commitDocNavigation(
   intent: number,
   path: string,
   sessionId?: string,
 ): Promise<boolean> {
-  if (state.view.kind === 'doc' && state.view.path === path && state.docError === null) {
-    return isCurrentIntent(intent) && selectPreparedSession(sessionId, path);
-  }
-  if (!(await mayCommitNavigation(intent))) return false;
   if (!selectPreparedSession(sessionId, path)) return false;
 
   const scope = state.scope;
@@ -222,6 +230,18 @@ async function navigateToDoc(
   }
 }
 
+async function navigateToDoc(
+  intent: number,
+  path: string,
+  sessionId?: string,
+): Promise<boolean> {
+  if (state.view.kind === 'doc' && state.view.path === path && state.docError === null) {
+    return isCurrentIntent(intent) && selectPreparedSession(sessionId, path);
+  }
+  if (!(await mayCommitNavigation(intent))) return false;
+  return commitDocNavigation(intent, path, sessionId);
+}
+
 async function loadCollectionDoc(intent: number, path: string): Promise<boolean> {
   const scope = state.scope;
   if (!scope) return false;
@@ -233,7 +253,6 @@ async function loadCollectionDoc(intent: number, path: string): Promise<boolean>
     if (
       !isCurrentIntent(intent) ||
       state.view.kind !== 'collection' ||
-      state.view.type !== 'issue' ||
       state.view.selectedPath !== path ||
       !sameProjectScope(scope, state.scope)
     ) {
@@ -246,7 +265,6 @@ async function loadCollectionDoc(intent: number, path: string): Promise<boolean>
     if (
       isCurrentIntent(intent) &&
       state.view.kind === 'collection' &&
-      state.view.type === 'issue' &&
       state.view.selectedPath === path &&
       sameProjectScope(scope, state.scope)
     ) {
@@ -263,16 +281,26 @@ async function loadCollectionDoc(intent: number, path: string): Promise<boolean>
 async function navigateToCollectionDoc(intent: number, path: string): Promise<boolean> {
   if (
     state.view.kind === 'collection' &&
-    state.view.type === 'issue' &&
     state.view.selectedPath === path &&
     state.docError === null
   ) {
     return isCurrentIntent(intent);
   }
   if (!(await mayCommitNavigation(intent))) return false;
-  if (state.view.kind !== 'collection' || state.view.type !== 'issue') return false;
+  if (state.view.kind !== 'collection') return false;
+  const doc = state.scan?.root ? findDocByPath(state.scan.root, path) : null;
+  if (
+    !doc ||
+    doc.type !== state.view.type ||
+    (state.view.workspacePath !== null && doc.workspacePath !== state.view.workspacePath)
+  ) {
+    return false;
+  }
 
-  issueSelectionByWorkspace.set(issueWorkspaceKey(state.view.workspacePath), path);
+  collectionSelectionByScope.set(
+    collectionScopeKey(state.view.type, state.view.workspacePath),
+    path,
+  );
   editorStore.closeSession();
   setState({
     docLoading: true,
@@ -305,7 +333,7 @@ export const projectStore = {
       return;
     }
     beginNavigationIntent();
-    issueSelectionByWorkspace.clear();
+    collectionSelectionByScope.clear();
     editorStore.closeSession();
     projectScopeState.set(scope);
     projectScopeState.setSwitching(false);
@@ -386,14 +414,14 @@ export const projectStore = {
     const unlinkedPaths = new Set(
       event.changes.filter((change) => change.kind === 'unlink').map((change) => change.path),
     );
-    for (const [key, path] of issueSelectionByWorkspace) {
-      if (unlinkedPaths.has(path)) issueSelectionByWorkspace.delete(key);
+    for (const [key, path] of collectionSelectionByScope) {
+      if (unlinkedPaths.has(path)) collectionSelectionByScope.delete(key);
     }
 
     const selectedPath =
       state.view.kind === 'doc'
         ? state.view.path
-        : state.view.kind === 'collection' && state.view.type === 'issue'
+        : state.view.kind === 'collection'
           ? state.view.selectedPath
           : null;
     if (
@@ -402,8 +430,10 @@ export const projectStore = {
     ) {
       beginNavigationIntent();
       editorStore.closeSession();
-      if (state.view.kind === 'collection' && state.view.type === 'issue') {
-        issueSelectionByWorkspace.delete(issueWorkspaceKey(state.view.workspacePath));
+      if (state.view.kind === 'collection') {
+        collectionSelectionByScope.delete(
+          collectionScopeKey(state.view.type, state.view.workspacePath),
+        );
         setState({
           view: { ...state.view, selectedPath: null },
           docLoading: false,
@@ -427,51 +457,125 @@ export const projectStore = {
     const intent = beginNavigationIntent();
     if (!(await mayCommitNavigation(intent))) return false;
 
-    if (type === 'issue') {
-      const selectedPath = issueSelectionByWorkspace.get(issueWorkspaceKey(workspacePath)) ?? null;
-      const reuseSession =
-        selectedPath !== null && editorStore.get()?.path === selectedPath;
-      if (reuseSession) editorStore.prepareForRemount();
-      else editorStore.closeSession();
-      setState({
-        view: { kind: 'collection', type, workspacePath, selectedPath },
-        docLoading: selectedPath !== null && !reuseSession,
-        docError: null,
-      });
-      if (selectedPath !== null && !reuseSession) {
-        return loadCollectionDoc(intent, selectedPath);
-      }
-      return true;
+    const returnTo = state.view.kind === 'collection' ? state.view.returnTo : state.view;
+    const returnWorkspacePath =
+      state.view.kind === 'collection'
+        ? state.view.returnWorkspacePath
+        : state.view.kind === 'doc' && state.view.path && state.scan?.root
+          ? findDocByPath(state.scan.root, state.view.path)?.workspacePath ?? null
+          : null;
+    const rememberedPath =
+      collectionSelectionByScope.get(collectionScopeKey(type, workspacePath)) ?? null;
+    const rememberedDoc =
+      rememberedPath && state.scan?.root ? findDocByPath(state.scan.root, rememberedPath) : null;
+    const selectedPath =
+      rememberedDoc?.type === type &&
+      (workspacePath === null || rememberedDoc.workspacePath === workspacePath)
+        ? rememberedPath
+        : null;
+    if (rememberedPath && !selectedPath) {
+      collectionSelectionByScope.delete(collectionScopeKey(type, workspacePath));
     }
-
-    editorStore.closeSession();
+    const reuseSession = selectedPath !== null && editorStore.get()?.path === selectedPath;
+    if (reuseSession) editorStore.prepareForRemount();
+    else editorStore.closeSession();
     setState({
-      view: { kind: 'collection', type, workspacePath, selectedPath: null },
-      docLoading: false,
+      view: {
+        kind: 'collection',
+        type,
+        workspacePath,
+        selectedPath,
+        returnTo,
+        returnWorkspacePath,
+      },
+      docLoading: selectedPath !== null && !reuseSession,
       docError: null,
     });
+    if (selectedPath !== null && !reuseSession) {
+      return loadCollectionDoc(intent, selectedPath);
+    }
     return true;
   },
 
-  /** Select an issue for the collection's right-hand detail pane. */
+  /** Select a document for the collection's right-hand detail pane. */
   async selectCollectionDoc(path: string): Promise<boolean> {
     return navigateToCollectionDoc(beginNavigationIntent(), path);
   },
 
-  /** Move the selected issue into the normal tree + editor + terminal shell. */
-  openIssueInDefaultView(): boolean {
+  /** Move a collection document into the normal editor + terminal shell. */
+  async openCollectionDocInDefaultView(path?: string): Promise<boolean> {
+    if (state.view.kind !== 'collection') return false;
+    const targetPath = path ?? state.view.selectedPath;
+    if (!targetPath) return false;
+    if (
+      state.view.selectedPath !== targetPath ||
+      editorStore.get()?.path !== targetPath
+    ) {
+      if (!(await navigateToCollectionDoc(beginNavigationIntent(), targetPath))) return false;
+    }
     if (
       state.view.kind !== 'collection' ||
-      state.view.type !== 'issue' ||
       !state.view.selectedPath ||
       editorStore.get()?.path !== state.view.selectedPath
     ) {
       return false;
     }
     beginNavigationIntent();
-    const path = state.view.selectedPath;
+    const selectedPath = state.view.selectedPath;
     editorStore.prepareForRemount();
-    setState({ view: { kind: 'doc', path }, docLoading: false, docError: null });
+    setState({ view: { kind: 'doc', path: selectedPath }, docLoading: false, docError: null });
+    return true;
+  },
+
+  /** Leave a document collection and restore the exact main-page view that opened it. */
+  async leaveCollection(): Promise<boolean> {
+    if (state.view.kind !== 'collection') return false;
+    const intent = beginNavigationIntent();
+    if (!(await mayCommitNavigation(intent))) return false;
+    if (state.view.kind !== 'collection') return false;
+
+    const { returnTo, returnWorkspacePath } = state.view;
+    if (returnTo.kind === 'doc' && returnTo.path) {
+      const sourceStillExists = state.scan?.root
+        ? findDocByPath(state.scan.root, returnTo.path) !== null
+        : true;
+      if (sourceStillExists) return commitDocNavigation(intent, returnTo.path);
+    }
+
+    editorStore.closeSession();
+    if (returnTo.kind === 'doc') {
+      const fallback = returnWorkspacePath ?? '.iris';
+      const fallbackExists = state.scan?.root
+        ? workspaceExists(state.scan.root, fallback)
+        : fallback === '.iris';
+      setState({
+        view:
+          fallback === '.iris' || !fallbackExists
+            ? { kind: 'root' }
+            : { kind: 'workspace', path: fallback },
+        docLoading: false,
+        docError: null,
+      });
+      return true;
+    }
+    if (
+      returnTo.kind === 'workspace' &&
+      state.scan?.root &&
+      !workspaceExists(state.scan.root, returnTo.path)
+    ) {
+      setState({ view: { kind: 'root' }, docLoading: false, docError: null });
+      return true;
+    }
+    if (
+      returnTo.kind === 'todos' &&
+      returnTo.workspacePath &&
+      state.scan?.root &&
+      !workspaceExists(state.scan.root, returnTo.workspacePath)
+    ) {
+      setState({ view: { kind: 'root' }, docLoading: false, docError: null });
+      return true;
+    }
+    setState({ view: returnTo, docLoading: false, docError: null });
     return true;
   },
 

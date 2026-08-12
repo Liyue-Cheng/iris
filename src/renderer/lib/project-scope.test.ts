@@ -1,5 +1,11 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { DocContent, IrisScanResult, ProjectScope, SessionInfo } from '@shared/types';
+import type {
+  DocContent,
+  IrisDoc,
+  IrisScanResult,
+  ProjectScope,
+  SessionInfo,
+} from '@shared/types';
 import { appISA } from '@renderer/cpu/isa/app-isa';
 import { docISA } from '@renderer/cpu/isa/doc-isa';
 import { PROJECT_SCOPE_RESOURCE } from '@renderer/cpu/isa/project-resources';
@@ -72,7 +78,22 @@ function docContent(path: string): DocContent {
   };
 }
 
-function openProjectState(): ProjectScope {
+function scanDoc(path: string, type: IrisDoc['type'], workspacePath = '.iris'): IrisDoc {
+  return {
+    path,
+    name: path.split('/').pop()!,
+    type,
+    workspacePath,
+    title: null,
+    status: null,
+    frontmatter: null,
+    frontmatterBroken: false,
+    todos: [],
+    mtimeMs: 1,
+  };
+}
+
+function openProjectState(docs: IrisDoc[] = []): ProjectScope {
   const scope = { root: 'E:\\project-a', generation: generation++ };
   const scan: IrisScanResult = {
     projectRoot: scope.root,
@@ -81,8 +102,16 @@ function openProjectState(): ProjectScope {
     root: {
       path: '.iris',
       name: 'project-a',
-      docs: [],
-      children: [],
+      docs: docs.filter((doc) => doc.workspacePath === '.iris'),
+      children: [
+        {
+          path: '.iris/spike',
+          name: 'spike',
+          docs: docs.filter((doc) => doc.workspacePath === '.iris/spike'),
+          children: [],
+          archived: false,
+        },
+      ],
       archived: false,
     },
     scannedAt: 1,
@@ -315,5 +344,130 @@ describe('session activation transaction', () => {
     await expect(staleActivation).resolves.toBe(false);
     expect(projectStore.get().view).toEqual({ kind: 'doc', path: docPath });
     expect(selectedSessionIdForAnchor(docPath)).toBe('doc-2');
+  });
+});
+
+describe('document collection navigation', () => {
+  it('restores the Todo main page after leaving a collection', async () => {
+    openProjectState([scanDoc('.iris/issue/a.md', 'issue')]);
+    await projectStore.openTodos('.iris/spike');
+
+    await expect(projectStore.openCollection('issue', null)).resolves.toBe(true);
+    expect(projectStore.get().view).toMatchObject({
+      kind: 'collection',
+      type: 'issue',
+      returnTo: { kind: 'todos', workspacePath: '.iris/spike' },
+    });
+
+    await expect(projectStore.leaveCollection()).resolves.toBe(true);
+    expect(projectStore.get().view).toEqual({ kind: 'todos', workspacePath: '.iris/spike' });
+  });
+
+  it('restores the source document and workspace hub exactly', async () => {
+    const source = scanDoc('.iris/spike/issue/source.md', 'issue', '.iris/spike');
+    openProjectState([source]);
+    await projectStore.selectDoc(source.path);
+    await projectStore.openCollection('report', null);
+    await projectStore.leaveCollection();
+    expect(projectStore.get().view).toEqual({ kind: 'doc', path: source.path });
+    expect(editorStore.get()?.path).toBe(source.path);
+
+    await projectStore.selectWorkspace('.iris/spike');
+    await projectStore.openCollection('status', '.iris/spike');
+    await projectStore.leaveCollection();
+    expect(projectStore.get().view).toEqual({ kind: 'workspace', path: '.iris/spike' });
+  });
+
+  it('does not enter or leave a collection when the editor refuses the switch', async () => {
+    const issue = scanDoc('.iris/issue/a.md', 'issue');
+    openProjectState([issue]);
+    await projectStore.selectRoot();
+    vi.spyOn(editorStore, 'flushBeforeSwitch').mockResolvedValue(false);
+
+    await expect(projectStore.openCollection('issue', null)).resolves.toBe(false);
+    expect(projectStore.get().view).toEqual({ kind: 'root' });
+
+    vi.mocked(editorStore.flushBeforeSwitch).mockResolvedValue(true);
+    await projectStore.openCollection('issue', null);
+    vi.mocked(editorStore.flushBeforeSwitch).mockResolvedValue(false);
+    await expect(projectStore.leaveCollection()).resolves.toBe(false);
+    expect(projectStore.get().view).toMatchObject({ kind: 'collection', type: 'issue' });
+  });
+
+  it('keeps the original main-page target when changing collection type', async () => {
+    openProjectState([
+      scanDoc('.iris/issue/a.md', 'issue'),
+      scanDoc('.iris/report/a.md', 'report'),
+    ]);
+    await projectStore.selectRoot();
+    await projectStore.openCollection('issue', null);
+
+    await expect(projectStore.openCollection('report', null)).resolves.toBe(true);
+    expect(projectStore.get().view).toMatchObject({
+      kind: 'collection',
+      type: 'report',
+      returnTo: { kind: 'root' },
+    });
+
+    await projectStore.leaveCollection();
+    expect(projectStore.get().view).toEqual({ kind: 'root' });
+  });
+
+  it('selects only documents matching the collection type and workspace scope', async () => {
+    const rootIssue = scanDoc('.iris/issue/a.md', 'issue');
+    const rootReport = scanDoc('.iris/report/a.md', 'report');
+    const nestedIssue = scanDoc('.iris/spike/issue/a.md', 'issue', '.iris/spike');
+    openProjectState([rootIssue, rootReport, nestedIssue]);
+    await projectStore.openCollection('issue', '.iris');
+
+    await expect(projectStore.selectCollectionDoc(rootReport.path)).resolves.toBe(false);
+    await expect(projectStore.selectCollectionDoc(nestedIssue.path)).resolves.toBe(false);
+    await expect(projectStore.selectCollectionDoc(rootIssue.path)).resolves.toBe(true);
+    expect(projectStore.get().view).toMatchObject({
+      kind: 'collection',
+      type: 'issue',
+      workspacePath: '.iris',
+      selectedPath: rootIssue.path,
+    });
+  });
+
+  it('remembers selection per type and opens the selected document in the main shell', async () => {
+    const issue = scanDoc('.iris/issue/a.md', 'issue');
+    const report = scanDoc('.iris/report/a.md', 'report');
+    openProjectState([issue, report]);
+    await projectStore.openCollection('issue', null);
+    await projectStore.selectCollectionDoc(issue.path);
+    await projectStore.openCollection('report', null);
+    await projectStore.selectCollectionDoc(report.path);
+
+    await projectStore.openCollection('issue', null);
+    expect(projectStore.get().view).toMatchObject({ selectedPath: issue.path });
+    await expect(projectStore.openCollectionDocInDefaultView()).resolves.toBe(true);
+    expect(projectStore.get().view).toEqual({ kind: 'doc', path: issue.path });
+    expect(editorStore.get()?.path).toBe(issue.path);
+  });
+
+  it('falls back to the source workspace when the return document disappears', async () => {
+    const source = scanDoc('.iris/spike/issue/source.md', 'issue', '.iris/spike');
+    const report = scanDoc('.iris/report/a.md', 'report');
+    openProjectState([source, report]);
+    await projectStore.selectDoc(source.path);
+    await projectStore.openCollection('report', null);
+
+    const scan = projectStore.get().scan!;
+    const spike = scan.root!.children[0]!;
+    spike.docs = [];
+    await expect(projectStore.leaveCollection()).resolves.toBe(true);
+    expect(projectStore.get().view).toEqual({ kind: 'workspace', path: '.iris/spike' });
+  });
+
+  it('falls back to the root hub when the return workspace disappears', async () => {
+    openProjectState([]);
+    await projectStore.selectWorkspace('.iris/spike');
+    await projectStore.openCollection('issue', '.iris/spike');
+
+    projectStore.get().scan!.root!.children = [];
+    await expect(projectStore.leaveCollection()).resolves.toBe(true);
+    expect(projectStore.get().view).toEqual({ kind: 'root' });
   });
 });

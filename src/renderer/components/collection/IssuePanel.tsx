@@ -359,14 +359,15 @@ function buildGroups(rows: CollectedDoc[], groupBy: GroupBy): Group[] {
 export function IssuePanel({
   root,
   workspacePath,
+  selectedPath,
 }: {
   root: IrisWorkspace;
   workspacePath: string | null;
+  selectedPath: string | null;
 }): JSX.Element {
   const { t } = useTranslation();
-  const { view, scope } = useProject();
-  const detailPath =
-    view.kind === 'collection' && view.type === 'issue' ? view.selectedPath : null;
+  const { scope } = useProject();
+  const detailPath = selectedPath;
   const memoryKey = `${scope?.root ?? ''}\u0000${workspacePath ?? ''}`;
   const memory = issuePanelMemory.get(memoryKey);
   const [filter, setFilter] = useState<Filter>(memory?.filter ?? 'active');
@@ -509,14 +510,11 @@ export function IssuePanel({
       if (it) void projectStore.selectCollectionDoc(it.doc.path);
     } else if (e.key === 'c') {
       e.preventDefault();
-      openCreateDialog({ workspacePath: workspacePath ?? '.iris', type: 'issue' });
-    }
-  };
-
-  const openIssueInDefaultView = async (path: string): Promise<void> => {
-    if (detailPath === path && projectStore.openIssueInDefaultView()) return;
-    if (await projectStore.selectCollectionDoc(path)) {
-      projectStore.openIssueInDefaultView();
+      openCreateDialog({
+        workspacePath: workspacePath ?? '.iris',
+        type: 'issue',
+        destination: 'collection',
+      });
     }
   };
 
@@ -585,7 +583,13 @@ export function IssuePanel({
           size="sm"
           variant="secondary"
           className="h-7 shrink-0"
-          onClick={() => openCreateDialog({ workspacePath: workspacePath ?? '.iris', type: 'issue' })}
+          onClick={() =>
+            openCreateDialog({
+              workspacePath: workspacePath ?? '.iris',
+              type: 'issue',
+              destination: 'collection',
+            })
+          }
         >
           <Plus /> {t('collection.new')}
         </Button>
@@ -596,7 +600,7 @@ export function IssuePanel({
       <div
         ref={listRef}
         role="grid"
-        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
+        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pb-14"
         onScroll={(event) => {
           const current = issuePanelMemory.get(memoryKey);
           if (current) {
@@ -627,7 +631,9 @@ export function IssuePanel({
                       key={item.doc.path}
                       docPath={item.doc.path}
                       docName={item.doc.name}
-                      onOpenInDefaultView={() => void openIssueInDefaultView(item.doc.path)}
+                      onOpenInDefaultView={() =>
+                        void projectStore.openCollectionDocInDefaultView(item.doc.path)
+                      }
                     >
                       <div
                         ref={(el) => {

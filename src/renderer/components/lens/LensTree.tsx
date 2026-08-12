@@ -189,6 +189,8 @@ function TypeSection({
         </button>
         <button
           type="button"
+          data-collection-entry-type={type}
+          data-collection-entry-workspace={workspacePath}
           title={t('layout.openCollection', { type: label })}
           onClick={() =>
             projectStore.openCollection(type, workspacePath === '.iris' ? null : workspacePath)
