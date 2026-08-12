@@ -45,6 +45,7 @@ export type CollectionView = {
   selectedPath: string | null;
   returnTo: MainView;
   returnWorkspacePath: string | null;
+  returnEntry: { type: DocType; workspacePath: string | null };
 };
 
 export type MiddleView = MainView | CollectionView;
@@ -466,6 +467,10 @@ export const projectStore = {
         : state.view.kind === 'doc' && state.view.path && state.scan?.root
           ? findDocByPath(state.scan.root, state.view.path)?.workspacePath ?? null
           : null;
+    const returnEntry =
+      state.view.kind === 'collection'
+        ? state.view.returnEntry
+        : { type, workspacePath };
     const rememberedPath =
       collectionSelectionByScope.get(collectionScopeKey(type, workspacePath)) ?? null;
     const rememberedDoc =
@@ -489,6 +494,7 @@ export const projectStore = {
         selectedPath,
         returnTo,
         returnWorkspacePath,
+        returnEntry,
       },
       docLoading: selectedPath !== null && !reuseSession,
       docError: null,

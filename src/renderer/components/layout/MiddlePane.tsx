@@ -40,6 +40,7 @@ export function MiddlePane(): JSX.Element {
       const Panel = DOCUMENT_COLLECTION_PANELS[view.type];
       return (
         <Panel
+          key={`${view.type}\u0000${view.workspacePath ?? ''}`}
           root={scan.root}
           workspacePath={view.workspacePath}
           selectedPath={view.selectedPath}

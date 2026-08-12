@@ -91,8 +91,8 @@ function DocumentCollectionShell(): JSX.Element {
   const returnToMain = (): void => {
     const view = projectStore.get().view;
     if (view.kind !== 'collection') return;
-    const entryType = view.type;
-    const entryWorkspace = view.workspacePath ?? '.iris';
+    const entryType = view.returnEntry.type;
+    const entryWorkspace = view.returnEntry.workspacePath ?? '.iris';
     void projectStore.leaveCollection().then((left) => {
       if (!left) return;
       requestAnimationFrame(() => {

@@ -437,6 +437,7 @@ describe('document collection navigation', () => {
       kind: 'collection',
       type: 'report',
       returnTo: { kind: 'root' },
+      returnEntry: { type: 'issue', workspacePath: null },
     });
 
     await projectStore.leaveCollection();
