@@ -688,9 +688,39 @@ export interface GitBranchInfo {
   current: boolean;
 }
 
+export type GitErrorCode =
+  | 'GitUnavailable'
+  | 'NotRepository'
+  | 'UnsafeRepository'
+  | 'PermissionDenied'
+  | 'RepositoryLocked'
+  | 'Timeout'
+  | 'ConfigurationError'
+  | 'NoStagedChanges'
+  | 'HookFailed'
+  | 'CommitRejected'
+  | 'SigningFailed'
+  | 'BranchConflict'
+  | 'CommandFailed';
+
+export interface GitSnapshotError {
+  code: GitErrorCode;
+  message: string;
+  retryable: boolean;
+}
+
 export interface GitSnapshot {
   available: boolean;
+  projectRoot: string | null;
+  /** Absolute root of the complete worktree represented by this snapshot. */
   root: string | null;
+  gitDir: string | null;
+  commonDir: string | null;
+  repositoryId: string | null;
+  /** Monotonic within a repository identity; stale responses have lower revisions. */
+  revision: number;
+  /** The last valid projection is being shown after a refresh failure. */
+  stale: boolean;
   branch: string | null;
   head: string | null;
   detached: boolean;
@@ -698,7 +728,7 @@ export interface GitSnapshot {
   behind: number;
   branches: GitBranchInfo[];
   groups: Record<GitResourceGroup, GitResource[]>;
-  error: string | null;
+  error: GitSnapshotError | null;
 }
 
 export interface GitChangedEvent {

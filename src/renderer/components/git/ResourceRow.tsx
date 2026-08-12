@@ -31,12 +31,15 @@ export function ResourceRow({
   const color = statusColor(resource.status, group);
   const label = statusLabel(resource.status, group);
   const { name, dir } = splitPath(resource.path);
+  const operationPaths = resource.originalPath
+    ? [resource.path, resource.originalPath]
+    : [resource.path];
 
   return (
     <div
       className="group grid h-8 items-center gap-1.5 border-b border-subtle/40 px-3 text-sm hover:bg-muted/50"
       style={{ gridTemplateColumns: '16px 1fr auto' }}
-      title={`${resource.path} — ${label}`}
+      title={`${resource.originalPath ? `${resource.originalPath} -> ` : ''}${resource.path} - ${label}`}
     >
       <Tooltip>
         <TooltipTrigger asChild>
@@ -60,6 +63,11 @@ export function ResourceRow({
         {dir && (
           <span className="min-w-0 truncate text-[11px] text-muted-foreground">{dir}</span>
         )}
+        {resource.originalPath && (
+          <span className="min-w-0 truncate text-[11px] text-muted-foreground">
+            {resource.originalPath}
+          </span>
+        )}
       </span>
 
       <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
@@ -72,8 +80,8 @@ export function ResourceRow({
               className="h-6 w-6"
               onClick={() =>
                 void (staged
-                  ? gitStore.unstage([resource.path])
-                  : gitStore.stage([resource.path]))
+                  ? gitStore.unstage(operationPaths)
+                  : gitStore.stage(operationPaths))
               }
             >
               {staged ? <Minus className="!size-3.5" /> : <Plus className="!size-3.5" />}

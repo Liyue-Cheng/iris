@@ -26,9 +26,8 @@ export function SourceControlPanel({
 }): JSX.Element | null {
   const { t } = useTranslation();
   const { phase } = useProject();
-  const { snapshot, loading, pending, error } = useGit();
+  const { snapshot, loading, pending, error, draft } = useGit();
   const [collapsed, setCollapsed] = useState(false);
-  const [message, setMessage] = useState('');
 
   useEffect(() => {
     if (refreshOnReady && phase === 'ready' && !snapshot) void gitStore.refresh();
@@ -42,12 +41,11 @@ export function SourceControlPanel({
     [snapshot],
   );
   const stagedCount = snapshot?.groups.index.length ?? 0;
+  const operationsDisabled = !!pending || snapshot?.stale === true;
 
   const handleCommit = (): void => {
-    if (!message.trim() || stagedCount === 0) return;
-    const msg = message;
-    setMessage('');
-    void gitStore.commit(msg);
+    if (!draft.trim() || stagedCount === 0) return;
+    void gitStore.commit(draft);
   };
 
   if (phase !== 'ready') return null;
@@ -68,7 +66,7 @@ export function SourceControlPanel({
         <div className={PANEL_BAR}>
           <h2 className="shrink-0 text-sm font-semibold">{t('git.sourceControl')}</h2>
           {snapshot?.available && (
-            <BranchSwitcher snapshot={snapshot} pending={!!pending} />
+            <BranchSwitcher snapshot={snapshot} pending={operationsDisabled} />
           )}
           {!snapshot?.available && (
             <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -115,7 +113,7 @@ export function SourceControlPanel({
             )}
           </button>
           {snapshot?.available ? (
-            <BranchSwitcher snapshot={snapshot} pending={!!pending} />
+            <BranchSwitcher snapshot={snapshot} pending={operationsDisabled} />
           ) : (
             <span className="flex min-w-0 flex-1 items-center gap-1.5 text-xs font-medium">
               <GitBranch className="size-3.5 shrink-0" />
@@ -162,19 +160,32 @@ export function SourceControlPanel({
           {/* Not a git repo */}
           {!loading && !snapshot?.available && (
             <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-              {snapshot?.error ?? error ?? t('git.notRepository')}
+              {snapshot?.error?.message ?? error ?? t('git.notRepository')}
             </div>
           )}
 
           {/* Available */}
           {snapshot?.available && (
             <>
+              {snapshot.projectRoot !== snapshot.root && snapshot.root && (
+                <div
+                  className="truncate border-b border-subtle px-3 py-1.5 text-[11px] text-muted-foreground"
+                  title={snapshot.root}
+                >
+                  {t('git.repositoryScope', { root: snapshot.root })}
+                </div>
+              )}
+              {snapshot.stale && (
+                <div className="border-b border-subtle px-3 py-1.5 text-[11px] text-destructive">
+                  {t('git.staleSnapshot')}
+                </div>
+              )}
               <CommitBox
-                message={message}
-                onMessageChange={setMessage}
+                message={draft}
+                onMessageChange={gitStore.setDraft}
                 onCommit={handleCommit}
                 stagedCount={stagedCount}
-                pending={!!pending}
+                pending={operationsDisabled}
               />
 
               {totalCount > 0 ? (
@@ -183,7 +194,7 @@ export function SourceControlPanel({
                     key={kind}
                     kind={kind}
                     resources={snapshot.groups[kind]}
-                    pending={!!pending}
+                    pending={operationsDisabled}
                   />
                 ))
               ) : (
@@ -197,7 +208,7 @@ export function SourceControlPanel({
           {/* Error bar */}
           {(error || snapshot?.error) && snapshot?.available && (
             <div className="border-t border-subtle px-3 py-2 text-[11px] text-destructive">
-              {error ?? snapshot.error}
+              {error ?? snapshot.error?.message}
             </div>
           )}
         </div>

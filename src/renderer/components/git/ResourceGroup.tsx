@@ -33,6 +33,9 @@ export function ResourceGroup({
   if (resources.length === 0) return null;
 
   const staged = kind === 'index';
+  const operationPaths = Array.from(new Set(resources.flatMap((resource) =>
+    resource.originalPath ? [resource.path, resource.originalPath] : [resource.path],
+  )));
 
   return (
     <div>
@@ -61,8 +64,8 @@ export function ResourceGroup({
                 onClick={(e) => {
                   e.stopPropagation();
                   void (staged
-                    ? gitStore.unstage(resources.map((r) => r.path))
-                    : gitStore.stage(resources.map((r) => r.path)));
+                    ? gitStore.unstage(operationPaths)
+                    : gitStore.stage(operationPaths));
                 }}
               >
                 {staged ? (
