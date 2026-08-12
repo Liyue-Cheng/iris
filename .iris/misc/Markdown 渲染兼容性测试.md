@@ -62,24 +62,24 @@ tags:
 
 以下链接用于区分外部导航、当前文档 fragment、项目内 Markdown 文档及应被拒绝的目标。点击应由 Iris 统一处理，不应让当前 Electron 窗口离开应用。
 
-| 场景 | 测试链接 | 预期结果 |
-| :--- | :--- | :--- |
-| 当前文档英文与数字标题 | [跳转到 7. 表格](#7-表格) | 保持当前文档，并定位到“7. 表格”。 |
-| 当前文档中文标题 | [跳转到中文标题](#中文标题) | 保持当前文档，并定位到下方“中文标题”。 |
-| 当前文档中英文、空格与标点标题 | [跳转到复杂标题](#中文-english-123-标点测试) | 使用固定 slug 规则定位到下方复杂标题。 |
-| 当前文档重复标题一 | [跳转到第一个重复标题](#重复标题) | 定位到下方第一个“重复标题”。 |
-| 当前文档重复标题二 | [跳转到第二个重复标题](#重复标题-2) | 使用稳定的去重 slug 定位到下方第二个“重复标题”。 |
-| 当前文档显式锚点 | [跳转到显式锚点](#iris-explicit-anchor) | 若 Iris 支持 `{#id}`，定位到下方显式锚点标题；否则保持稳定降级。 |
-| 当前文档不存在的 fragment | [跳转到不存在的标题](#不存在的标题) | 不离开当前文档，并给出无目标反馈或保持当前位置。 |
-| 相对路径回到当前文档 | [通过相对路径跳转到表格](./Markdown%20渲染兼容性测试.md#7-表格) | 解析为当前文档并定位到“7. 表格”。 |
-| 跨文档无 fragment | [打开 Markdown 文内链接 issue](../issue/2026-08-06-markdown文内链接不能定位跳转.md) | 打开目标 Markdown 文档。 |
-| 跨文档带 fragment | [打开 issue 的分析补充](../issue/2026-08-06-markdown文内链接不能定位跳转.md#2026-08-06-分析补充) | 打开目标文档，并在编辑器 ready 后定位到“2026-08-06 分析补充”。 |
-| 外部 HTTPS | [在系统浏览器打开 Example](https://example.com/iris#navigation-test) | 交给系统浏览器，Iris 当前窗口保持不变。 |
-| 越出项目根 | [拒绝项目外相对路径](../../../outside.md#target) | 拒绝导航，不读取项目外文件。 |
-| 绝对路径 | [拒绝绝对路径](C:/Windows/System32/drivers/etc/hosts) | 拒绝导航，不读取本机绝对路径。 |
-| 非 Markdown 文件 | [拒绝非 Markdown 文件](../../package.json#name) | 拒绝内部文档导航。 |
-| 危险协议 | [拒绝 javascript 协议](javascript:alert('Iris-navigation-test')) | 不执行脚本，也不触发 Electron 默认导航。 |
-| 本地文件协议 | [拒绝 file 协议](file:///C:/Windows/System32/drivers/etc/hosts) | 不打开或读取本地文件。 |
+| 场景                | 测试链接                                                                        | 预期结果                                      |
+| :---------------- | :-------------------------------------------------------------------------- | :---------------------------------------- |
+| 当前文档英文与数字标题       | [跳转到 7. 表格](#7-表格)                                                          | 保持当前文档，并定位到“7. 表格”。                       |
+| 当前文档中文标题          | [跳转到中文标题](#中文标题)                                                            | 保持当前文档，并定位到下方“中文标题”。                      |
+| 当前文档中英文、空格与标点标题   | [跳转到复杂标题](#中文-english-123-标点测试)                                             | 使用固定 slug 规则定位到下方复杂标题。                    |
+| 当前文档重复标题一         | [跳转到第一个重复标题](#重复标题)                                                         | 定位到下方第一个“重复标题”。                           |
+| 当前文档重复标题二         | [跳转到第二个重复标题](#重复标题-2)                                                       | 使用稳定的去重 slug 定位到下方第二个“重复标题”。              |
+| 当前文档显式锚点          | [跳转到显式锚点](#iris-explicit-anchor)                                            | 若 Iris 支持 `{#id}`，定位到下方显式锚点标题；否则保持稳定降级。   |
+| 当前文档不存在的 fragment | [跳转到不存在的标题](#不存在的标题)                                                        | 不离开当前文档，并给出无目标反馈或保持当前位置。                  |
+| 相对路径回到当前文档        | [通过相对路径跳转到表格](./Markdown%20渲染兼容性测试.md#7-表格)                                 | 解析为当前文档并定位到“7. 表格”。                       |
+| 跨文档无 fragment     | [打开 Markdown 文内链接 issue](../issue/2026-08-06-markdown文内链接不能定位跳转.md)         | 打开目标 Markdown 文档。                         |
+| 跨文档带 fragment     | [打开 issue 的分析补充](../issue/2026-08-06-markdown文内链接不能定位跳转.md#2026-08-06-分析补充) | 打开目标文档，并在编辑器 ready 后定位到“2026-08-06 分析补充”。 |
+| 外部 HTTPS          | [在系统浏览器打开 Example](https://example.com/iris#navigation-test)                | 交给系统浏览器，Iris 当前窗口保持不变。                    |
+| 越出项目根             | [拒绝项目外相对路径](../../../outside.md#target)                                     | 拒绝导航，不读取项目外文件。                            |
+| 绝对路径              | [拒绝绝对路径](C:/Windows/System32/drivers/etc/hosts)                             | 拒绝导航，不读取本机绝对路径。                           |
+| 非 Markdown 文件     | [拒绝非 Markdown 文件](../../package.json#name)                                  | 拒绝内部文档导航。                                 |
+| 危险协议              | [拒绝 javascript 协议](javascript:alert\('Iris-navigation-test'\))              | 不执行脚本，也不触发 Electron 默认导航。                 |
+| 本地文件协议            | [拒绝 file 协议](file:///C:/Windows/System32/drivers/etc/hosts)                 | 不打开或读取本地文件。                               |
 
 #### 中文标题
 
@@ -232,13 +232,13 @@ Iris 在 Crepe 中注册自有的 `code_block` NodeView 工厂来控制代码块
 
 以下样例用于检查长内容是否导致表格横向撑破、单元格换行异常、格式解析错误或编辑/阅读模式切换跳动：
 
-| 场景 | 长内容 | 观察点 |
-| :--- | :--- | :--- |
-| 不可断字符串 | `abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789` | 长 token 应在单元格内换行或由容器横向滚动，不得撑破页面。 |
-| 长中文文本 | 这是一段用于测试表格单元格自动换行的中文文本，内容足够长以覆盖窄屏和宽屏布局，并检查行高是否稳定。 | 中文应按字符换行，不能遮挡相邻列或导致列宽无限增长。 |
-| 长链接 | [长路径与查询参数示例](https://example.com/markdown/compatibility/table/cell/with/a/very/long/path?source=iris&mode=compatibility&case=long-structures) | 链接文本应保持可点击，目标地址不应撑宽表格。 |
-| 长行内代码 | `const documentMeta = { title: "Markdown 渲染兼容性测试", reflects: "c07af2434e26b5bfb6d5899fa131954062396ade" }` | 等宽文本应保持格式，并在可用宽度不足时稳定降级。 |
-| 混合格式与转义 | ***加粗斜体的长文本内容***、~~删除线内容~~、`inline code`、[链接](https://example.com) 与 A \| B | 粗体、删除线、代码、链接和转义竖线应同时正确解析。 |
+| 场景      | 长内容                                                                                                                                             | 观察点                              |
+| :------ | :---------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------- |
+| 不可断字符串  | `abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789`                  | 长 token 应在单元格内换行或由容器横向滚动，不得撑破页面。 |
+| 长中文文本   | 这是一段用于测试表格单元格自动换行的中文文本，内容足够长以覆盖窄屏和宽屏布局，并检查行高是否稳定。                                                                                               | 中文应按字符换行，不能遮挡相邻列或导致列宽无限增长。       |
+| 长链接     | [长路径与查询参数示例](https://example.com/markdown/compatibility/table/cell/with/a/very/long/path?source=iris\&mode=compatibility\&case=long-structures) | 链接文本应保持可点击，目标地址不应撑宽表格。           |
+| 长行内代码   | `const documentMeta = { title: "Markdown 渲染兼容性测试", reflects: "c07af2434e26b5bfb6d5899fa131954062396ade" }`                                      | 等宽文本应保持格式，并在可用宽度不足时稳定降级。         |
+| 混合格式与转义 | ***加粗斜体的长文本内容***、~~删除线内容~~、`inline code`、[链接](https://example.com) 与 A \| B                                                                     | 粗体、删除线、代码、链接和转义竖线应同时正确解析。        |
 
 ## 8. 图片
 
@@ -391,7 +391,7 @@ Emoji：😀 🚀 ✅ ⚠️ ❤️ 👍🏽；短代码扩展：`:smile:` `:roc
 
 多语言：简体中文、繁體中文、日本語、한국어、العربية、עברית、Русский、Español。
 
-组合字符：café、naïve、Ångström；数学符号：∞ ≠ ≤ ≥ √ π；货币：¥ $ € £。
+组合字符：café、naïve、Ångström；数学符号：∞ ≠ ≤ ≥ √ π；货币：¥ \$ € £。
 
 超长不可分词字符串：`abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789`
 
@@ -471,3 +471,4 @@ HTML 实体：& < > " © ☃。
 * [x] 浅色与深色主题下正文、代码、表格和 Mermaid 均清晰可读。
 
 * [x] 编辑模式与阅读模式的内容一致，切换时无明显跳动。
+

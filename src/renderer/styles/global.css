@@ -1329,6 +1329,9 @@ button:focus-visible .iris-status-badge {
   margin: 0 auto;
   padding: 1rem 1.5rem 4rem;
 }
+.crepe-host .milkdown .ProseMirror a[href] {
+  cursor: pointer;
+}
 .doc-view[data-pane-layout='fluid'] .crepe-host .milkdown .ProseMirror {
   width: 100%;
   max-width: none;
