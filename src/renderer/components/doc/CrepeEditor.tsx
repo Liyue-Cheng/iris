@@ -19,6 +19,7 @@ import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Crepe } from '@milkdown/crepe';
 import { editorViewCtx } from '@milkdown/kit/core';
+import { linkPreviewTooltip } from '@milkdown/kit/component/link-tooltip';
 import { TextSelection } from '@milkdown/kit/prose/state';
 import { languages } from '@codemirror/language-data';
 import { rosePineCodeMirror } from '@renderer/styles/codemirror-theme';
@@ -124,6 +125,11 @@ export function CrepeEditor({
           blockUploadPlaceholderText: t('editor.pasteLink'),
         },
       },
+    });
+    // Iris owns link activation directly. Keep Milkdown's selection-based
+    // link editing feature, but remove its separate hover preview/open surface.
+    crepe.editor.config((ctx) => {
+      ctx.set(linkPreviewTooltip.key, {});
     });
     crepe.editor.use(stableCodeBlockView);
     crepe.editor.use(safeHtmlView).use(safeHtmlDecorations);
