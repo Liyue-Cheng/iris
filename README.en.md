@@ -14,7 +14,7 @@ Iris brings project documents, interactive agent terminals, Git state, and human
 
 Your project state stays in ordinary Markdown under `.iris/`. Your agents run in real PTYs at the project root. Git remains the collaboration and delivery layer. There is no Iris account, cloud database, API key, or proprietary project format.
 
-> Current release line: `0.1.0-beta`. Iris is Windows-first and currently ships for Windows x64.
+> Current version: `0.1.0-beta.7`. This is the stabilization baseline for the existing desktop workflow. Iris is Windows-first and currently ships for Windows x64.
 
 > This is the English product overview. Active development records and maintainer discussions are currently written primarily in Simplified Chinese. English bug reports and pull requests are welcome, but contributors may need translation support when following the live `.iris/` project record.
 
@@ -114,7 +114,7 @@ status: In Progress
 ---
 ```
 
-Issue states default to `Todo`, `In Progress`, `In Review`, `Blocked`, `Done`, or `Canceled`. Reports use `Active` and `Backlog`. Iris preserves exceptional values instead of rejecting the document.
+Issue states default to `Todo`, `In Progress`, `In Review`, `Blocked`, `On Hold`, `Done`, or `Canceled`. Reports use `Active` and `Backlog`. `On Hold` means inactive but unresolved. Iris preserves exceptional values instead of rejecting the document.
 
 The `labels:` frontmatter field is reserved but not currently enabled. Iris
 preserves valid legacy metadata, but the application and its managed agent
@@ -175,7 +175,7 @@ Single-document views separate structured frontmatter from the Markdown body. Th
 
 Each document type has a different collection view:
 
-- Issues support activity filters, search, workspace filters, grouping, sorting, keyboard navigation, multi-selection, and bulk state changes.
+- Issues support activity filters, search, workspace filters, grouping, sorting, and keyboard navigation.
 - Todo aggregates unchecked tasks from active issues.
 - Status compares each document's `reflects` commit with the current Git HEAD.
 - Reports are arranged as a dated timeline.
@@ -227,8 +227,8 @@ Iris does not automatically download remote assets or delete orphans. Deleting a
 
 The built-in Git view is deliberately small and local:
 
-> [!CAUTION]
-> Git integration is experimental in the `0.1.0-beta` line. The basic status, stage, unstage, and commit flow is available, while rename and copy records, simultaneous staged and unstaged changes, unborn repositories, and watcher freshness are still being hardened. Verify critical repository state with Git CLI or another client. Progress is tracked in [Git basic workflow reliability](./.iris/issue/2026-08-09-Git%E5%9F%BA%E7%A1%80%E5%B7%A5%E4%BD%9C%E6%B5%81%E5%8F%AF%E9%9D%A0%E6%80%A7%E7%BC%BA%E9%99%B7.md).
+> [!NOTE]
+> `0.1.0-beta.7` substantially hardens the existing Git loop. Rename and copy records, simultaneous staged and unstaged changes, unborn repositories, nested projects and linked worktrees, commit-failure recovery, cross-window serialization, and watcher reconciliation now have automated coverage. The Git view remains deliberately limited to local foundational operations, while extreme scale, cross-platform behavior, and packaged-environment matrices still need broader validation. Continue to verify critical operations with Git CLI. Implementation and validation details are recorded in [Git basic workflow reliability](./.iris/issue/2026-08-09-Git%E5%9F%BA%E7%A1%80%E5%B7%A5%E4%BD%9C%E6%B5%81%E5%8F%AF%E9%9D%A0%E6%80%A7%E7%BC%BA%E9%99%B7.md).
 
 - Repository status and branch information
 - Merge, staged, working-tree, and untracked groups
@@ -347,7 +347,9 @@ Key technologies include Electron, TypeScript, React 18, Tailwind CSS, Radix UI,
 
 ## Current Status
 
-Iris is beta software being developed through daily dogfooding on its own repository. The filesystem protocol, project scoping, document workflow, and terminal state recovery already support the complete core loop. Current stabilization work focuses on data-safety edge cases, cross-window writes, Git projection correctness, and packaged multi-window verification. The release target is a trustworthy Windows beta for technical users already comfortable with local agent CLIs and Git.
+Iris is beta software developed through daily dogfooding on its own repository. `0.1.0-beta.7` consolidates the filesystem protocol, project scoping, document workflow, terminal state recovery, and local Git fundamentals into the stabilization baseline for the current desktop application.
+
+From this release onward, `main` enters maintenance-focused development: bug fixes, reliability, compatibility, and necessary small experience improvements, rather than large-scale product restructuring. Embedded-agent exploration based on Pi or another future coding-agent runtime, potentially including a DeepSeek Code option, will proceed on a separate development branch. The runtime choice will depend on maturity and maintainability. The current `beta.7` release still coordinates external agent CLIs that users install and authenticate themselves; it does not embed a model or agent runtime.
 
 Bug reports and focused design discussions are welcome through [GitHub Issues](https://github.com/Liyue-Cheng/iris/issues).
 

@@ -14,7 +14,7 @@ Iris 将项目文档、交互式 Agent 终端、Git 状态和人的注意力整�
 
 项目状态以普通 Markdown 文件保存在 `.iris/` 下。Agent 在项目根目录的真实 PTY 中运行，Git 仍然是协作与交付层。Iris 不需要账户、云端数据库、API Key，也不使用专有项目格式。
 
-> 当前发布线：`0.1.0-beta`。Iris 以 Windows 为优先平台，目前提供 Windows x64 版本。
+> 当前版本：`0.1.0-beta.7`。这是现有桌面工作流的稳定化基线。Iris 以 Windows 为优先平台，目前提供 Windows x64 版本。
 
 ![Iris 工作区](docs/images/readme-overview.png)
 
@@ -112,7 +112,7 @@ status: In Progress
 ---
 ```
 
-Issue 默认状态为 `Todo`、`In Progress`、`In Review`、`Blocked`、`Done` 或 `Canceled`；report 使用 `Active` 和 `Backlog`。Iris 会保留例外状态，而不是拒绝文档。
+Issue 默认状态为 `Todo`、`In Progress`、`In Review`、`Blocked`、`On Hold`、`Done` 或 `Canceled`；report 使用 `Active` 和 `Backlog`。`On Hold` 表示暂时不活跃但尚未解决。Iris 会保留例外状态，而不是拒绝文档。
 
 `labels:` frontmatter 字段已保留但尚未启用。Iris 会保留有效的历史元数据，但应用和托管的 Agent 指引不会创建、编辑、展示、分组或筛选标签。
 
@@ -171,7 +171,7 @@ Lens Tree 按工作区和类型组织文档。活跃的 issue 和 report 保持�
 
 不同文档类型拥有不同的集合视图：
 
-- Issue 支持活跃状态筛选、搜索、工作区筛选、分组、排序、键盘导航、多选和批量状态变更。
+- Issue 支持活跃状态筛选、搜索、工作区筛选、分组、排序和键盘导航。
 - Todo 聚合活跃 issue 中尚未勾选的任务。
 - Status 比较每个文档的 `reflects` commit 与当前 Git HEAD。
 - Report 使用按日期排列的时间线。
@@ -223,8 +223,8 @@ Iris 不会自动下载远程资产，也不会自动删除 orphan。删除文�
 
 内置 Git 视图有意保持精简和本地化：
 
-> [!CAUTION]
-> `0.1.0-beta` 发布线中的 Git 集成属于实验功能。基础的状态查看、暂存、取消暂存和提交闭环已经可用；重命名与复制记录、同时存在已暂存和未暂存变化的文件、尚无首次提交的仓库，以及 watcher 新鲜度仍在加固。关键仓库状态请使用 Git CLI 或其他客户端复核。进展记录在 [Git 基础工作流可靠性缺陷](./.iris/issue/2026-08-09-Git%E5%9F%BA%E7%A1%80%E5%B7%A5%E4%BD%9C%E6%B5%81%E5%8F%AF%E9%9D%A0%E6%80%A7%E7%BC%BA%E9%99%B7.md)中。
+> [!NOTE]
+> `0.1.0-beta.7` 对现有 Git 基础闭环做了集中加固：重命名与复制、同一文件的已暂存/未暂存双层状态、首次提交前仓库、嵌套项目与 linked worktree、提交失败恢复、跨窗口串行化和 watcher reconciliation 均已进入自动化覆盖。Git 视图仍有意只提供本地基础操作，极端规模、跨平台和安装环境矩阵仍在继续验证；关键操作后仍建议用 Git CLI 复核。实现与验收记录见 [Git 基础工作流可靠性缺陷](./.iris/issue/2026-08-09-Git%E5%9F%BA%E7%A1%80%E5%B7%A5%E4%BD%9C%E6%B5%81%E5%8F%AF%E9%9D%A0%E6%80%A7%E7%BC%BA%E9%99%B7.md)。
 
 - 仓库状态和分支信息
 - Merge、已暂存、working tree 和未跟踪资源组
@@ -343,7 +343,9 @@ src/shared/     跨进程模型、IPC channel 名称、Markdown 工具、
 
 ## 当前状态
 
-Iris 是一个通过自身仓库持续 dogfooding 开发的 beta 软件。文件系统协议、项目 scope、文档工作流和终端状态恢复已经支持完整核心闭环。当前稳定化工作集中在数据安全边界、跨窗口写入、Git 投影正确性和打包版本的多窗口验证。发布目标是一个值得信赖的 Windows beta，面向已经熟悉本地 Agent CLI 和 Git 的技术用户。
+Iris 是一个通过自身仓库持续 dogfooding 开发的 beta 软件。`0.1.0-beta.7` 将文件系统协议、项目 scope、文档工作流、终端状态恢复和本地 Git 基础闭环收敛为当前桌面版本的稳定化基线。
+
+从这个版本起，`main` 进入稳定维护阶段，以 bug 修复、可靠性、兼容性和必要的小幅体验改进为主，不再承载大规模产品重构。基于 Pi 或未来其他代码 Agent 运行时（包括可能的 DeepSeek Code 方案）的内置 Agent 探索，将在独立开发分支推进；具体运行时会根据成熟度和可维护性选择。当前 `beta.7` 仍只协调用户已经安装并认证的外部 Agent CLI，不内置模型或 Agent 运行时。
 
 欢迎通过 [GitHub Issues](https://github.com/Liyue-Cheng/iris/issues) 提交 bug 和聚焦的设计讨论。
 
