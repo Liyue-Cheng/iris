@@ -432,47 +432,47 @@ Worker 隔离是可靠性边界，不是安全沙箱。本 Issue 不实现沙箱
 
 目标是消除引擎、认证复用、Worker、工具和 PTY 的关键不确定性，不建设正式产品 UI。
 
-* [ ] 精确锁定 Pi SDK 版本，确认公开 API、异常类型、许可证和运行时依赖。
+* [x] 精确锁定 Pi SDK 版本，确认公开 API、异常类型、许可证和运行时依赖。
 
-* [ ] 定位该版本 Pi 默认 Agent 提示词的公开来源、组装 API、fingerprint 和许可证边界。
+* [x] 定位该版本 Pi 默认 Agent 提示词的公开来源、组装 API、fingerprint 和许可证边界。
 
-* [ ] 形成仅包含产品名、工具、运行环境和禁用能力的 Iris 最小提示词适配，并记录可审计 diff。
+* [x] 形成仅包含产品名、工具、运行环境和禁用能力的 Iris 最小提示词适配，并记录可审计 diff。
 
-* [ ] 验证读取并复用用户在 Pi TUI 中完成的登录与 provider 配置结果。
+* [x] 验证读取并复用用户在 Pi TUI 中完成的登录与 provider 配置结果。
 
-* [ ] 用至少一个真实 provider 完成流式回答、tool call、取消、错误和自然结束 spike。
+* [x] 用至少一个真实 provider 完成流式回答、tool call、取消、错误和自然结束 spike。
 
-* [ ] 确认 Electron/Node 要求和可随安装包交付的 Worker runtime。
+* [x] 确认 Electron/Node 要求和可随安装包交付的 Worker runtime。
 
-* [ ] 验证一运行 Session 一懒启动 Worker，Worker 退出后可从持久历史重建。
+* [x] 验证一运行 Session 一懒启动 Worker，Worker 退出后可从持久历史重建。
 
-* [ ] 关闭 Pi TUI、extensions、项目 `.pi/`、默认上下文发现、subagent、permission 和 sandbox。
+* [x] 关闭 Pi TUI、extensions、项目 `.pi/`、默认上下文发现、subagent、permission 和 sandbox。
 
-* [ ] 验证 Pi `read`、`edit`、`write`、bash/terminal 的公开实现可以被 Iris ToolHost 复用和包装。
+* [x] 验证 Pi `read`、`edit`、`write`、bash/terminal 的公开实现可以被 Iris ToolHost 复用和包装。
 
-* [ ] 验证稳定完成节点、指定节点历史截断、Fork 前缀复制和上下文重建。
+* [x] 验证稳定完成节点、指定节点历史截断、Fork 前缀复制和上下文重建。
 
-* [ ] 验证 canonical prompt、固定 anchor、发送前 flush 和最新文档快照可以直接组装。
+* [x] 验证 canonical prompt、固定 anchor、发送前 flush 和最新文档快照可以直接组装。
 
-* [ ] 验证最终请求按固定顺序包含 Pi-derived Agent 基础提示词、Iris software prompt、project prompt 和 anchor，且各层边界可区分。
+* [x] 验证最终请求按固定顺序包含 Pi-derived Agent 基础提示词、Iris software prompt、project prompt 和 anchor，且各层边界可区分。
 
-* [ ] 验证独立命令 PTY、3 秒显示阈值、完整磁盘输出、增量游标和单次最终结果。
+* [x] 验证独立命令 PTY、3 秒显示阈值、完整磁盘输出、增量游标和单次最终结果。
 
-* [ ] 验证临时监督调用不进入正式 Session 历史。
+* [x] 验证临时监督调用不进入正式 Session 历史。
 
-* [ ] 定义 Worker、Session、request、tool、terminal 和 correlation 的版本化协议。
+* [x] 定义 Worker、Session、request、tool、terminal 和 correlation 的版本化协议。
 
 第一阶段退出条件：
 
-* [ ] Pi 公开 SDK 足以支撑 Agent loop、TUI 认证复用、自定义 ToolHost、临时监督和历史截断，或确切阻塞点已经形成最小 fork 评审结论。
+* [x] Pi 公开 SDK 足以支撑 Agent loop、TUI 认证复用、自定义 ToolHost、临时监督和历史截断，或确切阻塞点已经形成最小 fork 评审结论。
 
-* [ ] Iris 可以完全控制 prompt、工具副作用、PTY、持久化和 Session 产品语义。
+* [x] Iris 可以完全控制 prompt、工具副作用、PTY、持久化和 Session 产品语义。
 
-* [ ] Worker runtime 与安装交付方式已经确定。
+* [x] Worker runtime 与安装交付方式已经确定。
 
-* [ ] 正式方案不依赖 Pi 未承诺的内部 `dist` 路径。
+* [x] 正式方案不依赖 Pi 未承诺的内部 `dist` 路径。
 
-* [ ] Agent 基础提示词的上游版本、最小适配、许可证处理和升级方法已经确定。
+* [x] Agent 基础提示词的上游版本、最小适配、许可证处理和升级方法已经确定。
 
 ### 第二阶段：MVP 与关键里程碑一
 
@@ -733,3 +733,166 @@ MVP 退出条件：
 * [ ] 普通终端和外部 Agent CLI 保持可用，不因内置 Agent 退化。
 
 * [ ] 自举只在全部核心门禁通过并经用户确认后开始。
+
+## 第一阶段调查记录
+
+### 2026-08-13：Pi 官方仓库与 npm scope 沿革
+
+初次探测曾把 `@earendil-works/pi-coding-agent` 误判为第三方 fork，现已根据官网、仓库重定向、npm 发布时间线和维护者信息纠正：
+
+* Pi 原仓库和 npm scope 是 `badlogic/pi-mono`、`@mariozechner/*`；`@mariozechner/pi-coding-agent` 的最后版本为 `0.73.1`，发布于 2026-05-07。
+
+* 项目随后迁移到官方组织 `earendil-works/pi` 和 `@earendil-works/*` scope；新 scope 在同一天从 `0.74.0` 连续发布，当前官网 `pi.dev`、README、GitHub 和 npm 均指向 `@earendil-works/pi-coding-agent`。
+
+* 新旧 npm 包维护者重合，旧 GitHub 地址会重定向到 `earendil-works/pi`。因此这是一条连续的官方项目版本线，不是两个竞争实现，也不应把旧 scope 的 `0.73.1` 当作当前 SDK。
+
+* 本机 `pi` 为当前官方 `@earendil-works/pi-coding-agent@0.84.1`，其认证和模型配置位于 `~/.pi/agent`。第一阶段后续应围绕精确锁定的 `@earendil-works/*` 包验证，不再使用 `@mariozechner/*` 旧包。
+
+* `0.84.1` 的公开包根导出包括主 SDK、`./client` 和 `./rpc-entry`，许可证为 MIT；正式实现仍只允许通过承诺的 package exports 进入，不能引用内部 `dist` 路径。
+
+* `0.84.1` 声明 Node `>=22.19.0`，而 Iris 当前 Electron 31 内置 Node 20。系统 Node 24 可以运行本机 Pi CLI，但不能证明安装版 Electron Worker 可直接加载 SDK。第一阶段必须在升级 Electron与随包交付独立 Worker runtime 之间作出验证后的明确选择，之后才能勾选版本和 runtime 退出条件。
+
+### 2026-08-13：升级 Electron 的影响评估
+
+满足 Pi `0.84.1` 的最低 Electron 代际是 Electron 39，其内置 Node 为 `22.20.0`；Electron 38 仍是 Node `22.18.0`，不满足 Pi 的 `>=22.19.0`。但 Electron 39 已不适合作为 2026-08 的新长期基线，若选择升级，应直接验证当前受支持代际，而不是停在刚好满足版本条件的旧代际。当前 Electron 43 内置 Node `24.17.0`，与开发机 Node 24 同代并满足 Pi 要求。
+
+对 Iris 的已知影响如下：
+
+* 主进程和 preload 迁移量预计较小。Iris 使用的是 `BrowserWindow`、`ipcMain`、`contextBridge`、`ipcRenderer`、`webUtils`、`dialog`、`shell` 等稳定公开 API；已经使用 `webUtils.getPathForFile`、安全的 IPC wrapper、`render-process-gone` 和 `setWindowOpenHandler`，没有命中从 Electron 32 到 43 已知的主要移除 API。
+
+* 最大技术风险是 `node-pty`。Electron 升级会改变 Node/V8/native ABI；虽然当前 `node-pty@1.1.0` 带 Windows x64/arm64 prebuild，且现有配置依赖预编译产物并关闭 `npmRebuild`，仍必须用目标 Electron 实际启动 ConPTY，验证创建、输入、resize、退出、进程树终止和安装包加载。不能仅靠 TypeScript 或单元测试认定兼容。
+
+* Chromium 会从 126 跨到 150，renderer 的实际回归面大于 Electron API 迁移面。需要重点回归 CodeMirror/Milkdown 编辑、IME、拖放文件、剪贴板、xterm/WebGL、窗口缩放、焦点、后台节流、链接导航和多窗口关闭 flush。现有 `webUtils.getPathForFile` 已兼容 Electron 32 移除 DOM `File.path` 的变化。
+
+* 构建链需要联动验证。当前 `electron-vite@2.3.0`、Vite 5、`electron-builder@26.15.2` 不一定都需要立即升级，但必须验证它们能以目标 Electron 完成 main/preload/renderer build、native 依赖 externalize、asar unpack、portable 和 NSIS 安装版运行。禁止把 Electron、electron-vite、Vite 和业务改造混在一个不可定位的超大升级中。
+
+* 安装包体积、冷启动、内存和 GPU 行为可能变化。Electron 自身升级通常不会增加第二套完整 runtime，但新的 Chromium/V8 和加入 Pi SDK 后仍需重新测量；Pi 的 provider SDK、图片处理 native 包和模型数据也会扩大依赖面。
+
+* 运行时语义会统一。升级后 main、Worker 和 Pi SDK 可以共享安装包内同一 Node runtime，生命周期、崩溃隔离、路径、签名、更新和诊断都比额外捆绑一个 `node.exe` 简单。独立 runtime 虽能避免 Electron 升级，却会新增一套可执行文件交付、签名、进程回收、IPC、版本更新和安全维护责任，并增加安装体积。
+
+建议路线是优先升级 Electron，但先做独立兼容 spike，不立即连带升级全部前端工具：
+
+1. 在专门提交中把 Electron 精确锁到选定的当前受支持版本，保持业务逻辑不变。
+2. 运行 typecheck、单元测试和现有 smoke，修复确定的 API 或类型变化。
+3. 手工回归编辑器、IME、拖放、剪贴板、普通 PTY、外部 Agent CLI、多窗口、关闭 flush 和 renderer crash 恢复。
+4. 验证 `node-pty` 在开发态和实际 Windows portable/NSIS 产物中工作；打包验证属于发布门禁，但不得用 `npm run dist` 代替分项验证。
+5. Electron 基线稳定后再引入精确锁定的 Pi SDK，单独验证 Worker 和 provider，避免两类变量混在一起。
+
+若第 4 步证明 `node-pty` 或安装交付存在无法接受的阻塞，再回退评审随包交付独立 Node runtime；目前没有证据支持先选择复杂度更高的双 runtime 方案。
+
+### 2026-08-13：Electron 43 自动化基线验证
+
+用户手动升级并重启后，文件锁阻塞已解除。本地依赖与实际 Electron runtime 均已确认是
+`43.4.0`，内置 Node `24.17.0` 满足 Pi SDK `0.84.1` 的 Node `>=22.19.0` 要求。
+
+第三方声明、typecheck、全部单元测试、生产 build、产品元数据和现有 Electron 启动 smoke
+均已通过。升级引入的 `@electron-internal/extract-zip@1.0.5` npm tarball 缺失 BSD-2-Clause
+许可证文本，声明生成器已用严格包名和许可证标识重建标准文本，未放宽其他包的失败策略。
+
+这组证据确定 Electron 43 可以作为 Iris Agent 第一阶段 Worker 的共同开发 runtime，后续
+不再以独立 Node runtime 作为默认路线。现有 smoke 不创建真实 PTY，开发态 ConPTY、编辑器、
+外部 Agent CLI 和安装产物仍需按独立风险 Issue 人工检查；在这些检查完成前，不把 Electron
+升级本身标记为发布完成。
+
+### 2026-08-13：Pi SDK 0.84.1 运行时与真实 Provider spike
+
+依赖已将 `@earendil-works/pi-coding-agent` 精确锁定为 `0.84.1`。Iris ToolHost 定义 custom
+tool 需要使用 Pi 公共契约中的 TypeBox schema，因此同时把 Pi 当前使用的 `typebox@1.3.7`
+精确声明为直接运行依赖，避免依赖嵌套 hoist。正式代码只允许从
+`@earendil-works/pi-coding-agent` 包根进入；已验证包根公开导出包含
+`createAgentSession`、`DefaultResourceLoader`、`readStoredCredential`、
+`createReadToolDefinition`、`createEditToolDefinition`、`createWriteToolDefinition` 和
+`createBashToolDefinition`，不需要引用未承诺的 `dist/*` 子路径。
+
+系统 Node 24、Electron 43 的 Node 模式以及 Electron 43 的 Node Worker 均能加载同一个公开
+包根。Pi 的认证存储非秘密枚举显示 `deepseek` 已配置为 stored API key，模型使用
+`openai-completions`。spike 只输出 provider ID、认证类型和状态，没有读取或打印 credential
+值。
+
+真实 provider 结果：
+
+* 自然结束：完整事件链包含 `agent_start`、`turn_start`、user/assistant
+  `message_start`/`message_end`、51 个 `message_update`、`turn_end`、`agent_end` 和
+  `agent_settled`；最终 `stopReason` 为 `stop`，usage 为 196 tokens。
+
+* 取消：收到首个 assistant stream 事件后调用 `abort()`，最终 `stopReason` 为 `aborted`、
+  输出和 usage 均为零，Session 回到 idle。
+
+* tool call：只注册内存 `iris_probe` tool，模型恰好调用一次，tool start/end 各一次，结果
+  返回后进入第二 turn 并自然结束；没有文件或进程副作用。
+
+* provider 错误：使用脚本内临时无效 credential store，不修改 Pi 的 `auth.json`。错误通过
+  assistant `message_end` 的 `stopReason: error` 结算，Session 回到 idle，调用 Promise 不一定
+  reject。因此 Iris adapter 必须同时消费结构化事件错误和 thrown error，不能只依赖 catch。
+
+资源边界 spike 显式启用 `noExtensions`、`noSkills`、`noPromptTemplates`、`noThemes` 和
+`noContextFiles`，并使用 `noTools: "all"` 与 in-memory SessionManager。结果 extensions、skills、
+prompts、themes、AGENTS context 和 tools 均为空，没有加载 Pi TUI 配置、项目 `.pi`、subagent、
+permission 或 sandbox。公开 system prompt builder 在 custom prompt 后仍固定追加规范化 cwd；
+这属于可观察的上游固定层，Iris 需要纳入 fingerprint 和 Inspector，不能宣称逐字完全覆盖。
+
+固定 cwd `C:/iris-prompt-root`、默认 `read`/`bash`/`edit`/`write` 下，Pi 0.84.1 默认 prompt
+规范化后为 2585 bytes、31 行，SHA-256 为
+`bfd83ad660a7f76ee86a8beee63c80eda1441be7f717ae156dedaf0029c85293`。最小适配应保留
+Pi 的精确编辑指导，把产品名改为 Iris Agent、`bash` 映射为可见 `terminal`，删除 custom
+tools、`PI_*` 环境变量和 Pi docs/extensions/TUI/skills 段，并把运行目录文案改成 Iris
+ToolHost 的真实项目边界。正式内置资源仍需记录适配 patch 版本和最终 fingerprint。
+
+Pi 四个 tool definition 已用纯内存 operations 实际执行：相对路径按 cwd 解析，`edit` 产生
+标准 patch，`write` 先调用 mkdir 再写入，terminal 通过 `exec`、`onData` 和 `AbortSignal`
+流式返回；非零退出将完整输出与退出码包装为 rejected Error。由此可确认 Iris main 能接管
+文件和 PTY operations，Worker 不必直接写文件或启动进程。
+
+许可证检查已覆盖 Pi monorepo、clipboard 平台包和 Pi provider 依赖中上游 tarball 漏发
+LICENSE 的已知包，规则按精确包名和声明许可证匹配；未知漏文件包仍会让生成器失败。
+`npm audit --omit=dev` 报告的旧 `undici@6.26.0` 和 `brace-expansion` 均来自既有
+electron-builder 工具链；Pi 自身使用的 `undici@8.9.0` 和 `brace-expansion@5.0.9` 不在当前
+advisory 影响范围。本阶段不使用全局 override 干预构建链，后续 Electron 发布风险检查单独
+跟踪升级或定向修复。
+
+### 2026-08-13：第一阶段可重复契约与退出结论
+
+第一阶段的剩余 spike 已固化为源码和自动化契约，但没有接入 Renderer 或宣称达到 MVP。
+`src/main/agent/pi-adapter.ts` 是生产源码中进入 Pi 的唯一窄入口，只从包根导入；资源加载器
+关闭 extension、skill、prompt template、theme 和 context file 发现，Session 使用 Iris 提供的
+四个 ToolHost operation。Pi 的 `bash` 定义在 adapter 中改名为 `terminal`，关闭 `PI_*`
+Session 环境暴露，文件和命令副作用仍由 main 注入的 operation 执行。
+
+Pi-derived Agent 基础提示词已内置为适配版本 1。上游固定 cwd
+`C:/iris-prompt-root` 的默认 prompt fingerprint 为
+`bfd83ad660a7f76ee86a8beee63c80eda1441be7f717ae156dedaf0029c85293`；Iris 适配基础文本
+fingerprint 为 `984689f4d2404091aa7f17a59cf10e1b61ce278241ad0d4fef37fd39dd1d433d`，计入 Pi 固定追加
+cwd 层后的最终 fingerprint 为
+`6b6cd774a3e79df8c0d9dc4d21e9bd281ebf0e3cb4fef49556cbb8fe9e4b3727`。适配只改产品名、
+工具名和宿主运行边界，并删除 custom tool、`PI_*`、Pi docs、extension、TUI 和 skill 指导；
+Pi 的精确 edit 行为指导保留。canonical assembler 强制先 flush，再读取 software、project 和
+固定 document/workspace anchor 的最新快照，按 Agent base、software、project、anchor 顺序
+组装，并为整体和每层分别生成 fingerprint。
+
+`src/shared/agent-protocol.ts` 定义 v1 Worker envelope 和贯穿 Session、request、turn、tool call、
+terminal 的 correlation 字段。Worker 作为 electron-vite 独立入口输出到
+`out/main/agent-worker.js`；host 懒启动，每次启动先读取 Iris 持久历史，空闲退出或崩溃后下次
+启动重新读取，Worker error 使用 Session 局部事件而不是主进程 `EventEmitter` 的 fatal
+`error` 语义。`npm run agent:worker-check` 使用 Electron 43 自身的 Node 模式启动真实构建
+Worker，返回 Node `24.18.1`、Pi `0.84.1` 和协议 v1。Worker 与 main 共用安装包 Electron
+runtime，构建产物沿用 electron-builder 已有的 `out/**` 应用交付路径；安装版实际启动检查仍由
+Electron 43 风险 Issue 跟踪。
+
+Iris 自有线性历史契约只给所有工具均已结算的 turn 建稳定完成节点。消息 Rewind 要求 Session
+idle，并直接产生目标节点以前的新线性历史，不暴露旧后缀恢复；Fork 深复制同一完成节点以前的
+线性前缀，后续 Worker 从 Iris 当前历史和真实工作区重建。Pi 自身的 append-only branch tree
+仅证明 SDK 能重建上下文，不承担 Iris 产品持久化或分支语义。
+
+独立命令 PTY 使用一次性非交互 shell，不在命令后返回交互 prompt。状态机在 3 秒阈值仍运行时
+只发一次显示事件；原始 PTY bytes 顺序 append 到 Iris 指定路径，增量事件携带单调 byte cursor，
+最终结果等待全部 append 结算后只产生一次。磁盘写入失败会 reject，不会把不完整输出谎报为
+完整结果。自动化同时覆盖假时钟的精确 3 秒边界和真实 Windows ConPTY 的分段输出、完整落盘、
+退出码与单次结算。临时监督调用的接口固定为无工具、固定规则和游标增量输入，只有诊断事实
+输出，没有正式历史或 ToolHost 写入口。
+
+最终门禁结果：`npm run licenses:check`、`npm run typecheck`、完整 `70` 个测试文件 `377` 项
+测试、`npm run build`、`npm run metadata:check`、`npm run agent:worker-check` 和
+`npm run smoke` 全部通过。生产构建明确生成独立 Agent Worker，应用 smoke 在 5 秒内完成
+主进程和窗口启动。按项目约束未运行 `npm run dist`，也没有用开发服务器截图替代人工测试。
+第一阶段技术退出条件已满足；第二阶段的正式 store、IPC、UI、真实产品入口和消息 Rewind 交互
+仍保持未完成。

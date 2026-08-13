@@ -291,7 +291,7 @@ Iris coordinates local tools instead of replacing them.
 
 ### Prerequisites
 
-- Node.js 20 or newer
+- Node.js 22.19 or newer (CI uses Node.js 24)
 - npm
 - Windows build environment capable of running Electron and the bundled `node-pty` prebuild
 

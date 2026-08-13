@@ -85,6 +85,7 @@ export default defineConfig({
         input: {
           index: resolve('src/main/index.ts'),
           'app-main': resolve('src/main/app-main.ts'),
+          'agent-worker': resolve('src/main/agent-worker.ts'),
         },
       },
     },

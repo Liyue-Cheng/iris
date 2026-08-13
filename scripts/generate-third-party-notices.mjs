@@ -19,14 +19,114 @@ const lockfile = readJson(resolve(root, 'package-lock.json'));
 // TypeScript import. Keep the list small and document why each entry ships.
 const additionalDistributedRoots = ['tailwindcss-animate'];
 
-// A few npm tarballs declare MIT but omit the license file. Prefer a license
-// from the same installed monorepo; otherwise preserve the package author's
-// attribution from package.json/README in a canonical MIT notice.
+// A few npm tarballs declare a standard license but omit the license file.
+// Prefer a license from the same installed monorepo; otherwise preserve the
+// package attribution in a canonical license notice.
 const licenseTextOverrides = {
+  '@electron-internal/extract-zip': {
+    license: 'BSD-2-Clause',
+    copyright: 'Copyright (c) Electron contributors',
+  },
+  '@aws-sdk/credential-provider-http': {
+    license: 'Apache-2.0',
+    from: 'node_modules/@earendil-works/pi-coding-agent/node_modules/@aws-sdk/core/LICENSE',
+  },
+  '@aws-sdk/credential-provider-login': {
+    license: 'Apache-2.0',
+    from: 'node_modules/@earendil-works/pi-coding-agent/node_modules/@aws-sdk/core/LICENSE',
+  },
+  '@aws-sdk/nested-clients': {
+    license: 'Apache-2.0',
+    from: 'node_modules/@earendil-works/pi-coding-agent/node_modules/@aws-sdk/core/LICENSE',
+  },
+  '@earendil-works/pi-agent-core': {
+    license: 'MIT',
+    copyright: 'Copyright (c) 2025 Mario Zechner',
+  },
+  '@earendil-works/pi-ai': {
+    license: 'MIT',
+    copyright: 'Copyright (c) 2025 Mario Zechner',
+  },
+  '@earendil-works/pi-client': {
+    license: 'MIT',
+    copyright: 'Copyright (c) 2025 Mario Zechner',
+  },
+  '@earendil-works/pi-coding-agent': {
+    license: 'MIT',
+    copyright: 'Copyright (c) 2025 Mario Zechner',
+  },
+  '@earendil-works/pi-protocol': {
+    license: 'MIT',
+    copyright: 'Copyright (c) 2025 Mario Zechner',
+  },
+  '@earendil-works/pi-telemetry': {
+    license: 'MIT',
+    copyright: 'Copyright (c) 2025 Mario Zechner',
+  },
+  '@earendil-works/pi-tui': {
+    license: 'MIT',
+    copyright: 'Copyright (c) 2025 Mario Zechner',
+  },
+  '@mariozechner/clipboard': {
+    license: 'MIT',
+    copyright: 'Copyright (c) Mario Zechner and clipboard contributors',
+  },
+  '@mariozechner/clipboard-darwin-arm64': {
+    license: 'MIT',
+    copyright: 'Copyright (c) Mario Zechner and clipboard contributors',
+  },
+  '@mariozechner/clipboard-darwin-universal': {
+    license: 'MIT',
+    copyright: 'Copyright (c) Mario Zechner and clipboard contributors',
+  },
+  '@mariozechner/clipboard-darwin-x64': {
+    license: 'MIT',
+    copyright: 'Copyright (c) Mario Zechner and clipboard contributors',
+  },
+  '@mariozechner/clipboard-linux-arm64-gnu': {
+    license: 'MIT',
+    copyright: 'Copyright (c) Mario Zechner and clipboard contributors',
+  },
+  '@mariozechner/clipboard-linux-arm64-musl': {
+    license: 'MIT',
+    copyright: 'Copyright (c) Mario Zechner and clipboard contributors',
+  },
+  '@mariozechner/clipboard-linux-riscv64-gnu': {
+    license: 'MIT',
+    copyright: 'Copyright (c) Mario Zechner and clipboard contributors',
+  },
+  '@mariozechner/clipboard-linux-x64-gnu': {
+    license: 'MIT',
+    copyright: 'Copyright (c) Mario Zechner and clipboard contributors',
+  },
+  '@mariozechner/clipboard-linux-x64-musl': {
+    license: 'MIT',
+    copyright: 'Copyright (c) Mario Zechner and clipboard contributors',
+  },
+  '@mariozechner/clipboard-win32-arm64-msvc': {
+    license: 'MIT',
+    copyright: 'Copyright (c) Mario Zechner and clipboard contributors',
+  },
+  '@mariozechner/clipboard-win32-x64-msvc': {
+    license: 'MIT',
+    copyright: 'Copyright (c) Mario Zechner and clipboard contributors',
+  },
+  '@nodable/entities': {
+    license: 'MIT',
+    copyright: 'Copyright (c) Amit Gupta',
+  },
   '@xterm/addon-serialize': { from: 'node_modules/@xterm/xterm/LICENSE' },
   '@xterm/headless': { from: 'node_modules/@xterm/xterm/LICENSE' },
+  'data-uri-to-buffer': {
+    license: 'MIT',
+    copyright: 'Copyright (c) Nathan Rajlich',
+  },
   'react-remove-scroll-bar': { from: 'node_modules/react-remove-scroll/LICENSE' },
   'remark-math': { from: 'node_modules/remark/license' },
+  'xml-naming': {
+    license: 'MIT',
+    copyright: 'Copyright (c) Amit Gupta',
+  },
   dlv: { copyright: 'Copyright (c) Jason Miller' },
   keyv: { copyright: 'Copyright (c) Jared Wray' },
 };
@@ -192,6 +292,31 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.`;
 }
 
+function bsd2ClauseLicense(copyright) {
+  return `${copyright}
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.`;
+}
+
 function packageLicenseTexts(metadata, directory) {
   const files = licenseFileSelections[metadata.name] ?? licenseFiles(directory);
   if (files.length) {
@@ -202,16 +327,28 @@ function packageLicenseTexts(metadata, directory) {
   }
 
   const override = licenseTextOverrides[metadata.name];
-  if (!override || metadata.license !== 'MIT') return null;
+  if (!override) return null;
   if (override.from) {
+    if (override.license && metadata.license !== override.license) return null;
     return [
       {
-        name: `MIT license from ${override.from}`,
+        name: `${metadata.license} license from ${override.from}`,
         text: normalizeText(readFileSync(resolve(root, override.from), 'utf8')),
       },
     ];
   }
-  return [{ name: 'MIT license reconstructed from package attribution', text: mitLicense(override.copyright) }];
+  if (metadata.license === 'MIT' && (!override.license || override.license === 'MIT')) {
+    return [{ name: 'MIT license reconstructed from package attribution', text: mitLicense(override.copyright) }];
+  }
+  if (metadata.license === 'BSD-2-Clause' && override.license === 'BSD-2-Clause') {
+    return [
+      {
+        name: 'BSD-2-Clause license reconstructed from package attribution',
+        text: bsd2ClauseLicense(override.copyright),
+      },
+    ];
+  }
+  return null;
 }
 
 function renderNotices(packagePaths) {

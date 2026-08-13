@@ -287,7 +287,7 @@ Iris 协调本地工具，而不是取代它们。
 
 ### 前置条件
 
-- Node.js 20 或更高版本
+- Node.js 22.19 或更高版本（CI 使用 Node.js 24）
 - npm
 - 能够运行 Electron 和内置 `node-pty` prebuild 的 Windows 构建环境
 

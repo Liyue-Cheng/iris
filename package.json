@@ -22,7 +22,7 @@
   "main": "out/main/index.js",
   "type": "module",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "dev": "electron-vite dev",
@@ -32,6 +32,7 @@
     "check:async": "node scripts/check-async-boundaries.mjs",
     "smoke": "node scripts/smoke-launch.mjs",
     "metadata:check": "node scripts/check-product-metadata.mjs",
+    "agent:worker-check": "node scripts/check-agent-worker.mjs",
     "gen:icons": "node scripts/gen-icons.mjs",
     "gen:lucide-icon-names": "node scripts/generate-lucide-icon-names.mjs",
     "licenses:generate": "node scripts/generate-third-party-notices.mjs",
@@ -41,6 +42,7 @@
     "dist": "npm run build && npm run metadata:check && npm run licenses:check && node scripts/clean-release.mjs && electron-builder --win --x64"
   },
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.1",
     "@xterm/addon-search": "^0.17.0-beta.256",
     "@xterm/addon-serialize": "^0.15.0-beta.256",
     "@xterm/headless": "^6.1.0-beta.256",
@@ -48,7 +50,8 @@
     "gray-matter": "^4.0.3",
     "i18next": "^26.3.6",
     "node-pty": "^1.1.0",
-    "react-i18next": "^17.0.11"
+    "react-i18next": "^17.0.11",
+    "typebox": "1.3.7"
   },
   "devDependencies": {
     "@codemirror/lang-markdown": "^6.5.0",
@@ -65,7 +68,7 @@
     "@radix-ui/react-slot": "^1.1.0",
     "@radix-ui/react-tooltip": "^1.1.0",
     "@resvg/resvg-js": "^2.6.2",
-    "@types/node": "^20.14.0",
+    "@types/node": "24.13.3",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
@@ -78,7 +81,7 @@
     "clsx": "^2.1.1",
     "codemirror": "^6.0.2",
     "dompurify": "^3.4.13",
-    "electron": "^31.0.2",
+    "electron": "43.4.0",
     "electron-builder": "^26.15.2",
     "electron-vite": "^2.2.0",
     "front-cpu": "^0.3.0",
