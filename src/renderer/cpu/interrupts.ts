@@ -13,6 +13,8 @@
 import { EVENTS } from '@shared/protocol';
 import type {
   FsIrisChangedEvent,
+  IrisAgentSessionChangedPayload,
+  IrisAgentSessionDestroyedPayload,
   SessionDestroyedPayload,
   SessionExitedPayload,
   SessionStateChangedPayload,
@@ -21,6 +23,7 @@ import { pipeline } from './index';
 import { projectStore } from '@renderer/stores/project-store';
 import { editorStore, readDocFromDisk } from '@renderer/stores/editor-store';
 import { hydrateSessions, sessionStore } from '@renderer/stores/session-store';
+import { hydrateIrisAgentSessions, irisAgentStore } from '@renderer/stores/iris-agent-store';
 import { projectScopeState, sameProjectScope } from '@renderer/stores/project-scope-state';
 import { projectSettingsStore } from '@renderer/stores/project-settings-store';
 import type { ServiceHealthChangedEvent } from '@shared/app-error';
@@ -57,6 +60,18 @@ export function wireInterrupts(): void {
       source: 'session-manager',
       data: event,
     });
+  });
+  window.api.on<IrisAgentSessionChangedPayload>(EVENTS.IRIS_AGENT_SESSION_CHANGED, (event) => {
+    if (!sameProjectScope(event.scope, projectScopeState.get())) return;
+    irisAgentStore.handleChanged(event.session);
+  });
+  window.api.on<IrisAgentSessionDestroyedPayload>(EVENTS.IRIS_AGENT_SESSION_DESTROYED, (event) => {
+    if (!sameProjectScope(event.scope, projectScopeState.get())) return;
+    if (!irisAgentStore.has(event.sessionId)) {
+      void hydrateIrisAgentSessions();
+      return;
+    }
+    irisAgentStore.handleDestroyed(event.sessionId);
   });
 
   pipeline.interrupts.register({

@@ -4,6 +4,7 @@ import './styles/global.css';
 import { App } from './App';
 import { initSettingsStore } from './stores/settings-store';
 import { hydrateSessions } from './stores/session-store';
+import { hydrateIrisAgentSessions } from './stores/iris-agent-store';
 import { editorStore } from './stores/editor-store';
 import { wireInterrupts } from './cpu/interrupts';
 import { offerPromptProjectionRepair, openProject } from './lib/project-actions';
@@ -96,6 +97,7 @@ async function bootstrap(): Promise<void> {
     // Session projection is event-fed; reloads recover the still-live pool
     // without replaying project.open and restarting project backends.
     await hydrateSessions();
+    await hydrateIrisAgentSessions();
   }
 
   const container = document.getElementById('root');

@@ -480,65 +480,65 @@ Worker 隔离是可靠性边界，不是安全沙箱。本 Issue 不实现沙箱
 
 #### 基础运行骨架
 
-* [ ] 实现独立 Agent Worker、版本化 IPC 和窄 Pi adapter。
+* [x] 实现独立 Agent Worker、版本化 IPC 和窄 Pi adapter。
 
-* [ ] 实现 Worker ready、停止、崩溃、超时和清理状态机。
+* [x] 实现 Worker ready、停止、崩溃、超时和清理状态机。
 
-* [ ] 实现本地 IrisAgentSession store、schema 校验、备份和重启恢复。
+* [x] 实现本地 IrisAgentSession store、schema 校验、备份和重启恢复。
 
-* [ ] 为 Session、turn、model request、tool call 和 terminal run 分配稳定 ID。
+* [x] 为 Session、turn、model request、tool call 和 terminal run 分配稳定 ID。
 
-* [ ] 实现实际请求事实的发送前脱敏与持久化。
+* [x] 实现实际请求事实的发送前脱敏与持久化。
 
-* [ ] 内置版本化的 Pi-derived Agent 基础提示词及 Iris 最小适配元数据。
+* [x] 内置版本化的 Pi-derived Agent 基础提示词及 Iris 最小适配元数据。
 
-* [ ] 在 Iris main 实现包装 Pi 工具的最小 ToolHost。
+* [x] 在 Iris main 实现包装 Pi 工具的最小 ToolHost。
 
-* [ ] 让 terminal tool 通过 Iris main 创建独立 PTY 并持久化完整输出。
+* [x] 让 terminal tool 通过 Iris main 创建独立 PTY 并持久化完整输出。
 
 #### 关键里程碑一：Agent UI 第一次打开
 
-* [ ] 在右栏空状态启动列表第一项加入“用 Iris Agent 打开”。
+* [x] 在右栏空状态启动列表第一项加入“用 Iris Agent 打开”。
 
-* [ ] 增加 `iris-agent` Session kind，并接入现有右栏顶部选择条。
+* [x] 增加 `iris-agent` Session kind，并接入现有右栏顶部选择条。
 
-* [ ] 实现初始只有固定 Agent 标签的 IrisAgentView。
+* [x] 实现初始只有固定 Agent 标签的 IrisAgentView。
 
 * [ ] 从真实 Issue 或 hub 打开 Session，通过 Pi TUI 登录结果完成一次真实 provider 流式对话。
 
 * [ ] 检查实际请求，确认使用锁定 Pi 版本的 Agent 基础提示词且只包含批准的 Iris 最小适配。
 
-* [ ] 实现实时思考状态、流式正文、停止生成、失败和重试。
+* [x] 实现实时思考状态、流式正文、停止生成、失败和重试。
 
-* [ ] 默认历史只显示用户消息、最终回答和紧凑工具事件。
+* [x] 默认历史只显示用户消息、最终回答和紧凑工具事件。
 
-* [ ] 为完成 turn 分配稳定节点，并实现仅截断消息记录的 Rewind。
+* [x] 为完成 turn 分配稳定节点，并实现仅截断消息记录的 Rewind。
 
-* [ ] Rewind 前要求 Session 已停止，确认界面明确显示“只回退消息记录，工作区保持不变”。
+* [x] Rewind 前要求 Session 已停止，确认界面明确显示“只回退消息记录，工作区保持不变”。
 
-* [ ] Rewind 后不提供旧消息后缀恢复或分支管理，下一次发送重新读取当前工作区。
+* [x] Rewind 后不提供旧消息后缀恢复或分支管理，下一次发送重新读取当前工作区。
 
 达到关键里程碑一只说明入口、事件链和消息 Rewind 成立，不能宣布具备完整 Rewind、可用或自举资格。
 
 #### MVP 最小工作闭环
 
-* [ ] 创建 Session 时固定 Issue、文档或 hub anchor，并处理 `anchor-missing`。
+* [x] 创建 Session 时固定 Issue、文档或 hub anchor，并处理 `anchor-missing`。
 
-* [ ] 实现最小 canonical prompt assembly，每次发送前强制 flush 和重读 anchor。
+* [x] 实现最小 canonical prompt assembly，每次发送前强制 flush 和重读 anchor。
 
 * [ ] 接通 Pi 语义的 `read`、`edit`、`write`，展示紧凑事件和可打开的真实 diff。
 
-* [ ] 记录 `edit`、`write` 前后状态，为关键里程碑二的文件 Rewind 留下足够事实。
+* [x] 记录 `edit`、`write` 前后状态，为关键里程碑二的文件 Rewind 留下足够事实。
 
-* [ ] 接通 3 秒内结束的非交互短命令，不创建 Terminal 标签。
+* [x] 接通 3 秒内结束的非交互短命令，不创建 Terminal 标签。
 
-* [ ] 对请求交互输入的命令终止并返回明确不支持错误。
+* [x] 对请求交互输入的命令终止并返回明确不支持错误。
 
 * [ ] Agent 写回 Issue 后由 watcher 刷新编辑器。
 
-* [ ] 将工具和 provider 错误完整传递给模型和 UI。
+* [x] 将工具和 provider 错误完整传递给模型和 UI。
 
-* [ ] 建立 Worker、adapter、ToolHost、store 和基础 UI 自动化测试。
+* [x] 建立 Worker、adapter、ToolHost、store 和基础 UI 自动化测试。
 
 * [ ] 回归普通 PTY 和外部 Agent CLI。
 
@@ -548,11 +548,11 @@ MVP 退出条件：
 
 * [ ] 实际请求使用 canonical project prompt 和发送前最新 Issue。
 
-* [ ] 所有文件和终端副作用都经过 Iris main 并可追溯。
+* [x] 所有文件和终端副作用都经过 Iris main 并可追溯。
 
 * [ ] UI 可达真实错误、diff 和命令结果。
 
-* [ ] 产品明确显示当前版本尚不具备自举资格。
+* [x] 产品明确显示当前版本尚不具备自举资格。
 
 ### 第三阶段：核心功能与关键里程碑二
 
@@ -896,3 +896,45 @@ idle，并直接产生目标节点以前的新线性历史，不暴露旧后缀�
 主进程和窗口启动。按项目约束未运行 `npm run dist`，也没有用开发服务器截图替代人工测试。
 第一阶段技术退出条件已满足；第二阶段的正式 store、IPC、UI、真实产品入口和消息 Rewind 交互
 仍保持未完成。
+
+### 2026-08-13：第二阶段 MVP 自动化骨架落地
+
+第二阶段已经完成内置 Iris Agent 的产品接线骨架，但还没有宣称真实 provider 端到端 MVP 退出。
+本次实现把 `iris-agent` 作为独立 Session kind 接入右栏选择条和空状态启动入口；Renderer 在打开、
+发送和重试前 flush 当前编辑器，main 每次发送前重新读取固定 document/workspace anchor，并把
+Pi-derived Agent 基础提示词、Iris software prompt、project prompt 和 anchor 组装成 canonical
+prompt。持久化的 request facts 只保存 prompt/layer fingerprint、anchor 和字符数，不保存 prompt
+正文。
+
+运行时采用一 Session 一懒启动 Worker。`src/shared/agent-protocol.ts` 定义 v1 Worker 协议；
+Worker 只运行 Pi Agent loop 和 tool-call RPC，不直接写文件或启动进程。所有 `read`、`edit`、
+`write` 和 `terminal` 调用都回到 Iris main 的 ToolHost：路径限制在项目根内，`edit`/`write`
+记录前后 SHA 与内容，禁止 Agent 未经用户明确请求新建 `.iris` 文档；短命令通过一次性 PTY
+执行并完整落盘，明显交互式命令返回不支持错误。
+
+本地 IrisAgentSession store 写入 app-owned `userData` hash 命名空间，不写项目 `.iris/`。store
+通过 `JsonStore` 继承 `.bak` 备份与主文件/备份/默认值加载顺序，加载时执行 schema 校验；重启
+恢复会把未结算 Session 和 turn 标记为 failed。Worker host 覆盖 ready、stop、crash、idle
+timeout 和 shutdown 清理，崩溃只影响对应 Agent Session。
+
+IrisAgentView 目前是固定 Agent 工作面，显示用户消息、流式 assistant 正文、紧凑工具事件、错误、
+停止、重试和消息 Rewind。Rewind 只在 Session 停止后允许，确认文案明确“只回退消息记录，工作区
+保持不变”，实现保留目标完成 turn，只删除其后的消息、tool event、file effect 和 request fact；
+不会保留可恢复后缀，也不会回滚文件、终端或外部副作用。界面仍明确显示“当前版本尚不具备自举资格”。
+
+已通过的本轮补充验证：
+
+* `npm test -- --run src/main/agent/session-manager.test.ts src/main/agent/history.test.ts`：2 个文件，
+  5 项测试通过。
+* `npm run typecheck`：main、preload、web typecheck 与 renderer async-boundary 门禁通过。
+* `npm test -- --run`：第二次原命令重跑通过，74 个测试文件、383 项测试通过。第一次全量
+  Vitest 运行在测试进程内触发 Node 原生 `readFileSync` assertion 崩溃，没有出现业务断言失败。
+* `npm run build`：typecheck 与 electron-vite 生产构建通过，并生成 `out/main/agent-worker.js`。
+* `npm run agent:worker-check`：Electron Node `24.18.1`、Pi `0.84.1`、protocol v1 通过。
+* `npm run metadata:check`、`npm run licenses:check` 和 `npm run smoke` 全部通过。
+
+仍未勾选的第二阶段真实验收项不是代码骨架问题，而是需要真实产品环境跑通或进一步 UI 能力：
+
+* [ ] 用当前产品入口从真实 Issue 通过 Pi TUI 登录结果完成一次真实 provider 流式对话，并审计实际请求。
+* [ ] 从真实 Issue 完成“读 Issue -> 读代码 -> 修改 -> 短测试 -> 写回 Issue -> 最终回答”闭环。
+* [ ] 展示可打开的真实 diff、真实命令结果和 watcher 刷新链路，并补齐对应手工/真实 provider 记录。

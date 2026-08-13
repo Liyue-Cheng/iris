@@ -15,6 +15,7 @@
 import { BrowserWindow, type IpcMainInvokeEvent, type WebContents } from 'electron';
 import type { ProjectManager } from './project-manager';
 import type { SessionManager } from './session-manager';
+import type { IrisAgentSessionManager } from './agent/session-manager';
 import type { SettingsManager } from './settings-manager';
 import type { GitManager } from './git-manager';
 import type { ProjectScope } from '@shared/types';
@@ -24,6 +25,7 @@ export interface WindowContext {
   readonly win: BrowserWindow;
   readonly projectManager: ProjectManager;
   readonly sessionManager: SessionManager;
+  readonly agentSessionManager: IrisAgentSessionManager;
   readonly gitManager: GitManager;
   /** Project bound to this window (null when none open yet). Updated on
    *  project:open so WINDOW_BOOTSTRAP and persistence see the current root. */

@@ -3,6 +3,7 @@ import { Worker } from 'node:worker_threads';
 import {
   IRIS_AGENT_PROTOCOL_VERSION,
   type AgentHistorySnapshot,
+  type AgentWorkerInitRuntime,
   type AgentWorkerEvent,
   type AgentWorkerRequest,
 } from '@shared/agent-protocol';
@@ -17,6 +18,7 @@ export interface AgentWorkerPort {
 
 export interface AgentWorkerHostOptions {
   loadHistory(sessionId: string): Promise<AgentHistorySnapshot>;
+  loadRuntime(sessionId: string): Promise<AgentWorkerInitRuntime>;
   workerFactory?: () => AgentWorkerPort;
   idleTimeoutMs?: number;
 }
@@ -95,6 +97,7 @@ export class AgentWorkerHost extends EventEmitter {
       type: 'initialize',
       correlation: { sessionId: this.sessionId },
       history,
+      runtime: await this.options.loadRuntime(this.sessionId),
     });
   }
 

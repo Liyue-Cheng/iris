@@ -29,6 +29,7 @@ import {
 import { ProjectManager } from './project-manager';
 import { GitManager } from './git-manager';
 import { SessionManager } from './session-manager';
+import { IrisAgentSessionManager } from './agent/session-manager';
 import { ensureFocusScriptCurrent } from './agent-injection';
 import { registerIpcHandler, registerIpcHandlers, wireBroadcasts } from './ipc';
 import {
@@ -130,12 +131,14 @@ function createWindowContext(win: BrowserWindow, initialRoot: string | null): Wi
   const projectManager = new ProjectManager();
   const gitManager = new GitManager();
   const sessionManager = new SessionManager(settingsManager);
+  const agentSessionManager = new IrisAgentSessionManager(app.getPath('userData'), projectManager);
   let ctx: WindowContext;
   const unwire = wireBroadcasts(
     settingsManager,
     projectManager,
     gitManager,
     sessionManager,
+    agentSessionManager,
     () => ctx.projectScope,
     () => ctx.outputAttachment,
     win,
@@ -145,6 +148,7 @@ function createWindowContext(win: BrowserWindow, initialRoot: string | null): Wi
     projectManager,
     gitManager,
     sessionManager,
+    agentSessionManager,
     projectRoot: initialRoot,
     projectScope: null,
     projectSwitching: false,
@@ -174,10 +178,11 @@ function shutdownWindowContext(ctx: WindowContext): Promise<void> {
   const cleanup = ctx.projectSwitchTail.catch(() => undefined).then(async () => {
     const results = await Promise.allSettled([
       ctx.sessionManager.shutdown(),
+      ctx.agentSessionManager.shutdown(),
       ctx.projectManager.close(),
       ctx.gitManager.close(),
     ]);
-    const names = ['sessions', 'project watcher', 'git watcher'];
+    const names = ['sessions', 'iris-agent sessions', 'project watcher', 'git watcher'];
     results.forEach((result, index) => {
       if (result.status === 'rejected') {
         logger.warn(

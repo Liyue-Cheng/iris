@@ -10,6 +10,10 @@ await access(workerPath);
 
 const probe = `
   const { Worker } = require('node:worker_threads');
+  const { mkdtempSync, rmSync } = require('node:fs');
+  const { tmpdir } = require('node:os');
+  const { join } = require('node:path');
+  const agentDir = mkdtempSync(join(tmpdir(), 'iris-agent-worker-check-'));
   const worker = new Worker(${JSON.stringify(workerPath)});
   const timeout = setTimeout(() => {
     console.error('agent worker check timed out');
@@ -19,10 +23,12 @@ const probe = `
     console.error(error);
     process.exit(3);
   });
-  worker.once('message', async (message) => {
+  worker.on('message', async (message) => {
+    if (message && message.type !== 'ready') return;
     clearTimeout(timeout);
     console.log(JSON.stringify(message));
     await worker.terminate();
+    rmSync(agentDir, { recursive: true, force: true });
   });
   worker.postMessage({
     version: 1,
@@ -32,6 +38,10 @@ const probe = `
       revision: 7,
       anchor: { kind: 'workspace', path: '.iris' },
       messages: [],
+    },
+    runtime: {
+      cwd: process.cwd(),
+      agentDir,
     },
   });
 `;
@@ -74,4 +84,3 @@ if (
 console.log(
   `[agent-worker] Electron Node ${event.runtime.nodeVersion}, Pi ${event.runtime.piVersion}, protocol v${event.version}`,
 );
-

@@ -12,7 +12,7 @@
  * EmptyPathState, F-1): spawn happens only on an explicit click.
  */
 import { useState } from 'react';
-import { ChevronDown, Plus, X, FileText, FolderRoot, SquareTerminal } from 'lucide-react';
+import { Bot, ChevronDown, Plus, X, FileText, FolderRoot, SquareTerminal } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AgentConfig } from '@shared/types';
 import {
@@ -21,11 +21,19 @@ import {
   sessionAnchorKey,
   workspaceAnchorKey,
 } from '@renderer/stores/session-store';
+import {
+  irisAgentAnchorKey,
+  irisAgentStore,
+  selectedIrisAgentIdForAnchor,
+  useIrisAgentSessions,
+} from '@renderer/stores/iris-agent-store';
 import { useSettings } from '@renderer/stores/settings-store';
 import { projectStore, useProject } from '@renderer/stores/project-store';
 import { closeSession, openSession, openWorkspaceSession } from '@renderer/lib/session-actions';
+import { closeIrisAgent, openIrisAgent } from '@renderer/lib/iris-agent-actions';
 import { docDisplayTitle, findDocByPath } from '@renderer/lib/doc-utils';
 import { TerminalView } from '@renderer/components/terminal/TerminalView';
+import { IrisAgentView } from '@renderer/components/agent/IrisAgentView';
 import { Button } from '@renderer/components/ui/button';
 import { Input } from '@renderer/components/ui/input';
 import { SessionDot } from '@renderer/components/ui/session-dot';
@@ -95,11 +103,13 @@ export function LauncherMenuItems({
 
 export function RightPane(): JSX.Element {
   const { t } = useTranslation();
-  const { sessions } = useSessions();
+  const { sessions: terminalSessions } = useSessions();
+  const { sessions: agentSessions } = useIrisAgentSessions();
   const settings = useSettings();
   const { phase, view, scan } = useProject();
   const agents = settings?.agents ?? [];
   const [launcherQuery, setLauncherQuery] = useState('');
+  const [selectedItemIdByAnchor, setSelectedItemIdByAnchor] = useState<Record<string, string>>({});
   const visibleLaunchers = matchingLaunchers(agents, launcherQuery);
   const projectReady = phase === 'ready';
 
@@ -136,20 +146,55 @@ export function RightPane(): JSX.Element {
   const visibleSessions =
     !projectReady || anchorKey === null
       ? []
-      : sessions.filter((s) => sessionAnchorKey(s) === anchorKey);
+      : terminalSessions.filter((s) => sessionAnchorKey(s) === anchorKey);
+  const visibleAgentSessions =
+    !projectReady || anchorKey === null
+      ? []
+      : agentSessions.filter((s) => irisAgentAnchorKey(s.anchor) === anchorKey);
+  const visibleItems = [
+    ...visibleSessions.map((session) => ({ kind: 'terminal' as const, session, createdAt: session.createdAt })),
+    ...visibleAgentSessions.map((session) => ({ kind: 'iris-agent' as const, session, createdAt: session.createdAt })),
+  ].sort((a, b) => a.createdAt - b.createdAt);
   // Never show a terminal whose session is outside the current anchor; if
   // the staged id points elsewhere but this anchor HAS sessions, fall back
   // to the newest one (display-level only — no state mutation in render).
-  const shownSession =
-    visibleSessions.find((s) => s.id === (anchorKey ? selectedSessionIdForAnchor(anchorKey) : null)) ??
-    visibleSessions[visibleSessions.length - 1] ??
+  const selectedItemId = anchorKey ? selectedItemIdByAnchor[anchorKey] : undefined;
+  const fallbackTerminalId = anchorKey ? selectedSessionIdForAnchor(anchorKey) : null;
+  const fallbackAgentId = anchorKey ? selectedIrisAgentIdForAnchor(anchorKey) : null;
+  const shownItem =
+    visibleItems.find((item) => item.session.id === selectedItemId) ??
+    visibleItems.find((item) => item.kind === 'iris-agent' && item.session.id === fallbackAgentId) ??
+    visibleItems.find((item) => item.kind === 'terminal' && item.session.id === fallbackTerminalId) ??
+    visibleItems[visibleItems.length - 1] ??
     null;
+  const shownSession = shownItem?.kind === 'terminal' ? shownItem.session : null;
+  const shownAgentSession = shownItem?.kind === 'iris-agent' ? shownItem.session : null;
+
+  const selectItem = (kind: 'terminal' | 'iris-agent', sessionId: string): void => {
+    if (!anchorKey) return;
+    setSelectedItemIdByAnchor((current) => ({ ...current, [anchorKey]: sessionId }));
+    if (kind === 'terminal') void projectStore.activateSession(sessionId);
+    else irisAgentStore.select(sessionId);
+  };
+
+  const spawnIrisAgent = (): void => {
+    const anchor = isHub
+      ? { kind: 'workspace' as const, path: hubWorkspacePath }
+      : selectedPath
+        ? { kind: 'document' as const, path: selectedPath }
+        : { kind: 'workspace' as const, path: '.iris' };
+    void openIrisAgent(anchor).then((session) => {
+      if (session && anchorKey) {
+        setSelectedItemIdByAnchor((current) => ({ ...current, [anchorKey]: session.id }));
+      }
+    });
+  };
 
   return (
     <div className="flex h-full flex-col bg-card/50">
       {/* Terminal banner — aligned (h-11) with the other panes' first rows. */}
       <div className="flex h-11 shrink-0 items-center gap-1 px-2">
-        {shownSession ? (
+        {shownItem ? (
           <ContextMenu>
             <ContextMenuTrigger asChild>
               <div className="flex min-w-0 flex-1">
@@ -160,22 +205,28 @@ export function RightPane(): JSX.Element {
                       title={t('layout.switchSession')}
                       className="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm px-1.5 py-1 text-left text-[13px] hover:bg-muted/60"
                     >
-                      <SessionDot state={shownSession.state} />
+                      {shownItem.kind === 'terminal' ? (
+                        <SessionDot state={shownItem.session.state} />
+                      ) : (
+                        <Bot className="h-3.5 w-3.5 shrink-0 text-primary" />
+                      )}
                       {/* Title bar shows the live terminal title (OSC 0/2),
                           falling back to the agent label until one arrives.
                           The agent identity stays available in the dropdown,
                           so the title bar shows only the live title. */}
                       <span className="min-w-0 truncate font-medium">
-                        {shownSession.terminalTitle ?? shownSession.displayName}
+                        {shownItem.kind === 'terminal'
+                          ? (shownItem.session.terminalTitle ?? shownItem.session.displayName)
+                          : shownItem.session.displayName}
                       </span>
-                      {shownSession.state === 'exited' && (
+                      {shownItem.kind === 'terminal' && shownItem.session.state === 'exited' && (
                         <span className="shrink-0 text-[11px] text-muted-foreground/60">
-                          exit {shownSession.exitCode}
+                          exit {shownItem.session.exitCode}
                         </span>
                       )}
-                      {visibleSessions.length > 1 && (
+                      {visibleItems.length > 1 && (
                         <span className="shrink-0 text-[11px] text-muted-foreground/60">
-                          {visibleSessions.indexOf(shownSession) + 1}/{visibleSessions.length}
+                          {visibleItems.indexOf(shownItem) + 1}/{visibleItems.length}
                         </span>
                       )}
                       <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground/60" />
@@ -188,25 +239,29 @@ export function RightPane(): JSX.Element {
                     <DropdownMenuLabel className="truncate">
                       {t('layout.sessionsFor', { name: anchorName })}
                     </DropdownMenuLabel>
-                    {visibleSessions.map((s) => (
+                    {visibleItems.map((item) => (
                       <DropdownMenuItem
-                        key={s.id}
-                        onClick={() => void projectStore.activateSession(s.id)}
+                        key={item.session.id}
+                        onClick={() => selectItem(item.kind, item.session.id)}
                         className="flex items-center gap-1.5"
                       >
-                        <SessionDot state={s.state} />
-                        <span className="shrink-0 font-medium">{s.displayName}</span>
-                        {s.terminalTitle && (
+                        {item.kind === 'terminal' ? (
+                          <SessionDot state={item.session.state} />
+                        ) : (
+                          <Bot className="h-3.5 w-3.5 shrink-0 text-primary" />
+                        )}
+                        <span className="shrink-0 font-medium">{item.session.displayName}</span>
+                        {item.kind === 'terminal' && item.session.terminalTitle && (
                           <span className="min-w-0 truncate text-[11px] text-muted-foreground/70">
-                            {s.terminalTitle}
+                            {item.session.terminalTitle}
                           </span>
                         )}
-                        {s.state === 'exited' && (
+                        {item.kind === 'terminal' && item.session.state === 'exited' && (
                           <span className="shrink-0 text-[11px] text-muted-foreground/60">
-                            exit {s.exitCode}
+                            exit {item.session.exitCode}
                           </span>
                         )}
-                        {s.id === shownSession.id && (
+                        {item.session.id === shownItem.session.id && (
                           <span className="shrink-0 text-[11px] text-muted-foreground/60">{t('common.current')}</span>
                         )}
                         <button
@@ -214,7 +269,8 @@ export function RightPane(): JSX.Element {
                           title={t('layout.closeSession')}
                           onClick={(e) => {
                             e.stopPropagation();
-                            void closeSession(s.id);
+                            if (item.kind === 'terminal') void closeSession(item.session.id);
+                            else void closeIrisAgent(item.session.id);
                           }}
                           className="ml-auto shrink-0 rounded-sm p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
                         >
@@ -227,7 +283,12 @@ export function RightPane(): JSX.Element {
               </div>
             </ContextMenuTrigger>
             <ContextMenuContent>
-              <ContextMenuItem onClick={() => void closeSession(shownSession.id)}>
+              <ContextMenuItem
+                onClick={() => {
+                  if (shownItem.kind === 'terminal') void closeSession(shownItem.session.id);
+                  else void closeIrisAgent(shownItem.session.id);
+                }}
+              >
                 {t('layout.closeSession')}
               </ContextMenuItem>
             </ContextMenuContent>
@@ -256,6 +317,9 @@ export function RightPane(): JSX.Element {
             <DropdownMenuLabel className="max-w-52 truncate">
               {isHub ? t('layout.workspaceFallback', { name: anchorName }) : t('layout.attachedTo', { name: anchorName })}
             </DropdownMenuLabel>
+            <DropdownMenuItem onClick={spawnIrisAgent}>
+              用 Iris Agent 打开
+            </DropdownMenuItem>
             <LauncherMenuItems agents={agents} onSelect={spawn} />
           </DropdownMenuContent>
         </DropdownMenu>
@@ -277,7 +341,12 @@ export function RightPane(): JSX.Element {
             <TerminalView key={shownSession.id} sessionId={shownSession.id} />
           </div>
         )}
-        {!shownSession &&
+        {shownAgentSession && (
+          <div className="absolute inset-0">
+            <IrisAgentView key={shownAgentSession.id} session={shownAgentSession} />
+          </div>
+        )}
+        {!shownItem &&
           (projectReady ? (
             /* Full-page launch pad (F-1) — spawn only on explicit click. */
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-6 text-center">
@@ -301,6 +370,14 @@ export function RightPane(): JSX.Element {
               </p>
             </div>
             <div className="flex max-h-[min(24rem,55vh)] w-64 flex-col gap-2 overflow-y-auto pr-1">
+              <Button
+                variant="default"
+                className="h-9 justify-start gap-2 px-4"
+                onClick={spawnIrisAgent}
+              >
+                <Bot className="!size-4" />
+                用 Iris Agent 打开
+              </Button>
               {agents.length > LAUNCHER_SEARCH_THRESHOLD && (
                 <Input
                   value={launcherQuery}

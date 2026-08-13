@@ -33,6 +33,7 @@ describe('AgentWorkerHost', () => {
     }));
     const host = new AgentWorkerHost('session-1', {
       loadHistory,
+      loadRuntime: async () => ({ cwd: process.cwd(), agentDir: process.cwd() }),
       workerFactory: () => {
         const worker = new FakeWorker();
         workers.push(worker);

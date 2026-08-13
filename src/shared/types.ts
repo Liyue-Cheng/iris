@@ -600,6 +600,125 @@ export interface SessionListSnapshot {
   sessions: SessionInfo[];
 }
 
+// ──────────────────────────────────────────────────────────────────
+// Iris Agent sessions (second-stage MVP)
+// ──────────────────────────────────────────────────────────────────
+
+export type IrisAgentAnchor =
+  | { kind: 'document'; path: string }
+  | { kind: 'workspace'; path: string };
+
+export type IrisAgentRuntimeState =
+  | 'starting'
+  | 'ready'
+  | 'running'
+  | 'waiting-tool'
+  | 'stopping'
+  | 'idle'
+  | 'failed';
+
+export type IrisAgentMessageRole = 'user' | 'assistant' | 'tool';
+
+export interface IrisAgentMessage {
+  id: string;
+  turnId: string;
+  role: IrisAgentMessageRole;
+  content: string;
+  createdAt: number;
+  compact?: boolean;
+}
+
+export interface IrisAgentToolEvent {
+  id: string;
+  turnId: string;
+  requestId: string;
+  name: 'read' | 'edit' | 'write' | 'terminal';
+  state: 'running' | 'completed' | 'failed';
+  createdAt: number;
+  completedAt?: number;
+  inputSummary: string;
+  resultSummary?: string;
+  error?: string;
+  diff?: string;
+  path?: string;
+  terminalId?: string;
+}
+
+export interface IrisAgentFileEffect {
+  id: string;
+  turnId: string;
+  toolCallId: string;
+  path: string;
+  kind: 'edit' | 'write';
+  beforeSha256: string | null;
+  afterSha256: string;
+  beforeContent?: string;
+  afterContent: string;
+  createdAt: number;
+}
+
+export interface IrisAgentRequestFacts {
+  id: string;
+  turnId: string;
+  createdAt: number;
+  promptFingerprint: string;
+  layerFingerprints: {
+    agent: string;
+    software: string;
+    project: string;
+    anchor: string;
+  };
+  anchor: IrisAgentAnchor;
+  promptChars: number;
+  redacted: true;
+}
+
+export interface IrisAgentTurn {
+  id: string;
+  userMessageId: string;
+  assistantMessageId?: string;
+  requestId: string;
+  status: 'running' | 'completed' | 'failed' | 'stopped' | 'rewound';
+  createdAt: number;
+  completedAt?: number;
+  error?: string;
+}
+
+export interface IrisAgentSessionInfo {
+  id: string;
+  kind: 'iris-agent';
+  anchor: IrisAgentAnchor;
+  projectRoot: string;
+  projectGeneration: number;
+  displayName: string;
+  state: IrisAgentRuntimeState;
+  createdAt: number;
+  updatedAt: number;
+  activeTurnId: string | null;
+  messages: IrisAgentMessage[];
+  turns: IrisAgentTurn[];
+  toolEvents: IrisAgentToolEvent[];
+  fileEffects: IrisAgentFileEffect[];
+  requestFacts: IrisAgentRequestFacts[];
+  lastError?: string;
+  selfHostingEligible: false;
+}
+
+export interface IrisAgentListSnapshot {
+  scope: ProjectScope;
+  sessions: IrisAgentSessionInfo[];
+}
+
+export interface IrisAgentSessionChangedPayload {
+  scope: ProjectScope;
+  session: IrisAgentSessionInfo;
+}
+
+export interface IrisAgentSessionDestroyedPayload {
+  scope: ProjectScope;
+  sessionId: string;
+}
+
 /** One main-process commit result for initial open, same-root refresh, or switch. */
 export interface ProjectOpenResult {
   scope: ProjectScope;

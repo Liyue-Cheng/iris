@@ -75,7 +75,12 @@ export function enqueueProjectSwitch(
 
       // Point of no return. A killed process cannot be rolled back; after the
       // complete preflight above, finish forward under the main-side gate.
-      if (current) await ctx.sessionManager.closeProject(current);
+      if (current) {
+        await Promise.all([
+          ctx.sessionManager.closeProject(current),
+          ctx.agentSessionManager.closeProject(current),
+        ]);
+      }
       const scan = await ctx.projectManager.activatePrepared(prepared);
       try {
         await ctx.gitManager.open(prepared.root);

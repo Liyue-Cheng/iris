@@ -8,6 +8,7 @@ import {
   createEditToolDefinition,
   createReadToolDefinition,
   createWriteToolDefinition,
+  getAgentDir,
   readStoredCredential,
   type BashOperations,
   type CreateAgentSessionOptions,
@@ -19,6 +20,10 @@ import { IRIS_AGENT_PROMPT } from './prompt';
 
 export const IRIS_PI_VERSION = VERSION;
 export const IRIS_PI_TOOL_NAMES = ['read', 'edit', 'write', 'terminal'] as const;
+
+export function irisPiAgentDir(): string {
+  return getAgentDir();
+}
 
 export interface IrisToolHostOperations {
   read: ReadOperations;

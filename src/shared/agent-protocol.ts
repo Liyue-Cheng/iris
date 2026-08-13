@@ -1,4 +1,8 @@
+import type { IrisAgentAnchor } from './types';
+
 export const IRIS_AGENT_PROTOCOL_VERSION = 1 as const;
+
+export type AgentToolName = 'read' | 'edit' | 'write' | 'terminal';
 
 export interface AgentCorrelation {
   sessionId: string;
@@ -20,13 +24,43 @@ export type AgentSessionRuntimeState =
 
 export interface AgentHistorySnapshot {
   revision: number;
-  anchor: { kind: 'document'; path: string } | { kind: 'workspace'; path: string };
+  anchor: IrisAgentAnchor;
   messages: Array<{
     id: string;
     role: 'user' | 'assistant' | 'tool';
     content: string;
   }>;
 }
+
+export interface AgentWorkerInitRuntime {
+  cwd: string;
+  agentDir: string;
+}
+
+export type AgentToolOperationInput =
+  | { tool: 'read'; operation: 'access' | 'readFile'; absolutePath: string }
+  | { tool: 'edit'; operation: 'access' | 'readFile' | 'writeFile'; absolutePath: string; content?: string }
+  | { tool: 'write'; operation: 'mkdir' | 'writeFile'; absolutePath: string; content?: string }
+  | {
+      tool: 'terminal';
+      operation: 'exec';
+      command: string;
+      cwd: string;
+      timeout?: number;
+      env?: Record<string, string | undefined>;
+    };
+
+export type AgentToolOperationResult =
+  | { kind: 'void' }
+  | { kind: 'file'; contentBase64: string }
+  | {
+      kind: 'terminal';
+      exitCode: number | null;
+      outputBase64: string;
+      terminalId: string;
+      outputPath: string;
+      shown: boolean;
+    };
 
 interface AgentProtocolEnvelope {
   version: typeof IRIS_AGENT_PROTOCOL_VERSION;
@@ -35,10 +69,11 @@ interface AgentProtocolEnvelope {
 
 export type AgentWorkerRequest = AgentProtocolEnvelope &
   (
-    | { type: 'initialize'; history: AgentHistorySnapshot }
+    | { type: 'initialize'; history: AgentHistorySnapshot; runtime: AgentWorkerInitRuntime }
     | { type: 'run'; prompt: string }
     | { type: 'abort'; reason: 'user' | 'project-switch' | 'app-quit' }
-    | { type: 'tool-result'; ok: boolean; content: string }
+    | { type: 'tool-result'; ok: true; result: AgentToolOperationResult }
+    | { type: 'tool-result'; ok: false; error: string }
     | { type: 'shutdown' }
   );
 
@@ -50,7 +85,7 @@ export type AgentWorkerEvent = AgentProtocolEnvelope &
       }
     | { type: 'state'; state: AgentSessionRuntimeState }
     | { type: 'stream'; event: unknown }
-    | { type: 'tool-request'; name: 'read' | 'edit' | 'write' | 'terminal'; input: unknown }
+    | { type: 'tool-request'; input: AgentToolOperationInput }
     | { type: 'failure'; code: string; message: string }
     | { type: 'stopped'; reason: 'idle-timeout' | 'shutdown' }
   );
@@ -60,13 +95,14 @@ export function isAgentWorkerRequest(value: unknown): value is AgentWorkerReques
   if (!isCorrelation(value.correlation)) return false;
   switch (value.type) {
     case 'initialize':
-      return isHistorySnapshot(value.history);
+      return isHistorySnapshot(value.history) && isInitRuntime(value.runtime);
     case 'run':
       return typeof value.prompt === 'string';
     case 'abort':
       return value.reason === 'user' || value.reason === 'project-switch' || value.reason === 'app-quit';
     case 'tool-result':
-      return typeof value.ok === 'boolean' && typeof value.content === 'string';
+      if (typeof value.ok !== 'boolean') return false;
+      return value.ok ? isToolOperationResult(value.result) : typeof value.error === 'string';
     case 'shutdown':
       return true;
     default:
@@ -92,8 +128,7 @@ function isHistorySnapshot(value: unknown): value is AgentHistorySnapshot {
   ) {
     return false;
   }
-  if (!isRecord(value.anchor) || typeof value.anchor.path !== 'string') return false;
-  if (value.anchor.kind !== 'document' && value.anchor.kind !== 'workspace') return false;
+  if (!isAnchor(value.anchor)) return false;
   if (!Array.isArray(value.messages)) return false;
   return value.messages.every(
     (message) =>
@@ -101,6 +136,29 @@ function isHistorySnapshot(value: unknown): value is AgentHistorySnapshot {
       typeof message.id === 'string' &&
       (message.role === 'user' || message.role === 'assistant' || message.role === 'tool') &&
       typeof message.content === 'string',
+  );
+}
+
+function isAnchor(value: unknown): value is IrisAgentAnchor {
+  if (!isRecord(value) || typeof value.path !== 'string') return false;
+  return value.kind === 'document' || value.kind === 'workspace';
+}
+
+function isInitRuntime(value: unknown): value is AgentWorkerInitRuntime {
+  return isRecord(value) && typeof value.cwd === 'string' && typeof value.agentDir === 'string';
+}
+
+function isToolOperationResult(value: unknown): value is AgentToolOperationResult {
+  if (!isRecord(value) || typeof value.kind !== 'string') return false;
+  if (value.kind === 'void') return true;
+  if (value.kind === 'file') return typeof value.contentBase64 === 'string';
+  return (
+    value.kind === 'terminal' &&
+    (typeof value.exitCode === 'number' || value.exitCode === null) &&
+    typeof value.outputBase64 === 'string' &&
+    typeof value.terminalId === 'string' &&
+    typeof value.outputPath === 'string' &&
+    typeof value.shown === 'boolean'
   );
 }
 

@@ -35,6 +35,10 @@ import type {
   FsIrisChangedEvent,
   GitChangedEvent,
   GitSnapshot,
+  IrisAgentListSnapshot,
+  IrisAgentSessionChangedPayload,
+  IrisAgentSessionDestroyedPayload,
+  IrisAgentSessionInfo,
   IrisScanResult,
   PingResult,
   ProjectOpenResult,
@@ -59,6 +63,7 @@ import type { SettingsManager } from './settings-manager';
 import type { ProjectManager } from './project-manager';
 import type { GitManager } from './git-manager';
 import type { SessionManager } from './session-manager';
+import type { IrisAgentSessionManager } from './agent/session-manager';
 import {
   detachTerminalOutput,
   shouldForwardTerminalOutput,
@@ -941,6 +946,89 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
   );
 
   ipcMain.handle(
+    CHANNELS.IRIS_AGENT_OPEN,
+    (
+      event,
+      payload: {
+        anchor: { kind: 'document'; path: string } | { kind: 'workspace'; path: string };
+      } & ProjectScopedPayload,
+    ): Promise<IrisAgentSessionInfo> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_OPEN);
+      return ctx.agentSessionManager.createSession({ anchor: payload.anchor, scope });
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_SEND,
+    (
+      event,
+      payload: { sessionId: string; message: string } & ProjectScopedPayload,
+    ): Promise<IrisAgentSessionInfo> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_SEND);
+      return ctx.agentSessionManager.send(scope, payload.sessionId, payload.message);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_STOP,
+    (
+      event,
+      payload: { sessionId: string } & ProjectScopedPayload,
+    ): Promise<IrisAgentSessionInfo> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_STOP);
+      return ctx.agentSessionManager.stop(scope, payload.sessionId);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_RETRY,
+    (
+      event,
+      payload: { sessionId: string } & ProjectScopedPayload,
+    ): Promise<IrisAgentSessionInfo> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_RETRY);
+      return ctx.agentSessionManager.retry(scope, payload.sessionId);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_REWIND,
+    (
+      event,
+      payload: { sessionId: string; turnId: string } & ProjectScopedPayload,
+    ): Promise<IrisAgentSessionInfo> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_REWIND);
+      return ctx.agentSessionManager.rewind(scope, payload.sessionId, payload.turnId);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_CLOSE,
+    (
+      event,
+      payload: { sessionId: string } & ProjectScopedPayload,
+    ): Promise<void> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_CLOSE);
+      return ctx.agentSessionManager.closeSession(scope, payload.sessionId);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_LIST,
+    (event, payload: ProjectScopedPayload): Promise<IrisAgentListSnapshot> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_LIST);
+      return ctx.agentSessionManager.list(scope);
+    },
+  );
+
+  ipcMain.handle(
     CHANNELS.SESSION_SCROLLBACK,
     (
       event,
@@ -975,6 +1063,7 @@ export function wireBroadcasts(
   projectManager: ProjectManager,
   gitManager: GitManager,
   sessionManager: SessionManager,
+  agentSessionManager: IrisAgentSessionManager,
   getProjectScope: () => ProjectScope | null,
   getOutputAttachment: () => TerminalOutputAttachment | null,
   window: BrowserWindow,
@@ -1024,6 +1113,10 @@ export function wireBroadcasts(
   const onState = (e: SessionStateChangedPayload): void => send(EVENTS.SESSION_STATE_CHANGED, e);
   const onExited = (e: SessionExitedPayload): void => send(EVENTS.SESSION_EXITED, e);
   const onDestroyed = (e: SessionDestroyedPayload): void => send(EVENTS.SESSION_DESTROYED, e);
+  const onAgentChanged = (e: IrisAgentSessionChangedPayload): void =>
+    send(EVENTS.IRIS_AGENT_SESSION_CHANGED, e);
+  const onAgentDestroyed = (e: IrisAgentSessionDestroyedPayload): void =>
+    send(EVENTS.IRIS_AGENT_SESSION_DESTROYED, e);
   const onMaximize = (): void => send(EVENTS.WINDOW_MAXIMIZED_CHANGED, { maximized: true });
   const onUnmaximize = (): void => send(EVENTS.WINDOW_MAXIMIZED_CHANGED, { maximized: false });
 
@@ -1039,6 +1132,8 @@ export function wireBroadcasts(
   sessionManager.on('sessionStateChanged', onState);
   sessionManager.on('sessionExited', onExited);
   sessionManager.on('sessionDestroyed', onDestroyed);
+  agentSessionManager.on('sessionChanged', onAgentChanged);
+  agentSessionManager.on('sessionDestroyed', onAgentDestroyed);
   return () => {
     window.off('maximize', onMaximize);
     window.off('unmaximize', onUnmaximize);
@@ -1052,5 +1147,7 @@ export function wireBroadcasts(
     sessionManager.off('sessionStateChanged', onState);
     sessionManager.off('sessionExited', onExited);
     sessionManager.off('sessionDestroyed', onDestroyed);
+    agentSessionManager.off('sessionChanged', onAgentChanged);
+    agentSessionManager.off('sessionDestroyed', onAgentDestroyed);
   };
 }

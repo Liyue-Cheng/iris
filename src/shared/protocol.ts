@@ -140,6 +140,14 @@ export const CHANNELS = {
   /** Queries. */
   SESSION_LIST: 'session:list',
   SESSION_SCROLLBACK: 'session:scrollback',
+  /** Iris Agent verbs and projections. */
+  IRIS_AGENT_OPEN: 'iris-agent:open',
+  IRIS_AGENT_SEND: 'iris-agent:send',
+  IRIS_AGENT_STOP: 'iris-agent:stop',
+  IRIS_AGENT_RETRY: 'iris-agent:retry',
+  IRIS_AGENT_REWIND: 'iris-agent:rewind',
+  IRIS_AGENT_CLOSE: 'iris-agent:close',
+  IRIS_AGENT_LIST: 'iris-agent:list',
 } as const;
 
 export type WindowEditAction = 'cut' | 'copy' | 'paste' | 'selectAll';
@@ -159,4 +167,6 @@ export const EVENTS = {
   SESSION_STATE_CHANGED: 'evt:session:state-changed',
   SESSION_EXITED: 'evt:session:exited',
   SESSION_DESTROYED: 'evt:session:destroyed',
+  IRIS_AGENT_SESSION_CHANGED: 'evt:iris-agent:session-changed',
+  IRIS_AGENT_SESSION_DESTROYED: 'evt:iris-agent:session-destroyed',
 } as const;

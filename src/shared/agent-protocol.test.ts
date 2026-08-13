@@ -19,8 +19,10 @@ describe('Iris Agent Worker protocol', () => {
         version: 1,
         type: 'initialize',
         correlation: { sessionId: 'session-1' },
+        history: { revision: 1, anchor: { kind: 'workspace', path: '.iris' }, messages: [] },
+        runtime: { cwd: process.cwd(), agentDir: process.cwd() },
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       isAgentWorkerRequest({
         version: 1,

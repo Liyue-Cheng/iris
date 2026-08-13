@@ -7,6 +7,7 @@ import { CHANNELS } from '@shared/protocol';
 import { pipeline } from '@renderer/cpu';
 import { projectStore } from '@renderer/stores/project-store';
 import { sessionStore } from '@renderer/stores/session-store';
+import { hydrateIrisAgentSessions, irisAgentStore } from '@renderer/stores/iris-agent-store';
 import { editorStore } from '@renderer/stores/editor-store';
 import { alertDialog, confirmDialog } from '@renderer/components/ui/confirm-dialog';
 import { gitStore } from '@renderer/stores/git-store';
@@ -130,14 +131,16 @@ export async function offerPromptProjectionRepair(): Promise<void> {
 export async function openProject(root: string): Promise<void> {
   const currentRoot = projectStore.get().scan?.projectRoot ?? null;
   const switchingRoot = currentRoot !== null && currentRoot !== root;
-  if (switchingRoot && sessionStore.get().sessions.length > 0) {
+  const activeAgentSessions = irisAgentStore.get().sessions;
+  if (switchingRoot && (sessionStore.get().sessions.length > 0 || activeAgentSessions.length > 0)) {
     const sessions = sessionStore.get().sessions;
-    const live = sessions.filter((session) => session.state !== 'exited').length;
+    const live = sessions.filter((session) => session.state !== 'exited').length +
+      activeAgentSessions.filter((session) => session.state !== 'idle' && session.state !== 'ready' && session.state !== 'failed').length;
     const confirmed = await confirmDialog({
       title: translate('layout.switchTitle'),
       message: live > 0
         ? translate('layout.switchMessage', { count: sessions.length, live })
-        : translate('layout.switchMessageNoneLive', { count: sessions.length }),
+        : translate('layout.switchMessageNoneLive', { count: sessions.length + activeAgentSessions.length }),
       confirmText: translate('layout.closeAndSwitch'),
       tone: 'destructive',
     });
@@ -149,6 +152,7 @@ export async function openProject(root: string): Promise<void> {
   try {
     await editorStore.flushBeforeProjectSwitch();
     await pipeline.dispatch('project.open', { root });
+    await hydrateIrisAgentSessions();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     projectStore.handleOpenFailed(message);

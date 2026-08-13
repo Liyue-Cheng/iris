@@ -10,6 +10,7 @@ import type { WindowContext } from './window-context';
 import type { ProjectManager, PreparedProject } from './project-manager';
 import type { GitManager } from './git-manager';
 import type { SessionManager } from './session-manager';
+import type { IrisAgentSessionManager } from './agent/session-manager';
 import { enqueueProjectSwitch } from './project-switch';
 
 function scan(root: string): IrisScanResult {
@@ -79,6 +80,10 @@ function harness(initial: ProjectScope | null, sessions: SessionInfo[] = []) {
     list: () => sessions,
     closeProject,
   } as unknown as SessionManager;
+  const closeAgentProject = vi.fn(async () => undefined);
+  const agentSessionManager = {
+    closeProject: closeAgentProject,
+  } as unknown as IrisAgentSessionManager;
   const gitOpen = vi.fn(async () => undefined);
   const gitManager = { open: gitOpen } as unknown as GitManager;
   const readProjectSettings = vi.fn(async () => projectSettings());
@@ -86,6 +91,7 @@ function harness(initial: ProjectScope | null, sessions: SessionInfo[] = []) {
     win: {} as WindowContext['win'],
     projectManager,
     sessionManager,
+    agentSessionManager,
     gitManager,
     projectRoot: initial?.root ?? null,
     projectScope: initial,
@@ -99,6 +105,7 @@ function harness(initial: ProjectScope | null, sessions: SessionInfo[] = []) {
     prepareOpen,
     activatePrepared,
     closeProject,
+    closeAgentProject,
     gitOpen,
     readProjectSettings,
   };
