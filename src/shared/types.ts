@@ -626,6 +626,10 @@ export interface IrisAgentMessage {
   content: string;
   createdAt: number;
   compact?: boolean;
+  /** Retained for provider history reconstruction but hidden from the conversation UI. */
+  providerOnly?: boolean;
+  /** Exact Pi message used to reconstruct provider context after Worker replacement. */
+  providerMessage?: Record<string, unknown>;
 }
 
 export interface IrisAgentToolEvent {
@@ -673,11 +677,28 @@ export interface IrisAgentRequestFacts {
   redacted: true;
 }
 
+export interface IrisAgentUndoReceipt {
+  commandId: string;
+  removedTurnId: string;
+  removedAt: number;
+  resultingRevision: number;
+  externalEffectsRetained: true;
+}
+
 export interface IrisAgentTurn {
   id: string;
   userMessageId: string;
   assistantMessageId?: string;
   requestId: string;
+  /** Previous terminal attempt replaced by this retry. */
+  retryOfTurnId?: string;
+  /** @deprecated Legacy assembled-input marker. Never interpret as provider context. */
+  promptAvailable?: true;
+  artifactSchemaVersion?: 1;
+  assembledInputAvailable?: true;
+  assembledInputLegacy?: true;
+  providerContextAvailable?: true;
+  providerCallCount?: number;
   status: 'running' | 'completed' | 'failed' | 'stopped' | 'rewound';
   createdAt: number;
   completedAt?: number;
@@ -694,14 +715,62 @@ export interface IrisAgentSessionInfo {
   state: IrisAgentRuntimeState;
   createdAt: number;
   updatedAt: number;
+  /** Strictly monotonic canonical state revision. */
+  revision: number;
+  /** Identifies the only Worker generation allowed to mutate this Session. */
+  workerEpoch: number;
   activeTurnId: string | null;
+  /** Main-owned intent. While set, the target turn can only settle as stopped. */
+  stopRequestedTurnId?: string;
   messages: IrisAgentMessage[];
   turns: IrisAgentTurn[];
   toolEvents: IrisAgentToolEvent[];
   fileEffects: IrisAgentFileEffect[];
   requestFacts: IrisAgentRequestFacts[];
+  undoReceipts?: IrisAgentUndoReceipt[];
+  /** Artifact deletions committed by Undo/Retry but not yet completed on disk. */
+  pendingArtifactCleanupTurnIds?: string[];
   lastError?: string;
   selfHostingEligible: false;
+}
+
+export type IrisJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | IrisJsonValue[]
+  | { [key: string]: IrisJsonValue };
+
+export interface IrisAgentProviderContextCall {
+  index: number;
+  capturedAt: number;
+  provider: string;
+  model: string;
+  api: string;
+  payload: IrisJsonValue;
+}
+
+export interface IrisAgentProviderContextBundle {
+  schemaVersion: 1;
+  kind: 'provider-context-bundle';
+  sessionId: string;
+  turnId: string;
+  requestId: string;
+  createdAt: number;
+  assembledInput: { available: boolean; legacy: false };
+  contextStage: 'provider-payload';
+  compaction: 'disabled';
+  calls: Array<{
+    index: number;
+    capturedAt: number;
+    provider: string;
+    model: string;
+    api: string;
+    jsonFile: string;
+    textFile: string;
+    sha256: string;
+  }>;
 }
 
 export interface IrisAgentListSnapshot {

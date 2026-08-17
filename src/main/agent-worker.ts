@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { parentPort } from 'node:worker_threads';
 import {
   IRIS_AGENT_PROTOCOL_VERSION,
+  agentHistoryDigest,
   isAgentWorkerRequest,
   type AgentCorrelation,
   type AgentToolOperationInput,
@@ -12,8 +13,10 @@ import {
 import {
   IRIS_PI_VERSION,
   createIrisPiSession,
+  storedPiCredentialSecrets,
   type IrisToolHostOperations,
 } from './agent/pi-adapter';
+import { collectKnownSecrets, sanitizeProviderPayload } from './agent/context-artifact';
 
 if (!parentPort) throw new Error('Iris Agent Worker requires a worker_threads parent port');
 const workerPort = parentPort;
@@ -36,6 +39,7 @@ let runtime:
     }
   | null = null;
 let currentCorrelation: AgentCorrelation = { sessionId: 'unknown' };
+let providerCallIndex = 0;
 const pendingTools = new Map<string, PendingTool>();
 
 workerPort.on('message', (message: unknown) => {
@@ -61,8 +65,8 @@ async function handleMessage(message: unknown): Promise<void> {
     return;
   }
 
-  currentCorrelation = message.correlation;
   if (message.type === 'initialize') {
+    currentCorrelation = message.correlation;
     await initialize(message);
     return;
   }
@@ -83,6 +87,8 @@ async function handleMessage(message: unknown): Promise<void> {
   }
   if (message.type === 'run') {
     if (!runtime) throw new Error('Iris Agent Worker has not been initialized');
+    currentCorrelation = message.correlation;
+    providerCallIndex = 0;
     post({ type: 'state', correlation: message.correlation, state: 'running' });
     try {
       await runtime.session.prompt(message.prompt, {
@@ -110,6 +116,26 @@ async function initialize(message: Extract<AgentWorkerRequest, { type: 'initiali
     cwd: message.runtime.cwd,
     agentDir: message.runtime.agentDir,
     operations,
+    history: message.history,
+    onProviderPayload: (payload, model) => {
+      if (!currentCorrelation.requestId || !currentCorrelation.turnId) return;
+      const knownSecrets = collectKnownSecrets([
+        storedPiCredentialSecrets(model.provider, message.runtime.agentDir),
+        providerSecretEnvironment(),
+      ]);
+      post({
+        type: 'provider-context',
+        correlation: currentCorrelation,
+        call: {
+          index: ++providerCallIndex,
+          capturedAt: Date.now(),
+          provider: model.provider,
+          model: model.id,
+          api: model.api,
+          payload: sanitizeProviderPayload(payload, knownSecrets),
+        },
+      });
+    },
   });
   const unsubscribe = result.session.subscribe((event) => {
     post({ type: 'stream', correlation: currentCorrelation, event: jsonSafeEvent(event) });
@@ -124,12 +150,26 @@ async function initialize(message: Extract<AgentWorkerRequest, { type: 'initiali
     type: 'ready',
     correlation: message.correlation,
     runtime: {
+      protocolVersion: IRIS_AGENT_PROTOCOL_VERSION,
       piVersion: IRIS_PI_VERSION,
       nodeVersion: process.versions.node,
+      workerEpoch: message.correlation.workerEpoch ?? 0,
       historyRevision: message.history.revision,
+      historyMessageCount: result.session.state.messages.length,
+      historyDigest: agentHistoryDigest(message.history),
     },
   });
   post({ type: 'state', correlation: message.correlation, state: 'ready' });
+}
+
+function providerSecretEnvironment(): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([name, value]) =>
+        typeof value === 'string' &&
+        /(?:api[_-]?key|token|secret|password|authorization|credential)/iu.test(name),
+    ),
+  ) as Record<string, string>;
 }
 
 function createWorkerOperations(): IrisToolHostOperations {

@@ -23,6 +23,12 @@ function projectScoped<T extends Record<string, unknown>>(scope: ProjectScope, p
   return { ...payload, expectedScope: scope };
 }
 
+function commandPrecondition(sessionId: string): { commandId: string; expectedRevision: number } {
+  const session = irisAgentStore.get().sessions.find((candidate) => candidate.id === sessionId);
+  if (!session) throw new Error('The Iris Agent session is no longer available.');
+  return { commandId: crypto.randomUUID(), expectedRevision: session.revision };
+}
+
 export async function openIrisAgent(anchor: IrisAgentAnchor): Promise<IrisAgentSessionInfo | null> {
   const outcome = await attemptAction(async () => {
     if (!(await editorStore.flushBeforeSwitch('before-external-action'))) return null;
@@ -59,10 +65,21 @@ export async function sendIrisAgentMessage(sessionId: string, message: string): 
     async () => {
       if (!(await editorStore.flushBeforeSwitch('before-external-action'))) return;
       const scope = scopeOrThrow();
+      const precondition = commandPrecondition(sessionId);
       const session = await window.api.invoke<
-        { sessionId: string; message: string; expectedScope: ProjectScope },
+        {
+          sessionId: string;
+          message: string;
+          commandId: string;
+          expectedRevision: number;
+          expectedScope: ProjectScope;
+        },
         IrisAgentSessionInfo
-      >(CHANNELS.IRIS_AGENT_SEND, projectScoped(scope, { sessionId, message: trimmed }));
+      >(CHANNELS.IRIS_AGENT_SEND, projectScoped(scope, {
+        sessionId,
+        message: trimmed,
+        ...precondition,
+      }));
       irisAgentStore.handleChanged(session);
     },
   );
@@ -94,20 +111,26 @@ export async function retryIrisAgent(sessionId: string): Promise<void> {
     async () => {
       if (!(await editorStore.flushBeforeSwitch('before-external-action'))) return;
       const scope = scopeOrThrow();
+      const precondition = commandPrecondition(sessionId);
       const session = await window.api.invoke<
-        { sessionId: string; expectedScope: ProjectScope },
+        {
+          sessionId: string;
+          commandId: string;
+          expectedRevision: number;
+          expectedScope: ProjectScope;
+        },
         IrisAgentSessionInfo
-      >(CHANNELS.IRIS_AGENT_RETRY, projectScoped(scope, { sessionId }));
+      >(CHANNELS.IRIS_AGENT_RETRY, projectScoped(scope, { sessionId, ...precondition }));
       irisAgentStore.handleChanged(session);
     },
   );
 }
 
-export async function rewindIrisAgent(sessionId: string, turnId: string): Promise<void> {
+export async function rewindIrisAgent(sessionId: string): Promise<void> {
   const confirmed = await confirmDialog({
-    title: '回退 Iris Agent 消息记录？',
-    message: '只回退消息记录，工作区文件、终端输出和外部副作用保持不变。下一次发送会重新读取当前工作区。',
-    confirmText: '回退消息',
+    title: '撤销 Iris Agent 上一轮？',
+    message: '只撤销最后一轮对话。已发生的文件改动、终端命令和外部副作用不会回滚。',
+    confirmText: '撤销上一轮',
     tone: 'destructive',
   });
   if (!confirmed) return;
@@ -118,11 +141,36 @@ export async function rewindIrisAgent(sessionId: string, turnId: string): Promis
     },
     async () => {
       const scope = scopeOrThrow();
+      const precondition = commandPrecondition(sessionId);
       const session = await window.api.invoke<
-        { sessionId: string; turnId: string; expectedScope: ProjectScope },
+        {
+          sessionId: string;
+          commandId: string;
+          expectedRevision: number;
+          expectedScope: ProjectScope;
+        },
         IrisAgentSessionInfo
-      >(CHANNELS.IRIS_AGENT_REWIND, projectScoped(scope, { sessionId, turnId }));
+      >(CHANNELS.IRIS_AGENT_REWIND, projectScoped(scope, { sessionId, ...precondition }));
       irisAgentStore.handleChanged(session);
+    },
+  );
+}
+
+export async function openIrisAgentContext(sessionId: string, turnId: string): Promise<void> {
+  await runUserAction(
+    {
+      title: '上下文 artifact 打开失败',
+      dedupeKey: `iris-agent:context:${sessionId}:${turnId}`,
+    },
+    async () => {
+      const scope = scopeOrThrow();
+      await window.api.invoke<
+        { sessionId: string; turnId: string; expectedScope: ProjectScope },
+        void
+      >(
+        CHANNELS.IRIS_AGENT_OPEN_CONTEXT,
+        projectScoped(scope, { sessionId, turnId }),
+      );
     },
   );
 }

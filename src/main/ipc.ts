@@ -963,11 +963,21 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     CHANNELS.IRIS_AGENT_SEND,
     (
       event,
-      payload: { sessionId: string; message: string } & ProjectScopedPayload,
+      payload: {
+        sessionId: string;
+        message: string;
+        commandId?: string;
+        expectedRevision?: number;
+      } & ProjectScopedPayload,
     ): Promise<IrisAgentSessionInfo> => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_SEND);
-      return ctx.agentSessionManager.send(scope, payload.sessionId, payload.message);
+      return ctx.agentSessionManager.send(scope, payload.sessionId, payload.message, {
+        ...(payload.commandId ? { commandId: payload.commandId } : {}),
+        ...(payload.expectedRevision === undefined
+          ? {}
+          : { expectedRevision: payload.expectedRevision }),
+      });
     },
   );
 
@@ -987,11 +997,16 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     CHANNELS.IRIS_AGENT_RETRY,
     (
       event,
-      payload: { sessionId: string } & ProjectScopedPayload,
+      payload: { sessionId: string; commandId?: string; expectedRevision?: number } & ProjectScopedPayload,
     ): Promise<IrisAgentSessionInfo> => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_RETRY);
-      return ctx.agentSessionManager.retry(scope, payload.sessionId);
+      return ctx.agentSessionManager.retry(scope, payload.sessionId, {
+        ...(payload.commandId ? { commandId: payload.commandId } : {}),
+        ...(payload.expectedRevision === undefined
+          ? {}
+          : { expectedRevision: payload.expectedRevision }),
+      });
     },
   );
 
@@ -999,11 +1014,34 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     CHANNELS.IRIS_AGENT_REWIND,
     (
       event,
-      payload: { sessionId: string; turnId: string } & ProjectScopedPayload,
+      payload: { sessionId: string; commandId?: string; expectedRevision?: number } & ProjectScopedPayload,
     ): Promise<IrisAgentSessionInfo> => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_REWIND);
-      return ctx.agentSessionManager.rewind(scope, payload.sessionId, payload.turnId);
+      return ctx.agentSessionManager.rewind(scope, payload.sessionId, {
+        ...(payload.commandId ? { commandId: payload.commandId } : {}),
+        ...(payload.expectedRevision === undefined
+          ? {}
+          : { expectedRevision: payload.expectedRevision }),
+      });
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_OPEN_CONTEXT,
+    async (
+      event,
+      payload: { sessionId: string; turnId: string } & ProjectScopedPayload,
+    ): Promise<void> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_OPEN_CONTEXT);
+      const target = await ctx.agentSessionManager.getTurnArtifactPath(
+        scope,
+        payload.sessionId,
+        payload.turnId,
+      );
+      const error = await shell.openPath(target);
+      if (error) throw new Error(`[${CHANNELS.IRIS_AGENT_OPEN_CONTEXT}] ${error}`);
     },
   );
 

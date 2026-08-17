@@ -8,6 +8,22 @@ const electronPath = require('electron');
 const workerPath = resolve('out/main/agent-worker.js');
 await access(workerPath);
 
+const history = {
+  revision: 7,
+  anchor: { kind: 'workspace', path: '.iris' },
+  messages: [],
+};
+
+function historyDigest(value) {
+  const text = JSON.stringify(value);
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
 const probe = `
   const { Worker } = require('node:worker_threads');
   const { mkdtempSync, rmSync } = require('node:fs');
@@ -31,14 +47,10 @@ const probe = `
     rmSync(agentDir, { recursive: true, force: true });
   });
   worker.postMessage({
-    version: 1,
+    version: 3,
     type: 'initialize',
-    correlation: { sessionId: 'runtime-check' },
-    history: {
-      revision: 7,
-      anchor: { kind: 'workspace', path: '.iris' },
-      messages: [],
-    },
+    correlation: { sessionId: 'runtime-check', workerEpoch: 4 },
+    history: ${JSON.stringify(history)},
     runtime: {
       cwd: process.cwd(),
       agentDir,
@@ -72,11 +84,16 @@ if (result.code !== 0) {
 }
 const event = JSON.parse(result.stdout);
 if (
-  event.version !== 1 ||
+  event.version !== 3 ||
   event.type !== 'ready' ||
   event.correlation?.sessionId !== 'runtime-check' ||
+  event.correlation?.workerEpoch !== 4 ||
+  event.runtime?.protocolVersion !== 3 ||
   event.runtime?.piVersion !== '0.84.1' ||
-  event.runtime?.historyRevision !== 7
+  event.runtime?.workerEpoch !== 4 ||
+  event.runtime?.historyRevision !== 7 ||
+  event.runtime?.historyMessageCount !== 0 ||
+  event.runtime?.historyDigest !== historyDigest(history)
 ) {
   throw new Error(`Unexpected Agent Worker response: ${result.stdout}`);
 }

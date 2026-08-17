@@ -1,5 +1,20 @@
-import { describe, expect, it } from 'vitest';
-import { applyIrisAgentMessageRewind } from './session-manager';
+import { EventEmitter } from 'node:events';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  IRIS_AGENT_PROTOCOL_VERSION,
+  agentHistoryDigest,
+  type AgentWorkerEvent,
+  type AgentWorkerRequest,
+} from '@shared/agent-protocol';
+import {
+  applyIrisAgentProviderMessage,
+  applyIrisAgentMessageRewind,
+  IrisAgentSessionManager,
+  settleIrisAgentTurn,
+} from './session-manager';
+import type { AgentWorkerPort } from './worker-host';
+import { createTempDataDir, removeTempDataDir } from '../persistence';
+import type { ProjectManager } from '../project-manager';
 import type { IrisAgentSessionInfo } from '@shared/types';
 
 const baseSession: IrisAgentSessionInfo = {
@@ -12,6 +27,8 @@ const baseSession: IrisAgentSessionInfo = {
   state: 'idle',
   createdAt: 1,
   updatedAt: 1,
+  revision: 1,
+  workerEpoch: 0,
   activeTurnId: null,
   messages: [
     { id: 'u1', turnId: 'turn-1', role: 'user', content: 'one', createdAt: 1 },
@@ -25,6 +42,7 @@ const baseSession: IrisAgentSessionInfo = {
       userMessageId: 'u1',
       assistantMessageId: 'a1',
       requestId: 'request-1',
+      promptAvailable: true,
       status: 'completed',
       createdAt: 1,
       completedAt: 2,
@@ -34,6 +52,7 @@ const baseSession: IrisAgentSessionInfo = {
       userMessageId: 'u2',
       assistantMessageId: 'a2',
       requestId: 'request-2',
+      promptAvailable: true,
       status: 'completed',
       createdAt: 3,
       completedAt: 4,
@@ -89,19 +108,102 @@ const baseSession: IrisAgentSessionInfo = {
   selfHostingEligible: false,
 };
 
+class SessionManagerWorker extends EventEmitter implements AgentWorkerPort {
+  readonly messages: AgentWorkerRequest[] = [];
+  private readonly termination: Promise<void>;
+  private releaseTermination: (() => void) | null = null;
+  private terminated = false;
+
+  constructor(blockTermination: boolean) {
+    super();
+    this.termination = blockTermination
+      ? new Promise<void>((resolve) => {
+          this.releaseTermination = resolve;
+        })
+      : Promise.resolve();
+  }
+
+  postMessage(message: AgentWorkerRequest): void {
+    this.messages.push(message);
+    if (message.type === 'initialize') {
+      queueMicrotask(() => this.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'ready',
+        correlation: message.correlation,
+        runtime: {
+          protocolVersion: IRIS_AGENT_PROTOCOL_VERSION,
+          piVersion: 'test',
+          nodeVersion: process.versions.node,
+          workerEpoch: message.correlation.workerEpoch ?? 0,
+          historyRevision: message.history.revision,
+          historyMessageCount: message.history.messages.length,
+          historyDigest: agentHistoryDigest(message.history),
+        },
+      }));
+    }
+  }
+
+  terminate = vi.fn(async () => {
+    await this.termination;
+    if (!this.terminated) {
+      this.terminated = true;
+      this.emit('exit', 0);
+    }
+    return 0;
+  });
+
+  releaseTerminate(): void {
+    this.releaseTermination?.();
+    this.releaseTermination = null;
+  }
+
+  emitMessage(message: AgentWorkerEvent): void {
+    this.emit('message', message);
+  }
+
+  latestRun(): Extract<AgentWorkerRequest, { type: 'run' }> {
+    const run = [...this.messages].reverse().find(
+      (message): message is Extract<AgentWorkerRequest, { type: 'run' }> => message.type === 'run',
+    );
+    if (!run) throw new Error('Expected the fake Worker to receive a run request.');
+    return run;
+  }
+}
+
+function finishWorkerTurn(worker: SessionManagerWorker, answer: string): void {
+  const run = worker.latestRun();
+  worker.emitMessage({
+    version: IRIS_AGENT_PROTOCOL_VERSION,
+    type: 'stream',
+    correlation: run.correlation,
+    event: {
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: answer },
+    },
+  });
+  worker.emitMessage({
+    version: IRIS_AGENT_PROTOCOL_VERSION,
+    type: 'stream',
+    correlation: run.correlation,
+    event: { type: 'agent_end' },
+  });
+}
+
 describe('IrisAgentSessionManager rewind', () => {
-  it('keeps the completed target turn and removes only later local history', () => {
-    const rewound = applyIrisAgentMessageRewind(baseSession, 'turn-1');
+  it('removes exactly the latest terminal turn and retains real-world effect facts', () => {
+    const rewound = applyIrisAgentMessageRewind({ ...baseSession, lastError: 'stale' });
 
     expect(rewound.turns.map((turn) => turn.id)).toEqual(['turn-1']);
     expect(rewound.messages.map((message) => message.id)).toEqual(['u1', 'a1']);
     expect(rewound.toolEvents).toEqual([]);
-    expect(rewound.fileEffects).toEqual([]);
+    expect(rewound.fileEffects).toEqual(baseSession.fileEffects);
     expect(rewound.requestFacts.map((facts) => facts.id)).toEqual(['request-1']);
+    expect(rewound.turns[0]?.promptAvailable).toBe(true);
     expect(rewound.state).toBe('idle');
+    expect(rewound.lastError).toBe('');
   });
 
-  it('rejects incomplete rewind targets', () => {
+  it('rejects a running latest turn', () => {
     const running = {
       ...baseSession,
       turns: [...baseSession.turns, {
@@ -113,6 +215,459 @@ describe('IrisAgentSessionManager rewind', () => {
       }],
     };
 
-    expect(() => applyIrisAgentMessageRewind(running, 'turn-3')).toThrow(/completed/);
+    expect(() => applyIrisAgentMessageRewind(running)).toThrow(/still running/);
+  });
+
+  it('rejects a latest turn whose tools are not settled', () => {
+    const unsettled = {
+      ...baseSession,
+      toolEvents: [{
+        id: 'tool-1',
+        turnId: 'turn-2',
+        requestId: 'request-2',
+        name: 'read' as const,
+        state: 'running' as const,
+        createdAt: 1,
+        inputSummary: 'read issue',
+      }],
+    };
+
+    expect(() => applyIrisAgentMessageRewind(unsettled)).toThrow(/unsettled tool call/);
+  });
+
+  it.each(['stopped', 'failed'] as const)('allows undoing a latest %s turn', (status) => {
+    const session = {
+      ...baseSession,
+      turns: baseSession.turns.map((turn, index) => index === 1 ? { ...turn, status } : turn),
+    };
+
+    expect(applyIrisAgentMessageRewind(session).turns.map((turn) => turn.id)).toEqual(['turn-1']);
+  });
+});
+
+describe('IrisAgentSessionManager turn settlement', () => {
+  const correlation = { sessionId: 'agent-1', requestId: 'request-2', turnId: 'turn-2' };
+
+  function runningSession(stopRequested = false): IrisAgentSessionInfo {
+    return {
+      ...baseSession,
+      state: stopRequested ? 'stopping' : 'running',
+      activeTurnId: 'turn-2',
+      ...(stopRequested ? { stopRequestedTurnId: 'turn-2' } : {}),
+      turns: baseSession.turns.map((turn) => {
+        if (turn.id !== 'turn-2') return turn;
+        const { completedAt: _completedAt, ...rest } = turn;
+        return { ...rest, status: 'running' as const };
+      }),
+    };
+  }
+
+  it('makes stop intent win over agent_end followed by interrupted', () => {
+    const running = runningSession(true);
+    const afterAgentEnd = settleIrisAgentTurn(running, correlation, 'completed');
+    const afterInterrupted = settleIrisAgentTurn(
+      afterAgentEnd,
+      correlation,
+      'stopped',
+      'Stopped by user.',
+    );
+
+    expect(afterAgentEnd.turns[1]).toMatchObject({ status: 'stopped', error: 'Stopped by user.' });
+    expect(afterAgentEnd.activeTurnId).toBeNull();
+    expect(afterAgentEnd.messages).toEqual(running.messages);
+    expect(afterInterrupted).toBe(afterAgentEnd);
+  });
+
+  it('keeps a stopped terminal result when interrupted arrives before agent_end', () => {
+    const interrupted = settleIrisAgentTurn(
+      runningSession(true),
+      correlation,
+      'stopped',
+      'Stopped by user.',
+    );
+    expect(settleIrisAgentTurn(interrupted, correlation, 'completed')).toBe(interrupted);
+    expect(settleIrisAgentTurn(interrupted, correlation, 'stopped')).toBe(interrupted);
+  });
+
+  it('ignores duplicate and stale terminal events', () => {
+    const running = runningSession();
+    const stale = settleIrisAgentTurn(running, {
+      sessionId: 'agent-1',
+      requestId: 'request-1',
+      turnId: 'turn-1',
+    }, 'completed');
+    expect(stale).toBe(running);
+
+    const completed = settleIrisAgentTurn(running, correlation, 'completed');
+    expect(completed.turns[1]?.status).toBe('completed');
+    expect(settleIrisAgentTurn(completed, correlation, 'failed', 'late')).toBe(completed);
+  });
+
+  it('settles a Worker failure during stop as stopped', () => {
+    const failed = settleIrisAgentTurn(runningSession(true), correlation, 'failed', 'crashed');
+    expect(failed.state).toBe('idle');
+    expect(failed.turns[1]).toMatchObject({ status: 'stopped', error: 'Stopped by user.' });
+  });
+
+  it('does not classify an empty stopped partial as completed', () => {
+    const running = runningSession(true);
+    running.messages = running.messages.map((message) => message.id === 'a2'
+      ? { ...message, content: '' }
+      : message);
+    const stopped = settleIrisAgentTurn(running, correlation, 'completed');
+    expect(stopped.turns[1]?.status).toBe('stopped');
+    expect(stopped.messages.find((message) => message.id === 'a2')?.content).toBe('');
+  });
+});
+
+describe('IrisAgentSessionManager provider history', () => {
+  it('preserves ordered intermediate assistant tool calls without replacing the visible answer', () => {
+    const usage = {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    };
+    let session = applyIrisAgentProviderMessage(baseSession, {
+      role: 'assistant',
+      content: [{ type: 'toolCall', id: 'call-b', name: 'read', arguments: { path: 'b.md' } }],
+      api: 'openai-responses',
+      provider: 'provider',
+      model: 'model',
+      usage,
+      stopReason: 'toolUse',
+      timestamp: 5,
+    }, 'turn-2');
+    session = applyIrisAgentProviderMessage(session, {
+      role: 'toolResult',
+      toolCallId: 'call-b',
+      toolName: 'read',
+      content: [{ type: 'text', text: 'result b' }],
+      isError: false,
+      timestamp: 6,
+    }, 'turn-2');
+    session = applyIrisAgentProviderMessage(session, {
+      role: 'assistant',
+      content: [{ type: 'toolCall', id: 'call-c', name: 'read', arguments: { path: 'c.md' } }],
+      api: 'openai-responses',
+      provider: 'provider',
+      model: 'model',
+      usage,
+      stopReason: 'toolUse',
+      timestamp: 7,
+    }, 'turn-2');
+    session = applyIrisAgentProviderMessage(session, {
+      role: 'toolResult',
+      toolCallId: 'call-c',
+      toolName: 'read',
+      content: [{ type: 'text', text: 'result c' }],
+      isError: false,
+      timestamp: 8,
+    }, 'turn-2');
+    session = applyIrisAgentProviderMessage(session, {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'final answer' }],
+      api: 'openai-responses',
+      provider: 'provider',
+      model: 'model',
+      usage,
+      stopReason: 'stop',
+      timestamp: 9,
+    }, 'turn-2');
+
+    const turnMessages = session.messages.filter((message) => message.turnId === 'turn-2');
+    expect(turnMessages.map((message) => message.id)).toEqual([
+      'u2',
+      'pi-assistant:turn-2:call-b',
+      'pi-tool:turn-2:call-b',
+      'pi-assistant:turn-2:call-c',
+      'pi-tool:turn-2:call-c',
+      'a2',
+    ]);
+    expect(turnMessages.filter((message) => message.providerOnly)).toHaveLength(2);
+    expect(turnMessages.find((message) => message.id === 'a2')).toMatchObject({
+      content: 'final answer',
+      providerMessage: { role: 'assistant', stopReason: 'stop' },
+    });
+    expect(turnMessages.find((message) => message.id === 'a2')).not.toHaveProperty('providerOnly');
+  });
+});
+
+describe('IrisAgentSessionManager command transactions', () => {
+  it('rejects a command based on a stale canonical revision before starting a Worker', async () => {
+    const dataDir = await createTempDataDir('iris-agent-stale-revision-');
+    const projectRoot = await createTempDataDir('iris-agent-stale-revision-project-');
+    const workerFactory = vi.fn(() => new SessionManagerWorker(false));
+    const projectManager = {
+      readDoc: vi.fn(async (path: string) => ({ path, raw: '# Focus' })),
+      assertProjectSettingsReady: vi.fn(async () => undefined),
+      softwarePromptState: vi.fn(async () => ({ project: { text: '# Project' } })),
+    } as unknown as ProjectManager;
+    const manager = new IrisAgentSessionManager(dataDir, projectManager, {
+      workerFactory,
+      workerIdleTimeoutMs: 60_000,
+    });
+    const scope = { root: projectRoot, generation: 1 };
+
+    try {
+      const opened = await manager.createSession({
+        scope,
+        anchor: { kind: 'document', path: '.iris/issue/task.md' },
+      });
+      await expect(manager.send(scope, opened.id, 'stale request', {
+        commandId: 'command-1',
+        expectedRevision: opened.revision - 1,
+      })).rejects.toThrow(/expected revision/);
+      expect(workerFactory).not.toHaveBeenCalled();
+      expect((await manager.list(scope)).sessions[0]?.turns).toEqual([]);
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(dataDir);
+      await removeTempDataDir(projectRoot);
+    }
+  });
+
+  it('retries the latest stopped turn from the preceding history prefix', async () => {
+    const dataDir = await createTempDataDir('iris-agent-retry-prefix-');
+    const projectRoot = await createTempDataDir('iris-agent-retry-project-');
+    const workers: SessionManagerWorker[] = [];
+    const projectManager = {
+      readDoc: vi.fn(async (path: string) => ({ path, raw: '# Focus' })),
+      assertProjectSettingsReady: vi.fn(async () => undefined),
+      softwarePromptState: vi.fn(async () => ({ project: { text: '# Project' } })),
+    } as unknown as ProjectManager;
+    const manager = new IrisAgentSessionManager(dataDir, projectManager, {
+      workerFactory: () => {
+        const worker = new SessionManagerWorker(false);
+        workers.push(worker);
+        return worker;
+      },
+      workerIdleTimeoutMs: 60_000,
+    });
+    const scope = { root: projectRoot, generation: 1 };
+
+    try {
+      const opened = await manager.createSession({
+        scope,
+        anchor: { kind: 'document', path: '.iris/issue/task.md' },
+      });
+      await manager.send(scope, opened.id, 'write a novel');
+      const firstRun = workers[0]!.latestRun();
+      workers[0]!.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'stream',
+        correlation: firstRun.correlation,
+        event: {
+          type: 'message_update',
+          assistantMessageEvent: { type: 'text_delta', delta: 'discarded partial' },
+        },
+      });
+      await manager.stop(scope, opened.id);
+      workers[0]!.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'state',
+        correlation: firstRun.correlation,
+        state: 'interrupted',
+      });
+      await vi.waitFor(async () => {
+        expect((await manager.list(scope)).sessions[0]?.state).toBe('idle');
+      });
+      const stopped = (await manager.list(scope)).sessions[0]!;
+      const stoppedTurnId = stopped.turns[0]!.id;
+
+      const retried = await manager.retry(scope, opened.id);
+      expect(retried.turns).toHaveLength(1);
+      expect(retried.turns[0]).toMatchObject({
+        status: 'running',
+        retryOfTurnId: stoppedTurnId,
+      });
+      expect(retried.messages.map((message) => message.content)).toEqual(['write a novel', '']);
+      expect(workers).toHaveLength(2);
+      const initialize = workers[1]!.messages.find(
+        (message): message is Extract<AgentWorkerRequest, { type: 'initialize' }> =>
+          message.type === 'initialize',
+      );
+      expect(initialize?.history.messages).toEqual([]);
+      expect(workers[1]!.latestRun().prompt).toContain('write a novel');
+      expect(workers[1]!.latestRun().prompt).not.toContain('discarded partial');
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(dataDir);
+      await removeTempDataDir(projectRoot);
+    }
+  });
+
+  it('undoes only the latest turn after two consecutive stopped turns', async () => {
+    const dataDir = await createTempDataDir('iris-agent-stop-stop-undo-');
+    const projectRoot = await createTempDataDir('iris-agent-stop-stop-project-');
+    const workers: SessionManagerWorker[] = [];
+    const projectManager = {
+      readDoc: vi.fn(async (path: string) => ({ path, raw: '# Focus' })),
+      assertProjectSettingsReady: vi.fn(async () => undefined),
+      softwarePromptState: vi.fn(async () => ({ project: { text: '# Project' } })),
+    } as unknown as ProjectManager;
+    const manager = new IrisAgentSessionManager(dataDir, projectManager, {
+      workerFactory: () => {
+        const worker = new SessionManagerWorker(false);
+        workers.push(worker);
+        return worker;
+      },
+      workerIdleTimeoutMs: 60_000,
+    });
+    const scope = { root: projectRoot, generation: 1 };
+
+    try {
+      const opened = await manager.createSession({
+        scope,
+        anchor: { kind: 'document', path: '.iris/issue/task.md' },
+      });
+
+      await manager.send(scope, opened.id, 'write a novel');
+      const firstRun = workers[0]!.latestRun();
+      workers[0]!.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'stream',
+        correlation: firstRun.correlation,
+        event: {
+          type: 'message_update',
+          assistantMessageEvent: { type: 'text_delta', delta: 'first partial' },
+        },
+      });
+      await manager.stop(scope, opened.id);
+      workers[0]!.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'state',
+        correlation: firstRun.correlation,
+        state: 'interrupted',
+      });
+      await vi.waitFor(async () => {
+        expect((await manager.list(scope)).sessions[0]?.turns[0]?.status).toBe('stopped');
+      });
+
+      await manager.send(scope, opened.id, 'continue');
+      const secondRun = workers[0]!.latestRun();
+      workers[0]!.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'stream',
+        correlation: secondRun.correlation,
+        event: {
+          type: 'message_update',
+          assistantMessageEvent: { type: 'text_delta', delta: 'second partial' },
+        },
+      });
+      await manager.stop(scope, opened.id);
+      workers[0]!.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'state',
+        correlation: secondRun.correlation,
+        state: 'interrupted',
+      });
+      await vi.waitFor(async () => {
+        const current = (await manager.list(scope)).sessions[0]!;
+        expect(current.turns.map((turn) => turn.status)).toEqual(['stopped', 'stopped']);
+      });
+
+      const rewound = await manager.rewind(scope, opened.id);
+      expect(rewound.turns).toHaveLength(1);
+      expect(rewound.turns[0]?.status).toBe('stopped');
+      expect(rewound.messages.map((message) => message.content)).toEqual([
+        'write a novel',
+        'first partial',
+      ]);
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(dataDir);
+      await removeTempDataDir(projectRoot);
+    }
+  });
+
+  it('serializes send with rewind and starts the replacement Worker from only the kept branch', async () => {
+    const dataDir = await createTempDataDir('iris-agent-manager-');
+    const projectRoot = await createTempDataDir('iris-agent-manager-project-');
+    const workers: SessionManagerWorker[] = [];
+    const projectManager = {
+      readDoc: vi.fn(async (path: string) => ({ path, raw: '# Focus' })),
+      assertProjectSettingsReady: vi.fn(async () => undefined),
+      softwarePromptState: vi.fn(async () => ({ project: { text: '# Project' } })),
+    } as unknown as ProjectManager;
+    const manager = new IrisAgentSessionManager(dataDir, projectManager, {
+      workerFactory: () => {
+        const worker = new SessionManagerWorker(workers.length === 0);
+        workers.push(worker);
+        return worker;
+      },
+      workerIdleTimeoutMs: 60_000,
+    });
+    const scope = { root: projectRoot, generation: 1 };
+
+    try {
+      const opened = await manager.createSession({
+        scope,
+        anchor: { kind: 'document', path: '.iris/issue/task.md' },
+      });
+      const firstSend = manager.send(scope, opened.id, 'first request');
+      const duplicateSend = manager.send(scope, opened.id, 'duplicate request');
+      await firstSend;
+      await expect(duplicateSend).rejects.toThrow(/already running/);
+      expect(workers).toHaveLength(1);
+      expect(workers[0]!.messages.filter((message) => message.type === 'run')).toHaveLength(1);
+
+      finishWorkerTurn(workers[0]!, 'first answer');
+      await vi.waitFor(async () => {
+        const snapshot = await manager.list(scope);
+        expect(snapshot.sessions[0]?.state).toBe('idle');
+      });
+      await manager.send(scope, opened.id, 'second request');
+      finishWorkerTurn(workers[0]!, 'second answer');
+      await vi.waitFor(async () => {
+        const snapshot = await manager.list(scope);
+        expect(snapshot.sessions[0]?.turns).toHaveLength(2);
+        expect(snapshot.sessions[0]?.state).toBe('idle');
+      });
+
+      const beforeRewind = (await manager.list(scope)).sessions[0]!;
+      const keptTurnId = beforeRewind.turns[0]!.id;
+      const rewind = manager.rewind(scope, opened.id);
+      await vi.waitFor(() => expect(workers[0]!.terminate).toHaveBeenCalledTimes(1));
+
+      const sendAfterRewind = manager.send(scope, opened.id, 'after rewind');
+      expect((await manager.list(scope)).sessions[0]?.turns).toHaveLength(2);
+      workers[0]!.releaseTerminate();
+
+      const rewound = await rewind;
+      const replacementRunning = await sendAfterRewind;
+      expect(rewound.turns.map((turn) => turn.id)).toEqual([keptTurnId]);
+      expect(replacementRunning.turns).toHaveLength(2);
+      expect(replacementRunning.turns[0]?.id).toBe(keptTurnId);
+      expect(workers).toHaveLength(2);
+
+      const initialize = workers[1]!.messages.find(
+        (message): message is Extract<AgentWorkerRequest, { type: 'initialize' }> =>
+          message.type === 'initialize',
+      );
+      expect(initialize?.history.messages.map((message) => message.content)).toEqual([
+        'first request',
+        'first answer',
+      ]);
+      expect(initialize?.history.messages.every((message) => message.turnId === keptTurnId)).toBe(true);
+      expect(workers[1]!.latestRun().prompt).toContain('after rewind');
+      expect(workers[0]!.messages.filter((message) => message.type === 'run')).toHaveLength(2);
+
+      workers[0]!.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'state',
+        correlation: { sessionId: opened.id },
+        state: 'starting',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect((await manager.list(scope)).sessions[0]?.state).toBe('running');
+    } finally {
+      for (const worker of workers) worker.releaseTerminate();
+      await manager.shutdown();
+      await removeTempDataDir(dataDir);
+      await removeTempDataDir(projectRoot);
+    }
   });
 });

@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
-import { AlertTriangle, Bot, RotateCcw, Send, Square, Undo2 } from 'lucide-react';
-import type { IrisAgentSessionInfo } from '@shared/types';
+import { AlertTriangle, Bot, FileText, RotateCcw, Send, Square, Undo2 } from 'lucide-react';
+import type { IrisAgentMessage, IrisAgentSessionInfo } from '@shared/types';
 import { Button } from '@renderer/components/ui/button';
 import {
   retryIrisAgent,
   rewindIrisAgent,
+  openIrisAgentContext,
   sendIrisAgentMessage,
   stopIrisAgent,
 } from '@renderer/lib/iris-agent-actions';
@@ -16,16 +17,14 @@ export function IrisAgentView({ session }: { session: IrisAgentSessionInfo }): J
     session.state === 'running' ||
     session.state === 'waiting-tool' ||
     session.state === 'stopping';
-  const latestRetryableTurn = [...session.turns]
-    .reverse()
-    .find((turn) => turn.status === 'failed' || turn.status === 'stopped');
   const latestTurn = session.turns[session.turns.length - 1] ?? null;
-  const completedTurns = session.turns.filter((turn) => turn.status === 'completed');
-  const rewindTargetTurn =
-    latestTurn?.status === 'completed'
-      ? completedTurns[completedTurns.length - 2] ?? null
-      : completedTurns[completedTurns.length - 1] ?? null;
+  const latestRetryableTurn =
+    latestTurn?.status === 'failed' || latestTurn?.status === 'stopped' ? latestTurn : null;
+  const canUndoLatestTurn = latestTurn !== null && latestTurn.status !== 'running';
   const statusText = statusLabel(session.state);
+  const openContext = (turnId: string): void => {
+    openIrisAgentContext(session.id, turnId).catch(() => undefined);
+  };
   const toolEventsByTurn = useMemo(() => {
     const map = new Map<string, typeof session.toolEvents>();
     for (const event of session.toolEvents) {
@@ -67,16 +66,16 @@ export function IrisAgentView({ session }: { session: IrisAgentSessionInfo }): J
             重试
           </Button>
         ) : null}
-        {!running && rewindTargetTurn && (
+        {!running && canUndoLatestTurn && (
           <Button
             variant="ghost"
             size="sm"
             className="h-7"
-            onClick={() => void rewindIrisAgent(session.id, rewindTargetTurn.id)}
-            title="只回退消息记录，工作区保持不变"
+            onClick={() => void rewindIrisAgent(session.id)}
+            title="只撤销最后一轮对话，工作区保持不变"
           >
             <Undo2 className="!size-3.5" />
-            Rewind
+            撤销上一轮
           </Button>
         )}
       </div>
@@ -91,25 +90,30 @@ export function IrisAgentView({ session }: { session: IrisAgentSessionInfo }): J
           <div className="space-y-3">
             {session.turns.map((turn) => {
               const messages = session.messages.filter((message) => message.turnId === turn.id);
+              const userMessages = messages.filter((message) => message.role === 'user');
+              const assistantMessages = messages.filter(
+                (message) => message.role === 'assistant' && !message.providerOnly,
+              );
               const tools = toolEventsByTurn.get(turn.id) ?? [];
+              const artifactTitle = turn.providerContextAvailable
+                ? `打开实际 Provider 上下文（${turn.providerCallCount ?? 1} 次调用）`
+                : turn.assembledInputLegacy || turn.promptAvailable
+                  ? '打开组装输入（旧版）'
+                  : turn.assembledInputAvailable
+                    ? '打开本轮组装输入'
+                    : undefined;
               return (
                 <div key={turn.id} className="space-y-2">
-                  {messages.map((message) => (
-                    <div
+                  {userMessages.map((message) => (
+                    <AgentMessageCard
                       key={message.id}
-                      className={
-                        message.role === 'user'
-                          ? 'rounded-md bg-muted px-3 py-2 text-sm'
-                          : 'rounded-md border bg-card px-3 py-2 text-sm'
-                      }
-                    >
-                      <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                        {message.role === 'user' ? 'You' : 'Iris Agent'}
-                      </div>
-                      <div className="whitespace-pre-wrap break-words">
-                        {message.content || (message.role === 'assistant' && running ? 'Thinking…' : '')}
-                      </div>
-                    </div>
+                      message={message}
+                      running={running}
+                      onOpenPrompt={artifactTitle
+                        ? () => openContext(turn.id)
+                        : undefined}
+                      artifactTitle={artifactTitle}
+                    />
                   ))}
                   {tools.length > 0 && (
                     <div className="space-y-1">
@@ -135,6 +139,17 @@ export function IrisAgentView({ session }: { session: IrisAgentSessionInfo }): J
                       ))}
                     </div>
                   )}
+                  {assistantMessages.map((message) => (
+                    <AgentMessageCard
+                      key={message.id}
+                      message={message}
+                      running={running}
+                      onOpenPrompt={artifactTitle
+                        ? () => openContext(turn.id)
+                        : undefined}
+                      artifactTitle={artifactTitle}
+                    />
+                  ))}
                   {turn.error && (
                     <div className="flex gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -179,6 +194,50 @@ export function IrisAgentView({ session }: { session: IrisAgentSessionInfo }): J
           </Button>
         </div>
       </form>
+    </div>
+  );
+}
+
+function AgentMessageCard({
+  message,
+  running,
+  onOpenPrompt,
+  artifactTitle,
+}: {
+  message: IrisAgentMessage;
+  running: boolean;
+  onOpenPrompt: (() => void) | undefined;
+  artifactTitle: string | undefined;
+}): JSX.Element {
+  return (
+    <div
+      className={
+        message.role === 'user'
+          ? 'rounded-md bg-muted px-3 py-2 text-sm'
+          : 'rounded-md border bg-card px-3 py-2 text-sm'
+      }
+    >
+      <div className="mb-1 flex h-6 items-start justify-between gap-2">
+        <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+          {message.role === 'user' ? 'You' : 'Iris Agent'}
+        </span>
+        {onOpenPrompt && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="-mr-1 -mt-1 h-6 w-6 shrink-0 text-muted-foreground"
+            title={artifactTitle}
+            aria-label={artifactTitle}
+            onClick={onOpenPrompt}
+          >
+            <FileText className="!size-3.5" />
+          </Button>
+        )}
+      </div>
+      <div className="whitespace-pre-wrap break-words">
+        {message.content || (message.role === 'assistant' && running ? 'Thinking…' : '')}
+      </div>
     </div>
   );
 }

@@ -1,11 +1,12 @@
-import type { IrisAgentAnchor } from './types';
+import type { IrisAgentAnchor, IrisAgentProviderContextCall } from './types';
 
-export const IRIS_AGENT_PROTOCOL_VERSION = 1 as const;
+export const IRIS_AGENT_PROTOCOL_VERSION = 3 as const;
 
 export type AgentToolName = 'read' | 'edit' | 'write' | 'terminal';
 
 export interface AgentCorrelation {
   sessionId: string;
+  workerEpoch?: number;
   requestId?: string;
   turnId?: string;
   toolCallId?: string;
@@ -27,9 +28,26 @@ export interface AgentHistorySnapshot {
   anchor: IrisAgentAnchor;
   messages: Array<{
     id: string;
+    turnId: string;
     role: 'user' | 'assistant' | 'tool';
     content: string;
+    createdAt: number;
+    providerMessage?: Record<string, unknown>;
   }>;
+}
+
+export function agentHistoryDigest(history: AgentHistorySnapshot): string {
+  const text = JSON.stringify({
+    revision: history.revision,
+    anchor: history.anchor,
+    messages: history.messages,
+  });
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
 export interface AgentWorkerInitRuntime {
@@ -81,10 +99,19 @@ export type AgentWorkerEvent = AgentProtocolEnvelope &
   (
     | {
         type: 'ready';
-        runtime: { piVersion: string; nodeVersion: string; historyRevision: number };
+        runtime: {
+          protocolVersion: typeof IRIS_AGENT_PROTOCOL_VERSION;
+          piVersion: string;
+          nodeVersion: string;
+          workerEpoch: number;
+          historyRevision: number;
+          historyMessageCount: number;
+          historyDigest: string;
+        };
       }
     | { type: 'state'; state: AgentSessionRuntimeState }
     | { type: 'stream'; event: unknown }
+    | { type: 'provider-context'; call: IrisAgentProviderContextCall }
     | { type: 'tool-request'; input: AgentToolOperationInput }
     | { type: 'failure'; code: string; message: string }
     | { type: 'stopped'; reason: 'idle-timeout' | 'shutdown' }
@@ -114,6 +141,12 @@ function isCorrelation(value: unknown): value is AgentCorrelation {
   if (!isRecord(value) || typeof value.sessionId !== 'string' || value.sessionId.length === 0) {
     return false;
   }
+  if (
+    value.workerEpoch !== undefined &&
+    (typeof value.workerEpoch !== 'number' || !Number.isSafeInteger(value.workerEpoch) || value.workerEpoch < 0)
+  ) {
+    return false;
+  }
   return ['requestId', 'turnId', 'toolCallId', 'terminalId'].every(
     (key) => value[key] === undefined || typeof value[key] === 'string',
   );
@@ -134,8 +167,11 @@ function isHistorySnapshot(value: unknown): value is AgentHistorySnapshot {
     (message) =>
       isRecord(message) &&
       typeof message.id === 'string' &&
+      typeof message.turnId === 'string' &&
       (message.role === 'user' || message.role === 'assistant' || message.role === 'tool') &&
-      typeof message.content === 'string',
+      typeof message.content === 'string' &&
+      typeof message.createdAt === 'number' &&
+      (message.providerMessage === undefined || isRecord(message.providerMessage)),
   );
 }
 

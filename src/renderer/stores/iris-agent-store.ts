@@ -62,6 +62,8 @@ export const irisAgentStore = {
     ) {
       return;
     }
+    const existing = state.sessions.find((item) => item.id === session.id);
+    if (existing && existing.revision > session.revision) return;
     const sessions = [...state.sessions.filter((item) => item.id !== session.id), session];
     setState({
       scope,

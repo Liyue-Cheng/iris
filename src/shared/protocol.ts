@@ -146,6 +146,7 @@ export const CHANNELS = {
   IRIS_AGENT_STOP: 'iris-agent:stop',
   IRIS_AGENT_RETRY: 'iris-agent:retry',
   IRIS_AGENT_REWIND: 'iris-agent:rewind',
+  IRIS_AGENT_OPEN_CONTEXT: 'iris-agent:open-context',
   IRIS_AGENT_CLOSE: 'iris-agent:close',
   IRIS_AGENT_LIST: 'iris-agent:list',
 } as const;
