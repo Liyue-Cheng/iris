@@ -131,7 +131,9 @@ function createWindowContext(win: BrowserWindow, initialRoot: string | null): Wi
   const projectManager = new ProjectManager();
   const gitManager = new GitManager();
   const sessionManager = new SessionManager(settingsManager);
-  const agentSessionManager = new IrisAgentSessionManager(app.getPath('userData'), projectManager);
+  const agentSessionManager = new IrisAgentSessionManager(app.getPath('userData'), projectManager, {
+    appVersion: app.getVersion(),
+  });
   let ctx: WindowContext;
   const unwire = wireBroadcasts(
     settingsManager,

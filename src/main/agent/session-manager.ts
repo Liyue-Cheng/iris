@@ -49,6 +49,7 @@ export interface CreateIrisAgentSessionInput {
 export interface IrisAgentSessionManagerOptions {
   workerFactory?: () => AgentWorkerPort;
   workerIdleTimeoutMs?: number;
+  appVersion?: string;
 }
 
 export interface IrisAgentCommandPrecondition {
@@ -217,14 +218,23 @@ export class IrisAgentSessionManager extends EventEmitter {
     return running;
   }
 
-  async stop(scope: ProjectScope, sessionId: string): Promise<IrisAgentSessionInfo> {
-    return this.runSessionCommand(sessionId, () => this.stopSession(scope, sessionId));
+  async stop(
+    scope: ProjectScope,
+    sessionId: string,
+    precondition: IrisAgentCommandPrecondition = {},
+  ): Promise<IrisAgentSessionInfo> {
+    return this.runSessionCommand(sessionId, () => this.stopSession(scope, sessionId, precondition));
   }
 
-  private async stopSession(scope: ProjectScope, sessionId: string): Promise<IrisAgentSessionInfo> {
+  private async stopSession(
+    scope: ProjectScope,
+    sessionId: string,
+    precondition: IrisAgentCommandPrecondition,
+  ): Promise<IrisAgentSessionInfo> {
     this.currentScope = scope;
     const store = await this.ensureStore(scope.root);
     const session = await this.requireSession(scope, sessionId);
+    assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
     const activeTurnId = session.activeTurnId;
     if (!activeTurnId) return session;
     if (session.stopRequestedTurnId === activeTurnId) return session;
@@ -373,12 +383,22 @@ export class IrisAgentSessionManager extends EventEmitter {
     throw new Error('No context artifact is available for this Iris Agent turn.');
   }
 
-  async closeSession(scope: ProjectScope, sessionId: string): Promise<void> {
-    await this.runSessionCommand(sessionId, () => this.closeSessionNow(scope, sessionId));
+  async closeSession(
+    scope: ProjectScope,
+    sessionId: string,
+    precondition: IrisAgentCommandPrecondition = {},
+  ): Promise<void> {
+    await this.runSessionCommand(sessionId, () => this.closeSessionNow(scope, sessionId, precondition));
   }
 
-  private async closeSessionNow(scope: ProjectScope, sessionId: string): Promise<void> {
+  private async closeSessionNow(
+    scope: ProjectScope,
+    sessionId: string,
+    precondition: IrisAgentCommandPrecondition,
+  ): Promise<void> {
     const store = await this.ensureStore(scope.root);
+    const session = await this.requireSession(scope, sessionId);
+    assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
     const host = this.hosts.get(sessionId);
     if (host) this.hosts.delete(sessionId);
     await host?.shutdown();
@@ -573,6 +593,12 @@ export class IrisAgentSessionManager extends EventEmitter {
       requestId,
       event.call,
       turn.assembledInputAvailable === true,
+      {
+        appVersion: this.options.appVersion ?? 'unknown',
+        protocolVersion: event.version,
+        sessionRevision: session.revision,
+        workerEpoch: session.workerEpoch,
+      },
     );
     const latest = store.get(session.id) ?? session;
     const updated = store.upsert({

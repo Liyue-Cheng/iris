@@ -761,6 +761,12 @@ export interface IrisAgentProviderContextBundle {
   assembledInput: { available: boolean; legacy: false };
   contextStage: 'provider-payload';
   compaction: 'disabled';
+  runtimeIdentity?: {
+    appVersion: string;
+    protocolVersion: number;
+    sessionRevision: number;
+    workerEpoch: number;
+  };
   calls: Array<{
     index: number;
     capturedAt: number;

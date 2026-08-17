@@ -53,6 +53,14 @@ export function renderProviderContextIndex(
     `Session: ${bundle.sessionId}`,
     `Turn: ${bundle.turnId}`,
     `Request: ${bundle.requestId}`,
+    ...(bundle.runtimeIdentity
+      ? [
+          `App: ${bundle.runtimeIdentity.appVersion}`,
+          `Protocol: ${bundle.runtimeIdentity.protocolVersion}`,
+          `Session revision: ${bundle.runtimeIdentity.sessionRevision}`,
+          `Worker epoch: ${bundle.runtimeIdentity.workerEpoch}`,
+        ]
+      : []),
     `Provider calls: ${bundle.calls.length}`,
     '',
     JSON.stringify(bundle, null, 2),

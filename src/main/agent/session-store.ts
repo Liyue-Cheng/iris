@@ -129,6 +129,7 @@ export class IrisAgentSessionStore {
     requestId: string,
     call: IrisAgentProviderContextCall,
     assembledInputAvailable = true,
+    runtimeIdentity?: NonNullable<IrisAgentProviderContextBundle['runtimeIdentity']>,
   ): Promise<IrisAgentProviderContextBundle> {
     const existing = await this.readProviderContextBundle(sessionId, turnId);
     if (existing && existing.requestId !== requestId) {
@@ -155,6 +156,7 @@ export class IrisAgentSessionStore {
       textFile,
       sha256: sha256(callJson),
     };
+    const effectiveRuntimeIdentity = runtimeIdentity ?? existing?.runtimeIdentity;
     const bundle: IrisAgentProviderContextBundle = {
       schemaVersion: 1,
       kind: 'provider-context-bundle',
@@ -165,6 +167,7 @@ export class IrisAgentSessionStore {
       assembledInput: { available: assembledInputAvailable, legacy: false },
       contextStage: 'provider-payload',
       compaction: 'disabled',
+      ...(effectiveRuntimeIdentity ? { runtimeIdentity: effectiveRuntimeIdentity } : {}),
       calls: [...calls, indexedCall],
     };
     await this.loadIndexedProviderCalls(sessionId, turnId, calls);
@@ -484,8 +487,21 @@ function isProviderContextBundle(value: unknown): value is IrisAgentProviderCont
     value.assembledInput.legacy === false &&
     value.contextStage === 'provider-payload' &&
     value.compaction === 'disabled' &&
+    (value.runtimeIdentity === undefined || isProviderContextRuntimeIdentity(value.runtimeIdentity)) &&
     Array.isArray(value.calls) &&
     value.calls.every(isProviderContextIndexCall)
+  );
+}
+
+function isProviderContextRuntimeIdentity(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.appVersion === 'string' &&
+    typeof value.protocolVersion === 'number' && Number.isSafeInteger(value.protocolVersion) &&
+    typeof value.sessionRevision === 'number' && Number.isSafeInteger(value.sessionRevision) &&
+    value.sessionRevision >= 0 &&
+    typeof value.workerEpoch === 'number' && Number.isSafeInteger(value.workerEpoch) &&
+    value.workerEpoch >= 0
   );
 }
 

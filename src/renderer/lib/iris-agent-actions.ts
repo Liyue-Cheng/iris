@@ -93,10 +93,16 @@ export async function stopIrisAgent(sessionId: string): Promise<void> {
     },
     async () => {
       const scope = scopeOrThrow();
+      const precondition = commandPrecondition(sessionId);
       const session = await window.api.invoke<
-        { sessionId: string; expectedScope: ProjectScope },
+        {
+          sessionId: string;
+          commandId: string;
+          expectedRevision: number;
+          expectedScope: ProjectScope;
+        },
         IrisAgentSessionInfo
-      >(CHANNELS.IRIS_AGENT_STOP, projectScoped(scope, { sessionId }));
+      >(CHANNELS.IRIS_AGENT_STOP, projectScoped(scope, { sessionId, ...precondition }));
       irisAgentStore.handleChanged(session);
     },
   );
@@ -183,9 +189,15 @@ export async function closeIrisAgent(sessionId: string): Promise<void> {
     },
     async () => {
       const scope = scopeOrThrow();
-      await window.api.invoke<{ sessionId: string; expectedScope: ProjectScope }, void>(
+      const precondition = commandPrecondition(sessionId);
+      await window.api.invoke<{
+        sessionId: string;
+        commandId: string;
+        expectedRevision: number;
+        expectedScope: ProjectScope;
+      }, void>(
         CHANNELS.IRIS_AGENT_CLOSE,
-        projectScoped(scope, { sessionId }),
+        projectScoped(scope, { sessionId, ...precondition }),
       );
       irisAgentStore.handleDestroyed(sessionId);
     },

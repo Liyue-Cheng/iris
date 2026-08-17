@@ -985,11 +985,16 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     CHANNELS.IRIS_AGENT_STOP,
     (
       event,
-      payload: { sessionId: string } & ProjectScopedPayload,
+      payload: { sessionId: string; commandId?: string; expectedRevision?: number } & ProjectScopedPayload,
     ): Promise<IrisAgentSessionInfo> => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_STOP);
-      return ctx.agentSessionManager.stop(scope, payload.sessionId);
+      return ctx.agentSessionManager.stop(scope, payload.sessionId, {
+        ...(payload.commandId ? { commandId: payload.commandId } : {}),
+        ...(payload.expectedRevision === undefined
+          ? {}
+          : { expectedRevision: payload.expectedRevision }),
+      });
     },
   );
 
@@ -1049,11 +1054,16 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     CHANNELS.IRIS_AGENT_CLOSE,
     (
       event,
-      payload: { sessionId: string } & ProjectScopedPayload,
+      payload: { sessionId: string; commandId?: string; expectedRevision?: number } & ProjectScopedPayload,
     ): Promise<void> => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_CLOSE);
-      return ctx.agentSessionManager.closeSession(scope, payload.sessionId);
+      return ctx.agentSessionManager.closeSession(scope, payload.sessionId, {
+        ...(payload.commandId ? { commandId: payload.commandId } : {}),
+        ...(payload.expectedRevision === undefined
+          ? {}
+          : { expectedRevision: payload.expectedRevision }),
+      });
     },
   );
 

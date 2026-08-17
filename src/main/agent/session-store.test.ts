@@ -271,6 +271,11 @@ describe('IrisAgentSessionStore', () => {
         model: 'gpt-test',
         api: 'openai-responses',
         payload: { model: 'gpt-test', input: [{ role: 'tool', content: 'result' }] },
+      }, true, {
+        appVersion: '0.1.0-test',
+        protocolVersion: 3,
+        sessionRevision: 7,
+        workerEpoch: 2,
       });
       expect(bundle.calls.map((call) => call.index)).toEqual([1, 2]);
       const json = await readFile(store.providerContextJsonPath('agent-1', 'turn-1'), 'utf8');
@@ -281,6 +286,12 @@ describe('IrisAgentSessionStore', () => {
         schemaVersion: 1,
         contextStage: 'provider-payload',
         compaction: 'disabled',
+        runtimeIdentity: {
+          appVersion: '0.1.0-test',
+          protocolVersion: 3,
+          sessionRevision: 7,
+          workerEpoch: 2,
+        },
         calls: [
           { index: 1, jsonFile: 'call-000.json', textFile: 'call-000.txt' },
           { index: 2, jsonFile: 'call-001.json', textFile: 'call-001.txt' },

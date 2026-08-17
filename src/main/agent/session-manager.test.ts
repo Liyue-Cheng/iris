@@ -416,9 +416,15 @@ describe('IrisAgentSessionManager command transactions', () => {
         scope,
         anchor: { kind: 'document', path: '.iris/issue/task.md' },
       });
-      await expect(manager.send(scope, opened.id, 'stale request', {
+      const stale = {
         commandId: 'command-1',
         expectedRevision: opened.revision - 1,
+      };
+      await expect(manager.stop(scope, opened.id, stale)).rejects.toThrow(/expected revision/);
+      await expect(manager.closeSession(scope, opened.id, stale)).rejects.toThrow(/expected revision/);
+      await expect(manager.send(scope, opened.id, 'stale request', {
+        commandId: 'command-2',
+        expectedRevision: stale.expectedRevision,
       })).rejects.toThrow(/expected revision/);
       expect(workerFactory).not.toHaveBeenCalled();
       expect((await manager.list(scope)).sessions[0]?.turns).toEqual([]);
