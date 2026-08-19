@@ -619,6 +619,57 @@ export type IrisAgentRuntimeState =
 
 export type IrisAgentMessageRole = 'user' | 'assistant' | 'tool';
 
+export interface IrisAgentModelRef {
+  provider: string;
+  modelId: string;
+}
+
+export interface IrisAgentModelOption extends IrisAgentModelRef {
+  name: string;
+  api: string;
+  reasoning: boolean;
+  /** Human-readable provider/profile name, when configured by Iris. */
+  providerName?: string;
+}
+
+export interface IrisAgentModelCatalog {
+  models: IrisAgentModelOption[];
+  error?: string;
+}
+
+export interface IrisAgentProviderOption {
+  providerId: string;
+  name: string;
+  configured: boolean;
+  hasStoredCredential: boolean;
+  credentialType?: 'api_key' | 'oauth';
+  source?: string;
+  supportsApiKey: boolean;
+  supportsOAuth: boolean;
+}
+
+export interface IrisAgentProviderCatalog {
+  providers: IrisAgentProviderOption[];
+  templates: IrisAgentProviderTemplate[];
+  profiles: IrisAgentProviderProfileInfo[];
+  error?: string;
+}
+
+export interface IrisAgentProviderTemplate {
+  id: string;
+  name: string;
+  sourceProvider: string;
+  api: 'openai-responses' | 'anthropic-messages';
+  defaultBaseUrl: string;
+}
+
+export interface IrisAgentProviderProfileInfo {
+  id: string;
+  name: string;
+  templateId: string;
+  baseUrl: string;
+}
+
 export interface IrisAgentMessage {
   id: string;
   turnId: string;
@@ -641,6 +692,13 @@ export interface IrisAgentToolEvent {
   createdAt: number;
   completedAt?: number;
   inputSummary: string;
+  /** Low-level operation currently represented by this provider tool call. */
+  operation?: 'access' | 'readFile' | 'writeFile' | 'mkdir' | 'exec';
+  /** Model-declared terminal semantics. Legacy terminal events migrate to unknown. */
+  terminalIntent?: 'information' | 'operation' | 'unknown';
+  /** Exact command executed by the terminal tool; inputSummary remains display-only. */
+  command?: string;
+  cwd?: string;
   resultSummary?: string;
   error?: string;
   diff?: string;
@@ -709,6 +767,11 @@ export interface IrisAgentSessionInfo {
   id: string;
   kind: 'iris-agent';
   anchor: IrisAgentAnchor;
+  /** The exact provider/model used whenever this Session starts a Worker. */
+  model: IrisAgentModelRef | null;
+  /** Lineage is informational; the parent Session remains fully independent. */
+  parentSessionId?: string;
+  forkedFromTurnId?: string;
   projectRoot: string;
   projectGeneration: number;
   displayName: string;

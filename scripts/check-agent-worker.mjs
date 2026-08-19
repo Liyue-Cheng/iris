@@ -6,6 +6,11 @@ import { resolve } from 'node:path';
 const require = createRequire(import.meta.url);
 const electronPath = require('electron');
 const workerPath = resolve('out/main/agent-worker.js');
+const protocolVersion = 6;
+const model = { provider: 'openai', modelId: 'gpt-5.2' };
+const commandShell = process.platform === 'win32'
+  ? { kind: 'powershell', executable: 'powershell.exe', displayName: 'Windows PowerShell' }
+  : { kind: 'posix', executable: process.env.SHELL || '/bin/bash', displayName: process.env.SHELL || '/bin/bash' };
 await access(workerPath);
 
 const history = {
@@ -47,13 +52,17 @@ const probe = `
     rmSync(agentDir, { recursive: true, force: true });
   });
   worker.postMessage({
-    version: 3,
+    version: ${protocolVersion},
     type: 'initialize',
     correlation: { sessionId: 'runtime-check', workerEpoch: 4 },
     history: ${JSON.stringify(history)},
     runtime: {
       cwd: process.cwd(),
       agentDir,
+      providerProfileRoot: agentDir,
+      model: ${JSON.stringify(model)},
+      commandShell: ${JSON.stringify(commandShell)},
+      providerProxy: { mode: 'direct' },
     },
   });
 `;
@@ -84,16 +93,20 @@ if (result.code !== 0) {
 }
 const event = JSON.parse(result.stdout);
 if (
-  event.version !== 3 ||
+  event.version !== protocolVersion ||
   event.type !== 'ready' ||
   event.correlation?.sessionId !== 'runtime-check' ||
   event.correlation?.workerEpoch !== 4 ||
-  event.runtime?.protocolVersion !== 3 ||
+  event.runtime?.protocolVersion !== protocolVersion ||
   event.runtime?.piVersion !== '0.84.1' ||
   event.runtime?.workerEpoch !== 4 ||
   event.runtime?.historyRevision !== 7 ||
   event.runtime?.historyMessageCount !== 0 ||
-  event.runtime?.historyDigest !== historyDigest(history)
+  event.runtime?.historyDigest !== historyDigest(history) ||
+  event.runtime?.model?.provider !== model.provider ||
+  event.runtime?.model?.modelId !== model.modelId ||
+  event.runtime?.commandShell?.kind !== commandShell.kind ||
+  event.runtime?.commandShell?.executable !== commandShell.executable
 ) {
   throw new Error(`Unexpected Agent Worker response: ${result.stdout}`);
 }

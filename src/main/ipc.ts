@@ -36,6 +36,8 @@ import type {
   GitChangedEvent,
   GitSnapshot,
   IrisAgentListSnapshot,
+  IrisAgentModelCatalog,
+  IrisAgentProviderCatalog,
   IrisAgentSessionChangedPayload,
   IrisAgentSessionDestroyedPayload,
   IrisAgentSessionInfo,
@@ -59,7 +61,7 @@ import type {
   SettingsChangedEvent,
   WindowBootstrapState,
 } from '@shared/types';
-import type { SettingsManager } from './settings-manager';
+import { appDataDir, type SettingsManager } from './settings-manager';
 import type { ProjectManager } from './project-manager';
 import type { GitManager } from './git-manager';
 import type { SessionManager } from './session-manager';
@@ -71,11 +73,22 @@ import {
 } from './terminal/output-attachment';
 import { injectionState, installFocusScript, installHook, removeHook } from './agent-injection';
 import {
+  allContexts,
   contextForWebContents,
   persistOpenRoots,
   requireContext,
   type WindowContext,
 } from './window-context';
+import {
+  irisPiAgentDir,
+  loadIrisProviderCatalog,
+  removeIrisProviderCredential,
+  saveIrisProviderApiKey,
+} from './agent/pi-adapter';
+import {
+  addIrisAgentProviderProfile,
+  removeIrisAgentProviderProfile,
+} from './agent/provider-profiles';
 import { logger } from './logger';
 import { enqueueProjectSwitch } from './project-switch';
 import { launchSystemTerminal } from './system-terminal';
@@ -1029,6 +1042,147 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
           ? {}
           : { expectedRevision: payload.expectedRevision }),
       });
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_BRANCH,
+    (
+      event,
+      payload: {
+        sessionId: string;
+        throughTurnId: string;
+        commandId?: string;
+        expectedRevision?: number;
+      } & ProjectScopedPayload,
+    ): Promise<IrisAgentSessionInfo> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_BRANCH);
+      return ctx.agentSessionManager.branch(scope, payload.sessionId, payload.throughTurnId, {
+        ...(payload.commandId ? { commandId: payload.commandId } : {}),
+        ...(payload.expectedRevision === undefined
+          ? {}
+          : { expectedRevision: payload.expectedRevision }),
+      });
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_SET_MODEL,
+    (
+      event,
+      payload: {
+        sessionId: string;
+        provider: string;
+        modelId: string;
+        commandId?: string;
+        expectedRevision?: number;
+      } & ProjectScopedPayload,
+    ): Promise<IrisAgentSessionInfo> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_SET_MODEL);
+      return ctx.agentSessionManager.setModel(
+        scope,
+        payload.sessionId,
+        { provider: payload.provider, modelId: payload.modelId },
+        {
+          ...(payload.commandId ? { commandId: payload.commandId } : {}),
+          ...(payload.expectedRevision === undefined
+            ? {}
+            : { expectedRevision: payload.expectedRevision }),
+        },
+      );
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_MODELS,
+    (event, payload: ProjectScopedPayload): Promise<IrisAgentModelCatalog> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_MODELS);
+      return ctx.agentSessionManager.listModels();
+    },
+  );
+
+  const prepareProviderConfigurationChange = (): void => {
+    for (const ctx of allContexts()) {
+      ctx.agentSessionManager.assertProviderConfigurationChangeAllowed();
+    }
+  };
+  const finishProviderConfigurationChange = async (): Promise<void> => {
+    await Promise.all(
+      allContexts().map((ctx) => ctx.agentSessionManager.reloadProviderConfiguration()),
+    );
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send(EVENTS.IRIS_AGENT_PROVIDERS_CHANGED, undefined);
+      }
+    }
+  };
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_PROVIDERS,
+    (): Promise<IrisAgentProviderCatalog> => loadIrisProviderCatalog(irisPiAgentDir(), appDataDir()),
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_PROVIDER_SET_KEY,
+    async (
+      _event,
+      payload: { providerId: string; apiKey: string },
+    ): Promise<IrisAgentProviderCatalog> => {
+      prepareProviderConfigurationChange();
+      const catalog = await saveIrisProviderApiKey(
+        payload.providerId,
+        payload.apiKey,
+        irisPiAgentDir(),
+        appDataDir(),
+      );
+      await finishProviderConfigurationChange();
+      return catalog;
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_PROVIDER_REMOVE,
+    async (
+      _event,
+      payload: { providerId: string },
+    ): Promise<IrisAgentProviderCatalog> => {
+      prepareProviderConfigurationChange();
+      const catalog = await removeIrisProviderCredential(
+        payload.providerId,
+        irisPiAgentDir(),
+        appDataDir(),
+      );
+      await finishProviderConfigurationChange();
+      return catalog;
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_PROVIDER_PROFILE_ADD,
+    async (
+      _event,
+      payload: { name: string; templateId: string; baseUrl: string; apiKey: string },
+    ): Promise<IrisAgentProviderCatalog> => {
+      prepareProviderConfigurationChange();
+      await addIrisAgentProviderProfile(payload, appDataDir());
+      await finishProviderConfigurationChange();
+      return loadIrisProviderCatalog(irisPiAgentDir(), appDataDir());
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_PROVIDER_PROFILE_REMOVE,
+    async (
+      _event,
+      payload: { profileId: string },
+    ): Promise<IrisAgentProviderCatalog> => {
+      prepareProviderConfigurationChange();
+      await removeIrisAgentProviderProfile(payload.profileId, appDataDir());
+      await finishProviderConfigurationChange();
+      return loadIrisProviderCatalog(irisPiAgentDir(), appDataDir());
     },
   );
 

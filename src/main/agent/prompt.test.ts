@@ -15,7 +15,7 @@ describe('Iris Agent canonical prompt', () => {
     expect(IRIS_AGENT_PROMPT).not.toMatch(/Pi documentation|PI_|custom tools|extensions|skills|TUI/);
     expect(IRIS_AGENT_PROMPT_METADATA.upstreamVersion).toBe('0.84.1');
     expect(IRIS_AGENT_PROMPT_METADATA.adaptedBasePromptSha256).toBe(
-      '984689f4d2404091aa7f17a59cf10e1b61ce278241ad0d4fef37fd39dd1d433d',
+      'e50340a52873692bf07e2ad3e59be4cfaa4e937de2bcbbeb3d46cd32a6deb093',
     );
     expect(IRIS_AGENT_PROMPT_METADATA.finalPromptSha256).toBe(
       effectivePiPromptFingerprint(IRIS_AGENT_PROMPT, IRIS_AGENT_PROMPT_METADATA.finalPromptCwd),

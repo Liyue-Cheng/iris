@@ -7,6 +7,7 @@ import type { AgentHistorySnapshot } from '@shared/agent-protocol';
 import type {
   IrisAgentAnchor,
   IrisAgentMessage,
+  IrisAgentModelRef,
   IrisAgentFileEffect,
   IrisAgentRequestFacts,
   IrisAgentRuntimeState,
@@ -23,7 +24,7 @@ import {
   sanitizeProviderContextCall,
 } from './context-artifact';
 
-export const IRIS_AGENT_SESSION_STORE_VERSION = 3 as const;
+export const IRIS_AGENT_SESSION_STORE_VERSION = 5 as const;
 
 interface IrisAgentSessionStoreFile {
   version: typeof IRIS_AGENT_SESSION_STORE_VERSION;
@@ -292,7 +293,11 @@ function defaultFile(projectRoot: string): IrisAgentSessionStoreFile {
 function validateFile(value: unknown, projectRoot: string): IrisAgentSessionStoreFile {
   if (
     !isRecord(value) ||
-    (value.version !== 1 && value.version !== 2 && value.version !== IRIS_AGENT_SESSION_STORE_VERSION)
+    (value.version !== 1 &&
+      value.version !== 2 &&
+      value.version !== 3 &&
+      value.version !== 4 &&
+      value.version !== IRIS_AGENT_SESSION_STORE_VERSION)
   ) {
     return defaultFile(projectRoot);
   }
@@ -349,6 +354,7 @@ function cloneSession(session: IrisAgentSessionInfo | null): IrisAgentSessionInf
   return {
     ...session,
     anchor: { ...session.anchor },
+    model: session.model ? { ...session.model } : null,
     messages: session.messages.map((message) => ({
       ...message,
       ...(message.providerMessage ? { providerMessage: { ...message.providerMessage } } : {}),
@@ -374,6 +380,9 @@ function isSession(value: unknown): value is IrisAgentSessionInfo {
     typeof value.id === 'string' &&
     value.kind === 'iris-agent' &&
     isAnchor(value.anchor) &&
+    (value.model === undefined || value.model === null || isModelRef(value.model)) &&
+    (value.parentSessionId === undefined || typeof value.parentSessionId === 'string') &&
+    (value.forkedFromTurnId === undefined || typeof value.forkedFromTurnId === 'string') &&
     typeof value.projectRoot === 'string' &&
     typeof value.projectGeneration === 'number' &&
     typeof value.displayName === 'string' &&
@@ -410,6 +419,14 @@ function isAnchor(value: unknown): value is IrisAgentAnchor {
     isRecord(value) &&
     typeof value.path === 'string' &&
     (value.kind === 'document' || value.kind === 'workspace')
+  );
+}
+
+function isModelRef(value: unknown): value is IrisAgentModelRef {
+  return (
+    isRecord(value) &&
+    typeof value.provider === 'string' && value.provider.length > 0 &&
+    typeof value.modelId === 'string' && value.modelId.length > 0
   );
 }
 
@@ -456,6 +473,7 @@ function migrateLegacyArtifacts(session: IrisAgentSessionInfo | null): IrisAgent
   const legacy = session as IrisAgentSessionInfo & { revision?: number; workerEpoch?: number };
   return {
     ...session,
+    model: legacy.model ?? null,
     revision: Number.isSafeInteger(legacy.revision) && legacy.revision! >= 0 ? legacy.revision! : 0,
     workerEpoch: Number.isSafeInteger(legacy.workerEpoch) && legacy.workerEpoch! >= 0
       ? legacy.workerEpoch!
@@ -470,6 +488,10 @@ function migrateLegacyArtifacts(session: IrisAgentSessionInfo | null): IrisAgent
         assembledInputLegacy: true,
       };
     }),
+    toolEvents: session.toolEvents.map((event) =>
+      event.name === 'terminal' && event.terminalIntent === undefined
+        ? { ...event, terminalIntent: 'unknown' as const }
+        : event),
   };
 }
 
@@ -555,7 +577,19 @@ function isToolEvent(value: unknown): value is IrisAgentToolEvent {
     (value.name === 'read' || value.name === 'edit' || value.name === 'write' || value.name === 'terminal') &&
     (value.state === 'running' || value.state === 'completed' || value.state === 'failed') &&
     typeof value.createdAt === 'number' &&
-    typeof value.inputSummary === 'string'
+    typeof value.inputSummary === 'string' &&
+    (value.operation === undefined ||
+      value.operation === 'access' ||
+      value.operation === 'readFile' ||
+      value.operation === 'writeFile' ||
+      value.operation === 'mkdir' ||
+      value.operation === 'exec') &&
+    (value.terminalIntent === undefined ||
+      value.terminalIntent === 'information' ||
+      value.terminalIntent === 'operation' ||
+      value.terminalIntent === 'unknown') &&
+    (value.command === undefined || typeof value.command === 'string') &&
+    (value.cwd === undefined || typeof value.cwd === 'string')
   );
 }
 

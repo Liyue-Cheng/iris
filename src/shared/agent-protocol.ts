@@ -1,8 +1,13 @@
-import type { IrisAgentAnchor, IrisAgentProviderContextCall } from './types';
+import type {
+  IrisAgentAnchor,
+  IrisAgentModelRef,
+  IrisAgentProviderContextCall,
+} from './types';
 
-export const IRIS_AGENT_PROTOCOL_VERSION = 3 as const;
+export const IRIS_AGENT_PROTOCOL_VERSION = 6 as const;
 
 export type AgentToolName = 'read' | 'edit' | 'write' | 'terminal';
+export type AgentTerminalIntent = 'information' | 'operation';
 
 export interface AgentCorrelation {
   sessionId: string;
@@ -10,6 +15,7 @@ export interface AgentCorrelation {
   requestId?: string;
   turnId?: string;
   toolCallId?: string;
+  operationId?: string;
   terminalId?: string;
 }
 
@@ -53,6 +59,20 @@ export function agentHistoryDigest(history: AgentHistorySnapshot): string {
 export interface AgentWorkerInitRuntime {
   cwd: string;
   agentDir: string;
+  providerProfileRoot: string;
+  model: IrisAgentModelRef;
+  commandShell: AgentCommandShell;
+  providerProxy: AgentProviderProxy;
+}
+
+export type AgentProviderProxy =
+  | { mode: 'direct' }
+  | { mode: 'proxy'; url: string };
+
+export interface AgentCommandShell {
+  kind: 'powershell' | 'posix';
+  executable: string;
+  displayName: string;
 }
 
 export type AgentToolOperationInput =
@@ -63,6 +83,7 @@ export type AgentToolOperationInput =
       tool: 'terminal';
       operation: 'exec';
       command: string;
+      intent: AgentTerminalIntent;
       cwd: string;
       timeout?: number;
       env?: Record<string, string | undefined>;
@@ -107,6 +128,8 @@ export type AgentWorkerEvent = AgentProtocolEnvelope &
           historyRevision: number;
           historyMessageCount: number;
           historyDigest: string;
+          model: IrisAgentModelRef;
+          commandShell: AgentCommandShell;
         };
       }
     | { type: 'state'; state: AgentSessionRuntimeState }
@@ -147,7 +170,7 @@ function isCorrelation(value: unknown): value is AgentCorrelation {
   ) {
     return false;
   }
-  return ['requestId', 'turnId', 'toolCallId', 'terminalId'].every(
+  return ['requestId', 'turnId', 'toolCallId', 'operationId', 'terminalId'].every(
     (key) => value[key] === undefined || typeof value[key] === 'string',
   );
 }
@@ -181,7 +204,44 @@ function isAnchor(value: unknown): value is IrisAgentAnchor {
 }
 
 function isInitRuntime(value: unknown): value is AgentWorkerInitRuntime {
-  return isRecord(value) && typeof value.cwd === 'string' && typeof value.agentDir === 'string';
+  return (
+    isRecord(value) &&
+    typeof value.cwd === 'string' &&
+    typeof value.agentDir === 'string' &&
+    typeof value.providerProfileRoot === 'string' &&
+    isModelRef(value.model) &&
+    isCommandShell(value.commandShell) &&
+    isProviderProxy(value.providerProxy)
+  );
+}
+
+function isProviderProxy(value: unknown): value is AgentProviderProxy {
+  if (!isRecord(value)) return false;
+  if (value.mode === 'direct') return true;
+  if (value.mode !== 'proxy' || typeof value.url !== 'string') return false;
+  try {
+    const parsed = new URL(value.url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function isModelRef(value: unknown): value is IrisAgentModelRef {
+  return (
+    isRecord(value) &&
+    typeof value.provider === 'string' && value.provider.length > 0 &&
+    typeof value.modelId === 'string' && value.modelId.length > 0
+  );
+}
+
+function isCommandShell(value: unknown): value is AgentCommandShell {
+  return (
+    isRecord(value) &&
+    (value.kind === 'powershell' || value.kind === 'posix') &&
+    typeof value.executable === 'string' && value.executable.length > 0 &&
+    typeof value.displayName === 'string' && value.displayName.length > 0
+  );
 }
 
 function isToolOperationResult(value: unknown): value is AgentToolOperationResult {

@@ -9,12 +9,52 @@ import type { IrisAgentSessionInfo } from '@shared/types';
 import {
   createIrisPiResourceLoader,
   createIrisPiToolDefinitions,
+  currentIrisProviderToolCallId,
   instrumentProviderPayloads,
+  loadIrisModelCatalog,
+  loadIrisProviderCatalog,
   normalizeIrisProviderContext,
+  removeIrisProviderCredential,
+  renderRawError,
+  renderRawHttpFailure,
   restoreIrisPiHistory,
+  saveIrisProviderApiKey,
+  storedPiCredentialSecrets,
+  unwrapProviderErrorMessage,
 } from './pi-adapter';
+import {
+  addIrisAgentProviderProfile,
+  loadStoredIrisAgentProviderProfiles,
+  removeIrisAgentProviderProfile,
+  runtimeProviderId,
+} from './provider-profiles';
 
 describe('Iris Pi adapter', () => {
+  it('preserves raw HTTP bodies and transport cause chains', () => {
+    const transport = Object.assign(new Error('fetch failed'), {
+      cause: Object.assign(new Error('Connect Timeout Error'), {
+        name: 'ConnectTimeoutError',
+        code: 'UND_ERR_CONNECT_TIMEOUT',
+        address: 'example.test',
+        port: 443,
+      }),
+    });
+
+    expect(renderRawError(transport)).toBe([
+      'Error: fetch failed',
+      'caused by ConnectTimeoutError [UND_ERR_CONNECT_TIMEOUT]: Connect Timeout Error (address=example.test, port=443)',
+    ].join('\n'));
+    expect(renderRawHttpFailure(503, 'Service Unavailable', '{"type":"shell_api_error"}'))
+      .toBe('HTTP 503 Service Unavailable\n{"type":"shell_api_error"}');
+    expect(unwrapProviderErrorMessage(
+      'OpenAI API error (503): {"type":"shell_api_error"}',
+    )).toBe('HTTP 503\n{"type":"shell_api_error"}');
+    expect(unwrapProviderErrorMessage(
+      'OpenAI API error: Request timed out.',
+      renderRawError(transport),
+    )).toBe(renderRawError(transport));
+  });
+
   it('loads only the built-in Iris prompt and no discovered Pi resources', async () => {
     const root = process.cwd();
     const loader = await createIrisPiResourceLoader(root, join(root, '.not-used-pi-agent'));
@@ -30,7 +70,13 @@ describe('Iris Pi adapter', () => {
   it('exposes only wrapped public Pi tool definitions and delegates operations', async () => {
     const root = process.cwd();
     const operations = {
-      read: { access: vi.fn(async () => {}), readFile: vi.fn(async () => Buffer.from('hello')) },
+      read: {
+        access: vi.fn(async () => {}),
+        readFile: vi.fn(async () => {
+          expect(currentIrisProviderToolCallId()).toBe('call-1');
+          return Buffer.from('hello');
+        }),
+      },
       edit: {
         access: vi.fn(async () => {}),
         readFile: vi.fn(async () => Buffer.from('before')),
@@ -38,13 +84,18 @@ describe('Iris Pi adapter', () => {
       },
       write: { mkdir: vi.fn(async () => {}), writeFile: vi.fn(async () => {}) },
       terminal: {
-        exec: vi.fn(async (_command, _cwd, options) => {
+        exec: vi.fn(async (_command, _intent, _cwd, options) => {
+          expect(currentIrisProviderToolCallId()).toBe('call-2');
           options.onData(Buffer.from('terminal output'));
           return { exitCode: 0 };
         }),
       },
     };
-    const tools = createIrisPiToolDefinitions(root, operations);
+    const tools = createIrisPiToolDefinitions(root, operations, {
+      kind: 'powershell',
+      executable: 'pwsh.exe',
+      displayName: 'PowerShell 7',
+    });
     expect(tools.map((tool) => tool.name)).toEqual(['read', 'edit', 'write', 'terminal']);
     const read = tools[0]!;
     const result = await read.execute(
@@ -56,7 +107,25 @@ describe('Iris Pi adapter', () => {
     );
     expect(operations.read.readFile).toHaveBeenCalledWith(join(root, 'README.md'));
     expect(result.content).toEqual([{ type: 'text', text: 'hello' }]);
-    expect(tools[3]!.promptGuidelines).toEqual([]);
+    expect(tools[3]).toMatchObject({ name: 'terminal', label: 'PowerShell' });
+    expect(tools[3]!.description).toContain('PowerShell 7 (pwsh.exe)');
+    expect(tools[3]!.description.toLowerCase()).not.toContain('bash');
+    expect(tools[3]!.promptGuidelines?.[0]).toContain('Do not emit Bash-only commands');
+    expect(tools[3]!.parameters.required).toEqual(['command', 'intent']);
+    const terminalResult = await tools[3]!.execute(
+      'call-2',
+      { command: 'git status', intent: 'information' },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    expect(operations.terminal.exec).toHaveBeenCalledWith(
+      'git status',
+      'information',
+      root,
+      expect.objectContaining({ onData: expect.any(Function) }),
+    );
+    expect(terminalResult.content).toEqual([{ type: 'text', text: 'terminal output' }]);
   });
 
   it('injects persisted provider messages and tool results into Pi context', () => {
@@ -319,6 +388,7 @@ describe('Iris Pi adapter', () => {
       id: 'session-1',
       kind: 'iris-agent',
       anchor: { kind: 'workspace', path: '.iris' },
+      model: { provider: 'openai', modelId: 'gpt-test' },
       projectRoot: process.cwd(),
       projectGeneration: 1,
       displayName: 'Iris Agent',
@@ -499,6 +569,108 @@ describe('Iris Pi adapter', () => {
       input: [{ role: 'user', content: 'before' }],
       transformed: true,
     }]);
+  });
+
+  it('injects the configured provider fetch into Pi requests', () => {
+    let receivedFetch: typeof globalThis.fetch | undefined;
+    const runtime = {
+      streamSimple: vi.fn((_model, _context, options) => {
+        receivedFetch = options.fetch;
+        return { marker: 'stream' };
+      }),
+    };
+    const providerFetch = vi.fn() as unknown as typeof globalThis.fetch;
+    instrumentProviderPayloads(runtime as never, undefined, undefined, providerFetch);
+
+    expect(runtime.streamSimple({} as never, { messages: [] } as never, {})).toEqual({ marker: 'stream' });
+    expect(receivedFetch).toBe(providerFetch);
+  });
+
+  it('persists and removes provider API keys without returning the secret', async () => {
+    const agentDir = await mkdtemp(join(tmpdir(), 'iris-pi-credentials-'));
+    try {
+      const saved = await saveIrisProviderApiKey('openai', 'sk-iris-test', agentDir, agentDir);
+      expect(saved.providers.find((provider) => provider.providerId === 'openai')).toMatchObject({
+        configured: true,
+        hasStoredCredential: true,
+        credentialType: 'api_key',
+      });
+      expect(JSON.stringify(saved)).not.toContain('sk-iris-test');
+      expect(storedPiCredentialSecrets('openai', agentDir)).toEqual({
+        type: 'api_key',
+        key: 'sk-iris-test',
+      });
+
+      const removed = await removeIrisProviderCredential('openai', agentDir, agentDir);
+      expect(removed.providers.find((provider) => provider.providerId === 'openai')).toMatchObject({
+        hasStoredCredential: false,
+      });
+      expect(storedPiCredentialSecrets('openai', agentDir)).toBeUndefined();
+      expect((await loadIrisProviderCatalog(agentDir, agentDir)).providers).not.toEqual([]);
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it('persists multiple profiles for one template and registers separate model providers', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'iris-provider-profiles-'));
+    try {
+      await expect(addIrisAgentProviderProfile({
+        name: 'Missing endpoint',
+        templateId: 'openai-compatible',
+        baseUrl: '',
+        apiKey: 'sk-not-saved',
+      }, root)).rejects.toThrow('requires a Base URL');
+      const firstProjection = await addIrisAgentProviderProfile({
+        name: 'OpenAI primary',
+        templateId: 'openai',
+        baseUrl: '',
+        apiKey: 'sk-primary-secret',
+      }, root);
+      const secondProjection = await addIrisAgentProviderProfile({
+        name: 'OpenAI backup',
+        templateId: 'openai',
+        baseUrl: 'https://proxy.example.com/v1',
+        apiKey: 'sk-backup-secret',
+      }, root);
+
+      expect(firstProjection).toHaveLength(1);
+      expect(secondProjection).toHaveLength(2);
+      expect(JSON.stringify(secondProjection)).not.toContain('secret');
+      const stored = await loadStoredIrisAgentProviderProfiles(root);
+      expect(stored.map((profile) => profile.apiKey)).toEqual([
+        'sk-primary-secret',
+        'sk-backup-secret',
+      ]);
+      expect(stored[1]).toMatchObject({
+        templateId: 'openai',
+        baseUrl: 'https://proxy.example.com/v1',
+      });
+
+      const catalog = await loadIrisProviderCatalog(root, root);
+      expect(catalog.templates.map((template) => template.id)).toContain('openai-compatible');
+      expect(catalog.profiles.map((profile) => profile.name)).toEqual([
+        'OpenAI primary',
+        'OpenAI backup',
+      ]);
+      expect(JSON.stringify(catalog)).not.toContain('sk-primary-secret');
+      expect(JSON.stringify(catalog)).not.toContain('sk-backup-secret');
+
+      const modelCatalog = await loadIrisModelCatalog(root, root);
+      const profileProviders = new Set(stored.map((profile) => runtimeProviderId(profile.id)));
+      expect(profileProviders.size).toBe(2);
+      expect(modelCatalog.models.some((model) =>
+        profileProviders.has(model.provider) && model.providerName === 'OpenAI primary')).toBe(true);
+      expect(modelCatalog.models.some((model) =>
+        profileProviders.has(model.provider) && model.providerName === 'OpenAI backup')).toBe(true);
+      expect(JSON.stringify(modelCatalog)).not.toContain('secret');
+
+      const remaining = await removeIrisAgentProviderProfile(stored[0]!.id, root);
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]?.name).toBe('OpenAI backup');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

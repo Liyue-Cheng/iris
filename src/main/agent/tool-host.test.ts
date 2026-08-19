@@ -4,6 +4,12 @@ import { describe, expect, it } from 'vitest';
 import { createTempDataDir, removeTempDataDir } from '../persistence';
 import { IrisAgentToolHost } from './tool-host';
 
+const commandShell = {
+  kind: 'powershell' as const,
+  executable: 'pwsh.exe',
+  displayName: 'PowerShell 7',
+};
+
 const correlation = {
   sessionId: 'agent-1',
   requestId: 'request-1',
@@ -19,7 +25,7 @@ describe('IrisAgentToolHost', () => {
       const target = join(projectRoot, 'src', 'value.txt');
       await fs.mkdir(join(projectRoot, 'src'), { recursive: true });
       await fs.writeFile(target, 'before', 'utf8');
-      const host = new IrisAgentToolHost({ projectRoot, outputRoot });
+      const host = new IrisAgentToolHost({ projectRoot, outputRoot, commandShell });
 
       const read = await host.execute(
         { tool: 'read', operation: 'readFile', absolutePath: target },
@@ -36,6 +42,9 @@ describe('IrisAgentToolHost', () => {
       );
       expect(await fs.readFile(target, 'utf8')).toBe('after');
       expect(write.event.state).toBe('completed');
+      expect(write.event.diff).toContain('@@');
+      expect(write.event.diff).toContain('-before');
+      expect(write.event.diff).toContain('+after');
       expect(write.fileEffect?.beforeContent).toBe('before');
       expect(write.fileEffect?.afterContent).toBe('after');
     } finally {
@@ -48,7 +57,7 @@ describe('IrisAgentToolHost', () => {
     const projectRoot = await createTempDataDir('iris-agent-tool-project-');
     const outputRoot = await createTempDataDir('iris-agent-tool-output-');
     try {
-      const host = new IrisAgentToolHost({ projectRoot, outputRoot });
+      const host = new IrisAgentToolHost({ projectRoot, outputRoot, commandShell });
       const write = await host.execute(
         {
           tool: 'write',
@@ -62,7 +71,13 @@ describe('IrisAgentToolHost', () => {
       expect(write.event.error).toContain('cannot create new .iris documents');
 
       const terminal = await host.execute(
-        { tool: 'terminal', operation: 'exec', command: 'node', cwd: projectRoot },
+        {
+          tool: 'terminal',
+          operation: 'exec',
+          command: 'node',
+          intent: 'operation',
+          cwd: projectRoot,
+        },
         correlation,
       );
       expect(terminal.event.state).toBe('failed');

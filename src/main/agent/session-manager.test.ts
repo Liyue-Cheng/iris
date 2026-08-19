@@ -1,4 +1,6 @@
 import { EventEmitter } from 'node:events';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   IRIS_AGENT_PROTOCOL_VERSION,
@@ -9,18 +11,31 @@ import {
 import {
   applyIrisAgentProviderMessage,
   applyIrisAgentMessageRewind,
+  createIrisAgentBranch,
   IrisAgentSessionManager,
+  parseElectronProxyRules,
   settleIrisAgentTurn,
 } from './session-manager';
 import type { AgentWorkerPort } from './worker-host';
 import { createTempDataDir, removeTempDataDir } from '../persistence';
 import type { ProjectManager } from '../project-manager';
-import type { IrisAgentSessionInfo } from '@shared/types';
+import type { IrisAgentModelCatalog, IrisAgentSessionInfo } from '@shared/types';
+
+const testModelCatalog: IrisAgentModelCatalog = {
+  models: [{
+    provider: 'openai',
+    modelId: 'gpt-test',
+    name: 'GPT Test',
+    api: 'openai-responses',
+    reasoning: true,
+  }],
+};
 
 const baseSession: IrisAgentSessionInfo = {
   id: 'agent-1',
   kind: 'iris-agent',
   anchor: { kind: 'document', path: '.iris/issue/task.md' },
+  model: { provider: 'openai', modelId: 'gpt-test' },
   projectRoot: 'E:/project',
   projectGeneration: 1,
   displayName: 'Iris Agent',
@@ -138,6 +153,8 @@ class SessionManagerWorker extends EventEmitter implements AgentWorkerPort {
           historyRevision: message.history.revision,
           historyMessageCount: message.history.messages.length,
           historyDigest: agentHistoryDigest(message.history),
+          model: message.runtime.model,
+          commandShell: message.runtime.commandShell,
         },
       }));
     }
@@ -170,6 +187,26 @@ class SessionManagerWorker extends EventEmitter implements AgentWorkerPort {
   }
 }
 
+describe('Iris Agent system proxy rules', () => {
+  it('uses the first supported Electron proxy decision in order', () => {
+    expect(parseElectronProxyRules('PROXY 127.0.0.1:7890; DIRECT')).toEqual({
+      mode: 'proxy',
+      url: 'http://127.0.0.1:7890/',
+    });
+    expect(parseElectronProxyRules('HTTPS proxy.example.test:8443')).toEqual({
+      mode: 'proxy',
+      url: 'https://proxy.example.test:8443/',
+    });
+    expect(parseElectronProxyRules('DIRECT; PROXY 127.0.0.1:7890')).toEqual({ mode: 'direct' });
+    expect(parseElectronProxyRules('SOCKS5 127.0.0.1:1080; DIRECT')).toEqual({ mode: 'direct' });
+  });
+
+  it('reports unsupported proxy results explicitly', () => {
+    expect(() => parseElectronProxyRules('SOCKS5 127.0.0.1:1080')).toThrow(/SOCKS/);
+    expect(() => parseElectronProxyRules('UNKNOWN proxy.example.test:80')).toThrow(/unsupported/);
+  });
+});
+
 function finishWorkerTurn(worker: SessionManagerWorker, answer: string): void {
   const run = worker.latestRun();
   worker.emitMessage({
@@ -188,6 +225,76 @@ function finishWorkerTurn(worker: SessionManagerWorker, answer: string): void {
     event: { type: 'agent_end' },
   });
 }
+
+describe('IrisAgentSessionManager tool activity', () => {
+  it('collapses low-level operations from one provider tool call into one event', async () => {
+    const dataDir = await createTempDataDir('iris-agent-tool-activity-');
+    const projectRoot = await createTempDataDir('iris-agent-tool-project-');
+    const worker = new SessionManagerWorker(false);
+    const projectManager = {
+      readDoc: vi.fn(async (path: string) => ({ path, raw: '# Focus' })),
+      assertProjectSettingsReady: vi.fn(async () => undefined),
+      softwarePromptState: vi.fn(async () => ({ project: { text: '# Project' } })),
+    } as unknown as ProjectManager;
+    const manager = new IrisAgentSessionManager(dataDir, projectManager, {
+      workerFactory: () => worker,
+      workerIdleTimeoutMs: 60_000,
+      modelCatalogLoader: async () => testModelCatalog,
+    });
+    const scope = { root: projectRoot, generation: 1 };
+    const target = join(projectRoot, 'value.txt');
+    await writeFile(target, 'value', 'utf8');
+
+    try {
+      const opened = await manager.createSession({
+        scope,
+        anchor: { kind: 'document', path: '.iris/issue/task.md' },
+      });
+      await manager.send(scope, opened.id, 'read value');
+      const run = worker.latestRun();
+      worker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'tool-request',
+        correlation: {
+          ...run.correlation,
+          toolCallId: 'provider-call-1',
+          operationId: 'operation-1',
+        },
+        input: { tool: 'read', operation: 'access', absolutePath: target },
+      });
+      await vi.waitFor(() => expect(worker.messages).toContainEqual(expect.objectContaining({
+        type: 'tool-result',
+        correlation: expect.objectContaining({ operationId: 'operation-1' }),
+      })));
+      worker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'tool-request',
+        correlation: {
+          ...run.correlation,
+          toolCallId: 'provider-call-1',
+          operationId: 'operation-2',
+        },
+        input: { tool: 'read', operation: 'readFile', absolutePath: target },
+      });
+      await vi.waitFor(async () => {
+        const event = (await manager.list(scope)).sessions[0]?.toolEvents[0];
+        expect(event).toMatchObject({
+          id: 'provider-call-1',
+          name: 'read',
+          operation: 'readFile',
+          state: 'completed',
+          resultSummary: '5 bytes',
+        });
+        expect((await manager.list(scope)).sessions[0]?.toolEvents).toHaveLength(1);
+      });
+      finishWorkerTurn(worker, 'done');
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(dataDir);
+      await removeTempDataDir(projectRoot);
+    }
+  });
+});
 
 describe('IrisAgentSessionManager rewind', () => {
   it('removes exactly the latest terminal turn and retains real-world effect facts', () => {
@@ -242,6 +349,59 @@ describe('IrisAgentSessionManager rewind', () => {
     };
 
     expect(applyIrisAgentMessageRewind(session).turns.map((turn) => turn.id)).toEqual(['turn-1']);
+  });
+});
+
+describe('IrisAgentSessionManager branch', () => {
+  it('copies only the selected conversation prefix and model identity', () => {
+    const source = structuredClone(baseSession);
+    const branch = createIrisAgentBranch(
+      source,
+      'turn-1',
+      'branch-1',
+      'Iris Agent Branch 1',
+      10,
+    );
+
+    expect(branch).toMatchObject({
+      id: 'branch-1',
+      parentSessionId: source.id,
+      forkedFromTurnId: 'turn-1',
+      model: source.model,
+      state: 'ready',
+      activeTurnId: null,
+      revision: 0,
+      workerEpoch: 0,
+    });
+    expect(branch.turns.map((turn) => turn.id)).toEqual(['turn-1']);
+    expect(branch.messages.map((message) => message.id)).toEqual(['u1', 'a1']);
+    expect(branch.turns[0]).not.toHaveProperty('promptAvailable');
+    expect(branch.toolEvents).toEqual([]);
+    expect(branch.fileEffects).toEqual([]);
+    expect(branch.requestFacts).toEqual([]);
+    expect(branch).not.toHaveProperty('undoReceipts');
+    expect(source.turns).toHaveLength(2);
+    expect(source.toolEvents).toHaveLength(1);
+    expect(source.fileEffects).toHaveLength(1);
+  });
+
+  it('rejects a missing or incomplete branch point', () => {
+    expect(() => createIrisAgentBranch(
+      baseSession,
+      'missing',
+      'branch-1',
+      'Branch',
+      10,
+    )).toThrow(/not found/);
+    const running = {
+      ...baseSession,
+      state: 'running' as const,
+      activeTurnId: 'turn-2',
+      turns: baseSession.turns.map((turn) =>
+        turn.id === 'turn-2' ? { ...turn, status: 'running' as const } : turn),
+    };
+    expect(() => createIrisAgentBranch(running, 'turn-2', 'branch-1', 'Branch', 10))
+      .toThrow(/before changing conversation history/);
   });
 });
 
@@ -408,6 +568,7 @@ describe('IrisAgentSessionManager command transactions', () => {
     const manager = new IrisAgentSessionManager(dataDir, projectManager, {
       workerFactory,
       workerIdleTimeoutMs: 60_000,
+      modelCatalogLoader: async () => testModelCatalog,
     });
     const scope = { root: projectRoot, generation: 1 };
 
@@ -451,6 +612,7 @@ describe('IrisAgentSessionManager command transactions', () => {
         return worker;
       },
       workerIdleTimeoutMs: 60_000,
+      modelCatalogLoader: async () => testModelCatalog,
     });
     const scope = { root: projectRoot, generation: 1 };
 
@@ -521,6 +683,7 @@ describe('IrisAgentSessionManager command transactions', () => {
         return worker;
       },
       workerIdleTimeoutMs: 60_000,
+      modelCatalogLoader: async () => testModelCatalog,
     });
     const scope = { root: projectRoot, generation: 1 };
 
@@ -605,6 +768,7 @@ describe('IrisAgentSessionManager command transactions', () => {
         return worker;
       },
       workerIdleTimeoutMs: 60_000,
+      modelCatalogLoader: async () => testModelCatalog,
     });
     const scope = { root: projectRoot, generation: 1 };
 
@@ -671,6 +835,109 @@ describe('IrisAgentSessionManager command transactions', () => {
       expect((await manager.list(scope)).sessions[0]?.state).toBe('running');
     } finally {
       for (const worker of workers) worker.releaseTerminate();
+      await manager.shutdown();
+      await removeTempDataDir(dataDir);
+      await removeTempDataDir(projectRoot);
+    }
+  });
+
+  it('persists a model switch and initializes the replacement Worker with it', async () => {
+    const dataDir = await createTempDataDir('iris-agent-model-switch-');
+    const projectRoot = await createTempDataDir('iris-agent-model-switch-project-');
+    const workers: SessionManagerWorker[] = [];
+    const catalog: IrisAgentModelCatalog = {
+      models: [
+        ...testModelCatalog.models,
+        {
+          provider: 'openai',
+          modelId: 'gpt-next',
+          name: 'GPT Next',
+          api: 'openai-responses',
+          reasoning: true,
+        },
+      ],
+    };
+    const projectManager = {
+      readDoc: vi.fn(async (path: string) => ({ path, raw: '# Focus' })),
+      assertProjectSettingsReady: vi.fn(async () => undefined),
+      softwarePromptState: vi.fn(async () => ({ project: { text: '# Project' } })),
+    } as unknown as ProjectManager;
+    const manager = new IrisAgentSessionManager(dataDir, projectManager, {
+      workerFactory: () => {
+        const worker = new SessionManagerWorker(false);
+        workers.push(worker);
+        return worker;
+      },
+      workerIdleTimeoutMs: 60_000,
+      modelCatalogLoader: async () => catalog,
+    });
+    const scope = { root: projectRoot, generation: 1 };
+
+    try {
+      const opened = await manager.createSession({
+        scope,
+        anchor: { kind: 'document', path: '.iris/issue/task.md' },
+      });
+      expect(opened.model).toEqual({ provider: 'openai', modelId: 'gpt-test' });
+      await manager.send(scope, opened.id, 'first request');
+      finishWorkerTurn(workers[0]!, 'first answer');
+      await vi.waitFor(async () => {
+        expect((await manager.list(scope)).sessions[0]?.state).toBe('idle');
+      });
+
+      const beforeSwitch = (await manager.list(scope)).sessions[0]!;
+      const switched = await manager.setModel(
+        scope,
+        opened.id,
+        { provider: 'openai', modelId: 'gpt-next' },
+        { expectedRevision: beforeSwitch.revision },
+      );
+      expect(switched.model).toEqual({ provider: 'openai', modelId: 'gpt-next' });
+      expect(workers[0]!.terminate).toHaveBeenCalledTimes(1);
+
+      await manager.send(scope, opened.id, 'second request');
+      expect(workers).toHaveLength(2);
+      const initialize = workers[1]!.messages.find(
+        (message): message is Extract<AgentWorkerRequest, { type: 'initialize' }> =>
+          message.type === 'initialize',
+      );
+      expect(initialize?.runtime.model).toEqual({ provider: 'openai', modelId: 'gpt-next' });
+      expect((await manager.list(scope)).sessions[0]?.model).toEqual({
+        provider: 'openai',
+        modelId: 'gpt-next',
+      });
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(dataDir);
+      await removeTempDataDir(projectRoot);
+    }
+  });
+
+  it('rejects sending when the saved model is no longer available', async () => {
+    const dataDir = await createTempDataDir('iris-agent-model-unavailable-');
+    const projectRoot = await createTempDataDir('iris-agent-model-unavailable-project-');
+    let catalog = testModelCatalog;
+    const manager = new IrisAgentSessionManager(dataDir, {
+      readDoc: vi.fn(async (path: string) => ({ path, raw: '# Focus' })),
+      assertProjectSettingsReady: vi.fn(async () => undefined),
+      softwarePromptState: vi.fn(async () => ({ project: { text: '# Project' } })),
+    } as unknown as ProjectManager, {
+      workerFactory: () => new SessionManagerWorker(false),
+      workerIdleTimeoutMs: 60_000,
+      modelCatalogLoader: async () => catalog,
+    });
+    const scope = { root: projectRoot, generation: 1 };
+
+    try {
+      const opened = await manager.createSession({
+        scope,
+        anchor: { kind: 'document', path: '.iris/issue/task.md' },
+      });
+      catalog = { models: [] };
+
+      await expect(manager.send(scope, opened.id, 'must not run')).rejects.toThrow(/unavailable/);
+      expect((await manager.list(scope)).sessions[0]?.turns).toEqual([]);
+    } finally {
       await manager.shutdown();
       await removeTempDataDir(dataDir);
       await removeTempDataDir(projectRoot);

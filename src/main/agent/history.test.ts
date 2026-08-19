@@ -12,6 +12,7 @@ function session(status: 'running' | 'completed' | 'stopped' | 'failed'): IrisAg
     id: 'session-1',
     kind: 'iris-agent',
     anchor: { kind: 'workspace', path: '.iris' },
+    model: { provider: 'openai', modelId: 'gpt-test' },
     projectRoot: 'E:/project',
     projectGeneration: 1,
     displayName: 'Iris Agent',

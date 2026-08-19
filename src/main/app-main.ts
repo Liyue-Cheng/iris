@@ -14,7 +14,7 @@
  * index.ts (that is what fires our `second-instance` event), and we open the new
  * window here in the winning main process — VS Code's one-main-process model.
  */
-import { app, BrowserWindow, dialog, screen, shell } from 'electron';
+import { app, BrowserWindow, dialog, screen, session as electronSession, shell } from 'electron';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,6 +24,7 @@ import { JsonStore } from './persistence';
 import {
   projectRootsForStartup,
   SettingsManager,
+  appDataDir,
   settingsFilePath,
 } from './settings-manager';
 import { ProjectManager } from './project-manager';
@@ -133,6 +134,8 @@ function createWindowContext(win: BrowserWindow, initialRoot: string | null): Wi
   const sessionManager = new SessionManager(settingsManager);
   const agentSessionManager = new IrisAgentSessionManager(app.getPath('userData'), projectManager, {
     appVersion: app.getVersion(),
+    providerProfileRoot: appDataDir(),
+    resolveProxy: (url) => electronSession.defaultSession.resolveProxy(url),
   });
   let ctx: WindowContext;
   const unwire = wireBroadcasts(

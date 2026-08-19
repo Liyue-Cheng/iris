@@ -51,7 +51,8 @@
     "i18next": "^26.3.6",
     "node-pty": "^1.1.0",
     "react-i18next": "^17.0.11",
-    "typebox": "1.3.7"
+    "typebox": "1.3.7",
+    "undici": "^6.26.0"
   },
   "devDependencies": {
     "@codemirror/lang-markdown": "^6.5.0",

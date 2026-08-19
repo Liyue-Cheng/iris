@@ -3,7 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { IDisposable, IPty } from 'node-pty';
-import { AgentCommandPty, commandShell, type AgentCommandPtyEvent } from './command-pty';
+import {
+  AgentCommandPty,
+  commandShell,
+  resolveAgentCommandShell,
+  type AgentCommandPtyEvent,
+} from './command-pty';
 
 function fakePty() {
   let dataListener: ((data: string) => void) | null = null;
@@ -123,7 +128,24 @@ describe('AgentCommandPty', () => {
     });
     expect(commandShell('echo ok', { PATH: '' }, 'win32')).toEqual({
       file: 'powershell.exe',
-      args: ['-NoLogo', '-NonInteractive', '-Command', 'echo ok'],
+      args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'echo ok'],
+    });
+  });
+
+  it('resolves PowerShell 7 by executable presence and otherwise uses Windows PowerShell', () => {
+    expect(resolveAgentCommandShell(
+      { PATH: 'C:\\Tools;C:\\Program Files\\PowerShell\\7\\' },
+      'win32',
+      (path) => path === 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+    )).toEqual({
+      kind: 'powershell',
+      executable: 'pwsh.exe',
+      displayName: 'PowerShell 7',
+    });
+    expect(resolveAgentCommandShell({ PATH: '' }, 'win32', () => false)).toEqual({
+      kind: 'powershell',
+      executable: 'powershell.exe',
+      displayName: 'Windows PowerShell',
     });
   });
 

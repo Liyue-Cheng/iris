@@ -5,8 +5,8 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  gitMetadataWatchTargets,
   GitManager,
-  shouldIgnoreGitWatchPath,
   shouldInvalidateGitWatchEvent,
 } from './git-manager';
 
@@ -48,6 +48,19 @@ async function waitForChange(label: string, action: () => Promise<void>): Promis
   });
   await action();
   await changed;
+}
+
+async function expectNoChange(durationMs: number, action: () => Promise<void>): Promise<void> {
+  let changed = false;
+  const onChanged = (): void => { changed = true; };
+  manager.on('changed', onChanged);
+  try {
+    await action();
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, durationMs));
+    expect(changed).toBe(false);
+  } finally {
+    manager.off('changed', onChanged);
+  }
 }
 
 beforeEach(async () => {
@@ -192,6 +205,26 @@ describe('GitManager integration', () => {
     expect((await manager.status()).groups.index[0]?.path).toBe('src/deep/nested/tracked.txt');
   }, 15_000);
 
+  it('does not invalidate for writes under a large ignored directory tree', async () => {
+    await initRepository();
+    await writeFile(join(repository, '.gitignore'), 'ignored/\n', 'utf8');
+    await git(['add', '--', '.gitignore']);
+    await git(['commit', '-m', 'ignore generated tree']);
+    const ignoredRoot = join(repository, 'ignored');
+    await Promise.all(Array.from({ length: 5_000 }, (_, index) => mkdir(join(
+      ignoredRoot,
+      `group-${Math.floor(index / 100)}`,
+      `leaf-${index % 100}`,
+    ), { recursive: true })));
+    await manager.open(repository);
+
+    await expectNoChange(2_750, () => writeFile(
+      join(ignoredRoot, 'group-0', 'leaf-0', 'output.txt'),
+      'generated',
+      'utf8',
+    ));
+  }, 15_000);
+
   it('uses the full worktree when the Iris project is a repository subdirectory', async () => {
     await initRepository();
     await commitFile('outside.txt', 'base');
@@ -255,6 +288,20 @@ describe('GitManager integration', () => {
       await git(['add', '--', 'tracked.txt'], linked);
     });
     expect((await manager.status()).groups.index[0]?.path).toBe('tracked.txt');
+  }, 15_000);
+
+  it('invalidates when an external commit advances the current ref', async () => {
+    await initRepository();
+    await commitFile('tracked.txt', 'base');
+    const ready = new Promise<void>((resolvePromise) => {
+      manager.once('healthChanged', () => resolvePromise());
+    });
+    await manager.open(repository);
+    await ready;
+
+    await waitForChange('external commit', async () => {
+      await git(['commit', '--allow-empty', '-m', 'external commit']);
+    });
   }, 15_000);
 
   it('preserves the last valid snapshot when a refresh temporarily fails', async () => {
@@ -406,21 +453,23 @@ describe('GitManager integration', () => {
   });
 });
 
-describe('Git watcher filters', () => {
+describe('Git watcher signals', () => {
   const repository = {
     worktreeRoot: resolve('watcher-repository'),
     gitDir: resolve('watcher-repository', '.git'),
     commonDir: resolve('watcher-repository', '.git'),
   };
 
-  it('keeps authoritative metadata and ignores noisy Git internals', () => {
-    expect(shouldIgnoreGitWatchPath(repository, join(repository.gitDir, 'index'))).toBe(false);
-    expect(shouldIgnoreGitWatchPath(repository, join(repository.gitDir, 'HEAD'))).toBe(false);
-    expect(shouldIgnoreGitWatchPath(repository, join(repository.gitDir, 'packed-refs'))).toBe(false);
-    expect(shouldIgnoreGitWatchPath(repository, join(repository.gitDir, 'refs', 'heads', 'main'))).toBe(false);
-    expect(shouldIgnoreGitWatchPath(repository, join(repository.gitDir, 'objects', 'ab', 'object'))).toBe(true);
-    expect(shouldIgnoreGitWatchPath(repository, join(repository.gitDir, 'fsmonitor--daemon', 'cookie'))).toBe(true);
-    expect(shouldIgnoreGitWatchPath(repository, join(repository.worktreeRoot, 'src', 'deep', 'file.ts'))).toBe(false);
+  it('only watches bounded authoritative metadata targets', () => {
+    const targets = gitMetadataWatchTargets(repository);
+    expect(targets).toEqual([
+      join(repository.gitDir, 'index'),
+      join(repository.gitDir, 'index.lock'),
+      join(repository.gitDir, 'HEAD'),
+      join(repository.commonDir, 'packed-refs'),
+    ]);
+    expect(targets).not.toContain(repository.worktreeRoot);
+    expect(targets.every((target) => target.startsWith(repository.gitDir))).toBe(true);
   });
 
   it('waits for index.lock removal before invalidating', () => {

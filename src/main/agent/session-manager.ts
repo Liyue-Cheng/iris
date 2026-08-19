@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { ProjectManager } from '../project-manager';
 import { assembleAgentPrompt } from './prompt';
 import { AgentWorkerHost } from './worker-host';
-import { irisPiAgentDir } from './pi-adapter';
+import { irisPiAgentDir, loadIrisModelCatalog, resolveIrisModelBaseUrl } from './pi-adapter';
 import { IrisAgentSessionStore } from './session-store';
 import {
   assertIrisAgentExpectedRevision,
@@ -15,8 +15,10 @@ import {
   undoLatestIrisAgentTurn,
 } from './session-domain';
 import { IrisAgentToolHost } from './tool-host';
+import { resolveAgentCommandShell } from './command-pty';
 import type {
   AgentSessionRuntimeState,
+  AgentProviderProxy,
   AgentToolOperationInput,
   AgentWorkerEvent,
 } from '@shared/agent-protocol';
@@ -25,6 +27,8 @@ import type {
   IrisAgentAnchor,
   IrisAgentListSnapshot,
   IrisAgentMessage,
+  IrisAgentModelCatalog,
+  IrisAgentModelRef,
   IrisAgentRequestFacts,
   IrisAgentRuntimeState,
   IrisAgentSessionChangedPayload,
@@ -50,6 +54,9 @@ export interface IrisAgentSessionManagerOptions {
   workerFactory?: () => AgentWorkerPort;
   workerIdleTimeoutMs?: number;
   appVersion?: string;
+  modelCatalogLoader?: () => Promise<IrisAgentModelCatalog>;
+  providerProfileRoot?: string;
+  resolveProxy?: (url: string) => Promise<string>;
 }
 
 export interface IrisAgentCommandPrecondition {
@@ -63,6 +70,7 @@ export class IrisAgentSessionManager extends EventEmitter {
   private currentScope: ProjectScope | null = null;
   private readonly workerEventChains = new Map<string, Promise<void>>();
   private readonly sessionCommandChains = new Map<string, Promise<void>>();
+  private readonly commandShell = resolveAgentCommandShell(process.env);
   private shuttingDown = false;
 
   constructor(
@@ -88,11 +96,16 @@ export class IrisAgentSessionManager extends EventEmitter {
     this.currentScope = input.scope;
     const store = await this.ensureStore(input.scope.root);
     await this.verifyAnchor(input.anchor);
+    const catalog = await this.loadModelCatalog();
+    const defaultModel = catalog.models[0];
     const now = Date.now();
     const session: IrisAgentSessionInfo = {
       id: randomUUID(),
       kind: 'iris-agent',
       anchor: input.anchor,
+      model: defaultModel
+        ? { provider: defaultModel.provider, modelId: defaultModel.modelId }
+        : null,
       projectRoot: input.scope.root,
       projectGeneration: input.scope.generation,
       displayName: 'Iris Agent',
@@ -112,6 +125,74 @@ export class IrisAgentSessionManager extends EventEmitter {
     const saved = store.upsert(session);
     this.emitChanged(input.scope, saved);
     return saved;
+  }
+
+  async listModels(): Promise<IrisAgentModelCatalog> {
+    return this.loadModelCatalog();
+  }
+
+  async setModel(
+    scope: ProjectScope,
+    sessionId: string,
+    model: IrisAgentModelRef,
+    precondition: IrisAgentCommandPrecondition = {},
+  ): Promise<IrisAgentSessionInfo> {
+    return this.runSessionCommand(sessionId, async () => {
+      this.currentScope = scope;
+      const store = await this.ensureStore(scope.root);
+      const session = await this.requireSession(scope, sessionId);
+      assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
+      assertQuiescentIrisAgentSession(session);
+      const catalog = await this.loadModelCatalog();
+      const available = catalog.models.some(
+        (candidate) =>
+          candidate.provider === model.provider && candidate.modelId === model.modelId,
+      );
+      if (!available) {
+        throw new Error(`Iris Agent model is unavailable: ${model.provider}/${model.modelId}`);
+      }
+      if (sameModel(session.model, model)) return session;
+
+      const host = this.hosts.get(sessionId);
+      if (host) this.hosts.delete(sessionId);
+      await host?.shutdown();
+      await this.drainWorkerEvents(sessionId);
+      const latest = await this.requireSession(scope, sessionId);
+      assertQuiescentIrisAgentSession(latest);
+      const updated = store.upsert({ ...latest, model: { ...model }, lastError: '' });
+      await store.flush();
+      this.emitChanged(scope, updated);
+      return updated;
+    });
+  }
+
+  async branch(
+    scope: ProjectScope,
+    sessionId: string,
+    throughTurnId: string,
+    precondition: IrisAgentCommandPrecondition = {},
+  ): Promise<IrisAgentSessionInfo> {
+    return this.runSessionCommand(sessionId, async () => {
+      this.currentScope = scope;
+      const store = await this.ensureStore(scope.root);
+      const source = await this.requireSession(scope, sessionId);
+      assertIrisAgentExpectedRevision(source, precondition.expectedRevision);
+      assertQuiescentIrisAgentSession(source);
+      const branchNumber = store.list(scope).filter(
+        (session) => session.parentSessionId === source.id,
+      ).length + 1;
+      const branch = createIrisAgentBranch(
+        source,
+        throughTurnId,
+        randomUUID(),
+        `${source.displayName} Branch ${branchNumber}`,
+        Date.now(),
+      );
+      const saved = store.upsert(branch);
+      await store.flush();
+      this.emitChanged(scope, saved);
+      return saved;
+    });
   }
 
   async send(
@@ -134,6 +215,15 @@ export class IrisAgentSessionManager extends EventEmitter {
     const store = await this.ensureStore(scope.root);
     const session = await this.requireSession(scope, sessionId);
     assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
+    if (!session.model) {
+      throw new Error('Select an available provider/model before sending an Iris Agent message.');
+    }
+    const catalog = await this.loadModelCatalog();
+    if (!catalog.models.some((candidate) => sameModel(session.model, candidate))) {
+      throw new Error(
+        `The configured Iris Agent model is unavailable: ${session.model.provider}/${session.model.modelId}`,
+      );
+    }
     if (!isStoppedState(session.state)) {
       throw new Error('Iris Agent session is already running.');
     }
@@ -421,6 +511,22 @@ export class IrisAgentSessionManager extends EventEmitter {
     await store.flush();
   }
 
+  assertProviderConfigurationChangeAllowed(): void {
+    const scope = this.currentScope;
+    const store = this.loaded?.store;
+    if (!scope || !store || this.loaded?.root !== scope.root) return;
+    if (store.list(scope).some((session) => !isStoppedState(session.state))) {
+      throw new Error('Stop all running Iris Agent Sessions before changing provider credentials.');
+    }
+  }
+
+  async reloadProviderConfiguration(): Promise<void> {
+    const hosts = [...this.hosts.entries()];
+    this.hosts.clear();
+    await Promise.all(hosts.map(([, host]) => host.shutdown('shutdown')));
+    await Promise.all(hosts.map(([sessionId]) => this.drainWorkerEvents(sessionId)));
+  }
+
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
     const pendingCommands = [...this.sessionCommandChains.values()];
@@ -492,11 +598,30 @@ export class IrisAgentSessionManager extends EventEmitter {
   private hostFor(session: IrisAgentSessionInfo, store: IrisAgentSessionStore): AgentWorkerHost {
     const existing = this.hosts.get(session.id);
     if (existing) return existing;
+    if (!session.model) throw new Error('Iris Agent Session has no configured model.');
     const withEpoch = store.upsert({ ...session, workerEpoch: session.workerEpoch + 1 });
     if (this.currentScope) this.emitChanged(this.currentScope, withEpoch);
     const host = new AgentWorkerHost(session.id, {
       loadHistory: async (sessionId) => store.history(sessionId),
-      loadRuntime: async () => ({ cwd: session.projectRoot, agentDir: irisPiAgentDir() }),
+      loadRuntime: async (sessionId) => {
+        const latest = store.get(sessionId);
+        if (!latest?.model) throw new Error('Iris Agent Session has no configured model.');
+        const agentDir = irisPiAgentDir();
+        const providerProfileRoot = this.options.providerProfileRoot ?? this.userDataPath;
+        const providerProxy = this.options.resolveProxy
+          ? parseElectronProxyRules(await this.options.resolveProxy(
+              await resolveIrisModelBaseUrl(agentDir, providerProfileRoot, latest.model),
+            ))
+          : { mode: 'direct' as const };
+        return {
+          cwd: latest.projectRoot,
+          agentDir,
+          providerProfileRoot,
+          model: { ...latest.model },
+          commandShell: { ...this.commandShell },
+          providerProxy,
+        };
+      },
       workerEpoch: withEpoch.workerEpoch,
       ...(this.options.workerFactory ? { workerFactory: this.options.workerFactory } : {}),
       ...(this.options.workerIdleTimeoutMs === undefined
@@ -623,24 +748,40 @@ export class IrisAgentSessionManager extends EventEmitter {
   ): Promise<void> {
     const correlation = event.correlation;
     if (!correlation.requestId || !correlation.turnId || !correlation.toolCallId) return;
-    if (!matchesActiveIrisAgentTurn(session, correlation)) return;
+    const current = store.get(session.id) ?? session;
+    if (!matchesActiveIrisAgentTurn(current, correlation)) return;
     const host = new IrisAgentToolHost({
       projectRoot: scope.root,
       outputRoot: join(this.userDataPath, 'iris-agent-output'),
+      commandShell: this.commandShell,
     });
-    const initialToolEvent: IrisAgentToolEvent = {
-      id: correlation.toolCallId,
-      turnId: correlation.turnId,
-      requestId: correlation.requestId,
-      name: toolName(event.input),
-      state: 'running',
-      createdAt: Date.now(),
-      inputSummary: compactToolInput(event.input),
-    };
+    const existingToolEvent = current.toolEvents.find(
+      (toolEvent) => toolEvent.id === correlation.toolCallId,
+    );
+    const initialToolEvent: IrisAgentToolEvent = existingToolEvent
+      ? {
+          ...existingToolEvent,
+          state: 'running',
+          inputSummary: compactToolInput(event.input),
+          ...toolEventInputDetails(event.input),
+        }
+      : {
+          id: correlation.toolCallId,
+          turnId: correlation.turnId,
+          requestId: correlation.requestId,
+          name: toolName(event.input),
+          state: 'running',
+          createdAt: Date.now(),
+          inputSummary: compactToolInput(event.input),
+          ...toolEventInputDetails(event.input),
+        };
     this.emitChanged(scope, store.upsert({
-      ...session,
+      ...current,
       state: 'waiting-tool',
-      toolEvents: [...session.toolEvents, initialToolEvent],
+      toolEvents: existingToolEvent
+        ? current.toolEvents.map((toolEvent) =>
+            toolEvent.id === initialToolEvent.id ? initialToolEvent : toolEvent)
+        : [...current.toolEvents, initialToolEvent],
     }));
     const executed = await host.execute(event.input, {
       sessionId: correlation.sessionId,
@@ -649,8 +790,14 @@ export class IrisAgentSessionManager extends EventEmitter {
       toolCallId: correlation.toolCallId,
     });
     const latest = store.get(session.id) ?? session;
+    const previousEvent = latest.toolEvents.find((toolEvent) => toolEvent.id === executed.event.id);
+    const completedEvent: IrisAgentToolEvent = {
+      ...previousEvent,
+      ...executed.event,
+      createdAt: previousEvent?.createdAt ?? executed.event.createdAt,
+    };
     const toolEvents = latest.toolEvents.map((toolEvent) =>
-      toolEvent.id === executed.event.id ? executed.event : toolEvent,
+      toolEvent.id === completedEvent.id ? completedEvent : toolEvent,
     );
     const fileEffects = executed.fileEffect
       ? [...latest.fileEffects, executed.fileEffect]
@@ -839,6 +986,13 @@ export class IrisAgentSessionManager extends EventEmitter {
     }
   }
 
+  private async loadModelCatalog(): Promise<IrisAgentModelCatalog> {
+    return this.options.modelCatalogLoader?.() ?? loadIrisModelCatalog(
+      irisPiAgentDir(),
+      this.options.providerProfileRoot ?? this.userDataPath,
+    );
+  }
+
   private async ensureStore(projectRoot: string): Promise<IrisAgentSessionStore> {
     if (this.loaded?.root === projectRoot) return this.loaded.store;
     await this.loaded?.store.flush();
@@ -874,6 +1028,70 @@ export class IrisAgentSessionManager extends EventEmitter {
   private emitChanged(scope: ProjectScope, session: IrisAgentSessionInfo): void {
     this.emit('sessionChanged', { scope, session } satisfies IrisAgentSessionChangedPayload);
   }
+}
+
+export function createIrisAgentBranch(
+  source: IrisAgentSessionInfo,
+  throughTurnId: string,
+  id: string,
+  displayName: string,
+  now: number,
+): IrisAgentSessionInfo {
+  assertQuiescentIrisAgentSession(source);
+  const turnIndex = source.turns.findIndex((turn) => turn.id === throughTurnId);
+  if (turnIndex < 0) throw new Error('The Iris Agent branch point was not found.');
+  const sourceTurn = source.turns[turnIndex]!;
+  if (sourceTurn.status === 'running') {
+    throw new Error('Cannot branch from an incomplete Iris Agent turn.');
+  }
+  const turns = source.turns.slice(0, turnIndex + 1).map(withoutTurnArtifacts);
+  const turnIds = new Set(turns.map((turn) => turn.id));
+  const messages = source.messages
+    .filter((message) => turnIds.has(message.turnId))
+    .map((message) => ({
+      ...message,
+      ...(message.providerMessage ? { providerMessage: { ...message.providerMessage } } : {}),
+    }));
+  return {
+    id,
+    kind: 'iris-agent',
+    anchor: { ...source.anchor },
+    model: source.model ? { ...source.model } : null,
+    parentSessionId: source.id,
+    forkedFromTurnId: throughTurnId,
+    projectRoot: source.projectRoot,
+    projectGeneration: source.projectGeneration,
+    displayName,
+    state: 'ready',
+    createdAt: now,
+    updatedAt: now,
+    revision: 0,
+    workerEpoch: 0,
+    activeTurnId: null,
+    messages,
+    turns,
+    toolEvents: [],
+    fileEffects: [],
+    requestFacts: [],
+    selfHostingEligible: false,
+  };
+}
+
+function withoutTurnArtifacts(turn: IrisAgentTurn): IrisAgentTurn {
+  const {
+    promptAvailable: _promptAvailable,
+    artifactSchemaVersion: _artifactSchemaVersion,
+    assembledInputAvailable: _assembledInputAvailable,
+    assembledInputLegacy: _assembledInputLegacy,
+    providerContextAvailable: _providerContextAvailable,
+    providerCallCount: _providerCallCount,
+    ...conversationTurn
+  } = turn;
+  return conversationTurn;
+}
+
+function sameModel(left: IrisAgentModelRef | null, right: IrisAgentModelRef): boolean {
+  return left?.provider === right.provider && left.modelId === right.modelId;
 }
 
 export function applyIrisAgentProviderMessage(
@@ -975,6 +1193,30 @@ function isStoppedState(state: IrisAgentRuntimeState): boolean {
   return state === 'ready' || state === 'idle' || state === 'failed';
 }
 
+export function parseElectronProxyRules(rules: string): AgentProviderProxy {
+  const entries = rules.split(';').map((entry) => entry.trim()).filter(Boolean);
+  if (entries.length === 0) return { mode: 'direct' };
+  let sawUnsupportedProxy = false;
+  for (const entry of entries) {
+    if (/^DIRECT$/iu.test(entry)) return { mode: 'direct' };
+    const match = entry.match(/^(PROXY|HTTP|HTTPS|SOCKS|SOCKS4|SOCKS5)\s+(.+)$/iu);
+    if (!match) continue;
+    const kind = match[1]!.toUpperCase();
+    if (kind.startsWith('SOCKS')) {
+      sawUnsupportedProxy = true;
+      continue;
+    }
+    const protocol = kind === 'HTTPS' ? 'https:' : 'http:';
+    const url = new URL(`${protocol}//${match[2]!.trim()}`);
+    if (!url.hostname || !url.port) throw new Error('Windows returned an invalid system proxy endpoint.');
+    return { mode: 'proxy', url: url.href };
+  }
+  if (sawUnsupportedProxy) {
+    throw new Error('The Windows system proxy resolved only to SOCKS, which this provider transport does not support.');
+  }
+  throw new Error('Windows returned an unsupported system proxy rule.');
+}
+
 export function applyIrisAgentMessageRewind(
   session: IrisAgentSessionInfo,
   _legacyTargetTurnId?: string,
@@ -1045,6 +1287,21 @@ function toolName(input: AgentToolOperationInput): IrisAgentToolEvent['name'] {
 function compactToolInput(input: AgentToolOperationInput): string {
   if (input.tool === 'terminal') return input.command.slice(0, 220);
   return (input.operation + ' ' + input.absolutePath).slice(0, 220);
+}
+
+function toolEventInputDetails(input: AgentToolOperationInput): Pick<
+  IrisAgentToolEvent,
+  'operation' | 'terminalIntent' | 'command' | 'cwd'
+> {
+  if (input.tool === 'terminal') {
+    return {
+      operation: 'exec',
+      terminalIntent: input.intent,
+      command: input.command,
+      cwd: input.cwd,
+    };
+  }
+  return { operation: input.operation };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

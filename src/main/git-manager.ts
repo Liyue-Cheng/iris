@@ -1,6 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
-import { isAbsolute, normalize, relative, resolve, sep } from 'node:path';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
 import { AppError } from '@shared/app-error';
 import type {
@@ -47,6 +49,11 @@ const SWITCH_TIMEOUT_MS = 60_000;
 const COMMIT_TIMEOUT_MS = 5 * 60_000;
 const STATUS_MAX_BUFFER = 32 * 1024 * 1024;
 const COMMAND_MAX_BUFFER = 8 * 1024 * 1024;
+const GIT_PROBE_INTERVAL_MS = 2_000;
+const GIT_PROBE_JITTER_MS = 250;
+const GIT_PROBE_RETRY_MAX_MS = 30_000;
+const GIT_PROBE_MAX_CONCURRENCY = 2;
+const GIT_METADATA_TARGET_LIMIT = 256;
 const repositoryMutationTails = new Map<string, Promise<void>>();
 
 async function serializeRepositoryMutation<T>(
@@ -258,49 +265,264 @@ function runGit(
   });
 }
 
-export function shouldIgnoreGitWatchPath(
+export function gitMetadataWatchTargets(
   repository: Pick<RepositoryIdentity, 'worktreeRoot' | 'gitDir' | 'commonDir'>,
-  path: string,
-): boolean {
-  const normalized = normalize(path);
-  const rel = relative(repository.worktreeRoot, normalized);
-  const insideWorktree = rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..');
-  const insideGitDir = normalized === repository.gitDir || normalized.startsWith(`${repository.gitDir}${sep}`);
-  const insideCommonDir = normalized === repository.commonDir || normalized.startsWith(`${repository.commonDir}${sep}`);
-  if (insideGitDir || insideCommonDir) {
-    const metadataRoots = [repository.gitDir, repository.commonDir];
-    const metadataRelative = metadataRoots.flatMap((root) => {
-      const candidate = relative(root, normalized);
-      return candidate === '' || (!candidate.startsWith(`..${sep}`) && candidate !== '..')
-        ? [candidate]
-        : [];
-    });
-    return !metadataRelative.some((candidate) =>
-      candidate === '' ||
-      candidate === 'HEAD' ||
-      candidate === 'index' ||
-      candidate === 'index.lock' ||
-      candidate === 'packed-refs' ||
-      candidate === 'refs' ||
-      candidate.startsWith(`refs${sep}`),
-    );
+): string[] {
+  let currentRef: string | null = null;
+  try {
+    const head = readFileSync(join(repository.gitDir, 'HEAD'), 'utf8').trim();
+    if (head.startsWith('ref: refs/') && !head.includes('..')) {
+      const candidate = normalize(join(repository.commonDir, head.slice('ref: '.length)));
+      const rel = relative(repository.commonDir, candidate);
+      if (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)) currentRef = candidate;
+    }
+  } catch {
+    // The HEAD file can be absent while a repository is being initialized.
   }
-  return insideWorktree && rel.split(sep).includes('.git');
+  const targets = Array.from(new Set([
+    join(repository.gitDir, 'index'),
+    join(repository.gitDir, 'index.lock'),
+    join(repository.gitDir, 'HEAD'),
+    join(repository.commonDir, 'packed-refs'),
+    ...(currentRef ? [currentRef] : []),
+  ]));
+  if (targets.length > GIT_METADATA_TARGET_LIMIT) {
+    logger.warn('git', `metadata watcher target limit exceeded for ${repository.worktreeRoot}`);
+    return targets.slice(0, GIT_METADATA_TARGET_LIMIT);
+  }
+  return targets;
 }
 
 export function shouldInvalidateGitWatchEvent(event: string, path: string): boolean {
   return !path.endsWith(`${sep}index.lock`) || event === 'unlink';
 }
 
+async function repositoryFingerprint(repository: RepositoryIdentity): Promise<string> {
+  const status = await runGit([
+    '-c', 'core.quotepath=false',
+    'status', '--porcelain=v1', '-z', '--branch', '--untracked-files=all',
+  ], repository.worktreeRoot, {
+    timeoutMs: STATUS_TIMEOUT_MS,
+    maxBuffer: STATUS_MAX_BUFFER,
+  });
+  const refs = await runGit([
+    'for-each-ref', '--format=%(refname)%00%(objectname)', 'refs/heads',
+  ], repository.worktreeRoot, {
+    timeoutMs: STATUS_TIMEOUT_MS,
+    maxBuffer: COMMAND_MAX_BUFFER,
+  });
+  return createHash('sha256')
+    .update(status.stdout)
+    .update('\0')
+    .update(refs.stdout)
+    .digest('hex');
+}
+
+interface GitWatchListener {
+  changed: () => void;
+  healthChanged: (state: 'healthy' | 'degraded', error?: unknown) => void;
+}
+
+interface GitWatchEntry {
+  repository: RepositoryIdentity;
+  listeners: Set<GitWatchListener>;
+  watcher: FSWatcher | null;
+  watcherClosePromise: Promise<void> | null;
+  watcherReady: boolean;
+  watcherRetryTimer: NodeJS.Timeout | null;
+  watcherRetryAttempt: number;
+  probeTimer: NodeJS.Timeout | null;
+  probePromise: Promise<void> | null;
+  probeRetryAttempt: number;
+  fingerprint: string | null;
+  closed: boolean;
+}
+
+class GitWatchCoordinator {
+  private readonly entries = new Map<string, GitWatchEntry>();
+  private activeProbes = 0;
+
+  async subscribe(
+    repository: RepositoryIdentity,
+    listener: GitWatchListener,
+  ): Promise<() => Promise<void>> {
+    let entry = this.entries.get(repository.id);
+    if (!entry) {
+      entry = {
+        repository,
+        listeners: new Set(),
+        watcher: null,
+        watcherClosePromise: null,
+        watcherReady: false,
+        watcherRetryTimer: null,
+        watcherRetryAttempt: 0,
+        probeTimer: null,
+        probePromise: null,
+        probeRetryAttempt: 0,
+        fingerprint: null,
+        closed: false,
+      };
+      this.entries.set(repository.id, entry);
+      this.startMetadataWatcher(entry);
+    }
+    entry.listeners.add(listener);
+    if (entry.watcherReady && entry.fingerprint !== null) listener.healthChanged('healthy');
+    void this.runProbe(entry);
+    return () => this.unsubscribe(entry!, listener);
+  }
+
+  private async unsubscribe(entry: GitWatchEntry, listener: GitWatchListener): Promise<void> {
+    entry.listeners.delete(listener);
+    if (entry.listeners.size > 0 || this.entries.get(entry.repository.id) !== entry) return;
+    this.entries.delete(entry.repository.id);
+    entry.closed = true;
+    if (entry.probeTimer) clearTimeout(entry.probeTimer);
+    if (entry.watcherRetryTimer) clearTimeout(entry.watcherRetryTimer);
+    entry.probeTimer = null;
+    entry.watcherRetryTimer = null;
+    const watcher = entry.watcher;
+    entry.watcher = null;
+    await Promise.all([
+      watcher?.close().catch(() => {}),
+      entry.watcherClosePromise?.catch(() => {}),
+      entry.probePromise?.catch(() => {}),
+    ]);
+  }
+
+  private startMetadataWatcher(entry: GitWatchEntry): void {
+    if (entry.closed || this.entries.get(entry.repository.id) !== entry) return;
+    entry.watcherReady = false;
+    const watcher = chokidar.watch(gitMetadataWatchTargets(entry.repository), {
+      depth: 0,
+      ignoreInitial: true,
+      awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 25 },
+    });
+    entry.watcher = watcher;
+    watcher
+      .on('all', (event, path) => {
+        if (!shouldInvalidateGitWatchEvent(event, path)) return;
+        this.notifyChanged(entry);
+        this.scheduleProbe(entry, 100);
+        if (normalize(path) === join(entry.repository.gitDir, 'HEAD')) {
+          this.restartMetadataWatcher(entry, watcher);
+        }
+      })
+      .on('ready', () => {
+        if (entry.closed || entry.watcher !== watcher) return;
+        entry.watcherReady = true;
+        entry.watcherRetryAttempt = 0;
+        if (entry.fingerprint !== null) this.notifyHealth(entry, 'healthy');
+      })
+      .on('error', (error) => this.handleWatcherError(entry, watcher, error));
+  }
+
+  private restartMetadataWatcher(entry: GitWatchEntry, watcher: FSWatcher): void {
+    if (entry.closed || entry.watcher !== watcher) return;
+    entry.watcher = null;
+    const closing = watcher.close().catch(() => {});
+    entry.watcherClosePromise = closing;
+    void closing.then(() => {
+      if (entry.watcherClosePromise === closing) entry.watcherClosePromise = null;
+      this.startMetadataWatcher(entry);
+    });
+  }
+
+  private handleWatcherError(entry: GitWatchEntry, watcher: FSWatcher, error: unknown): void {
+    if (entry.closed || entry.watcher !== watcher) return;
+    logger.warn('git', `metadata watcher error for ${entry.repository.worktreeRoot}`, error);
+    entry.watcherReady = false;
+    this.notifyHealth(entry, 'degraded', error);
+    entry.watcher = null;
+    void watcher.close().catch(() => {});
+    if (entry.watcherRetryTimer) return;
+    const delay = Math.min(
+      GIT_PROBE_RETRY_MAX_MS,
+      1_000 * (2 ** entry.watcherRetryAttempt),
+    );
+    entry.watcherRetryAttempt += 1;
+    entry.watcherRetryTimer = setTimeout(() => {
+      entry.watcherRetryTimer = null;
+      this.startMetadataWatcher(entry);
+    }, delay);
+  }
+
+  private scheduleProbe(entry: GitWatchEntry, delay?: number): void {
+    if (entry.closed || this.entries.get(entry.repository.id) !== entry) return;
+    if (entry.probeTimer) clearTimeout(entry.probeTimer);
+    const jitter = Math.floor(Math.random() * GIT_PROBE_JITTER_MS);
+    entry.probeTimer = setTimeout(() => {
+      entry.probeTimer = null;
+      void this.runProbe(entry);
+    }, delay ?? GIT_PROBE_INTERVAL_MS + jitter);
+  }
+
+  private async runProbe(entry: GitWatchEntry): Promise<void> {
+    if (entry.closed || this.entries.get(entry.repository.id) !== entry) return;
+    if (entry.probePromise) return entry.probePromise;
+    if (this.activeProbes >= GIT_PROBE_MAX_CONCURRENCY) {
+      this.scheduleProbe(entry, 250);
+      return;
+    }
+    const probe = this.performProbe(entry);
+    entry.probePromise = probe;
+    await probe.finally(() => {
+      if (entry.probePromise === probe) entry.probePromise = null;
+    });
+  }
+
+  private async performProbe(entry: GitWatchEntry): Promise<void> {
+    this.activeProbes += 1;
+    let nextDelay: number | undefined;
+    try {
+      const fingerprint = await repositoryFingerprint(entry.repository);
+      if (entry.closed || this.entries.get(entry.repository.id) !== entry) return;
+      const changed = entry.fingerprint !== null && entry.fingerprint !== fingerprint;
+      const recovered = entry.probeRetryAttempt > 0;
+      const initialized = entry.fingerprint === null;
+      entry.fingerprint = fingerprint;
+      entry.probeRetryAttempt = 0;
+      if (entry.watcherReady && (initialized || recovered)) this.notifyHealth(entry, 'healthy');
+      if (changed) this.notifyChanged(entry);
+    } catch (error) {
+      if (entry.closed || this.entries.get(entry.repository.id) !== entry) return;
+      logger.warn('git', `status probe failed for ${entry.repository.worktreeRoot}`, error);
+      this.notifyHealth(entry, 'degraded', error);
+      nextDelay = Math.min(
+        GIT_PROBE_RETRY_MAX_MS,
+        1_000 * (2 ** entry.probeRetryAttempt),
+      );
+      entry.probeRetryAttempt += 1;
+    } finally {
+      this.activeProbes -= 1;
+      if (!entry.closed && this.entries.get(entry.repository.id) === entry) {
+        this.scheduleProbe(entry, nextDelay);
+      }
+    }
+  }
+
+  private notifyChanged(entry: GitWatchEntry): void {
+    for (const listener of entry.listeners) listener.changed();
+  }
+
+  private notifyHealth(
+    entry: GitWatchEntry,
+    state: 'healthy' | 'degraded',
+    error?: unknown,
+  ): void {
+    for (const listener of entry.listeners) listener.healthChanged(state, error);
+  }
+}
+
+const gitWatchCoordinator = new GitWatchCoordinator();
+
 /** Per-window Git projection. Watchers only invalidate; status is authoritative. */
 export class GitManager extends EventEmitter {
   private projectRoot: string | null = null;
   private repository: RepositoryIdentity | null = null;
-  private watcher: FSWatcher | null = null;
   private timer: NodeJS.Timeout | null = null;
-  private watcherRetryTimer: NodeJS.Timeout | null = null;
-  private watcherRetryAttempt = 0;
-  private watcherGeneration = 0;
+  private discoveryTimer: NodeJS.Timeout | null = null;
+  private signalGeneration = 0;
+  private signalSubscription: { repositoryId: string; unsubscribe: () => Promise<void> } | null = null;
   private revision = 0;
   private lastSnapshot: GitSnapshot | null = null;
 
@@ -308,19 +530,18 @@ export class GitManager extends EventEmitter {
     await this.close();
     this.projectRoot = normalize(resolve(projectRoot));
     await this.refreshRepositoryIdentity();
-    this.watcherGeneration += 1;
-    this.startWatcher(this.watcherGeneration);
+    await this.syncWatchSubscription();
   }
 
   async close(): Promise<void> {
     if (this.timer) clearTimeout(this.timer);
-    if (this.watcherRetryTimer) clearTimeout(this.watcherRetryTimer);
+    if (this.discoveryTimer) clearTimeout(this.discoveryTimer);
     this.timer = null;
-    this.watcherRetryTimer = null;
-    this.watcherRetryAttempt = 0;
-    this.watcherGeneration += 1;
-    await this.watcher?.close().catch(() => {});
-    this.watcher = null;
+    this.discoveryTimer = null;
+    this.signalGeneration += 1;
+    const subscription = this.signalSubscription;
+    this.signalSubscription = null;
+    await subscription?.unsubscribe().catch(() => {});
     this.projectRoot = null;
     this.repository = null;
     this.lastSnapshot = null;
@@ -364,66 +585,6 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  private watchTargets(): string[] {
-    if (!this.projectRoot) return [];
-    if (!this.repository) return [this.projectRoot];
-    const { worktreeRoot, gitDir, commonDir } = this.repository;
-    return Array.from(new Set([worktreeRoot, gitDir, commonDir])).filter((target) => {
-      if (target === worktreeRoot) return true;
-      const rel = relative(worktreeRoot, target);
-      return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel);
-    });
-  }
-
-  private startWatcher(generation: number): void {
-    const targets = this.watchTargets();
-    if (targets.length === 0) return;
-    const repository = this.repository;
-    const watcher = chokidar.watch(targets, {
-      ignored: (path) => repository ? shouldIgnoreGitWatchPath(repository, path) : false,
-      ignoreInitial: true,
-      awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 25 },
-    });
-    this.watcher = watcher;
-    watcher
-      .on('all', (event, path) => {
-        if (!shouldInvalidateGitWatchEvent(event, path)) return;
-        this.invalidate();
-      })
-      .on('ready', () => {
-        if (this.watcherGeneration !== generation) return;
-        this.watcherRetryAttempt = 0;
-        this.emit('healthChanged', { domain: 'git-watcher', state: 'healthy' });
-      })
-      .on('error', (error) => this.handleWatcherError(generation, error));
-  }
-
-  private handleWatcherError(generation: number, error: unknown): void {
-    if (this.watcherGeneration !== generation) return;
-    logger.warn('git', `watcher error for ${this.projectRoot ?? 'closed project'}`, error);
-    this.emit('healthChanged', { domain: 'git-watcher', state: 'degraded', error });
-    if (this.watcherRetryTimer) return;
-    const delay = Math.min(30_000, 1_000 * (2 ** this.watcherRetryAttempt));
-    this.watcherRetryAttempt += 1;
-    this.watcherRetryTimer = setTimeout(() => {
-      this.watcherRetryTimer = null;
-      void this.rebuildWatcher(generation);
-    }, delay);
-  }
-
-  private async rebuildWatcher(generation: number): Promise<void> {
-    if (this.watcherGeneration !== generation) return;
-    const previous = this.watcher;
-    this.watcher = null;
-    await previous?.close().catch(() => {});
-    if (this.watcherGeneration !== generation) return;
-    try {
-      this.startWatcher(generation);
-    } catch (error) {
-      this.handleWatcherError(generation, error);
-    }
-  }
-
   private invalidate(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
@@ -432,14 +593,57 @@ export class GitManager extends EventEmitter {
     }, 150);
   }
 
-  private async restartWatcherIfIdentityChanged(previousId: string | null): Promise<void> {
-    if (this.repository?.id === previousId) return;
-    this.watcherGeneration += 1;
-    const generation = this.watcherGeneration;
-    const previous = this.watcher;
-    this.watcher = null;
-    await previous?.close().catch(() => {});
-    this.startWatcher(generation);
+  private async syncWatchSubscription(): Promise<void> {
+    const repository = this.repository;
+    if (repository && this.signalSubscription?.repositoryId === repository.id) return;
+    this.signalGeneration += 1;
+    const generation = this.signalGeneration;
+    const previous = this.signalSubscription;
+    this.signalSubscription = null;
+    await previous?.unsubscribe().catch(() => {});
+    if (generation !== this.signalGeneration || !this.projectRoot) return;
+    if (!repository) {
+      this.scheduleRepositoryDiscovery();
+      return;
+    }
+    if (this.discoveryTimer) clearTimeout(this.discoveryTimer);
+    this.discoveryTimer = null;
+    const unsubscribe = await gitWatchCoordinator.subscribe(repository, {
+      changed: () => {
+        if (generation === this.signalGeneration) this.invalidate();
+      },
+      healthChanged: (state, error) => {
+        if (generation !== this.signalGeneration) return;
+        this.emit('healthChanged', { domain: 'git-watcher', state, ...(error === undefined ? {} : { error }) });
+      },
+    });
+    if (generation !== this.signalGeneration || !this.projectRoot) {
+      await unsubscribe();
+      return;
+    }
+    this.signalSubscription = { repositoryId: repository.id, unsubscribe };
+  }
+
+  private scheduleRepositoryDiscovery(): void {
+    if (!this.projectRoot || this.repository || this.discoveryTimer) return;
+    this.discoveryTimer = setTimeout(() => {
+      this.discoveryTimer = null;
+      void this.discoverOpenedRepository();
+    }, GIT_PROBE_INTERVAL_MS);
+  }
+
+  private async discoverOpenedRepository(): Promise<void> {
+    if (!this.projectRoot || this.repository) return;
+    try {
+      await this.refreshRepositoryIdentity();
+      await this.syncWatchSubscription();
+      if (this.repository) this.invalidate();
+    } catch (error) {
+      logger.warn('git', `repository discovery probe failed for ${this.projectRoot}`, error);
+      this.emit('healthChanged', { domain: 'git-watcher', state: 'degraded', error });
+    } finally {
+      this.scheduleRepositoryDiscovery();
+    }
   }
 
   private repositoryOrThrow(): RepositoryIdentity {
@@ -487,10 +691,9 @@ export class GitManager extends EventEmitter {
   async status(): Promise<GitSnapshot> {
     const requestRevision = ++this.revision;
     if (!this.projectRoot) return emptySnapshot(null, requestRevision);
-    const previousId = this.repository?.id ?? null;
     try {
       await this.refreshRepositoryIdentity();
-      await this.restartWatcherIfIdentityChanged(previousId);
+      await this.syncWatchSubscription();
       const repository = this.repositoryOrThrow();
       await (repositoryMutationTails.get(repository.id) ?? Promise.resolve()).catch(() => {});
       const { stdout } = await this.command('status', [

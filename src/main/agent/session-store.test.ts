@@ -12,6 +12,7 @@ function session(projectRoot: string, state: IrisAgentSessionInfo['state']): Iri
     id: 'agent-1',
     kind: 'iris-agent',
     anchor: { kind: 'document', path: '.iris/issue/task.md' },
+    model: { provider: 'openai', modelId: 'gpt-test' },
     projectRoot,
     projectGeneration: 1,
     displayName: 'Iris Agent',
@@ -44,14 +45,28 @@ function session(projectRoot: string, state: IrisAgentSessionInfo['state']): Iri
 }
 
 describe('IrisAgentSessionStore', () => {
-  it('migrates version 2 sessions to explicit revisions and Worker epochs', async () => {
+  it('migrates legacy sessions to explicit revisions, Worker epochs, and model state', async () => {
     const dataDir = await createTempDataDir('iris-agent-v2-store-');
     const projectRoot = await createTempDataDir('iris-agent-v2-project-');
     try {
       const filePath = agentSessionStorePath(dataDir, projectRoot);
       await mkdir(dirname(filePath), { recursive: true });
       const current = session(projectRoot, 'running');
-      const { revision: _revision, workerEpoch: _workerEpoch, ...legacy } = current;
+      current.toolEvents = [{
+        id: 'legacy-terminal',
+        turnId: 'turn-1',
+        requestId: 'request-1',
+        name: 'terminal',
+        state: 'completed',
+        createdAt: 1,
+        inputSummary: 'git status',
+      }];
+      const {
+        revision: _revision,
+        workerEpoch: _workerEpoch,
+        model: _model,
+        ...legacy
+      } = current;
       await writeFile(filePath, JSON.stringify({
         version: 2,
         projectRoot,
@@ -59,7 +74,12 @@ describe('IrisAgentSessionStore', () => {
       }));
 
       const store = await IrisAgentSessionStore.load({ userDataPath: dataDir, projectRoot, debounceMs: 0 });
-      expect(store.get('agent-1')).toMatchObject({ revision: 0, workerEpoch: 0 });
+      expect(store.get('agent-1')).toMatchObject({
+        revision: 0,
+        workerEpoch: 0,
+        model: null,
+        toolEvents: [{ id: 'legacy-terminal', terminalIntent: 'unknown' }],
+      });
       store.destroy();
     } finally {
       await removeTempDataDir(dataDir);

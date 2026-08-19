@@ -343,7 +343,11 @@ export function RightPane(): JSX.Element {
         )}
         {shownAgentSession && (
           <div className="absolute inset-0">
-            <IrisAgentView key={shownAgentSession.id} session={shownAgentSession} />
+            <IrisAgentView
+              key={shownAgentSession.id}
+              session={shownAgentSession}
+              onForked={(session) => selectItem('iris-agent', session.id)}
+            />
           </div>
         )}
         {!shownItem &&

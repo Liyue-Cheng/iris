@@ -13,10 +13,13 @@ import {
 import {
   IRIS_PI_VERSION,
   createIrisPiSession,
+  currentIrisProviderToolCallId,
   storedPiCredentialSecrets,
+  unwrapProviderErrorMessage,
   type IrisToolHostOperations,
 } from './agent/pi-adapter';
 import { collectKnownSecrets, sanitizeProviderPayload } from './agent/context-artifact';
+import { loadStoredIrisAgentProviderProfiles } from './agent/provider-profiles';
 
 if (!parentPort) throw new Error('Iris Agent Worker requires a worker_threads parent port');
 const workerPort = parentPort;
@@ -34,12 +37,14 @@ let runtime:
   | {
       session: Awaited<ReturnType<typeof createIrisPiSession>>['session'];
       unsubscribe: () => void;
+      disposeProviderTransport: () => Promise<void>;
       cwd: string;
       agentDir: string;
     }
   | null = null;
 let currentCorrelation: AgentCorrelation = { sessionId: 'unknown' };
 let providerCallIndex = 0;
+let providerFailure: string | null = null;
 const pendingTools = new Map<string, PendingTool>();
 
 workerPort.on('message', (message: unknown) => {
@@ -89,6 +94,7 @@ async function handleMessage(message: unknown): Promise<void> {
     if (!runtime) throw new Error('Iris Agent Worker has not been initialized');
     currentCorrelation = message.correlation;
     providerCallIndex = 0;
+    providerFailure = null;
     post({ type: 'state', correlation: message.correlation, state: 'running' });
     try {
       await runtime.session.prompt(message.prompt, {
@@ -97,11 +103,14 @@ async function handleMessage(message: unknown): Promise<void> {
       });
       post({ type: 'state', correlation: message.correlation, state: 'idle' });
     } catch (err) {
+      const wrapped = err instanceof Error ? err.message : String(err);
+      const failure = unwrapProviderErrorMessage(wrapped, providerFailure);
+      providerFailure = null;
       post({
         type: 'failure',
         correlation: message.correlation,
         code: err instanceof Error ? err.name : 'ProviderError',
-        message: err instanceof Error ? err.message : String(err),
+        message: failure,
       });
       post({ type: 'state', correlation: message.correlation, state: 'failed' });
     }
@@ -112,16 +121,28 @@ async function initialize(message: Extract<AgentWorkerRequest, { type: 'initiali
   await disposeRuntime();
   post({ type: 'state', correlation: message.correlation, state: 'starting' });
   const operations = createWorkerOperations();
+  const providerProfileSecrets = (await loadStoredIrisAgentProviderProfiles(
+    message.runtime.providerProfileRoot,
+  ))
+    .map((profile) => profile.apiKey);
+  const knownSecrets = collectKnownSecrets([
+    providerProfileSecrets,
+    providerSecretEnvironment(),
+  ]);
   const result = await createIrisPiSession({
     cwd: message.runtime.cwd,
     agentDir: message.runtime.agentDir,
+    providerProfileRoot: message.runtime.providerProfileRoot,
+    model: message.runtime.model,
+    commandShell: message.runtime.commandShell,
+    providerProxy: message.runtime.providerProxy,
     operations,
     history: message.history,
     onProviderPayload: (payload, model) => {
       if (!currentCorrelation.requestId || !currentCorrelation.turnId) return;
-      const knownSecrets = collectKnownSecrets([
+      const payloadSecrets = collectKnownSecrets([
         storedPiCredentialSecrets(model.provider, message.runtime.agentDir),
-        providerSecretEnvironment(),
+        knownSecrets,
       ]);
       post({
         type: 'provider-context',
@@ -132,17 +153,32 @@ async function initialize(message: Extract<AgentWorkerRequest, { type: 'initiali
           provider: model.provider,
           model: model.id,
           api: model.api,
-          payload: sanitizeProviderPayload(payload, knownSecrets),
+          payload: sanitizeProviderPayload(payload, payloadSecrets),
         },
       });
     },
+    onProviderFailure: (failure, model) => {
+      if (failure === null) {
+        providerFailure = null;
+        return;
+      }
+      const failureSecrets = collectKnownSecrets([
+        storedPiCredentialSecrets(model.provider, message.runtime.agentDir),
+        knownSecrets,
+      ]);
+      const sanitized = sanitizeProviderPayload(failure, failureSecrets);
+      providerFailure = typeof sanitized === 'string' ? sanitized : failure;
+    },
   });
   const unsubscribe = result.session.subscribe((event) => {
-    post({ type: 'stream', correlation: currentCorrelation, event: jsonSafeEvent(event) });
+    const projected = projectProviderFailure(event, providerFailure);
+    if (projected.consumedFailure) providerFailure = null;
+    post({ type: 'stream', correlation: currentCorrelation, event: jsonSafeEvent(projected.event) });
   });
   runtime = {
     session: result.session,
     unsubscribe,
+    disposeProviderTransport: result.disposeProviderTransport,
     cwd: message.runtime.cwd,
     agentDir: message.runtime.agentDir,
   };
@@ -157,6 +193,8 @@ async function initialize(message: Extract<AgentWorkerRequest, { type: 'initiali
       historyRevision: message.history.revision,
       historyMessageCount: result.session.state.messages.length,
       historyDigest: agentHistoryDigest(message.history),
+      model: message.runtime.model,
+      commandShell: message.runtime.commandShell,
     },
   });
   post({ type: 'state', correlation: message.correlation, state: 'ready' });
@@ -206,11 +244,12 @@ function createWorkerOperations(): IrisToolHostOperations {
       },
     },
     terminal: {
-      exec: async (command, cwd, options) => {
+      exec: async (command, intent, cwd, options) => {
         const input: AgentToolOperationInput = {
           tool: 'terminal',
           operation: 'exec',
           command,
+          intent,
           cwd,
           ...(options.timeout === undefined ? {} : { timeout: options.timeout }),
           ...(options.env === undefined ? {} : { env: options.env }),
@@ -227,10 +266,12 @@ function createWorkerOperations(): IrisToolHostOperations {
 }
 
 function requestTool(input: AgentToolOperationInput): Promise<AgentToolOperationResult> {
-  const toolCallId = randomUUID();
+  const operationId = randomUUID();
+  const toolCallId = currentIrisProviderToolCallId() ?? operationId;
   const correlation: AgentCorrelation = {
     ...currentCorrelation,
     toolCallId,
+    operationId,
   };
   post({ type: 'state', correlation, state: 'waiting-tool' });
   workerPort.postMessage({
@@ -240,18 +281,18 @@ function requestTool(input: AgentToolOperationInput): Promise<AgentToolOperation
     input,
   } satisfies AgentWorkerEvent);
   return new Promise<AgentToolOperationResult>((resolve, reject) => {
-    pendingTools.set(toolCallId, { resolve, reject });
+    pendingTools.set(operationId, { resolve, reject });
   }).finally(() => {
     post({ type: 'state', correlation: currentCorrelation, state: 'running' });
   });
 }
 
 function settleTool(message: Extract<AgentWorkerRequest, { type: 'tool-result' }>): void {
-  const toolCallId = message.correlation.toolCallId;
-  if (!toolCallId) return;
-  const pending = pendingTools.get(toolCallId);
+  const operationId = message.correlation.operationId ?? message.correlation.toolCallId;
+  if (!operationId) return;
+  const pending = pendingTools.get(operationId);
   if (!pending) return;
-  pendingTools.delete(toolCallId);
+  pendingTools.delete(operationId);
   if (message.ok) pending.resolve(message.result);
   else pending.reject(new Error(message.error));
 }
@@ -262,9 +303,14 @@ async function disposeRuntime(): Promise<void> {
     pending.reject(new Error('Iris Agent Worker disposed while a tool call was pending'));
   }
   if (!runtime) return;
-  runtime.unsubscribe();
-  runtime.session.dispose();
+  const current = runtime;
   runtime = null;
+  current.unsubscribe();
+  try {
+    current.session.dispose();
+  } finally {
+    await current.disposeProviderTransport();
+  }
 }
 
 function post(event: AgentWorkerEventPayload): void {
@@ -286,4 +332,34 @@ function jsonSafeEvent(event: unknown): unknown {
       summary: Object.prototype.toString.call(event),
     };
   }
+}
+
+export function projectProviderFailure(
+  event: unknown,
+  capturedFailure: string | null,
+): { event: unknown; consumedFailure: boolean } {
+  if (!isRecord(event) || event.type !== 'message_end' || !isRecord(event.message)) {
+    return { event, consumedFailure: false };
+  }
+  const message = event.message;
+  if (message.role !== 'assistant' || message.stopReason !== 'error') {
+    return { event, consumedFailure: false };
+  }
+  const wrapped = typeof message.errorMessage === 'string'
+    ? message.errorMessage
+    : 'Provider returned stopReason=error.';
+  return {
+    event: {
+      ...event,
+      message: {
+        ...message,
+        errorMessage: unwrapProviderErrorMessage(wrapped, capturedFailure),
+      },
+    },
+    consumedFailure: capturedFailure !== null,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
 }

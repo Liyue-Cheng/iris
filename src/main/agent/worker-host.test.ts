@@ -8,6 +8,19 @@ import {
 } from '@shared/agent-protocol';
 import { AgentWorkerHost, resolveAgentWorkerUrl, type AgentWorkerPort } from './worker-host';
 
+const testRuntime = {
+  cwd: process.cwd(),
+  agentDir: process.cwd(),
+  providerProfileRoot: process.cwd(),
+  model: { provider: 'openai', modelId: 'gpt-test' },
+  commandShell: {
+    kind: 'powershell' as const,
+    executable: 'pwsh.exe',
+    displayName: 'PowerShell 7',
+  },
+  providerProxy: { mode: 'direct' as const },
+};
+
 class FakeWorker extends EventEmitter implements AgentWorkerPort {
   messages: AgentWorkerRequest[] = [];
   postMessage(message: AgentWorkerRequest): void {
@@ -27,6 +40,7 @@ function readyEvent(
   historyRevision = 1,
   historyMessageCount = 0,
   workerEpoch = 1,
+  runtimeOverride: Partial<Extract<AgentWorkerEvent, { type: 'ready' }>['runtime']> = {},
 ): AgentWorkerEvent {
   const history = {
     revision: historyRevision,
@@ -45,6 +59,9 @@ function readyEvent(
       historyRevision,
       historyMessageCount,
       historyDigest: agentHistoryDigest(history),
+      model: testRuntime.model,
+      commandShell: testRuntime.commandShell,
+      ...runtimeOverride,
     },
   };
 }
@@ -65,7 +82,7 @@ describe('AgentWorkerHost', () => {
     }));
     const host = new AgentWorkerHost('session-1', {
       loadHistory,
-      loadRuntime: async () => ({ cwd: process.cwd(), agentDir: process.cwd() }),
+      loadRuntime: async () => testRuntime,
       workerEpoch: 1,
       workerFactory: () => {
         const worker = new FakeWorker();
@@ -110,7 +127,7 @@ describe('AgentWorkerHost', () => {
         anchor: { kind: 'workspace', path: '.iris' },
         messages: [],
       }),
-      loadRuntime: async () => ({ cwd: process.cwd(), agentDir: process.cwd() }),
+      loadRuntime: async () => testRuntime,
       workerEpoch: 1,
       workerFactory: () => worker,
     });
@@ -128,7 +145,7 @@ describe('AgentWorkerHost', () => {
         anchor: { kind: 'workspace', path: '.iris' },
         messages: [],
       }),
-      loadRuntime: async () => ({ cwd: process.cwd(), agentDir: process.cwd() }),
+      loadRuntime: async () => testRuntime,
       workerEpoch: 4,
       workerFactory: () => worker,
     });
@@ -146,13 +163,40 @@ describe('AgentWorkerHost', () => {
         anchor: { kind: 'workspace', path: '.iris' },
         messages: [],
       }),
-      loadRuntime: async () => ({ cwd: process.cwd(), agentDir: process.cwd() }),
+      loadRuntime: async () => testRuntime,
       workerEpoch: 1,
       workerFactory: () => worker,
     });
     const started = host.ensureStarted();
     await vi.waitFor(() => expect(worker.messages).toHaveLength(1));
     worker.emitMessage(readyEvent('session-1', 7, 1));
+    await expect(started).rejects.toThrow(/runtime or history identity/);
+  });
+
+  it.each([
+    ['model', { model: { provider: 'openai', modelId: 'gpt-other' } }],
+    ['command shell', {
+      commandShell: {
+        kind: 'powershell' as const,
+        executable: 'powershell.exe',
+        displayName: 'Windows PowerShell',
+      },
+    }],
+  ])('rejects ready when the Worker acknowledges a different %s', async (_label, override) => {
+    const worker = new FakeWorker();
+    const host = new AgentWorkerHost('session-1', {
+      loadHistory: async () => ({
+        revision: 7,
+        anchor: { kind: 'workspace', path: '.iris' },
+        messages: [],
+      }),
+      loadRuntime: async () => testRuntime,
+      workerEpoch: 1,
+      workerFactory: () => worker,
+    });
+    const started = host.ensureStarted();
+    await vi.waitFor(() => expect(worker.messages).toHaveLength(1));
+    worker.emitMessage(readyEvent('session-1', 7, 0, 1, override));
     await expect(started).rejects.toThrow(/runtime or history identity/);
   });
 
@@ -164,7 +208,7 @@ describe('AgentWorkerHost', () => {
         anchor: { kind: 'workspace', path: '.iris' },
         messages: [],
       }),
-      loadRuntime: async () => ({ cwd: process.cwd(), agentDir: process.cwd() }),
+      loadRuntime: async () => testRuntime,
       workerEpoch: 1,
       workerFactory: () => worker,
     });
@@ -199,7 +243,7 @@ describe('AgentWorkerHost', () => {
     const workerFactory = vi.fn(() => new FakeWorker());
     const host = new AgentWorkerHost('session-1', {
       loadHistory: async () => history,
-      loadRuntime: async () => ({ cwd: process.cwd(), agentDir: process.cwd() }),
+      loadRuntime: async () => testRuntime,
       workerEpoch: 1,
       workerFactory,
     });

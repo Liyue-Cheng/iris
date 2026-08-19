@@ -30,6 +30,7 @@ import {
   FolderCog,
   FolderOpen,
   Info,
+  KeyRound,
   Moon,
   MoonStar,
   Palette,
@@ -52,6 +53,7 @@ import {
   type DeepPartial,
   type HookCliInfo,
   type InjectionState,
+  type IrisAgentProviderCatalog,
   type ProjectPromptStateUi,
   type ProjectCommandTerminal,
   type ProjectToolbarAction,
@@ -102,6 +104,7 @@ import {
 export type SettingsCategoryId =
   | 'appearance'
   | 'terminal'
+  | 'iris-agent'
   | 'agents'
   | 'project'
   | 'prompts'
@@ -148,9 +151,10 @@ export function useSettingsViewOpen(): boolean {
 // Categories
 // ──────────────────────────────────────────────────────────────────
 
-const CATEGORIES: Array<{ id: SettingsCategoryId; icon: typeof Palette; labelKey: 'settings.appearance' | 'settings.terminal' | 'settings.agents' | 'projectSettings.title' | 'settings.prompts' | 'settings.advanced' | 'settings.about' }> = [
+const CATEGORIES: Array<{ id: SettingsCategoryId; icon: typeof Palette; labelKey: 'settings.appearance' | 'settings.terminal' | 'settings.irisAgent' | 'settings.agents' | 'projectSettings.title' | 'settings.prompts' | 'settings.advanced' | 'settings.about' }> = [
   { id: 'appearance', icon: Palette, labelKey: 'settings.appearance' },
   { id: 'terminal', icon: SquareTerminal, labelKey: 'settings.terminal' },
+  { id: 'iris-agent', icon: KeyRound, labelKey: 'settings.irisAgent' },
   { id: 'agents', icon: Bot, labelKey: 'settings.agents' },
   { id: 'project', icon: FolderCog, labelKey: 'projectSettings.title' },
   { id: 'prompts', icon: ScrollText, labelKey: 'settings.prompts' },
@@ -260,6 +264,8 @@ function CategoryPanel({
       return <AppearancePanel setError={setError} />;
     case 'terminal':
       return <TerminalPanel setError={setError} />;
+    case 'iris-agent':
+      return <IrisAgentSettingsPanel setError={setError} />;
     case 'agents':
       return <AgentsPanel setError={setError} />;
     case 'project':
@@ -291,7 +297,7 @@ function SettingRow({
     <div className="flex items-start gap-6 px-4 py-4">
       <div className="w-52 shrink-0">
         <div className="text-[13px]">{label}</div>
-        {hint && <div className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{hint}</div>}
+        {hint && <div className="mt-0.5 break-words text-[11px] leading-snug text-muted-foreground">{hint}</div>}
       </div>
       <div className="min-w-0 flex-1">{children}</div>
     </div>
@@ -814,6 +820,221 @@ function uniqueAgentId(preferred: string, agents: readonly AgentConfig[]): strin
   let suffix = 2;
   while (ids.has(`${base}-${suffix}`)) suffix += 1;
   return `${base}-${suffix}`;
+}
+
+function IrisAgentSettingsPanel({
+  setError,
+}: {
+  setError: (message: string | null) => void;
+}): JSX.Element {
+  const { t } = useTranslation();
+  const [catalog, setCatalog] = useState<IrisAgentProviderCatalog | null>(null);
+  const [templateId, setTemplateId] = useState('openai');
+  const [profileName, setProfileName] = useState('');
+  const [baseUrl, setBaseUrl] = useState('https://api.openai.com/v1');
+  const [apiKey, setApiKey] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const refresh = async (): Promise<void> => {
+    try {
+      const next = await window.api.invoke<undefined, IrisAgentProviderCatalog>(
+        CHANNELS.IRIS_AGENT_PROVIDERS,
+      );
+      setCatalog(next);
+      setError(next.error ?? null);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+    return window.api.on(EVENTS.IRIS_AGENT_PROVIDERS_CHANGED, () => void refresh());
+    // The provider projection is machine-level and refreshes only on explicit events.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const templates = catalog?.templates ?? [];
+  const profiles = catalog?.profiles ?? [];
+  const selectedTemplate = templates.find((template) => template.id === templateId);
+
+  useEffect(() => {
+    if (templates.length === 0 || selectedTemplate) return;
+    const fallback = templates[0]!;
+    setTemplateId(fallback.id);
+    setBaseUrl(fallback.defaultBaseUrl);
+  }, [templates, selectedTemplate]);
+
+  const addProfile = async (): Promise<void> => {
+    if (!selectedTemplate || !profileName.trim() || !apiKey.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await window.api.invoke<
+        { name: string; templateId: string; baseUrl: string; apiKey: string },
+        IrisAgentProviderCatalog
+      >(CHANNELS.IRIS_AGENT_PROVIDER_PROFILE_ADD, {
+        name: profileName,
+        templateId,
+        baseUrl,
+        apiKey,
+      });
+      setCatalog(next);
+      setError(next.error ?? null);
+      setProfileName('');
+      setApiKey('');
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeProfile = async (profileId: string, name: string): Promise<void> => {
+    const confirmed = await confirmDialog({
+      title: t('settings.removeProviderProfile'),
+      message: t('settings.removeProviderProfileConfirm', { profile: name }),
+      confirmText: t('settings.removeCredential'),
+      tone: 'destructive',
+    });
+    if (!confirmed) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await window.api.invoke<
+        { profileId: string },
+        IrisAgentProviderCatalog
+      >(CHANNELS.IRIS_AGENT_PROVIDER_PROFILE_REMOVE, { profileId });
+      setCatalog(next);
+      setError(next.error ?? null);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section>
+      <PanelTitle description={t('settings.irisAgentDescription')}>
+        {t('settings.irisAgent')}
+      </PanelTitle>
+
+      <SettingGroup title={t('settings.addProviderProfile')}>
+        <SettingRow label={t('settings.providerTemplate')} hint={t('settings.providerTemplateHint')}>
+          <select
+            value={templateId}
+            disabled={busy || templates.length === 0}
+            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+            onChange={(event) => {
+              const nextId = event.target.value;
+              const nextTemplate = templates.find((template) => template.id === nextId);
+              setTemplateId(nextId);
+              setBaseUrl(nextTemplate?.defaultBaseUrl ?? '');
+              setApiKey('');
+            }}
+          >
+            {templates.map((template) => (
+              <option key={template.id} value={template.id}>
+                {template.name}
+              </option>
+            ))}
+          </select>
+        </SettingRow>
+        <SettingRow label={t('settings.providerProfileName')} hint={t('settings.providerProfileNameHint')}>
+          <Input
+            value={profileName}
+            disabled={busy || !selectedTemplate}
+            spellCheck={false}
+            placeholder={t('settings.providerProfileNamePlaceholder')}
+            onChange={(event) => setProfileName(event.target.value)}
+          />
+        </SettingRow>
+        <SettingRow label={t('settings.baseUrl')} hint={t('settings.baseUrlHint')}>
+          <Input
+            value={baseUrl}
+            disabled={busy || !selectedTemplate}
+            type="url"
+            spellCheck={false}
+            placeholder={t('settings.baseUrlPlaceholder')}
+            onChange={(event) => setBaseUrl(event.target.value)}
+          />
+        </SettingRow>
+        <SettingRow label={t('settings.apiKey')} hint={t('settings.apiKeyHint')}>
+          <div className="flex min-w-0 gap-2">
+            <Input
+              type="password"
+              value={apiKey}
+              disabled={busy || !selectedTemplate}
+              autoComplete="new-password"
+              spellCheck={false}
+              placeholder={t('settings.apiKeyPlaceholder')}
+              onChange={(event) => setApiKey(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  addProfile().catch(() => undefined);
+                }
+              }}
+            />
+            <Button
+              type="button"
+              className="shrink-0"
+              disabled={busy
+                || !selectedTemplate
+                || !profileName.trim()
+                || (!baseUrl.trim() && !selectedTemplate.defaultBaseUrl)
+                || !apiKey.trim()}
+              onClick={() => addProfile().catch(() => undefined)}
+            >
+              <Plus className="!size-4" />
+              {t('settings.addProvider')}
+            </Button>
+          </div>
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup title={t('settings.configuredProviderProfiles')}>
+        {catalog === null ? (
+          <div className="px-4 py-4 text-xs text-muted-foreground">
+            {t('settings.loadingProviders')}
+          </div>
+        ) : profiles.length === 0 ? (
+          <div className="px-4 py-4 text-xs text-muted-foreground">
+            {t('settings.noConfiguredProviderProfiles')}
+          </div>
+        ) : profiles.map((profile) => {
+          const template = templates.find((candidate) => candidate.id === profile.templateId);
+          const resolvedBaseUrl = profile.baseUrl || template?.defaultBaseUrl || '';
+          return (
+            <SettingRow
+              key={profile.id}
+              label={profile.name}
+              hint={[template?.name, resolvedBaseUrl].filter(Boolean).join(' · ')}
+            >
+              <div className="flex h-8 items-center justify-between gap-2">
+                <span className="text-xs text-muted-foreground">••••••••</span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                  disabled={busy}
+                  title={t('settings.removeProviderProfile')}
+                  aria-label={t('settings.removeProviderProfile')}
+                  onClick={() => {
+                    removeProfile(profile.id, profile.name).catch(() => undefined);
+                  }}
+                >
+                  <Trash2 className="!size-3.5" />
+                </Button>
+              </div>
+            </SettingRow>
+          );
+        })}
+      </SettingGroup>
+    </section>
+  );
 }
 
 function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JSX.Element {

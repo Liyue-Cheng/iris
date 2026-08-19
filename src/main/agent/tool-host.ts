@@ -3,7 +3,9 @@ import { promises as fs } from 'node:fs';
 import { dirname, join, normalize, relative, resolve, sep } from 'node:path';
 import { AgentCommandPty } from './command-pty';
 import { writeFileAtomic } from '../atomic-write';
+import { generateUnifiedPatch } from '@earendil-works/pi-coding-agent';
 import type {
+  AgentCommandShell,
   AgentCorrelation,
   AgentToolOperationInput,
   AgentToolOperationResult,
@@ -22,6 +24,7 @@ export interface IrisAgentToolHostResult {
 export interface IrisAgentToolHostOptions {
   projectRoot: string;
   outputRoot: string;
+  commandShell: AgentCommandShell;
   displayThresholdMs?: number;
 }
 
@@ -39,6 +42,7 @@ export class IrisAgentToolHost {
       requestId: correlation.requestId,
       createdAt: started,
       inputSummary: summarizeInput(input),
+      ...eventInputDetails(input),
     };
     try {
       const executed = await this.executeUnchecked(input, correlation, started);
@@ -72,7 +76,18 @@ export class IrisAgentToolHost {
     started: number,
   ): Promise<{
     result: AgentToolOperationResult;
-    event: Pick<IrisAgentToolEvent, 'name' | 'resultSummary' | 'diff' | 'path' | 'terminalId'>;
+    event: Pick<
+      IrisAgentToolEvent,
+      | 'name'
+      | 'operation'
+      | 'terminalIntent'
+      | 'command'
+      | 'cwd'
+      | 'resultSummary'
+      | 'diff'
+      | 'path'
+      | 'terminalId'
+    >;
     fileEffect?: IrisAgentFileEffect;
   }> {
     if (input.tool === 'terminal') return this.executeTerminal(input, correlation);
@@ -133,11 +148,12 @@ export class IrisAgentToolHost {
     const beforeSha = before === null ? null : sha256(before);
     const afterSha = sha256(content);
     const kind = input.tool === 'edit' ? 'edit' : 'write';
-    const diff = summarizeDiff(before, content, relPath);
+    const diff = generateUnifiedPatch(relPath, before ?? '', content);
     return {
       result: { kind: 'void' },
       event: {
         name: input.tool,
+        operation: input.operation,
         path: relPath,
         resultSummary: before === null ? 'created' : 'updated',
         diff,
@@ -162,7 +178,10 @@ export class IrisAgentToolHost {
     correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'requestId' | 'turnId' | 'toolCallId'>>,
   ): Promise<{
     result: AgentToolOperationResult;
-    event: Pick<IrisAgentToolEvent, 'name' | 'resultSummary' | 'path' | 'terminalId'>;
+    event: Pick<
+      IrisAgentToolEvent,
+      'name' | 'operation' | 'terminalIntent' | 'command' | 'cwd' | 'resultSummary' | 'path' | 'terminalId'
+    >;
   }> {
     if (looksInteractive(input.command)) {
       throw new Error('Interactive terminal commands are not supported in this Iris Agent milestone.');
@@ -181,6 +200,7 @@ export class IrisAgentToolHost {
       cwd,
       outputPath,
       env: sanitizeEnv(input.env),
+      commandShell: this.options.commandShell,
       displayThresholdMs: this.options.displayThresholdMs ?? 3000,
     });
     const timeoutMs = Math.min(Math.max(input.timeout ?? 3000, 1), 3000);
@@ -199,9 +219,15 @@ export class IrisAgentToolHost {
       },
       event: {
         name: 'terminal',
+        operation: 'exec',
+        terminalIntent: input.intent,
+        command: input.command,
+        cwd: relCwd || '.',
         terminalId,
         path: relCwd || '.',
-        resultSummary: 'exit ' + String(result.exitCode) + ', ' + String(result.outputBytes) + ' bytes',
+        resultSummary: this.options.commandShell.displayName +
+          ' (' + this.options.commandShell.executable + '): exit ' +
+          String(result.exitCode) + ', ' + String(result.outputBytes) + ' bytes',
       },
     };
   }
@@ -237,15 +263,19 @@ function summarizeInput(input: AgentToolOperationInput): string {
   return (input.operation + ' ' + input.absolutePath).slice(0, 220);
 }
 
-function summarizeDiff(before: string | null, after: string, path: string): string {
-  if (before === null) return 'created ' + path + ' (' + String(after.length) + ' chars)';
-  const beforeLines = before.split(/\r?\n/);
-  const afterLines = after.split(/\r?\n/);
-  let first = 0;
-  while (first < beforeLines.length && first < afterLines.length && beforeLines[first] === afterLines[first]) {
-    first += 1;
+function eventInputDetails(input: AgentToolOperationInput): Pick<
+  IrisAgentToolEvent,
+  'operation' | 'terminalIntent' | 'command' | 'cwd'
+> {
+  if (input.tool === 'terminal') {
+    return {
+      operation: 'exec',
+      terminalIntent: input.intent,
+      command: input.command,
+      cwd: input.cwd,
+    };
   }
-  return 'updated ' + path + ' at line ' + String(first + 1) + ' (' + String(before.length) + ' -> ' + String(after.length) + ' chars)';
+  return { operation: input.operation };
 }
 
 function looksInteractive(command: string): boolean {

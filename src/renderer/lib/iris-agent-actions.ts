@@ -1,6 +1,8 @@
 import { CHANNELS } from '@shared/protocol';
 import type {
   IrisAgentAnchor,
+  IrisAgentModelCatalog,
+  IrisAgentModelRef,
   IrisAgentSessionInfo,
   ProjectScope,
 } from '@shared/types';
@@ -159,6 +161,85 @@ export async function rewindIrisAgent(sessionId: string): Promise<void> {
       >(CHANNELS.IRIS_AGENT_REWIND, projectScoped(scope, { sessionId, ...precondition }));
       irisAgentStore.handleChanged(session);
     },
+  );
+}
+
+export async function branchIrisAgent(
+  sessionId: string,
+  throughTurnId: string,
+): Promise<IrisAgentSessionInfo | null> {
+  const outcome = await attemptAction(async () => {
+    const scope = scopeOrThrow();
+    const precondition = commandPrecondition(sessionId);
+    const session = await window.api.invoke<
+      {
+        sessionId: string;
+        throughTurnId: string;
+        commandId: string;
+        expectedRevision: number;
+        expectedScope: ProjectScope;
+      },
+      IrisAgentSessionInfo
+    >(CHANNELS.IRIS_AGENT_BRANCH, projectScoped(scope, {
+      sessionId,
+      throughTurnId,
+      ...precondition,
+    }));
+    irisAgentStore.handleChanged(session);
+    irisAgentStore.select(session.id);
+    return session;
+  });
+  if (outcome.status === 'ok') return outcome.value;
+  if (outcome.status === 'failed') {
+    notify({
+      dedupeKey: `iris-agent:branch:${sessionId}:${throughTurnId}`,
+      title: 'Iris Agent 分支失败',
+      message: outcome.error.message,
+      domain: outcome.error.domain,
+      ...(outcome.error.incidentId ? { incidentId: outcome.error.incidentId } : {}),
+    });
+  }
+  return null;
+}
+
+export async function setIrisAgentModel(
+  sessionId: string,
+  model: IrisAgentModelRef,
+): Promise<void> {
+  await runUserAction(
+    {
+      title: 'Iris Agent 模型切换失败',
+      dedupeKey: `iris-agent:model:${sessionId}`,
+    },
+    async () => {
+      const scope = scopeOrThrow();
+      const precondition = commandPrecondition(sessionId);
+      const session = await window.api.invoke<
+        {
+          sessionId: string;
+          provider: string;
+          modelId: string;
+          commandId: string;
+          expectedRevision: number;
+          expectedScope: ProjectScope;
+        },
+        IrisAgentSessionInfo
+      >(CHANNELS.IRIS_AGENT_SET_MODEL, projectScoped(scope, {
+        sessionId,
+        provider: model.provider,
+        modelId: model.modelId,
+        ...precondition,
+      }));
+      irisAgentStore.handleChanged(session);
+    },
+  );
+}
+
+export async function listIrisAgentModels(): Promise<IrisAgentModelCatalog> {
+  const scope = scopeOrThrow();
+  return window.api.invoke<{ expectedScope: ProjectScope }, IrisAgentModelCatalog>(
+    CHANNELS.IRIS_AGENT_MODELS,
+    { expectedScope: scope },
   );
 }
 

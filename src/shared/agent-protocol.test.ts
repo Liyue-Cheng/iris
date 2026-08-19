@@ -11,6 +11,22 @@ describe('Iris Agent Worker protocol', () => {
       }),
     ).toBe(true);
     expect(
+      isAgentWorkerRequest({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'initialize',
+        correlation: { sessionId: 'session-1' },
+        history: { revision: 1, anchor: { kind: 'workspace', path: '.iris' }, messages: [] },
+        runtime: {
+          cwd: process.cwd(),
+          agentDir: process.cwd(),
+          providerProfileRoot: process.cwd(),
+          model: { provider: 'openai', modelId: 'gpt-test' },
+          commandShell: { kind: 'powershell', executable: 'pwsh.exe', displayName: 'PowerShell 7' },
+          providerProxy: { mode: 'proxy', url: 'socks5://127.0.0.1:1080' },
+        },
+      }),
+    ).toBe(false);
+    expect(
       isAgentWorkerRequest({ version: 1, type: 'shutdown', correlation: { sessionId: 'session-1' } }),
     ).toBe(false);
     expect(isAgentWorkerRequest({ version: IRIS_AGENT_PROTOCOL_VERSION, type: 'shutdown', correlation: {} })).toBe(false);
@@ -20,9 +36,29 @@ describe('Iris Agent Worker protocol', () => {
         type: 'initialize',
         correlation: { sessionId: 'session-1' },
         history: { revision: 1, anchor: { kind: 'workspace', path: '.iris' }, messages: [] },
-        runtime: { cwd: process.cwd(), agentDir: process.cwd() },
+        runtime: {
+          cwd: process.cwd(),
+          agentDir: process.cwd(),
+          providerProfileRoot: process.cwd(),
+          model: { provider: 'openai', modelId: 'gpt-test' },
+          commandShell: {
+            kind: 'powershell',
+            executable: 'pwsh.exe',
+            displayName: 'PowerShell 7',
+          },
+          providerProxy: { mode: 'proxy', url: 'http://127.0.0.1:7890/' },
+        },
       }),
     ).toBe(true);
+    expect(
+      isAgentWorkerRequest({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'initialize',
+        correlation: { sessionId: 'session-1' },
+        history: { revision: 1, anchor: { kind: 'workspace', path: '.iris' }, messages: [] },
+        runtime: { cwd: process.cwd(), agentDir: process.cwd() },
+      }),
+    ).toBe(false);
     expect(
       isAgentWorkerRequest({
         version: IRIS_AGENT_PROTOCOL_VERSION,

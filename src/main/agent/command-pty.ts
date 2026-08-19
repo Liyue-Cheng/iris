@@ -1,6 +1,8 @@
+import { existsSync } from 'node:fs';
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { spawn, type IDisposable, type IPty } from 'node-pty';
+import type { AgentCommandShell } from '@shared/agent-protocol';
 import { buildSpawnEnv } from '../pty-utils';
 
 export interface AgentCommandPtyResult {
@@ -31,6 +33,7 @@ export interface AgentCommandPtyOptions {
   cwd: string;
   outputPath: string;
   env?: NodeJS.ProcessEnv;
+  commandShell?: AgentCommandShell;
   displayThresholdMs?: number;
   spawnFn?: typeof spawn;
   outputStore?: AgentCommandOutputStore;
@@ -60,7 +63,7 @@ export class AgentCommandPty {
       'FOCUS_DOC',
       'IRIS_WORKSPACE_PATH',
     ]);
-    const shell = commandShell(options.command, env);
+    const shell = commandShell(options.command, env, process.platform, options.commandShell);
     this.pty = (options.spawnFn ?? spawn)(shell.file, shell.args, {
       name: 'xterm-256color',
       cols: 80,
@@ -132,15 +135,37 @@ export function commandShell(
   command: string,
   env: Record<string, string>,
   platform: NodeJS.Platform = process.platform,
+  resolvedShell: AgentCommandShell = resolveAgentCommandShell(env, platform),
 ): { file: string; args: string[] } {
-  if (platform === 'win32') {
-    const path = env.PATH ?? env.Path ?? '';
-    const hasPwsh = path.split(';').some((part) => /powershell\\7$/i.test(part));
-    return hasPwsh
-      ? { file: 'pwsh.exe', args: ['-NoLogo', '-NonInteractive', '-Command', command] }
-      : { file: 'powershell.exe', args: ['-NoLogo', '-NonInteractive', '-Command', command] };
+  if (resolvedShell.kind === 'powershell') {
+    return {
+      file: resolvedShell.executable,
+      args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command],
+    };
   }
-  return { file: env.SHELL ?? '/bin/bash', args: ['-lc', command] };
+  return { file: resolvedShell.executable, args: ['-lc', command] };
+}
+
+export function resolveAgentCommandShell(
+  env: Record<string, string | undefined> = process.env,
+  platform: NodeJS.Platform = process.platform,
+  fileExists: (path: string) => boolean = existsSync,
+): AgentCommandShell {
+  if (platform !== 'win32') {
+    const executable = env.SHELL || '/bin/bash';
+    return { kind: 'posix', executable, displayName: executable };
+  }
+
+  const pathDirs = (env.PATH ?? env.Path ?? '').split(';').filter(Boolean);
+  const hasPwsh = pathDirs.some((directory) =>
+    fileExists(`${directory.replace(/[\\/]+$/u, '')}\\pwsh.exe`));
+  return hasPwsh
+    ? { kind: 'powershell', executable: 'pwsh.exe', displayName: 'PowerShell 7' }
+    : {
+        kind: 'powershell',
+        executable: 'powershell.exe',
+        displayName: 'Windows PowerShell',
+      };
 }
 
 const fileOutputStore: AgentCommandOutputStore = {
