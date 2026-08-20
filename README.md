@@ -10,11 +10,11 @@
   一个以持久项目记忆为核心的本地优先人机协同开发工作空间。
 </p>
 
-Iris 将项目文档、交互式 Agent 终端、Git 状态和人的注意力整合进同一个桌面工作空间。它不内置模型，也不取代你已有的 Agent CLI；它为这些工具提供持久的项目记忆，以及一个让人与 Agent 共同工作的可视化空间。
+Iris 将项目文档、Agent、Git 状态和人的注意力整合进同一个桌面工作空间。它不提供模型服务，也不取代你已有的 Agent CLI；它为这些工具提供持久的项目记忆，以及一个让人与 Agent 共同工作的可视化空间。
 
-项目状态以普通 Markdown 文件保存在 `.iris/` 下。Agent 在项目根目录的真实 PTY 中运行，Git 仍然是协作与交付层。Iris 不需要账户、云端数据库、API Key，也不使用专有项目格式。
+项目状态以普通 Markdown 文件保存在 `.iris/` 下。外部 Agent 在项目根目录的真实 PTY 中运行，Git 仍然是协作与交付层。Iris 不需要账户或云端数据库，也不使用专有项目格式。
 
-> 当前版本：`0.1.0-beta.8`。这是现有桌面工作流的稳定化基线。Iris 以 Windows 为优先平台，目前提供 Windows x64 版本。
+> 当前版本：`0.1.0-beta.10`。实验性的 Iris Agent 仍处于非常早期阶段、默认关闭；现有的外部 Agent CLI 工作流不受影响。Iris 以 Windows 为优先平台，目前提供 Windows x64 版本。
 
 ![Iris 工作区](docs/images/readme-overview.png)
 
@@ -55,7 +55,7 @@ Iris 完全通过自身工作流进行开发。本仓库的 [`.iris/`](./.iris/)
 1. 在 Iris 中打开一个本地项目。
 2. 初始化 Iris 协议，或使用已有的 `.iris/` 目录树。
 3. 创建或选择 issue、status、report 或 workspace hub。
-4. 从该上下文启动 Claude Code、Codex、Gemini、其他 CLI 或普通 shell。
+4. 从该上下文启动 Claude Code、Codex、Gemini、其他 CLI、普通 shell，或选择实验性的 Iris Agent。
 5. 向 Agent 提出指令。对于支持的 CLI，Iris 已经提供当前文档或工作区上下文。
 6. 让 Agent 直接修改磁盘上的代码和 Markdown。
 7. Iris 监听文件变化，并重新投影界面状态。
@@ -135,15 +135,18 @@ Electron 应用是协议的参考实现和操作控制面，提供：
 - WYSIWYG Markdown 编辑器和源码模式
 - 受管文档资产
 - 每个文档或工作区下的多个交互式 PTY 会话
+- 默认关闭的实验性 Iris Agent
 - Git 状态、暂存、取消暂存、提交和本地分支切换
 - 会话与 watcher 状态隔离的多项目窗口
 - 机器级主题、编辑器行为、终端行为和 Agent 配置
 
 协议保证可移植性，应用则提供工作流效率、安全检查和明确的并发边界。
 
-### Agent 适配器
+### Agent 执行
 
-Iris 运行你已经安装并完成认证的 Agent 命令。默认配置包括 Claude Code、Codex、Gemini 和普通终端，所有条目和命令行都可以编辑。
+Iris 默认运行你已经安装并完成认证的 Agent 命令。默认配置包括 Claude Code、Codex、Gemini 和普通终端，所有条目和命令行都可以编辑。
+
+`0.1.0-beta.10` 也包含默认关闭的实验性 Iris Agent。启用后，可以配置模型供应商并从当前文档或 workspace 启动内置会话。它仍处于非常早期阶段，适合试用和反馈，不应视为外部 Agent CLI 的稳定替代品。
 
 文档会话会收到：
 
@@ -259,7 +262,7 @@ Iris 当前没有代码签名。Windows SmartScreen 可能显示“未知发布�
 
 1. 启动 Iris，选择 **Open Project Folder**。
 2. 如果项目没有 `.iris/`，检查并确认 **Initialize Iris Protocol**。
-3. 打开 **Settings > Agents**，配置你使用的 CLI 命令。
+3. 打开 **Settings > Agents**，配置你使用的 CLI 命令；也可以在 **Settings > Iris Agent** 中选择性启用早期的内置 Agent。
 4. 可以选择安装 SessionStart hook，以获得 zero-turn 焦点注入。
 5. 创建一个 issue，或在 Lens Tree 中选择已有文档。
 6. 使用右侧启动器，在该文档上下文中打开 Agent。
@@ -271,7 +274,7 @@ Iris 当前没有代码签名。Windows SmartScreen 可能显示“未知发布�
 
 以下是当前产品边界，不是隐藏的路线图承诺：
 
-- 不内置模型、模型 SDK、API Key 或模型订阅
+- 不提供 Iris 托管的模型、模型账户或模型订阅；外部 CLI 和可选的 Iris Agent 供应商配置仍由用户管理
 - 不需要账户，不提供云端数据库、托管同步、权限系统或遥测
 - 不提供 headless Agent dispatch 或自主编排队列
 - 不把 Agent 终端输出解析为业务状态
@@ -343,9 +346,9 @@ src/shared/     跨进程模型、IPC channel 名称、Markdown 工具、
 
 ## 当前状态
 
-Iris 是一个通过自身仓库持续 dogfooding 开发的 beta 软件。`0.1.0-beta.8` 将文件系统协议、项目 scope、文档工作流、终端状态恢复和本地 Git 基础闭环收敛为当前桌面版本的稳定化基线。
+Iris 是一个通过自身仓库持续 dogfooding 开发的 beta 软件。文件系统协议、项目 scope、文档工作流、终端状态恢复和本地 Git 基础闭环已经形成可用的桌面工作流。
 
-从这个版本起，`main` 进入稳定维护阶段，以 bug 修复、可靠性、兼容性和必要的小幅体验改进为主，不再承载大规模产品重构。基于 Pi 或未来其他代码 Agent 运行时（包括可能的 DeepSeek Code 方案）的内置 Agent 探索，将在独立开发分支推进；具体运行时会根据成熟度和可维护性选择。当前 `beta.7` 仍只协调用户已经安装并认证的外部 Agent CLI，不内置模型或 Agent 运行时。
+`0.1.0-beta.10` 首次提供可选的 Iris Agent 实验入口。它仍处于非常早期阶段并默认关闭；当前版本的成熟工作流仍是 `.iris/` 文档、外部 Agent CLI、终端与 Git 的组合。
 
 欢迎通过 [GitHub Issues](https://github.com/Liyue-Cheng/iris/issues) 提交 bug 和聚焦的设计讨论。
 
@@ -353,7 +356,7 @@ Iris 是一个通过自身仓库持续 dogfooding 开发的 beta 软件。`0.1.0
 
 - 项目产物以普通文件形式保留在项目仓库中。
 - 机器设置保存在本地 `~/.iris/` 下，开发版使用 `~/.iris-dev/`。
-- Agent 认证和计费仍由各 Agent CLI 管理。
+- 外部 Agent CLI 的认证和计费由各 CLI 管理；可选 Iris Agent 的供应商 API Key 保存在本机 Iris 用户数据中。
 - Iris 不发送遥测。
 - 外部链接只有在使用允许的 Web 或邮件协议时才会在系统浏览器中打开。
 - 本地文档和资产操作会对 active project boundary 进行路径校验。Symlink 和 junction 加固仍是 beta 限制；不要让 `.iris/` 或 typed folder 通过链接指向项目之外的位置。

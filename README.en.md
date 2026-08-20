@@ -10,11 +10,11 @@
   A local-first human-agent development workspace built around durable project memory.
 </p>
 
-Iris brings project documents, interactive agent terminals, Git state, and human attention into one desktop workspace. It does not embed a model or replace your agent CLI. Instead, it gives the tools you already use a durable project memory and a visible place to work together.
+Iris brings project documents, agents, Git state, and human attention into one desktop workspace. It does not provide a model service or replace your agent CLI. Instead, it gives the tools you already use a durable project memory and a visible place to work together.
 
-Your project state stays in ordinary Markdown under `.iris/`. Your agents run in real PTYs at the project root. Git remains the collaboration and delivery layer. There is no Iris account, cloud database, API key, or proprietary project format.
+Your project state stays in ordinary Markdown under `.iris/`. External agents run in real PTYs at the project root. Git remains the collaboration and delivery layer. There is no Iris account, cloud database, or proprietary project format.
 
-> Current version: `0.1.0-beta.8`. This is the stabilization baseline for the existing desktop workflow. Iris is Windows-first and currently ships for Windows x64.
+> Current version: `0.1.0-beta.10`. The experimental Iris Agent remains very early and is disabled by default; the existing external agent CLI workflow is unchanged. Iris is Windows-first and currently ships for Windows x64.
 
 > This is the English product overview. Active development records and maintainer discussions are currently written primarily in Simplified Chinese. English bug reports and pull requests are welcome, but contributors may need translation support when following the live `.iris/` project record.
 
@@ -57,7 +57,7 @@ Features and regressions are worked from focused documents in Iris, implemented 
 1. Open a local project in Iris.
 2. Initialize the Iris protocol, or use an existing `.iris/` tree.
 3. Create or select an issue, status document, report, or workspace hub.
-4. Launch Claude Code, Codex, Gemini, another CLI, or a plain shell from that context.
+4. Launch Claude Code, Codex, Gemini, another CLI, a plain shell, or the experimental Iris Agent from that context.
 5. Give the agent an instruction. Iris has already supplied the document or workspace context when the configured CLI supports it.
 6. Let the agent edit code and Markdown on disk.
 7. Iris watches the files and re-projects the interface from the new disk state.
@@ -139,15 +139,18 @@ The Electron app is the reference implementation and operational control plane f
 - WYSIWYG Markdown editing with a source-mode escape hatch
 - Managed document assets
 - Multiple interactive PTY sessions per document or workspace
+- An experimental Iris Agent, disabled by default
 - Git status, staging, unstaging, commits, and local branch switching
 - Multiple project windows with isolated session and watcher state
 - Machine-level themes, editor behavior, terminal behavior, and agent configuration
 
 The protocol preserves portability. The app adds workflow efficiency, safety checks, and explicit concurrency boundaries.
 
-### Agent adapters
+### Agent execution
 
-Iris runs agent commands that are already installed and authenticated on your machine. Default entries include Claude Code, Codex, Gemini, and a plain terminal; the list and command lines are editable.
+By default, Iris runs agent commands that are already installed and authenticated on your machine. Default entries include Claude Code, Codex, Gemini, and a plain terminal; the list and command lines are editable.
+
+`0.1.0-beta.10` also includes an experimental Iris Agent that is disabled by default. Once enabled, you can configure a model provider and open an embedded session from the current document or workspace. It is still very early, intended for testing and feedback rather than as a stable replacement for external agent CLIs.
 
 A document session receives:
 
@@ -263,7 +266,7 @@ The installer and portable build share machine-level settings under `~/.iris/`. 
 
 1. Launch Iris and choose **Open Project Folder**.
 2. If the project has no `.iris/`, review and confirm **Initialize Iris Protocol**.
-3. Open **Settings > Agents** and configure the CLI commands you use.
+3. Open **Settings > Agents** and configure the CLI commands you use; optionally enable the early embedded agent under **Settings > Iris Agent**.
 4. Optionally install the SessionStart hook for zero-turn focus injection.
 5. Create an issue or select an existing document in the lens tree.
 6. Use the right-pane launcher to open an agent under that document.
@@ -275,7 +278,7 @@ Initialization creates the four typed directories and adds or refreshes an Iris-
 
 These are current product boundaries, not hidden roadmap promises:
 
-- No embedded model, model SDK, API key, or model subscription
+- No Iris-hosted model, model account, or model subscription; users still manage external CLIs and optional Iris Agent provider configuration
 - No account, cloud database, hosted sync, permission system, or telemetry
 - No headless agent dispatch or autonomous orchestration queue
 - No parsing of agent terminal output as business state
@@ -347,9 +350,9 @@ Key technologies include Electron, TypeScript, React 18, Tailwind CSS, Radix UI,
 
 ## Current Status
 
-Iris is beta software developed through daily dogfooding on its own repository. `0.1.0-beta.8` consolidates the filesystem protocol, project scoping, document workflow, terminal state recovery, and local Git fundamentals into the stabilization baseline for the current desktop application.
+Iris is beta software developed through daily dogfooding on its own repository. The filesystem protocol, project scoping, document workflow, terminal state recovery, and local Git fundamentals now form a usable desktop workflow.
 
-From this release onward, `main` enters maintenance-focused development: bug fixes, reliability, compatibility, and necessary small experience improvements, rather than large-scale product restructuring. Embedded-agent exploration based on Pi or another future coding-agent runtime, potentially including a DeepSeek Code option, will proceed on a separate development branch. The runtime choice will depend on maturity and maintainability. The current `beta.7` release still coordinates external agent CLIs that users install and authenticate themselves; it does not embed a model or agent runtime.
+`0.1.0-beta.10` introduces an optional Iris Agent experiment. It remains very early and disabled by default; the mature workflow in this release is still the combination of `.iris/` documents, external agent CLIs, terminals, and Git.
 
 Bug reports and focused design discussions are welcome through [GitHub Issues](https://github.com/Liyue-Cheng/iris/issues).
 
@@ -357,7 +360,7 @@ Bug reports and focused design discussions are welcome through [GitHub Issues](h
 
 - Project artifacts remain in the project repository as ordinary files.
 - Machine settings are stored locally under `~/.iris/` (`~/.iris-dev/` for development builds).
-- Agent authentication and billing remain with each agent CLI.
+- External agent authentication and billing remain with each CLI; API keys for the optional Iris Agent are stored in local Iris user data.
 - Iris does not send telemetry.
 - External links open in the system browser only for allowed web and mail protocols.
 - Local document and asset operations validate paths against the active project boundary. Symlink and junction hardening remains a beta limitation; do not place `.iris/` or typed folders behind links to locations outside the project.
