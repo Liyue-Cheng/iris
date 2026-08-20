@@ -99,6 +99,8 @@ export interface Settings {
   experimental: {
     /** Embedded Iris Agent is still under development and opt-in. */
     irisAgent: boolean;
+    /** Last Iris Agent model the user selected; used as the default for new sessions. */
+    irisAgentDefaultModel: IrisAgentModelRef | null;
   };
   /**
    * Agent CLIs offered by the "open with X" gesture. The shell is dumb:

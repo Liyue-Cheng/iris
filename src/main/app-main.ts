@@ -135,6 +135,7 @@ function createWindowContext(win: BrowserWindow, initialRoot: string | null): Wi
   const agentSessionManager = new IrisAgentSessionManager(app.getPath('userData'), projectManager, {
     appVersion: app.getVersion(),
     providerProfileRoot: appDataDir(),
+    settingsManager,
     resolveProxy: (url) => electronSession.defaultSession.resolveProxy(url),
   });
   let ctx: WindowContext;

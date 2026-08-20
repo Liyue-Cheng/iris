@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import type { ProjectManager } from '../project-manager';
+import type { SettingsManager } from '../settings-manager';
 import { assembleAgentPrompt } from './prompt';
 import { AgentWorkerHost } from './worker-host';
 import { irisPiAgentDir, loadIrisModelCatalog, resolveIrisModelBaseUrl } from './pi-adapter';
@@ -70,6 +71,8 @@ export interface IrisAgentSessionManagerOptions {
   appVersion?: string;
   modelCatalogLoader?: () => Promise<IrisAgentModelCatalog>;
   providerProfileRoot?: string;
+  /** Machine-level settings store; persists the user's last selected model. */
+  settingsManager?: SettingsManager;
   resolveProxy?: (url: string) => Promise<string>;
   toolExecutor?: (
     input: AgentToolOperationInput,
@@ -119,7 +122,8 @@ export class IrisAgentSessionManager extends EventEmitter {
     const store = await this.ensureStore(input.scope.root);
     await this.verifyAnchor(input.anchor);
     const catalog = await this.loadModelCatalog();
-    const selected = catalog.models[0];
+    const preferred = this.options.settingsManager?.get().experimental.irisAgentDefaultModel ?? null;
+    const selected = catalog.models.find((candidate) => sameModel(preferred, candidate)) ?? catalog.models[0];
     const aggregate = createEmptyAgentSession({
       id: randomUUID(),
       anchor: input.anchor,
@@ -153,6 +157,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       if (!catalog.models.some((candidate) => sameModel(model, candidate))) {
         throw new Error(`Iris Agent model is unavailable: ${model.provider}/${model.modelId}`);
       }
+      this.options.settingsManager?.update({ experimental: { irisAgentDefaultModel: { ...model } } });
       if (sameModel(session.model, model)) return projectAgentSession(session, scope.generation);
       await this.shutdownHost(sessionId);
       const latest = await this.requireSession(scope, sessionId);

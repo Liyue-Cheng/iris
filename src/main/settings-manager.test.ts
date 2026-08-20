@@ -102,6 +102,22 @@ describe('experimental feature settings', () => {
 
     expect(() => validateSettings(invalid)).toThrow(/experimental\.irisAgent must be a boolean/);
   });
+
+  it('accepts a valid remembered Iris Agent default model and rejects malformed ones', () => {
+    const valid = structuredClone(DEFAULT_SETTINGS);
+    valid.experimental.irisAgentDefaultModel = { provider: 'openai', modelId: 'gpt-5' };
+    expect(() => validateSettings(valid)).not.toThrow();
+
+    const missingModelId = structuredClone(DEFAULT_SETTINGS);
+    missingModelId.experimental.irisAgentDefaultModel = {
+      provider: 'openai',
+    } as Settings['experimental']['irisAgentDefaultModel'];
+    expect(() => validateSettings(missingModelId)).toThrow(/irisAgentDefaultModel/);
+
+    const emptyProvider = structuredClone(DEFAULT_SETTINGS);
+    emptyProvider.experimental.irisAgentDefaultModel = { provider: '', modelId: 'gpt-5' };
+    expect(() => validateSettings(emptyProvider)).toThrow(/irisAgentDefaultModel/);
+  });
 });
 
 describe('recent project settings', () => {

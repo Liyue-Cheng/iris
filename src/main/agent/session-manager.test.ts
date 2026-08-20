@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   IRIS_AGENT_PROTOCOL_VERSION,
@@ -8,7 +9,8 @@ import {
 } from '@shared/agent-protocol';
 import type { IrisAgentModelCatalog, ProjectScope } from '@shared/types';
 import type { ProjectManager } from '../project-manager';
-import { createTempDataDir, removeTempDataDir } from '../persistence';
+import { createTempDataDir, JsonStore, removeTempDataDir } from '../persistence';
+import { SettingsManager } from '../settings-manager';
 import type { AgentWorkerPort } from './worker-host';
 import type { IrisAgentToolHostResult } from './tool-host';
 import { IrisAgentSessionManager, parseElectronProxyRules } from './session-manager';
@@ -725,6 +727,105 @@ describe('IrisAgentSessionManager v2 timeline', () => {
     } finally {
       await firstManager.shutdown();
       await secondManager?.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+});
+
+describe('Iris Agent remembered default model', () => {
+  const multiModelCatalog: IrisAgentModelCatalog = {
+    models: [
+      {
+        provider: 'openai', modelId: 'gpt-test', name: 'GPT Test',
+        api: 'openai-responses', reasoning: true,
+      },
+      {
+        provider: 'anthropic', modelId: 'claude-test', name: 'Claude Test',
+        api: 'anthropic-messages', reasoning: false,
+      },
+    ],
+  };
+
+  function settingsManager(root: string): SettingsManager {
+    return new SettingsManager(new JsonStore(join(root, 'settings.json'), 0));
+  }
+
+  it('uses the remembered default model for new sessions', async () => {
+    const userData = await createTempDataDir('iris-agent-manager-default-model-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const settings = settingsManager(userData);
+    settings.update({
+      experimental: { irisAgentDefaultModel: { provider: 'anthropic', modelId: 'claude-test' } },
+    });
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      settingsManager: settings,
+      modelCatalogLoader: async () => multiModelCatalog,
+    });
+    try {
+      const created = await manager.createSession({
+        scope,
+        anchor: { kind: 'document', path: '.iris/issue/task.md' },
+      });
+      expect(created.model).toEqual({ provider: 'anthropic', modelId: 'claude-test' });
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('remembers the model chosen via setModel for later sessions', async () => {
+    const userData = await createTempDataDir('iris-agent-manager-set-model-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const settings = settingsManager(userData);
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      settingsManager: settings,
+      modelCatalogLoader: async () => multiModelCatalog,
+    });
+    try {
+      const created = await manager.createSession({
+        scope,
+        anchor: { kind: 'document', path: '.iris/issue/task.md' },
+      });
+      expect(created.model).toEqual({ provider: 'openai', modelId: 'gpt-test' });
+      await manager.setModel(
+        scope,
+        created.id,
+        { provider: 'anthropic', modelId: 'claude-test' },
+        { expectedRevision: created.revision },
+      );
+      expect(settings.get().experimental.irisAgentDefaultModel).toEqual({
+        provider: 'anthropic', modelId: 'claude-test',
+      });
+      const second = await manager.createSession({
+        scope,
+        anchor: { kind: 'document', path: '.iris/issue/other.md' },
+      });
+      expect(second.model).toEqual({ provider: 'anthropic', modelId: 'claude-test' });
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('falls back to the first catalog model when the remembered default is unavailable', async () => {
+    const userData = await createTempDataDir('iris-agent-manager-stale-model-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const settings = settingsManager(userData);
+    settings.update({
+      experimental: { irisAgentDefaultModel: { provider: 'stale', modelId: 'gone' } },
+    });
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      settingsManager: settings,
+      modelCatalogLoader: async () => multiModelCatalog,
+    });
+    try {
+      const created = await manager.createSession({
+        scope,
+        anchor: { kind: 'workspace', path: '.iris' },
+      });
+      expect(created.model).toEqual({ provider: 'openai', modelId: 'gpt-test' });
+    } finally {
+      await manager.shutdown();
       await removeTempDataDir(userData);
     }
   });

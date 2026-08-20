@@ -85,6 +85,7 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   experimental: {
     irisAgent: false,
+    irisAgentDefaultModel: null,
   },
   agents: AGENT_PRESETS.filter((preset) =>
     ['claude', 'codex', 'gemini', 'shell'].includes(preset.id),
@@ -487,6 +488,22 @@ export function validateSettings(s: Settings): void {
   }
   if (typeof s.experimental.irisAgent !== 'boolean') {
     throw new SettingsError('InvalidSettings', 'experimental.irisAgent must be a boolean');
+  }
+  const defaultModel = s.experimental.irisAgentDefaultModel;
+  if (
+    defaultModel !== null &&
+    (!defaultModel ||
+      typeof defaultModel !== 'object' ||
+      Array.isArray(defaultModel) ||
+      typeof defaultModel.provider !== 'string' ||
+      !defaultModel.provider ||
+      typeof defaultModel.modelId !== 'string' ||
+      !defaultModel.modelId)
+  ) {
+    throw new SettingsError(
+      'InvalidSettings',
+      'experimental.irisAgentDefaultModel must be null or { provider, modelId }',
+    );
   }
   if (!Array.isArray(s.agents) || s.agents.length === 0) {
     throw new SettingsError('InvalidSettings', 'agents must be a non-empty array');
