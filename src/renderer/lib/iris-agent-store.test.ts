@@ -38,6 +38,7 @@ function session(id: string, path: string): IrisAgentSessionInfo {
     revision: id === 'a' ? 1 : 2,
     currentTurnId: null,
     turns: [],
+    terminals: [],
     canUndoLatestTurn: false,
     selfHostingEligible: false,
   };

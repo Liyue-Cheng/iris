@@ -1,9 +1,11 @@
 import { existsSync } from 'node:fs';
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { spawn, type IDisposable, type IPty } from 'node-pty';
 import type { AgentCommandShell } from '@shared/agent-protocol';
 import { buildSpawnEnv } from '../pty-utils';
+import { TerminalMirror } from '../terminal/terminal-mirror';
 
 export interface AgentCommandPtyResult {
   terminalId: string;
@@ -13,6 +15,8 @@ export interface AgentCommandPtyResult {
   outputBytes: number;
   finalCursor: number;
   shown: boolean;
+  plainText: string;
+  outputTruncated: boolean;
 }
 
 export interface AgentCommandPtyEvent {
@@ -44,6 +48,8 @@ export class AgentCommandPty {
   private readonly pty: IPty;
   private readonly disposables: IDisposable[] = [];
   private readonly displayTimer: ReturnType<typeof setTimeout>;
+  private readonly mirror = new TerminalMirror(80, 24, 5000);
+  private readonly outputDecoder = new StringDecoder('utf8');
   private outputChain = Promise.resolve();
   private cursor = 0;
   private shown = false;
@@ -86,10 +92,39 @@ export class AgentCommandPty {
     if (!this.settled) this.pty.kill();
   }
 
+  dispose(): void {
+    if (this.settled) this.mirror.dispose();
+  }
+
+  write(data: string): void {
+    if (!this.settled) this.pty.write(data);
+  }
+
+  resize(cols: number, rows: number): void {
+    if (this.settled || cols < 20 || rows < 5) return;
+    this.pty.resize(cols, rows);
+    this.mirror.resize(cols, rows);
+  }
+
+  async replay(): Promise<{ data: string; cursor: number }> {
+    await this.mirror.fence(250, () => undefined);
+    return {
+      data: Buffer.from(this.mirror.serialize(5000), 'utf8').toString('base64'),
+      cursor: this.cursor,
+    };
+  }
+
+  async observation(): Promise<{ cursor: number; text: string; running: boolean }> {
+    await this.mirror.fence(250, () => undefined);
+    return { cursor: this.cursor, text: this.mirror.plainText(5000), running: !this.settled };
+  }
+
   private acceptOutput(bytes: Buffer): void {
     if (this.settled) return;
     const startCursor = this.cursor;
     this.cursor += bytes.length;
+    const plainChunk = this.outputDecoder.write(bytes);
+    if (plainChunk) this.mirror.write(plainChunk);
     const store = this.options.outputStore ?? fileOutputStore;
     this.outputChain = this.outputChain.then(() => store.append(this.options.outputPath, bytes));
     this.options.onEvent?.({
@@ -113,6 +148,9 @@ export class AgentCommandPty {
     for (const disposable of this.disposables) disposable.dispose();
     try {
       await this.outputChain;
+      const finalChunk = this.outputDecoder.end();
+      if (finalChunk) this.mirror.write(finalChunk);
+      await this.mirror.fence(250, () => undefined);
     } catch (error) {
       this.rejectResult(error instanceof Error ? error : new Error(String(error)));
       return;
@@ -125,6 +163,8 @@ export class AgentCommandPty {
       outputBytes: this.cursor,
       finalCursor: this.cursor,
       shown: this.shown,
+      plainText: this.mirror.plainText(5000),
+      outputTruncated: false,
     };
     this.options.onEvent?.({ type: 'completed', terminalId: this.options.terminalId, result });
     this.resolveResult(result);
@@ -140,7 +180,7 @@ export function commandShell(
   if (resolvedShell.kind === 'powershell') {
     return {
       file: resolvedShell.executable,
-      args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command],
+      args: ['-NoLogo', '-NoProfile', '-Command', command],
     };
   }
   return { file: resolvedShell.executable, args: ['-lc', command] };

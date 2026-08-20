@@ -101,6 +101,17 @@ export class TerminalMirror {
     return ansi;
   }
 
+  plainText(scrollback: number): string {
+    const buffer = this.terminal.buffer.active;
+    const start = Math.max(0, buffer.length - Math.max(this.terminal.rows, scrollback));
+    const lines: string[] = [];
+    for (let index = start; index < buffer.length; index += 1) {
+      lines.push(buffer.getLine(index)?.translateToString(true) ?? '');
+    }
+    while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+    return lines.join('\n');
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;

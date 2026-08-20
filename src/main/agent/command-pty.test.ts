@@ -37,7 +37,8 @@ function fakePty() {
   } satisfies IPty;
   return {
     pty,
-    data: (value: string) => (dataListener as ((data: string) => void) | null)?.(value),
+    data: (value: string | Buffer) =>
+      (dataListener as unknown as ((data: string | Buffer) => void) | null)?.(value),
     exit: (exitCode: number) =>
       (exitListener as ((event: { exitCode: number }) => void) | null)?.({ exitCode }),
   };
@@ -72,6 +73,7 @@ describe('AgentCommandPty', () => {
     fake.exit(0);
     expect(events.filter((event) => event.type === 'completed')).toHaveLength(0);
     release();
+    await vi.advanceTimersByTimeAsync(250);
     const result = await command.result;
     expect(result).toMatchObject({ outputBytes: 2, finalCursor: 2, shown: false });
     expect(stored).toEqual(['ok']);
@@ -81,29 +83,33 @@ describe('AgentCommandPty', () => {
 
   it('shows a still-running command once at the threshold and retains monotonic cursors', async () => {
     vi.useFakeTimers();
-    const fake = fakePty();
-    const events: AgentCommandPtyEvent[] = [];
-    const command = new AgentCommandPty({
-      terminalId: 'terminal-2',
-      command: 'long',
-      cwd: process.cwd(),
-      outputPath: 'output.bin',
-      spawnFn: () => fake.pty,
-      outputStore: { append: async () => {} },
-      onEvent: (event) => events.push(event),
-    });
-    fake.data('one');
-    fake.data('two');
-    vi.advanceTimersByTime(3_000);
-    vi.advanceTimersByTime(3_000);
-    fake.exit(7);
-    const result = await command.result;
-    expect(events.filter((event) => event.type === 'shown')).toHaveLength(1);
-    expect(events.filter((event) => event.type === 'output').map((event) => event.cursor)).toEqual([
-      0, 3,
-    ]);
-    expect(result).toMatchObject({ exitCode: 7, finalCursor: 6, shown: true });
-    vi.useRealTimers();
+    try {
+      const fake = fakePty();
+      const events: AgentCommandPtyEvent[] = [];
+      const command = new AgentCommandPty({
+        terminalId: 'terminal-2',
+        command: 'long',
+        cwd: process.cwd(),
+        outputPath: 'output.bin',
+        spawnFn: () => fake.pty,
+        outputStore: { append: async () => {} },
+        onEvent: (event) => events.push(event),
+      });
+      fake.data('one');
+      fake.data('two');
+      vi.advanceTimersByTime(3_000);
+      vi.advanceTimersByTime(3_000);
+      fake.exit(7);
+      await vi.advanceTimersByTimeAsync(250);
+      const result = await command.result;
+      expect(events.filter((event) => event.type === 'shown')).toHaveLength(1);
+      expect(events.filter((event) => event.type === 'output').map((event) => event.cursor)).toEqual([
+        0, 3,
+      ]);
+      expect(result).toMatchObject({ exitCode: 7, finalCursor: 6, shown: true });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('rejects instead of hanging when full-output persistence fails', async () => {
@@ -121,6 +127,40 @@ describe('AgentCommandPty', () => {
     await expect(command.result).rejects.toThrow('disk full');
   });
 
+  it('only kills the PTY when explicitly aborted', async () => {
+    const fake = fakePty();
+    const command = new AgentCommandPty({
+      terminalId: 'terminal-abort',
+      command: 'long',
+      cwd: process.cwd(),
+      outputPath: 'output.bin',
+      spawnFn: () => fake.pty,
+      outputStore: { append: async () => {} },
+    });
+    command.abort();
+    expect(fake.pty.kill).toHaveBeenCalledOnce();
+    fake.exit(130);
+    await expect(command.result).resolves.toMatchObject({ exitCode: 130 });
+  });
+
+  it('decodes UTF-8 text across raw PTY chunk boundaries', async () => {
+    const fake = fakePty();
+    const command = new AgentCommandPty({
+      terminalId: 'terminal-utf8',
+      command: 'unicode',
+      cwd: process.cwd(),
+      outputPath: 'output.bin',
+      spawnFn: () => fake.pty,
+      outputStore: { append: async () => {} },
+    });
+    const bytes = Buffer.from('你好', 'utf8');
+    fake.data(bytes.subarray(0, 2));
+    fake.data(bytes.subarray(2, 4));
+    fake.data(bytes.subarray(4));
+    fake.exit(0);
+    await expect(command.result).resolves.toMatchObject({ plainText: '你好' });
+  });
+
   it('uses a one-shot non-interactive shell command', () => {
     expect(commandShell('echo ok', { SHELL: '/bin/zsh' }, 'linux')).toEqual({
       file: '/bin/zsh',
@@ -128,7 +168,7 @@ describe('AgentCommandPty', () => {
     });
     expect(commandShell('echo ok', { PATH: '' }, 'win32')).toEqual({
       file: 'powershell.exe',
-      args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'echo ok'],
+      args: ['-NoLogo', '-NoProfile', '-Command', 'echo ok'],
     });
   });
 

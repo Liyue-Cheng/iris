@@ -21,4 +21,14 @@ describe('TerminalMirror', () => {
     expect(mirror.activeBufferType).toBe('alternate');
     mirror.dispose();
   });
+
+  it('projects readable text without leaking ANSI and OSC control sequences', async () => {
+    const mirror = new TerminalMirror(40, 5, 100);
+    mirror.write('\x1b]0;secret title\x07\x1b[31mfailed\x1b[0m\r\nnext');
+    await mirror.fence(100, () => undefined);
+    expect(mirror.plainText(100)).toContain('failed\nnext');
+    expect(mirror.plainText(100)).not.toContain('\x1b');
+    expect(mirror.plainText(100)).not.toContain('secret title');
+    mirror.dispose();
+  });
 });

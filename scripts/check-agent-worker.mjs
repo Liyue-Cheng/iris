@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 const require = createRequire(import.meta.url);
 const electronPath = require('electron');
 const workerPath = resolve('out/main/agent-worker.js');
-const protocolVersion = 11;
+const protocolVersion = 12;
 const model = { provider: 'openai', modelId: 'gpt-5.2' };
 const commandShell = process.platform === 'win32'
   ? { kind: 'powershell', executable: 'powershell.exe', displayName: 'Windows PowerShell' }

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   AlertTriangle,
   Bot,
@@ -16,7 +16,9 @@ import {
   Square,
   SquareTerminal,
   Undo2,
+  X,
 } from 'lucide-react';
+import '@xterm/xterm/css/xterm.css';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type {
@@ -25,6 +27,8 @@ import type {
   IrisAgentModelOption,
   IrisAgentSessionInfo,
   IrisAgentUserView,
+  IrisAgentTerminalOutputPayload,
+  IrisAgentTerminalView,
 } from '@shared/types';
 import { EVENTS } from '@shared/protocol';
 import { Button } from '@renderer/components/ui/button';
@@ -37,7 +41,13 @@ import {
   sendIrisAgentMessage,
   setIrisAgentModel,
   stopIrisAgent,
+  replayIrisAgentTerminal,
+  resizeIrisAgentTerminal,
+  writeIrisAgentTerminal,
+  continueIrisAgentTerminalSupervision,
 } from '@renderer/lib/iris-agent-actions';
+import { BrowserXtermAdapter } from '@renderer/terminal/xterm-adapter';
+import { getSettings } from '@renderer/stores/settings-store';
 
 export function IrisAgentView({
   session,
@@ -49,32 +59,56 @@ export function IrisAgentView({
   const [draft, setDraft] = useState('');
   const [models, setModels] = useState<IrisAgentModelOption[]>([]);
   const [modelError, setModelError] = useState<string | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(null);
+  const [hiddenTerminalIds, setHiddenTerminalIds] = useState<Set<string>>(() => new Set());
+  const knownTerminalIds = useRef(new Set(session.terminals.map((terminal) => terminal.id)));
+  const modelRequest = useRef(0);
+  const autoSelectingModel = useRef<string | null>(null);
   const running = isSessionRunning(session);
   const statusText = statusLabel(session.state);
+  const visibleTerminals = session.terminals.filter((terminal) =>
+    !hiddenTerminalIds.has(terminal.id) &&
+    (terminal.revealed || terminal.id === selectedTerminalId));
+  const selectedTerminal = visibleTerminals.find((terminal) => terminal.id === selectedTerminalId) ?? null;
 
   useEffect(() => {
-    let current = true;
-    const refresh = (): void => {
-      listIrisAgentModels().then(
-        (catalog) => {
-          if (!current) return;
-          setModels(catalog.models);
-          setModelError(catalog.error ?? null);
-        },
-        (error: unknown) => {
-          if (!current) return;
-          setModels([]);
-          setModelError(error instanceof Error ? error.message : String(error));
-        },
-      ).catch(() => undefined);
-    };
-    const unsubscribe = window.api.on(EVENTS.IRIS_AGENT_PROVIDERS_CHANGED, refresh);
-    refresh();
+    const added = session.terminals.find((terminal) => !knownTerminalIds.current.has(terminal.id));
+    for (const terminal of session.terminals) knownTerminalIds.current.add(terminal.id);
+    if (added?.revealed) {
+      setHiddenTerminalIds((current) => {
+        const next = new Set(current);
+        next.delete(added.id);
+        return next;
+      });
+      setSelectedTerminalId(added.id);
+    }
+  }, [session.terminals]);
+
+  const refreshModels = useCallback((forceRefresh = false): void => {
+    const request = ++modelRequest.current;
+    setModelsLoading(true);
+    void listIrisAgentModels(forceRefresh).then((catalog) => {
+      if (modelRequest.current !== request) return;
+      setModels(catalog.models);
+      setModelError(catalog.error ?? null);
+    }).catch((error: unknown) => {
+        if (modelRequest.current !== request) return;
+        setModels([]);
+        setModelError(error instanceof Error ? error.message : String(error));
+    }).finally(() => {
+      if (modelRequest.current === request) setModelsLoading(false);
+    });
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = window.api.on(EVENTS.IRIS_AGENT_PROVIDERS_CHANGED, () => refreshModels(true));
+    refreshModels();
     return () => {
-      current = false;
+      modelRequest.current += 1;
       unsubscribe();
     };
-  }, []);
+  }, [refreshModels]);
 
   const selectedModelValue = session.model
     ? modelValue(session.model.provider, session.model.modelId)
@@ -85,6 +119,28 @@ export function IrisAgentView({
           model.provider === session.model?.provider && model.modelId === session.model.modelId,
       )
     : false;
+
+  useEffect(() => {
+    if (session.model && selectedModelAvailable) {
+      autoSelectingModel.current = null;
+      return;
+    }
+    // A fresh session may carry a remembered model whose provider is currently
+    // unavailable. Fall back only before the session has any conversation history.
+    if (session.model && session.turns.length > 0) return;
+    const first = models[0];
+    if (modelsLoading || !first) return;
+    const key = modelValue(first.provider, first.modelId);
+    if (autoSelectingModel.current === key) return;
+    autoSelectingModel.current = key;
+    void setIrisAgentModel(session.id, {
+      provider: first.provider,
+      modelId: first.modelId,
+    }).catch((error: unknown) => {
+      autoSelectingModel.current = null;
+      setModelError(error instanceof Error ? error.message : String(error));
+    });
+  }, [models, modelsLoading, selectedModelAvailable, session.id, session.model, session.turns.length]);
   const openContext = (turnId: string): void => {
     openIrisAgentContext(session.id, turnId).catch(() => undefined);
   };
@@ -130,7 +186,11 @@ export function IrisAgentView({
         >
           {!session.model && (
             <option value="" disabled>
-              {modelError ? '模型不可用' : '选择模型'}
+              {modelsLoading
+                ? '正在加载模型…'
+                : modelError && models.length === 0
+                  ? '模型加载失败'
+                  : '选择模型'}
             </option>
           )}
           {session.model && !selectedModelAvailable && (
@@ -160,6 +220,119 @@ export function IrisAgentView({
           </Button>
         )}
       </div>
+
+      {modelError && (
+        <div className="flex shrink-0 items-start gap-2 border-b border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+          <div className="min-w-0 flex-1">
+            <div className="font-medium">
+              {models.length > 0 ? '部分供应商模型加载失败' : '模型加载失败'}
+            </div>
+            <div className="mt-0.5 max-h-20 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">
+              {modelError}
+            </div>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            disabled={modelsLoading}
+            title="重新加载模型"
+            aria-label="重新加载模型"
+            onClick={() => refreshModels(true)}
+          >
+            <RotateCcw className={`!size-3.5 ${modelsLoading ? 'animate-spin' : ''}`} />
+          </Button>
+        </div>
+      )}
+
+      {visibleTerminals.length > 0 && (
+        <div className="flex h-9 shrink-0 items-end gap-0.5 overflow-x-auto border-b bg-muted/30 px-2 pt-1">
+          <button
+            type="button"
+            className={`h-8 shrink-0 border-b-2 px-3 text-xs ${selectedTerminal ? 'border-transparent text-muted-foreground' : 'border-primary text-foreground'}`}
+            onClick={() => setSelectedTerminalId(null)}
+          >
+            Agent
+          </button>
+          {visibleTerminals.map((terminal) => (
+            <button
+              key={terminal.id}
+              type="button"
+              className={`flex h-8 max-w-48 shrink-0 items-center gap-1.5 border-b-2 px-2 text-xs ${selectedTerminal?.id === terminal.id ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground'}`}
+              onClick={() => setSelectedTerminalId(terminal.id)}
+            >
+              <SquareTerminal className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">{terminalTitle(terminal)}</span>
+              {terminal.state === 'exited' && (
+                <span
+                  role="button"
+                  tabIndex={0}
+                  title="关闭终端工作面"
+                  aria-label="关闭终端工作面"
+                  className="ml-0.5 rounded p-0.5 hover:bg-muted"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setHiddenTerminalIds((current) => new Set(current).add(terminal.id));
+                    if (selectedTerminalId === terminal.id) setSelectedTerminalId(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setHiddenTerminalIds((current) => new Set(current).add(terminal.id));
+                    if (selectedTerminalId === terminal.id) setSelectedTerminalId(null);
+                  }}
+                >
+                  <X className="h-3 w-3" />
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {session.supervisionAlert && (
+        <div className="shrink-0 border-b border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+            <div className="min-w-0 flex-1">
+              <div className="font-medium">终端输出可能异常，进程仍在运行</div>
+              <div className="mt-0.5 whitespace-pre-wrap break-words text-muted-foreground">
+                {session.supervisionAlert.evidence}
+              </div>
+              <div className="mt-2 flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 bg-background"
+                  onClick={() => void continueIrisAgentTerminalSupervision(
+                    session.id, session.supervisionAlert!.terminalId,
+                  ).catch(() => undefined)}
+                >
+                  继续观察
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  className="h-7"
+                  onClick={() => void stopIrisAgent(session.id)}
+                >
+                  终止命令
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedTerminal ? (
+        <AgentTerminalPane sessionId={session.id} terminal={selectedTerminal} />
+      ) : (
+        <>
 
       {session.pause && (
         <div className="flex shrink-0 items-start gap-2 border-b border-amber-500/30 bg-amber-500/8 px-3 py-2 text-xs">
@@ -207,6 +380,14 @@ export function IrisAgentView({
                       card={card}
                       canRetry={false}
                       onRetry={() => undefined}
+                      onOpenTerminal={(terminalId) => {
+                        setHiddenTerminalIds((current) => {
+                          const next = new Set(current);
+                          next.delete(terminalId);
+                          return next;
+                        });
+                        setSelectedTerminalId(terminalId);
+                      }}
                     />
                   ))}
                   {turn.canFork && (
@@ -272,26 +453,124 @@ export function IrisAgentView({
           </Button>
         </div>
       </form>
+        </>
+      )}
     </div>
   );
+}
+
+function AgentTerminalPane({
+  sessionId,
+  terminal,
+}: {
+  sessionId: string;
+  terminal: IrisAgentTerminalView;
+}): JSX.Element {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const settings = getSettings();
+    const adapter = new BrowserXtermAdapter({
+      fontFamily: settings?.appearance.terminalFontFamily ?? "'Cascadia Mono', 'Consolas', monospace",
+      fontSize: settings?.appearance.terminalFontSize ?? 13,
+      lineHeight: settings?.appearance.terminalLineHeight ?? 1.2,
+      themeId: settings?.appearance.theme,
+      renderer: settings?.advanced.terminalRenderer ?? 'auto',
+      windowsBuild: window.api.windowsBuild,
+      openLink: () => undefined,
+    });
+    adapter.open(host);
+    const term = adapter.terminal;
+    adapter.fit.fit();
+    let disposed = false;
+    let replayed = false;
+    let replayCursor = 0;
+    const queued: IrisAgentTerminalOutputPayload[] = [];
+    const unsubscribe = window.api.on<IrisAgentTerminalOutputPayload>(
+      EVENTS.IRIS_AGENT_TERMINAL_OUTPUT,
+      (payload) => {
+        if (payload.sessionId !== sessionId || payload.terminalId !== terminal.id) return;
+        if (!replayed) {
+          queued.push(payload);
+          return;
+        }
+        if (payload.cursor >= replayCursor) term.write(decodeBase64(payload.data));
+      },
+    );
+    const dataDisposable = term.onData((data) => {
+      void writeIrisAgentTerminal(sessionId, terminal.id, data).catch(() => undefined);
+    });
+    const resizeDisposable = term.onResize(({ cols, rows }) => {
+      if (cols < 20 || rows < 5) return;
+      void resizeIrisAgentTerminal(sessionId, terminal.id, cols, rows).catch(() => undefined);
+    });
+    const observer = new ResizeObserver(() => adapter.fit.fit());
+    observer.observe(host);
+    void replayIrisAgentTerminal(sessionId, terminal.id, term.cols, term.rows).then((snapshot) => {
+      if (disposed) return;
+      replayCursor = snapshot.cursor;
+      term.write(decodeBase64(snapshot.data), () => {
+        if (disposed) return;
+        replayed = true;
+        for (const payload of queued) {
+          if (payload.cursor >= replayCursor) term.write(decodeBase64(payload.data));
+        }
+        queued.length = 0;
+        term.scrollToBottom();
+        term.focus();
+      });
+    }).catch((error: unknown) => {
+      if (!disposed) term.writeln(`\r\nUnable to replay terminal: ${error instanceof Error ? error.message : String(error)}`);
+      replayed = true;
+      replayCursor = 0;
+      for (const payload of queued) term.write(decodeBase64(payload.data));
+      queued.length = 0;
+    });
+    return () => {
+      disposed = true;
+      observer.disconnect();
+      unsubscribe();
+      dataDisposable.dispose();
+      resizeDisposable.dispose();
+      adapter.dispose();
+    };
+  }, [sessionId, terminal.id]);
+
+  return <div ref={hostRef} className="min-h-0 flex-1 bg-black p-1" />;
+}
+
+function decodeBase64(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function terminalTitle(terminal: IrisAgentTerminalView): string {
+  const first = terminal.command.trim().split(/\s+/u)[0] ?? 'Terminal';
+  return `${first}${terminal.state === 'running' ? ' · 运行中' : ''}`;
 }
 
 function AgentActivityCard({
   card,
   canRetry,
   onRetry,
+  onOpenTerminal,
 }: {
   card: IrisAgentCardView;
   canRetry: boolean;
   onRetry: () => void;
+  onOpenTerminal: (terminalId: string) => void;
 }): JSX.Element {
   switch (card.kind) {
     case 'local-retrieval':
-      return <LocalRetrievalCard card={card} />;
+      return <LocalRetrievalCard card={card} onOpenTerminal={onOpenTerminal} />;
     case 'file-change':
       return <FileChangeCard card={card} />;
     case 'terminal-operation':
-      return <TerminalOperationCard card={card} />;
+      return <TerminalOperationCard card={card} onOpenTerminal={onOpenTerminal} />;
     case 'agent-reply':
       return <AgentReplyCard card={card} canRetry={canRetry} onRetry={onRetry} />;
   }
@@ -299,8 +578,10 @@ function AgentActivityCard({
 
 function LocalRetrievalCard({
   card,
+  onOpenTerminal,
 }: {
   card: Extract<IrisAgentCardView, { kind: 'local-retrieval' }>;
+  onOpenTerminal: (terminalId: string) => void;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const files = card.items.filter((item) => item.kind === 'file').length;
@@ -346,13 +627,32 @@ function LocalRetrievalCard({
                 : <SquareTerminal className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
               <div className="min-w-0 flex-1">
                 <div className="break-all font-mono text-[11px] text-foreground/90">{item.label}</div>
-                {(item.detail || item.path) && (
-                  <div className="mt-0.5 break-all text-[11px] text-muted-foreground">
-                    {[item.path, item.detail].filter(Boolean).join(' · ')}
-                  </div>
-                )}
-                {item.error && (
-                  <div className="mt-1 whitespace-pre-wrap break-words text-destructive">{item.error}</div>
+                <div className={`mt-0.5 flex items-center gap-1 text-[11px] ${item.state === 'failed' ? 'text-destructive' : 'text-muted-foreground'}`}>
+                  <RetrievalStateIcon state={item.state} />
+                  <span>{retrievalStateLabel(item.state)}</span>
+                </div>
+                {item.state === 'failed' && item.error && (
+                  <details className="mt-1 text-[11px] text-destructive">
+                    <summary className="cursor-pointer select-none">展开失败原因</summary>
+                    <div className="mt-1 whitespace-pre-wrap break-words">{item.error}</div>
+                    {item.errorDetail && (
+                      <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded border border-destructive/20 bg-background p-2 font-mono text-[10px] text-foreground">
+                        {item.errorDetail}
+                      </pre>
+                    )}
+                    {item.terminalId && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="mt-1 h-6 px-1.5 text-[11px]"
+                        onClick={() => onOpenTerminal(item.terminalId!)}
+                      >
+                        <SquareTerminal className="!size-3" />
+                        打开终端
+                      </Button>
+                    )}
+                  </details>
                 )}
               </div>
             </div>
@@ -426,8 +726,10 @@ function FileChangeCard({
 
 function TerminalOperationCard({
   card,
+  onOpenTerminal,
 }: {
   card: Extract<IrisAgentCardView, { kind: 'terminal-operation' }>;
+  onOpenTerminal: (terminalId: string) => void;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const multiline = card.command.split('\n').length > 6 || card.command.length > 420;
@@ -435,7 +737,7 @@ function TerminalOperationCard({
     <CardFrame
       icon={<SquareTerminal className="h-4 w-4" />}
       title="操作终端"
-      summary={`${card.cwd}${card.detail ? ` · ${card.detail}` : ''}`}
+      summary={cardStateLabel(card.state)}
       state={card.state}
       action={multiline ? (
         <Button
@@ -458,8 +760,29 @@ function TerminalOperationCard({
         {card.command}
       </pre>
       {card.error && (
-        <div className="border-t border-destructive/30 px-3 py-2 text-xs text-destructive">
-          {card.error}
+        <details className="border-t border-destructive/30 px-3 py-2 text-xs text-destructive">
+          <summary className="cursor-pointer select-none">展开失败原因</summary>
+          <div className="mt-1 whitespace-pre-wrap break-words">{card.error}</div>
+          {card.errorDetail && (
+            <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-destructive/20 bg-background p-2 font-mono text-[10px] text-foreground">
+              {card.errorDetail}
+            </pre>
+          )}
+        </details>
+      )}
+      {card.terminalId && (
+        <div className="flex justify-end border-t px-2 py-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6"
+            title="打开终端"
+            aria-label="打开终端"
+            onClick={() => onOpenTerminal(card.terminalId!)}
+          >
+            <SquareTerminal className="!size-3.5" />
+          </Button>
         </div>
       )}
     </CardFrame>
@@ -571,6 +894,31 @@ function CardStateIcon({ state }: { state: IrisAgentCardState }): JSX.Element {
     return <Square className="h-3 w-3 shrink-0 text-muted-foreground" aria-label="已停止" />;
   }
   return <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label={state === 'unchanged' ? '无变化' : '完成'} />;
+}
+
+function RetrievalStateIcon({
+  state,
+}: {
+  state: 'running' | 'completed' | 'failed' | 'canceled';
+}): JSX.Element {
+  if (state === 'running') return <LoaderCircle className="h-3 w-3 animate-spin" />;
+  if (state === 'failed') return <AlertTriangle className="h-3 w-3" />;
+  if (state === 'canceled') return <Square className="h-2.5 w-2.5" />;
+  return <Check className="h-3 w-3" />;
+}
+
+function retrievalStateLabel(state: 'running' | 'completed' | 'failed' | 'canceled'): string {
+  if (state === 'running') return '运行中';
+  if (state === 'failed') return '失败';
+  if (state === 'canceled') return '已停止';
+  return '成功';
+}
+
+function cardStateLabel(state: IrisAgentCardState): string {
+  if (state === 'running') return '运行中';
+  if (state === 'failed') return '失败';
+  if (state === 'stopped') return '已停止';
+  return '成功';
 }
 
 function UserMessage({

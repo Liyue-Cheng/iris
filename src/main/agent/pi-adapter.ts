@@ -36,6 +36,7 @@ import type {
 import { IRIS_AGENT_PROMPT } from './prompt';
 import {
   IRIS_AGENT_PROVIDER_TEMPLATES,
+  findIrisAgentProviderTemplate,
   loadStoredIrisAgentProviderProfiles,
   profileModelsConfig,
   profilesForRenderer,
@@ -46,7 +47,10 @@ export const IRIS_PI_VERSION = VERSION;
 export const IRIS_PI_TOOL_NAMES = ['read', 'edit', 'write', 'terminal'] as const;
 
 const irisToolCallContext = new AsyncLocalStorage<string>();
-const irisTerminalIntentContext = new AsyncLocalStorage<AgentTerminalIntent>();
+const irisTerminalContext = new AsyncLocalStorage<{
+  intent: AgentTerminalIntent;
+  successExitCodes: number[];
+}>();
 
 export function currentIrisProviderToolCallId(): string | undefined {
   return irisToolCallContext.getStore();
@@ -56,11 +60,11 @@ interface IrisTerminalOperations {
   exec: (
     command: string,
     intent: AgentTerminalIntent,
+    successExitCodes: number[],
     cwd: string,
     options: {
       onData: (data: Buffer) => void;
       signal?: AbortSignal;
-      timeout?: number;
       env?: NodeJS.ProcessEnv;
     },
   ) => Promise<{ exitCode: number | null }>;
@@ -110,9 +114,15 @@ export function createIrisPiToolDefinitions(
   const terminalBase = createBashToolDefinition(cwd, {
     operations: {
       exec: (command, commandCwd, options) => {
-        const intent = irisTerminalIntentContext.getStore();
-        if (!intent) throw new Error('Iris terminal intent context is missing.');
-        return operations.terminal.exec(command, intent, commandCwd, options);
+        const terminalContext = irisTerminalContext.getStore();
+        if (!terminalContext) throw new Error('Iris terminal context is missing.');
+        return operations.terminal.exec(
+          command,
+          terminalContext.intent,
+          terminalContext.successExitCodes,
+          commandCwd,
+          options,
+        );
       },
     },
     exposeSessionEnvironment: false,
@@ -125,7 +135,11 @@ export function createIrisPiToolDefinitions(
     ], {
       description: 'Use information only for read-only inspection; otherwise use operation.',
     }),
-    timeout: Type.Optional(Type.Number()),
+    successExitCodes: Type.Optional(Type.Array(Type.Integer(), {
+      description: 'Exit codes that count as success. Defaults to [0].',
+      minItems: 1,
+      uniqueItems: true,
+    })),
   });
   const { prepareArguments: _legacyPrepareArguments, ...terminalBaseDefinition } = terminalBase;
   const terminal = {
@@ -133,15 +147,15 @@ export function createIrisPiToolDefinitions(
     parameters: terminalParameters,
     execute: (
       toolCallId: string,
-      params: { command: string; intent: AgentTerminalIntent; timeout?: number },
+      params: { command: string; intent: AgentTerminalIntent; successExitCodes?: number[] },
       signal: AbortSignal | undefined,
       onUpdate: Parameters<typeof terminalBase.execute>[3],
       context: Parameters<typeof terminalBase.execute>[4],
-    ) => irisTerminalIntentContext.run(
-      params.intent,
+    ) => irisTerminalContext.run(
+      { intent: params.intent, successExitCodes: params.successExitCodes ?? [0] },
       () => terminalBase.execute(
         toolCallId,
-        { command: params.command, ...(params.timeout === undefined ? {} : { timeout: params.timeout }) },
+        { command: params.command },
         signal,
         onUpdate,
         context,
@@ -193,7 +207,13 @@ export async function loadIrisModelCatalog(
   profileRoot: string,
 ): Promise<IrisAgentModelCatalog> {
   try {
-    const runtime = await createIrisModelRuntime(agentDir, profileRoot);
+    const profileErrors: string[] = [];
+    const runtime = await createIrisModelRuntime(agentDir, profileRoot, {
+      kind: 'discover',
+      onError: (profileName, error) => {
+        profileErrors.push(`${profileName}: ${error instanceof Error ? error.message : String(error)}`);
+      },
+    });
     const profiles = await loadProviderProfiles(profileRoot);
     const profileNames = new Map(
       profiles.map((profile) => [runtimeProviderId(profile.id), profile.name]),
@@ -202,7 +222,8 @@ export async function loadIrisModelCatalog(
       .map((model) => toIrisModelOption(model, profileNames.get(model.provider)))
       .sort(compareModels);
     const runtimeError = runtime.getError();
-    return { models, ...(runtimeError ? { error: runtimeError } : {}) };
+    const errors = [runtimeError, ...profileErrors].filter((error): error is string => !!error);
+    return { models, ...(errors.length > 0 ? { error: errors.join('\n') } : {}) };
   } catch (error) {
     return {
       models: [],
@@ -216,7 +237,7 @@ export async function loadIrisProviderCatalog(
   profileRoot: string,
 ): Promise<IrisAgentProviderCatalog> {
   try {
-    const runtime = await createIrisModelRuntime(agentDir, profileRoot, false);
+    const runtime = await createIrisModelRuntime(agentDir, profileRoot, { kind: 'none' });
     const credentials = new Map(
       (await runtime.listCredentials()).map((credential) => [credential.providerId, credential]),
     );
@@ -265,7 +286,7 @@ export async function saveIrisProviderApiKey(
   if (!normalizedApiKey) throw new Error('API key is required.');
   if (normalizedApiKey.length > 20_000) throw new Error('API key is too long.');
 
-  const runtime = await createIrisModelRuntime(agentDir, profileRoot);
+  const runtime = await createIrisModelRuntime(agentDir, profileRoot, { kind: 'none' });
   const provider = runtime.getProvider(normalizedProviderId);
   if (!provider) throw new Error(`Unknown provider: ${normalizedProviderId}`);
   if (!provider.auth.apiKey?.login) {
@@ -295,7 +316,7 @@ export async function removeIrisProviderCredential(
 ): Promise<IrisAgentProviderCatalog> {
   const normalizedProviderId = providerId.trim();
   if (!normalizedProviderId) throw new Error('Provider is required.');
-  const runtime = await createIrisModelRuntime(agentDir, profileRoot);
+  const runtime = await createIrisModelRuntime(agentDir, profileRoot, { kind: 'none' });
   if (!runtime.getProvider(normalizedProviderId)) {
     throw new Error(`Unknown provider: ${normalizedProviderId}`);
   }
@@ -349,7 +370,10 @@ export async function createIrisPiSession(
   const resourceLoader = await createIrisPiResourceLoader(cwd, agentDir);
   const sessionManager = SessionManager.inMemory(cwd);
   restoreIrisPiHistory(sessionManager, history);
-  const modelRuntime = await createIrisModelRuntime(agentDir, providerProfileRoot);
+  const modelRuntime = await createIrisModelRuntime(agentDir, providerProfileRoot, {
+    kind: 'selected',
+    model: modelRef,
+  });
   const model = modelRuntime.getModel(modelRef.provider, modelRef.modelId);
   if (!model) {
     throw new Error(
@@ -373,7 +397,7 @@ export async function createIrisPiSession(
         CreateAgentSessionOptions['customTools']
       >,
     });
-    return { ...result, disposeProviderTransport: transport.dispose };
+    return { ...result, modelRuntime, model, disposeProviderTransport: transport.dispose };
   } catch (error) {
     await transport.dispose();
     throw error;
@@ -385,7 +409,14 @@ export async function resolveIrisModelBaseUrl(
   profileRoot: string,
   modelRef: IrisAgentModelRef,
 ): Promise<string> {
-  const runtime = await createIrisModelRuntime(agentDir, profileRoot);
+  const profiles = await loadProviderProfiles(profileRoot);
+  const profile = profiles.find((candidate) => runtimeProviderId(candidate.id) === modelRef.provider);
+  if (profile) {
+    const template = findIrisAgentProviderTemplate(profile.templateId);
+    if (!template) throw new Error(`Configured Iris Agent provider template was not found: ${profile.templateId}`);
+    return profile.baseUrl || template.defaultBaseUrl;
+  }
+  const runtime = await createIrisModelRuntime(agentDir, profileRoot, { kind: 'none' });
   const model = runtime.getModel(modelRef.provider, modelRef.modelId);
   if (!model) {
     throw new Error(`Configured Iris Agent model was not found: ${modelRef.provider}/${modelRef.modelId}`);
@@ -409,30 +440,72 @@ function createProviderTransport(providerProxy: AgentProviderProxy): {
   };
 }
 
+type IrisProfileModelMode =
+  | { kind: 'none' }
+  | { kind: 'discover'; onError?: (profileName: string, error: unknown) => void }
+  | { kind: 'selected'; model: IrisAgentModelRef };
+
 async function createIrisModelRuntime(
   agentDir: string,
   profileRoot: string,
-  loadProfileModels = true,
+  profileMode: IrisProfileModelMode = { kind: 'discover' },
 ): Promise<ModelRuntime> {
   const runtime = await ModelRuntime.create({
     authPath: join(agentDir, 'auth.json'),
     modelsPath: join(agentDir, 'models.json'),
   });
   const profiles = await loadProviderProfiles(profileRoot);
-  if (!loadProfileModels) return runtime;
+  if (profileMode.kind === 'none') return runtime;
+  if (profileMode.kind === 'discover') {
+    const discoveries = await Promise.all(profiles.map(async (profile) => {
+      const template = findIrisAgentProviderTemplate(profile.templateId);
+      if (!template) return null;
+      const baseUrl = profile.baseUrl || template.defaultBaseUrl;
+      try {
+        return {
+          profile,
+          providerId: runtimeProviderId(profile.id),
+          template,
+          baseUrl,
+          modelIds: await fetchIrisProviderModelIds(template, baseUrl, profile.apiKey),
+        };
+      } catch (error) {
+        profileMode.onError?.(profile.name, error);
+        return null;
+      }
+    }));
+    for (const discovery of discoveries) {
+      if (!discovery) continue;
+      runtime.registerProvider(discovery.providerId, {
+        name: discovery.profile.name,
+        ...(discovery.baseUrl ? { baseUrl: discovery.baseUrl } : {}),
+        api: discovery.template.api,
+        apiKey: discovery.profile.apiKey,
+        models: profileModelsConfig(
+          runtime.getModels(discovery.template.sourceProvider),
+          discovery.template.api,
+          discovery.modelIds,
+        ),
+      });
+    }
+    return runtime;
+  }
   for (const profile of profiles) {
-    const template = IRIS_AGENT_PROVIDER_TEMPLATES.find(
-      (candidate) => candidate.id === profile.templateId,
-    );
+    const providerId = runtimeProviderId(profile.id);
+    if (providerId !== profileMode.model.provider) continue;
+    const template = findIrisAgentProviderTemplate(profile.templateId);
     if (!template) continue;
     const baseUrl = profile.baseUrl || template.defaultBaseUrl;
-    const modelIds = await fetchIrisProviderModelIds(template, baseUrl, profile.apiKey);
-    runtime.registerProvider(runtimeProviderId(profile.id), {
+    runtime.registerProvider(providerId, {
       name: profile.name,
       ...(baseUrl ? { baseUrl } : {}),
       api: template.api,
       apiKey: profile.apiKey,
-      models: profileModelsConfig(runtime.getModels(template.sourceProvider), template.api, modelIds),
+      models: profileModelsConfig(
+        runtime.getModels(template.sourceProvider),
+        template.api,
+        [profileMode.model.modelId],
+      ),
     });
   }
   return runtime;

@@ -155,6 +155,10 @@ export const CHANNELS = {
   IRIS_AGENT_PROVIDER_PROFILE_ADD: 'iris-agent:provider-profile-add',
   IRIS_AGENT_PROVIDER_PROFILE_REMOVE: 'iris-agent:provider-profile-remove',
   IRIS_AGENT_OPEN_CONTEXT: 'iris-agent:open-context',
+  IRIS_AGENT_TERMINAL_REPLAY: 'iris-agent:terminal-replay',
+  IRIS_AGENT_TERMINAL_INPUT: 'iris-agent:terminal-input',
+  IRIS_AGENT_TERMINAL_RESIZE: 'iris-agent:terminal-resize',
+  IRIS_AGENT_SUPERVISION_CONTINUE: 'iris-agent:supervision-continue',
   IRIS_AGENT_CLOSE: 'iris-agent:close',
   IRIS_AGENT_LIST: 'iris-agent:list',
 } as const;
@@ -179,4 +183,5 @@ export const EVENTS = {
   IRIS_AGENT_SESSION_CHANGED: 'evt:iris-agent:session-changed',
   IRIS_AGENT_SESSION_DESTROYED: 'evt:iris-agent:session-destroyed',
   IRIS_AGENT_PROVIDERS_CHANGED: 'evt:iris-agent:providers-changed',
+  IRIS_AGENT_TERMINAL_OUTPUT: 'evt:iris-agent:terminal-output',
 } as const;

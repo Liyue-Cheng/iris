@@ -4,7 +4,7 @@ import type {
   IrisAgentProviderContextCall,
 } from './types';
 
-export const IRIS_AGENT_PROTOCOL_VERSION = 11 as const;
+export const IRIS_AGENT_PROTOCOL_VERSION = 12 as const;
 
 export type AgentToolName = 'read' | 'edit' | 'write' | 'terminal';
 export type AgentTerminalIntent = 'information' | 'operation';
@@ -31,6 +31,22 @@ export type AgentSessionRuntimeState =
   | 'idle'
   | 'interrupted'
   | 'paused';
+
+export interface AgentTerminalSupervisionInput {
+  terminalId: string;
+  command: string;
+  cursorStart: number;
+  cursorEnd: number;
+  overlapOutput: string;
+  incrementalOutput: string;
+  processState: 'running' | 'exited';
+}
+
+export interface AgentTerminalSupervisionResult {
+  outcome: 'normal' | 'suspicious' | 'error';
+  evidence?: string;
+  usageTokens?: number;
+}
 
 export interface AgentHistorySnapshot {
   revision: number;
@@ -88,7 +104,7 @@ export type AgentToolOperationInput =
       command: string;
       intent: AgentTerminalIntent;
       cwd: string;
-      timeout?: number;
+      successExitCodes?: number[];
       env?: Record<string, string | undefined>;
     };
 
@@ -98,7 +114,9 @@ export type AgentToolOperationResult =
   | {
       kind: 'terminal';
       exitCode: number | null;
-      outputBase64: string;
+      success: boolean;
+      outputText: string;
+      outputTruncated: boolean;
       terminalId: string;
       outputPath: string;
       shown: boolean;
@@ -115,6 +133,7 @@ export type AgentWorkerRequest = AgentProtocolEnvelope &
     | { type: 'initialize'; history: AgentHistorySnapshot; runtime: AgentWorkerInitRuntime }
     | { type: 'run'; prompt: string }
     | { type: 'resume'; providerCallOffset: number }
+    | { type: 'supervise-terminal'; supervisionId: string; input: AgentTerminalSupervisionInput }
     | { type: 'abort'; reason: 'user' | 'project-switch' | 'app-quit' }
     | { type: 'tool-result'; ok: true; result: AgentToolOperationResult }
     | { type: 'tool-result'; ok: false; error: string }
@@ -155,6 +174,11 @@ export type AgentWorkerEvent = AgentProtocolEnvelope &
         message: string;
       }
     | { type: 'execution-settled' }
+    | {
+        type: 'terminal-supervision-result';
+        supervisionId: string;
+        result: AgentTerminalSupervisionResult;
+      }
     | { type: 'tool-request'; input: AgentToolOperationInput }
     | { type: 'failure'; code: string; message: string }
     | { type: 'stopped'; reason: 'idle-timeout' | 'shutdown' }
@@ -171,6 +195,8 @@ export function isAgentWorkerRequest(value: unknown): value is AgentWorkerReques
     case 'resume':
       return typeof value.providerCallOffset === 'number' &&
         Number.isSafeInteger(value.providerCallOffset) && value.providerCallOffset >= 0;
+    case 'supervise-terminal':
+      return typeof value.supervisionId === 'string' && isTerminalSupervisionInput(value.input);
     case 'abort':
       return value.reason === 'user' || value.reason === 'project-switch' || value.reason === 'app-quit';
     case 'tool-result':
@@ -184,6 +210,14 @@ export function isAgentWorkerRequest(value: unknown): value is AgentWorkerReques
     default:
       return false;
   }
+}
+
+function isTerminalSupervisionInput(value: unknown): value is AgentTerminalSupervisionInput {
+  return isRecord(value) && typeof value.terminalId === 'string' &&
+    typeof value.command === 'string' && typeof value.cursorStart === 'number' &&
+    typeof value.cursorEnd === 'number' && typeof value.overlapOutput === 'string' &&
+    typeof value.incrementalOutput === 'string' &&
+    (value.processState === 'running' || value.processState === 'exited');
 }
 
 function isCorrelation(value: unknown): value is AgentCorrelation {
@@ -277,7 +311,9 @@ function isToolOperationResult(value: unknown): value is AgentToolOperationResul
   return (
     value.kind === 'terminal' &&
     (typeof value.exitCode === 'number' || value.exitCode === null) &&
-    typeof value.outputBase64 === 'string' &&
+    typeof value.success === 'boolean' &&
+    typeof value.outputText === 'string' &&
+    typeof value.outputTruncated === 'boolean' &&
     typeof value.terminalId === 'string' &&
     typeof value.outputPath === 'string' &&
     typeof value.shown === 'boolean'

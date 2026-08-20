@@ -7,6 +7,8 @@ import {
   type AgentCorrelation,
   type AgentToolOperationInput,
   type AgentToolOperationResult,
+  type AgentTerminalSupervisionInput,
+  type AgentTerminalSupervisionResult,
   type AgentWorkerEvent,
   type AgentWorkerRequest,
 } from '@shared/agent-protocol';
@@ -21,6 +23,7 @@ import {
 } from './agent/pi-adapter';
 import { collectKnownSecrets, sanitizeProviderPayload } from './agent/context-artifact';
 import { loadStoredIrisAgentProviderProfiles } from './agent/provider-profiles';
+import { AGENT_SUPERVISION_RULE } from './agent/supervision';
 
 if (!parentPort) throw new Error('Iris Agent Worker requires a worker_threads parent port');
 const workerPort = parentPort;
@@ -44,6 +47,8 @@ let runtime:
       session: Awaited<ReturnType<typeof createIrisPiSession>>['session'];
       unsubscribe: () => void;
       disposeProviderTransport: () => Promise<void>;
+      modelRuntime: Awaited<ReturnType<typeof createIrisPiSession>>['modelRuntime'];
+      model: Awaited<ReturnType<typeof createIrisPiSession>>['model'];
       cwd: string;
       agentDir: string;
     }
@@ -107,6 +112,20 @@ async function handleMessage(message: unknown): Promise<void> {
     await disposeRuntime();
     post({ type: 'stopped', correlation: message.correlation, reason: 'shutdown' });
     workerPort.close();
+    return;
+  }
+  if (message.type === 'supervise-terminal') {
+    if (!runtime) throw new Error('Iris Agent Worker has not been initialized');
+    const result = await superviseTerminal(message.input).catch((error: unknown) => ({
+      outcome: 'error' as const,
+      evidence: error instanceof Error ? error.message : String(error),
+    }));
+    post({
+      type: 'terminal-supervision-result',
+      correlation: message.correlation,
+      supervisionId: message.supervisionId,
+      result,
+    });
     return;
   }
   if (message.type === 'abort') {
@@ -279,6 +298,8 @@ async function initialize(message: Extract<AgentWorkerRequest, { type: 'initiali
     session: result.session,
     unsubscribe,
     disposeProviderTransport: result.disposeProviderTransport,
+    modelRuntime: result.modelRuntime,
+    model: result.model,
     cwd: message.runtime.cwd,
     agentDir: message.runtime.agentDir,
   };
@@ -298,6 +319,44 @@ async function initialize(message: Extract<AgentWorkerRequest, { type: 'initiali
     },
   });
   post({ type: 'state', correlation: message.correlation, state: 'ready' });
+}
+
+async function superviseTerminal(
+  input: AgentTerminalSupervisionInput,
+): Promise<AgentTerminalSupervisionResult> {
+  if (!runtime) throw new Error('Iris Agent Worker has not been initialized');
+  const response = await runtime.modelRuntime.completeSimple(runtime.model, {
+    systemPrompt: `${AGENT_SUPERVISION_RULE}\nReturn only JSON: {"outcome":"normal"} or {"outcome":"suspicious","evidence":"concise evidence"}.`,
+    tools: [],
+    messages: [{
+      role: 'user',
+      content: JSON.stringify(input),
+      timestamp: Date.now(),
+    }],
+  });
+  const text = response.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n');
+  const parsed = parseSupervisionResponse(text);
+  return {
+    ...parsed,
+    usageTokens: response.usage.totalTokens,
+  };
+}
+
+function parseSupervisionResponse(text: string): AgentTerminalSupervisionResult {
+  const match = text.match(/\{[\s\S]*\}/u);
+  if (!match) return { outcome: 'error', evidence: 'Supervisor returned invalid JSON.' };
+  try {
+    const value: unknown = JSON.parse(match[0]);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid result');
+    const result = value as Record<string, unknown>;
+    if (result.outcome === 'normal') return { outcome: 'normal' };
+    if (result.outcome === 'suspicious' && typeof result.evidence === 'string') {
+      return { outcome: 'suspicious', evidence: result.evidence };
+    }
+  } catch {
+    // Fall through to a diagnostic result; the command remains running.
+  }
+  return { outcome: 'error', evidence: 'Supervisor returned an invalid decision.' };
 }
 
 function providerSecretEnvironment(): Record<string, string> {
@@ -344,22 +403,22 @@ function createWorkerOperations(): IrisToolHostOperations {
       },
     },
     terminal: {
-      exec: async (command, intent, cwd, options) => {
+      exec: async (command, intent, successExitCodes, cwd, options) => {
         const input: AgentToolOperationInput = {
           tool: 'terminal',
           operation: 'exec',
           command,
           intent,
           cwd,
-          ...(options.timeout === undefined ? {} : { timeout: options.timeout }),
+          successExitCodes,
           ...(options.env === undefined ? {} : { env: options.env }),
         };
         const result = await requestTool(input);
         if (result.kind !== 'terminal') {
           throw new Error('Iris Agent terminal returned a non-terminal result');
         }
-        options.onData(Buffer.from(result.outputBase64, 'base64'));
-        return { exitCode: result.exitCode };
+        options.onData(Buffer.from(result.outputText, 'utf8'));
+        return { exitCode: result.success ? 0 : result.exitCode };
       },
     },
   };

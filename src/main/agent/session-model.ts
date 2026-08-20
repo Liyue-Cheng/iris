@@ -28,6 +28,7 @@ export interface AgentSessionAggregate {
   nextOrdinal: number;
   currentTurnId: string | null;
   stopRequestedTurnId?: string;
+  terminalSupervisionAlert?: { terminalId: string; evidence: string; createdAt: number };
   turns: AgentTurn[];
   providerCalls: AgentProviderCall[];
   providerAttempts: AgentProviderAttempt[];
@@ -144,6 +145,17 @@ export interface AgentToolActivity extends AgentActivityBase {
   diff?: string;
   path?: string;
   terminalId?: string;
+  terminalArtifactRef?: string;
+  terminalState?: 'running' | 'exited';
+  terminalOutcome?: 'success' | 'command-failed' | 'launch-failed' | 'canceled';
+  terminalRevealedAt?: number;
+  terminalStartedAt?: number;
+  terminalCompletedAt?: number;
+  terminalExitCode?: number | null;
+  terminalSuccessExitCodes?: number[];
+  terminalOutputBytes?: number;
+  terminalOutputPreview?: string;
+  terminalUserInput?: boolean;
   effectIds: string[];
   completedAt?: number;
 }
@@ -288,10 +300,50 @@ export function projectAgentSession(
           },
         }
       : {}),
+    ...(session.terminalSupervisionAlert
+      ? { supervisionAlert: { ...session.terminalSupervisionAlert } }
+      : {}),
     turns: visibleTurns.map((turn) => projectTurn(session, turn)),
+    terminals: session.timeline.flatMap((activity) => {
+      if (
+        activity.kind !== 'tool' || activity.tool !== 'terminal' ||
+        !activity.terminalId || !terminalArtifactRef(session, activity) ||
+        (!activity.terminalRevealedAt && activity.state === 'running' &&
+          activity.terminalState !== 'exited')
+      ) return [];
+      const terminalExited = activity.terminalState === 'exited' || activity.state !== 'running';
+      const terminalOutcome = activity.terminalOutcome ??
+        (activity.state === 'canceled'
+          ? 'canceled'
+          : undefined);
+      return [{
+        id: activity.terminalId,
+        toolActivityId: activity.id,
+        command: activity.command ?? activity.inputSummary,
+        cwd: activity.cwd ?? activity.path ?? '.',
+        revealed: activity.terminalRevealedAt !== undefined,
+        state: terminalExited ? 'exited' : 'running',
+        ...(terminalOutcome ? { outcome: terminalOutcome } : {}),
+        ...(activity.terminalExitCode === undefined ? {} : { exitCode: activity.terminalExitCode }),
+        startedAt: activity.terminalStartedAt ?? activity.createdAt,
+        ...((activity.terminalCompletedAt ?? activity.completedAt)
+          ? { completedAt: activity.terminalCompletedAt ?? activity.completedAt }
+          : {}),
+        userInput: activity.terminalUserInput ?? false,
+      }];
+    }),
     canUndoLatestTurn,
     selfHostingEligible: false,
   };
+}
+
+function terminalArtifactRef(
+  session: AgentSessionAggregate,
+  activity: AgentToolActivity,
+): string | undefined {
+  return activity.terminalArtifactRef ?? session.effects.find(
+    (effect) => effect.kind === 'terminal-output' && effect.toolActivityId === activity.id,
+  )?.artifactRef;
 }
 
 export function diffAgentSessionProjection(
@@ -437,6 +489,8 @@ export function projectCards(activities: AgentTimelineActivity[]): IrisAgentCard
       cwd: activity.cwd ?? activity.path ?? '.',
       ...(activity.resultSummary ? { detail: activity.resultSummary } : {}),
       ...(activity.error ? { error: activity.error } : {}),
+      ...(activity.terminalOutputPreview ? { errorDetail: activity.terminalOutputPreview } : {}),
+      ...(activity.terminalId ? { terminalId: activity.terminalId } : {}),
     });
   }
   return cards;
@@ -452,19 +506,20 @@ function localRetrievalItem(activity: AgentToolActivity) {
       id: activity.id,
       kind: 'file' as const,
       label: activity.path ?? pathFromInputSummary(activity.inputSummary),
-      ...(activity.resultSummary ? { detail: activity.resultSummary } : {}),
       state: activity.state,
       ...(activity.error ? { error: activity.error } : {}),
+      ...(activity.terminalOutputPreview ? { errorDetail: activity.terminalOutputPreview } : {}),
+      ...(activity.terminalId ? { terminalId: activity.terminalId } : {}),
     };
   }
   return {
     id: activity.id,
     kind: 'query' as const,
     label: activity.command ?? activity.inputSummary,
-    path: activity.cwd ?? activity.path ?? '.',
-    ...(activity.resultSummary ? { detail: activity.resultSummary } : {}),
     state: activity.state,
     ...(activity.error ? { error: activity.error } : {}),
+    ...(activity.terminalOutputPreview ? { errorDetail: activity.terminalOutputPreview } : {}),
+    ...(activity.terminalId ? { terminalId: activity.terminalId } : {}),
   };
 }
 

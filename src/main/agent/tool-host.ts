@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { dirname, join, normalize, relative, resolve, sep } from 'node:path';
-import { AgentCommandPty } from './command-pty';
+import {
+  AgentCommandPty,
+  type AgentCommandPtyEvent,
+  type AgentCommandPtyOptions,
+} from './command-pty';
 import { writeFileAtomic } from '../atomic-write';
 import { generateUnifiedPatch } from '@earendil-works/pi-coding-agent';
 import type {
@@ -22,7 +26,10 @@ export interface IrisAgentToolHostResult {
   result: AgentToolOperationResult;
   update: { state: AgentToolActivity['state']; completedAt: number } & Partial<Pick<
     AgentToolActivity,
-    'resultSummary' | 'diff' | 'path' | 'terminalId' | 'error'
+    'resultSummary' | 'diff' | 'path' | 'terminalId' | 'error' |
+    'terminalArtifactRef' | 'terminalState' | 'terminalOutcome' | 'terminalStartedAt' |
+    'terminalCompletedAt' | 'terminalExitCode' | 'terminalSuccessExitCodes' |
+    'terminalOutputBytes' | 'terminalOutputPreview'
   >>;
   effects: AgentEffect[];
 }
@@ -32,6 +39,15 @@ export interface IrisAgentToolHostOptions {
   artifactRoot: string;
   commandShell: AgentCommandShell;
   displayThresholdMs?: number;
+  terminalFactory?: (options: AgentCommandPtyOptions) => AgentCommandPty;
+  onTerminalCreated?: (
+    terminal: AgentCommandPty,
+    context: { terminalId: string; correlation: AgentCorrelation; outputPath: string },
+  ) => void;
+  onTerminalEvent?: (
+    event: AgentCommandPtyEvent,
+    context: { correlation: AgentCorrelation; outputPath: string },
+  ) => void;
 }
 
 export class IrisAgentToolHost {
@@ -44,24 +60,38 @@ export class IrisAgentToolHost {
     const started = Date.now();
     try {
       const executed = await this.executeUnchecked(input, correlation, started);
+      const terminalExitCode = executed.result.kind === 'terminal' ? executed.result.exitCode : null;
+      const terminalFailed = executed.result.kind === 'terminal' && !executed.result.success;
       return {
         result: executed.result,
         effects: executed.effects,
         update: {
           ...executed.update,
-          state: 'completed',
+          state: terminalFailed ? 'failed' : 'completed',
           completedAt: Date.now(),
+          ...(terminalFailed
+            ? { error: `Command exited with code ${String(terminalExitCode)}.` }
+            : {}),
         },
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const completedAt = Date.now();
       return {
         result: { kind: 'void' },
         effects: [],
         update: {
           state: 'failed',
-          completedAt: Date.now(),
+          completedAt,
           error: message,
+          ...(input.tool === 'terminal'
+            ? {
+                terminalState: 'exited' as const,
+                terminalOutcome: 'launch-failed' as const,
+                terminalStartedAt: started,
+                terminalCompletedAt: completedAt,
+              }
+            : {}),
         },
       };
     }
@@ -76,7 +106,7 @@ export class IrisAgentToolHost {
     update: Partial<Pick<AgentToolActivity, 'resultSummary' | 'diff' | 'path' | 'terminalId'>>;
     effects: AgentEffect[];
   }> {
-    if (input.tool === 'terminal') return this.executeTerminal(input, correlation);
+    if (input.tool === 'terminal') return this.executeTerminal(input, correlation, started);
 
     const target = await this.resolveOperationPath(input.absolutePath);
     const relPath = toProjectPath(relative(this.options.projectRoot, target));
@@ -190,14 +220,17 @@ export class IrisAgentToolHost {
   private async executeTerminal(
     input: Extract<AgentToolOperationInput, { tool: 'terminal' }>,
     correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'turnId' | 'toolCallId' | 'operationId'>>,
+    started: number,
   ): Promise<{
     result: AgentToolOperationResult;
-    update: Pick<AgentToolActivity, 'resultSummary' | 'path' | 'terminalId'>;
+    update: Pick<
+      AgentToolActivity,
+      'path' | 'terminalId' | 'terminalArtifactRef' | 'terminalState' |
+      'terminalOutcome' | 'terminalStartedAt' | 'terminalCompletedAt' | 'terminalExitCode' |
+      'terminalSuccessExitCodes' | 'terminalOutputBytes' | 'terminalOutputPreview'
+    >;
     effects: AgentEffect[];
   }> {
-    if (looksInteractive(input.command)) {
-      throw new Error('Interactive terminal commands are not supported in this Iris Agent milestone.');
-    }
     const cwd = await this.resolveOperationPath(input.cwd);
     const terminalId = randomUUID();
     const outputPath = join(
@@ -205,7 +238,8 @@ export class IrisAgentToolHost {
       'terminal',
       terminalId + '.log',
     );
-    const pty = new AgentCommandPty({
+    const artifactRef = `terminal/${terminalId}.log`;
+    const terminalOptions: AgentCommandPtyOptions = {
       terminalId,
       command: input.command,
       cwd,
@@ -213,17 +247,23 @@ export class IrisAgentToolHost {
       env: sanitizeEnv(input.env),
       commandShell: this.options.commandShell,
       displayThresholdMs: this.options.displayThresholdMs ?? 3000,
-    });
-    const timeoutMs = Math.min(Math.max(input.timeout ?? 3000, 1), 3000);
-    const timeout = setTimeout(() => pty.abort(), timeoutMs);
-    const result = await pty.result.finally(() => clearTimeout(timeout));
-    const bytes = await fs.readFile(result.outputPath).catch(() => Buffer.alloc(0));
+      onEvent: (event) => this.options.onTerminalEvent?.(event, { correlation, outputPath }),
+    };
+    const pty = this.options.terminalFactory?.(terminalOptions) ??
+      new AgentCommandPty(terminalOptions);
+    this.options.onTerminalCreated?.(pty, { terminalId, correlation, outputPath });
+    const result = await pty.result;
     const relCwd = toProjectPath(relative(this.options.projectRoot, cwd));
+    const outputText = tailText(result.plainText, 64 * 1024);
+    const successExitCodes = normalizeSuccessExitCodes(input.successExitCodes);
+    const success = successExitCodes.includes(result.exitCode);
     return {
       result: {
         kind: 'terminal',
         exitCode: result.exitCode,
-        outputBase64: bytes.toString('base64'),
+        success,
+        outputText: outputText.text,
+        outputTruncated: outputText.truncated || result.outputTruncated || result.outputBytes > 64 * 1024,
         terminalId,
         outputPath: result.outputPath,
         shown: result.shown,
@@ -231,16 +271,22 @@ export class IrisAgentToolHost {
       update: {
         terminalId,
         path: relCwd || '.',
-        resultSummary: this.options.commandShell.displayName +
-          ' (' + this.options.commandShell.executable + '): exit ' +
-          String(result.exitCode) + ', ' + String(result.outputBytes) + ' bytes',
+        terminalArtifactRef: artifactRef,
+        terminalState: 'exited',
+        terminalOutcome: success ? 'success' : 'command-failed',
+        terminalStartedAt: started,
+        terminalCompletedAt: Date.now(),
+        terminalExitCode: result.exitCode,
+        terminalSuccessExitCodes: successExitCodes,
+        terminalOutputBytes: result.outputBytes,
+        terminalOutputPreview: tailText(result.plainText, 8 * 1024).text,
       },
       effects: [{
         id: `terminal--${correlation.operationId}`,
         turnId: correlation.turnId,
         toolActivityId: correlation.toolCallId,
         kind: 'terminal-output',
-        artifactRef: `terminal/${terminalId}.log`,
+        artifactRef,
         createdAt: Date.now(),
       } satisfies AgentTerminalEffect],
     };
@@ -271,10 +317,6 @@ function assertInside(root: string, target: string): void {
   }
 }
 
-function looksInteractive(command: string): boolean {
-  return /\b(read-host|pause|vim|nvim|nano|less|more|ssh|python|node|irb|rails console)\b/i.test(command.trim());
-}
-
 function sanitizeEnv(env: Record<string, string | undefined> | undefined): NodeJS.ProcessEnv {
   if (!env) return process.env;
   const sanitized: NodeJS.ProcessEnv = {};
@@ -282,6 +324,22 @@ function sanitizeEnv(env: Record<string, string | undefined> | undefined): NodeJ
     if (typeof value === 'string') sanitized[key] = value;
   }
   return { ...process.env, ...sanitized };
+}
+
+function tailText(value: string, maxBytes: number): { text: string; truncated: boolean } {
+  const bytes = Buffer.from(value, 'utf8');
+  if (bytes.length <= maxBytes) return { text: value, truncated: false };
+  let start = bytes.length - maxBytes;
+  while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start += 1;
+  return {
+    text: bytes.subarray(start).toString('utf8'),
+    truncated: true,
+  };
+}
+
+function normalizeSuccessExitCodes(value: number[] | undefined): number[] {
+  const normalized = value?.filter((code) => Number.isSafeInteger(code)) ?? [];
+  return normalized.length > 0 ? [...new Set(normalized)] : [0];
 }
 
 function isIrisManagedPath(path: string): boolean {

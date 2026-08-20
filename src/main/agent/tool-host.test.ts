@@ -60,7 +60,7 @@ describe('IrisAgentToolHost', () => {
     }
   });
 
-  it('rejects unmanaged .iris document creation and interactive commands', async () => {
+  it('rejects unmanaged .iris document creation without classifying command text as interactive', async () => {
     const projectRoot = await createTempDataDir('iris-agent-tool-project-');
     const artifactRoot = await createTempDataDir('iris-agent-tool-output-');
     try {
@@ -81,14 +81,116 @@ describe('IrisAgentToolHost', () => {
         {
           tool: 'terminal',
           operation: 'exec',
-          command: 'node',
+          command: "Write-Output 'tsconfig.node.json'",
+          intent: 'information',
+          cwd: projectRoot,
+        },
+        correlation,
+      );
+      expect(terminal.update.state).toBe('completed');
+      expect(terminal.result).toMatchObject({ kind: 'terminal', exitCode: 0 });
+      if (terminal.result.kind === 'terminal') {
+        expect(terminal.result.outputText).toContain('tsconfig.node.json');
+      }
+    } finally {
+      await removeTempDataDir(projectRoot);
+      await removeTempDataDir(artifactRoot);
+    }
+  });
+
+  it('returns cleaned output for a nonzero exit while recording command failure', async () => {
+    const projectRoot = await createTempDataDir('iris-agent-tool-failure-project-');
+    const artifactRoot = await createTempDataDir('iris-agent-tool-failure-output-');
+    try {
+      const host = new IrisAgentToolHost({ projectRoot, artifactRoot, commandShell });
+      const terminal = await host.execute(
+        {
+          tool: 'terminal',
+          operation: 'exec',
+          command: "Write-Output 'before failure'; exit 7",
           intent: 'operation',
           cwd: projectRoot,
         },
         correlation,
       );
-      expect(terminal.update.state).toBe('failed');
-      expect(terminal.update.error).toContain('Interactive terminal commands');
+      expect(terminal.update).toMatchObject({
+        state: 'failed',
+        error: 'Command exited with code 7.',
+        terminalOutcome: 'command-failed',
+        terminalExitCode: 7,
+      });
+      expect(terminal.result).toMatchObject({
+        kind: 'terminal',
+        exitCode: 7,
+        success: false,
+        outputTruncated: false,
+      });
+      if (terminal.result.kind === 'terminal') {
+        expect(terminal.result.outputText).toContain('before failure');
+        expect(terminal.result.outputText).not.toContain('\u001b[');
+      }
+    } finally {
+      await removeTempDataDir(projectRoot);
+      await removeTempDataDir(artifactRoot);
+    }
+  });
+
+  it('uses explicitly allowed nonzero exit codes consistently', async () => {
+    const projectRoot = await createTempDataDir('iris-agent-tool-allowed-exit-project-');
+    const artifactRoot = await createTempDataDir('iris-agent-tool-allowed-exit-output-');
+    try {
+      const host = new IrisAgentToolHost({ projectRoot, artifactRoot, commandShell });
+      const terminal = await host.execute(
+        {
+          tool: 'terminal',
+          operation: 'exec',
+          command: 'exit 1',
+          intent: 'information',
+          cwd: projectRoot,
+          successExitCodes: [0, 1],
+        },
+        correlation,
+      );
+      expect(terminal.update).toMatchObject({
+        state: 'completed',
+        terminalOutcome: 'success',
+        terminalExitCode: 1,
+        terminalSuccessExitCodes: [0, 1],
+      });
+      expect(terminal.result).toMatchObject({ kind: 'terminal', exitCode: 1, success: true });
+    } finally {
+      await removeTempDataDir(projectRoot);
+      await removeTempDataDir(artifactRoot);
+    }
+  });
+
+  it('records terminal launch failure separately from command failure', async () => {
+    const projectRoot = await createTempDataDir('iris-agent-tool-launch-project-');
+    const artifactRoot = await createTempDataDir('iris-agent-tool-launch-output-');
+    try {
+      const host = new IrisAgentToolHost({
+        projectRoot,
+        artifactRoot,
+        commandShell,
+        terminalFactory: () => { throw new Error('simulated spawn failure'); },
+      });
+      const terminal = await host.execute(
+        {
+          tool: 'terminal',
+          operation: 'exec',
+          command: 'missing-command',
+          intent: 'operation',
+          cwd: projectRoot,
+        },
+        correlation,
+      );
+      expect(terminal.update).toMatchObject({
+        state: 'failed',
+        terminalState: 'exited',
+        terminalOutcome: 'launch-failed',
+        error: 'simulated spawn failure',
+      });
+      expect(terminal.result).toEqual({ kind: 'void' });
     } finally {
       await removeTempDataDir(projectRoot);
       await removeTempDataDir(artifactRoot);

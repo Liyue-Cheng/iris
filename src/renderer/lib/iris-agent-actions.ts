@@ -4,6 +4,7 @@ import type {
   IrisAgentModelCatalog,
   IrisAgentModelRef,
   IrisAgentSessionInfo,
+  IrisAgentTerminalReplay,
   ProjectScope,
 } from '@shared/types';
 import { editorStore } from '@renderer/stores/editor-store';
@@ -246,11 +247,11 @@ export async function setIrisAgentModel(
   );
 }
 
-export async function listIrisAgentModels(): Promise<IrisAgentModelCatalog> {
+export async function listIrisAgentModels(forceRefresh = false): Promise<IrisAgentModelCatalog> {
   const scope = scopeOrThrow();
-  return window.api.invoke<{ expectedScope: ProjectScope }, IrisAgentModelCatalog>(
+  return window.api.invoke<{ expectedScope: ProjectScope; forceRefresh?: boolean }, IrisAgentModelCatalog>(
     CHANNELS.IRIS_AGENT_MODELS,
-    { expectedScope: scope },
+    { expectedScope: scope, ...(forceRefresh ? { forceRefresh: true } : {}) },
   );
 }
 
@@ -271,6 +272,71 @@ export async function openIrisAgentContext(sessionId: string, turnId: string): P
       );
     },
   );
+}
+
+export async function replayIrisAgentTerminal(
+  sessionId: string,
+  terminalId: string,
+  cols: number,
+  rows: number,
+): Promise<IrisAgentTerminalReplay> {
+  const scope = scopeOrThrow();
+  return window.api.invoke<{
+    sessionId: string;
+    terminalId: string;
+    cols: number;
+    rows: number;
+    expectedScope: ProjectScope;
+  }, IrisAgentTerminalReplay>(CHANNELS.IRIS_AGENT_TERMINAL_REPLAY, projectScoped(scope, {
+    sessionId, terminalId, cols, rows,
+  }));
+}
+
+export async function writeIrisAgentTerminal(
+  sessionId: string,
+  terminalId: string,
+  data: string,
+): Promise<void> {
+  const scope = scopeOrThrow();
+  await window.api.invoke<{
+    sessionId: string;
+    terminalId: string;
+    data: string;
+    expectedScope: ProjectScope;
+  }, void>(CHANNELS.IRIS_AGENT_TERMINAL_INPUT, projectScoped(scope, { sessionId, terminalId, data }));
+}
+
+export async function resizeIrisAgentTerminal(
+  sessionId: string,
+  terminalId: string,
+  cols: number,
+  rows: number,
+): Promise<void> {
+  const scope = scopeOrThrow();
+  await window.api.invoke<{
+    sessionId: string;
+    terminalId: string;
+    cols: number;
+    rows: number;
+    expectedScope: ProjectScope;
+  }, void>(CHANNELS.IRIS_AGENT_TERMINAL_RESIZE, projectScoped(scope, {
+    sessionId, terminalId, cols, rows,
+  }));
+}
+
+export async function continueIrisAgentTerminalSupervision(
+  sessionId: string,
+  terminalId: string,
+): Promise<void> {
+  const scope = scopeOrThrow();
+  const session = await window.api.invoke<{
+    sessionId: string;
+    terminalId: string;
+    expectedScope: ProjectScope;
+  }, IrisAgentSessionInfo>(CHANNELS.IRIS_AGENT_SUPERVISION_CONTINUE, projectScoped(scope, {
+    sessionId, terminalId,
+  }));
+  irisAgentStore.handleChanged(session);
 }
 
 export async function closeIrisAgent(sessionId: string): Promise<void> {

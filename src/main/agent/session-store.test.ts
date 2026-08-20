@@ -106,17 +106,105 @@ describe('IrisAgentSessionStore v2', () => {
         id: 'turn-1', userActivityId: 'user-1', state: 'running',
         assembledInputAvailable: true, createdAt: 2,
       });
-      session.timeline.push({
-        kind: 'user', id: 'user-1', ordinal: 1, turnId: 'turn-1', content: 'hello',
-        assembledInputArtifactId: 'input-1', createdAt: 2,
+      session.providerCalls.push({
+        id: 'call-1', turnId: 'turn-1', index: 1, state: 'running',
+        attemptIds: [], createdAt: 2,
       });
-      session.nextOrdinal = 2;
+      session.timeline.push(
+        {
+          kind: 'user', id: 'user-1', ordinal: 1, turnId: 'turn-1', content: 'hello',
+          assembledInputArtifactId: 'input-1', createdAt: 2,
+        },
+        {
+          kind: 'tool', id: 'tool-terminal', ordinal: 2, turnId: 'turn-1',
+          providerCallId: 'call-1', toolCallId: 'tool-terminal', tool: 'terminal',
+          intent: 'operation', state: 'running', inputSummary: 'long command',
+          operation: 'exec', command: 'long command', cwd: '.',
+          terminalId: 'terminal-running',
+          terminalArtifactRef: 'terminal/terminal-running.log',
+          terminalState: 'running', terminalStartedAt: 3,
+          terminalRevealedAt: 4, effectIds: ['terminal--operation-terminal'], createdAt: 3,
+        },
+      );
+      session.toolOperations.push({
+        id: 'operation-terminal', toolActivityId: 'tool-terminal', turnId: 'turn-1',
+        input: {
+          tool: 'terminal', operation: 'exec', command: 'long command',
+          intent: 'operation', cwd: '.',
+        },
+        state: 'running', createdAt: 3,
+      });
+      session.effects.push({
+        id: 'terminal--operation-terminal', turnId: 'turn-1',
+        toolActivityId: 'tool-terminal', kind: 'terminal-output',
+        artifactRef: 'terminal/terminal-running.log', createdAt: 3,
+      });
+      session.terminalSupervisionAlert = {
+        terminalId: 'terminal-running', evidence: 'pending decision', createdAt: 4,
+      };
+      session.nextOrdinal = 3;
       await store.commit(session);
       store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
       const recovered = store.get('session-1')!;
       expect(recovered.state).toBe('paused');
       expect(recovered.turns[0]).toMatchObject({ state: 'paused', pauseReason: 'restart' });
-      expect(recovered.timeline.map((activity) => activity.kind)).toEqual(['user']);
+      expect(recovered.timeline[1]).toMatchObject({
+        state: 'canceled',
+        terminalState: 'exited',
+        terminalOutcome: 'canceled',
+        terminalArtifactRef: 'terminal/terminal-running.log',
+      });
+      expect(recovered.toolOperations[0]).toMatchObject({
+        state: 'failed', error: 'Iris restarted before the tool operation settled.',
+      });
+      expect(recovered.terminalSupervisionAlert).toBeUndefined();
+      expect(recovered.effects).toContainEqual(expect.objectContaining({
+        kind: 'terminal-output', artifactRef: 'terminal/terminal-running.log',
+      }));
+    } finally {
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('loads legacy terminal facts without parsing or rewriting resultSummary', async () => {
+    const userData = await createTempDataDir('iris-agent-v2-terminal-normalize-');
+    const projectRoot = join(userData, 'project');
+    try {
+      let store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
+      const session = aggregate(projectRoot);
+      session.state = 'idle';
+      session.turns.push({
+        id: 'turn-1', userActivityId: 'user-1', state: 'fulfilled',
+        assembledInputAvailable: true, createdAt: 1, closedAt: 4,
+      });
+      session.providerCalls.push({
+        id: 'call-1', turnId: 'turn-1', index: 1, state: 'completed',
+        attemptIds: [], createdAt: 1, completedAt: 4,
+      });
+      session.timeline.push({
+        kind: 'user', id: 'user-1', ordinal: 1, turnId: 'turn-1', content: 'run',
+        assembledInputArtifactId: 'input-1', createdAt: 1,
+      }, {
+        kind: 'tool', id: 'tool-1', ordinal: 2, turnId: 'turn-1',
+        providerCallId: 'call-1', toolCallId: 'tool-1', tool: 'terminal',
+        intent: 'operation', state: 'completed', inputSummary: 'old command',
+        operation: 'exec', command: 'old command', cwd: '.',
+        resultSummary: 'PowerShell: exit 0, 10 bytes', terminalId: 'terminal-old',
+        effectIds: ['terminal--operation-1'], createdAt: 2, completedAt: 3,
+      });
+      session.effects.push({
+        id: 'terminal--operation-1', turnId: 'turn-1', toolActivityId: 'tool-1',
+        kind: 'terminal-output', artifactRef: 'terminal/terminal-old.log', createdAt: 3,
+      });
+      session.nextOrdinal = 3;
+      await store.commit(session);
+
+      store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
+      const terminal = store.get('session-1')!.timeline[1];
+      expect(terminal).not.toHaveProperty('terminalArtifactRef');
+      expect(terminal).not.toHaveProperty('terminalState');
+      expect(terminal).not.toHaveProperty('terminalOutcome');
+      expect(terminal).toMatchObject({ resultSummary: 'PowerShell: exit 0, 10 bytes' });
     } finally {
       await removeTempDataDir(userData);
     }

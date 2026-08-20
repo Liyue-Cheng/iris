@@ -701,6 +701,34 @@ export interface IrisAgentLocalRetrievalItemView {
   detail?: string;
   state: 'running' | 'completed' | 'failed' | 'canceled';
   error?: string;
+  errorDetail?: string;
+  terminalId?: string;
+}
+
+export interface IrisAgentTerminalView {
+  id: string;
+  toolActivityId: string;
+  command: string;
+  cwd: string;
+  revealed: boolean;
+  state: 'running' | 'exited';
+  outcome?: 'success' | 'command-failed' | 'launch-failed' | 'canceled';
+  exitCode?: number | null;
+  startedAt: number;
+  completedAt?: number;
+  userInput: boolean;
+}
+
+export interface IrisAgentTerminalOutputPayload {
+  sessionId: string;
+  terminalId: string;
+  cursor: number;
+  data: string;
+}
+
+export interface IrisAgentTerminalReplay {
+  data: string;
+  cursor: number;
 }
 
 export type IrisAgentCardView =
@@ -728,6 +756,8 @@ export type IrisAgentCardView =
       cwd: string;
       detail?: string;
       error?: string;
+      errorDetail?: string;
+      terminalId?: string;
     }
   | {
       kind: 'agent-reply';
@@ -768,7 +798,13 @@ export interface IrisAgentSessionInfo {
     reason: IrisAgentPauseReason;
     message: string;
   };
+  supervisionAlert?: {
+    terminalId: string;
+    evidence: string;
+    createdAt: number;
+  };
   turns: IrisAgentTurnView[];
+  terminals: IrisAgentTerminalView[];
   canUndoLatestTurn: boolean;
   selfHostingEligible: false;
 }

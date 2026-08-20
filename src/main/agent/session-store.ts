@@ -493,6 +493,11 @@ async function recoverInterrupted(
       if (activity.kind === 'tool' && activity.turnId === turn.id && activity.state === 'running') {
         activity.state = 'canceled';
         activity.completedAt = now;
+        if (activity.tool === 'terminal') {
+          activity.terminalState = 'exited';
+          activity.terminalOutcome = 'canceled';
+          activity.terminalCompletedAt = now;
+        }
       }
     }
     for (const operation of session.toolOperations) {
@@ -529,6 +534,7 @@ async function recoverInterrupted(
   }
   session.state = 'paused';
   delete session.stopRequestedTurnId;
+  delete session.terminalSupervisionAlert;
   return session;
 }
 

@@ -117,10 +117,12 @@ it changed. Agents without a hook fall back to the environment variables.
    `reflects:` with current `git HEAD` — the change is not done until the
    mirror is true again. After a git merge, do not hand-merge status docs —
    regenerate and restamp.
-4. **No unsolicited files.** Never create a new file — reports included —
-   unless the user explicitly asks. Editing the focused document is always
-   fine, as are frontmatter updates (e.g. `status:` transitions) on existing
-   docs.
+4. **No unsolicited Iris-managed files.** Never create a new document in a
+   typed folder — reports included — or a new companion asset unless the user
+   explicitly asks. This restriction does not apply to project source, tests,
+   configuration, or other files needed for an authorized implementation task.
+   Editing the focused document is always fine, as are frontmatter updates
+   (e.g. `status:` transitions) on existing docs.
 5. **Naming.** New files in `issue/` and `report/` use a `YYYY-MM-DD-<slug>`
    prefix.
 6. **Trust calibration.** Before relying on a status doc, compare its

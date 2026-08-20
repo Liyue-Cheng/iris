@@ -6,21 +6,12 @@ export interface AgentSupervisionFact {
   usageTokens?: number;
 }
 
-export interface AgentSupervisionInput {
-  terminalId: string;
-  command: string;
-  cursorStart: number;
-  cursorEnd: number;
-  overlapOutput: string;
-  incrementalOutput: string;
-  processState: 'running' | 'exited';
-}
+import type {
+  AgentTerminalSupervisionInput as AgentSupervisionInput,
+  AgentTerminalSupervisionResult as AgentSupervisionResult,
+} from '@shared/agent-protocol';
 
-export interface AgentSupervisionResult {
-  outcome: AgentSupervisionFact['outcome'];
-  evidence?: string;
-  usageTokens?: number;
-}
+export type { AgentSupervisionInput, AgentSupervisionResult };
 
 export type AgentSupervisionCall = (
   input: AgentSupervisionInput & {

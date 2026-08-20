@@ -13,6 +13,7 @@ import { createTempDataDir, JsonStore, removeTempDataDir } from '../persistence'
 import { SettingsManager } from '../settings-manager';
 import type { AgentWorkerPort } from './worker-host';
 import type { IrisAgentToolHostResult } from './tool-host';
+import type { AgentCommandPty, AgentCommandPtyOptions, AgentCommandPtyResult } from './command-pty';
 import { IrisAgentSessionManager, parseElectronProxyRules } from './session-manager';
 import { IrisAgentSessionStore } from './session-store';
 
@@ -26,26 +27,13 @@ const catalog: IrisAgentModelCatalog = {
 class FakeWorker extends EventEmitter implements AgentWorkerPort {
   readonly messages: AgentWorkerRequest[] = [];
 
+  constructor(private readonly autoReady = true) {
+    super();
+  }
+
   postMessage(message: AgentWorkerRequest): void {
     this.messages.push(message);
-    if (message.type === 'initialize') {
-      queueMicrotask(() => this.emitMessage({
-        version: IRIS_AGENT_PROTOCOL_VERSION,
-        type: 'ready',
-        correlation: message.correlation,
-        runtime: {
-          protocolVersion: IRIS_AGENT_PROTOCOL_VERSION,
-          piVersion: 'test',
-          nodeVersion: process.versions.node,
-          workerEpoch: message.correlation.workerEpoch ?? 0,
-          historyRevision: message.history.revision,
-          historyMessageCount: message.history.messages.length,
-          historyDigest: agentHistoryDigest(message.history),
-          model: message.runtime.model,
-          commandShell: message.runtime.commandShell,
-        },
-      }));
-    }
+    if (message.type === 'initialize' && this.autoReady) queueMicrotask(() => this.emitReady());
   }
 
   terminate = vi.fn(async () => {
@@ -57,10 +45,100 @@ class FakeWorker extends EventEmitter implements AgentWorkerPort {
     this.emit('message', message);
   }
 
+  emitReady(): void {
+    const message = this.last('initialize');
+    this.emitMessage({
+      version: IRIS_AGENT_PROTOCOL_VERSION,
+      type: 'ready',
+      correlation: message.correlation,
+      runtime: {
+        protocolVersion: IRIS_AGENT_PROTOCOL_VERSION,
+        piVersion: 'test',
+        nodeVersion: process.versions.node,
+        workerEpoch: message.correlation.workerEpoch ?? 0,
+        historyRevision: message.history.revision,
+        historyMessageCount: message.history.messages.length,
+        historyDigest: agentHistoryDigest(message.history),
+        model: message.runtime.model,
+        commandShell: message.runtime.commandShell,
+      },
+    });
+  }
+
   last<T extends AgentWorkerRequest['type']>(type: T): Extract<AgentWorkerRequest, { type: T }> {
     const message = [...this.messages].reverse().find((candidate) => candidate.type === type);
     if (!message) throw new Error(`Missing Worker request ${type}`);
     return message as Extract<AgentWorkerRequest, { type: T }>;
+  }
+}
+
+class FakeInteractiveTerminal {
+  private cursor = 0;
+  private text = '';
+  private running = true;
+  private resolveResult!: (result: AgentCommandPtyResult) => void;
+  readonly result: Promise<AgentCommandPtyResult>;
+
+  constructor(private readonly options: AgentCommandPtyOptions) {
+    this.result = new Promise((resolve) => { this.resolveResult = resolve; });
+    queueMicrotask(() => {
+      this.emitOutput('first');
+      options.onEvent?.({ type: 'shown', terminalId: options.terminalId });
+    });
+  }
+
+  abort(): void {
+    if (this.running) this.complete(130);
+  }
+
+  write(data: string): void {
+    if (!this.running) return;
+    if (data.includes('one')) this.emitOutput('one\r\nsecond:one');
+    if (data.includes('two')) {
+      this.emitOutput('two\r\ndone:two');
+      this.complete(0);
+    }
+  }
+
+  resize(): void {}
+
+  dispose(): void {}
+
+  async replay(): Promise<{ data: string; cursor: number }> {
+    return { data: Buffer.from(this.text).toString('base64'), cursor: this.cursor };
+  }
+
+  async observation(): Promise<{ cursor: number; text: string; running: boolean }> {
+    return { cursor: this.cursor, text: this.text, running: this.running };
+  }
+
+  private emitOutput(value: string): void {
+    const cursor = this.cursor;
+    this.cursor += Buffer.byteLength(value);
+    this.text += value;
+    this.options.onEvent?.({
+      type: 'output',
+      terminalId: this.options.terminalId,
+      cursor,
+      data: Buffer.from(value).toString('base64'),
+    });
+  }
+
+  private complete(exitCode: number): void {
+    if (!this.running) return;
+    this.running = false;
+    const result: AgentCommandPtyResult = {
+      terminalId: this.options.terminalId,
+      exitCode,
+      outputPath: this.options.outputPath,
+      outputBytes: this.cursor,
+      finalCursor: this.cursor,
+      shown: true,
+      plainText: this.text,
+      outputTruncated: false,
+    };
+    this.options.onEvent?.({ type: 'completed', terminalId: this.options.terminalId, result });
+    this.resolveResult(result);
   }
 }
 
@@ -108,6 +186,42 @@ function emitReply(
 }
 
 describe('IrisAgentSessionManager v2 timeline', () => {
+  it('publishes the accepted user message before a cold Worker becomes ready', async () => {
+    const userData = await createTempDataDir('iris-agent-manager-cold-message-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const worker = new FakeWorker(false);
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => worker,
+      modelCatalogLoader: async () => catalog,
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({
+        scope,
+        anchor: { kind: 'workspace', path: '.iris' },
+      });
+      let settled = false;
+      const sending = manager.send(scope, created.id, 'visible immediately').then(() => {
+        settled = true;
+      });
+
+      await vi.waitFor(async () => {
+        const projected = (await manager.list(scope)).sessions[0]!;
+        expect(projected.state).toBe('starting');
+        expect(projected.turns[0]?.user.content).toBe('visible immediately');
+        expect(worker.messages.some((message) => message.type === 'initialize')).toBe(true);
+      });
+      expect(settled).toBe(false);
+
+      worker.emitReady();
+      await sending;
+      expect((await manager.list(scope)).sessions[0]?.state).toBe('running');
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
   it('keeps stopped Reply A and appends completed Reply B when continuing the same Turn', async () => {
     const userData = await createTempDataDir('iris-agent-manager-v2-');
     const scope: ProjectScope = { root: userData, generation: 1 };
@@ -121,6 +235,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       modelCatalogLoader: async () => catalog,
     });
     try {
+      await manager.listModels();
       const created = await manager.createSession({
         scope,
         anchor: { kind: 'document', path: '.iris/issue/task.md' },
@@ -203,6 +318,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       modelCatalogLoader: async () => catalog,
     });
     try {
+      await manager.listModels();
       const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
       await manager.send(scope, created.id, 'fail', { expectedRevision: created.revision });
       const run = worker.last('run');
@@ -233,6 +349,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       modelCatalogLoader: async () => catalog,
     });
     try {
+      await manager.listModels();
       const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
       await manager.send(scope, created.id, 'race');
       const run = worker.last('run');
@@ -279,6 +396,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       toolExecutor: () => new Promise((resolve) => { settleTool = resolve; }),
     });
     try {
+      await manager.listModels();
       const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
       await manager.send(scope, created.id, 'read');
       const worker = workers[0]!;
@@ -381,6 +499,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       }),
     });
     try {
+      await manager.listModels();
       const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
       await manager.send(scope, created.id, 'inspect');
       const run = worker.last('run');
@@ -513,6 +632,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       return originalCommit.call(this, source);
     });
     try {
+      await manager.listModels();
       const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
       await manager.send(scope, created.id, 'fail commit');
       const run = worker.last('run');
@@ -552,6 +672,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       modelCatalogLoader: async () => catalog,
     });
     try {
+      await manager.listModels();
       const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
       await manager.send(scope, created.id, 'finish despite late failure');
       const run = worker.last('run');
@@ -611,6 +732,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       modelCatalogLoader: async () => catalog,
     });
     try {
+      await manager.listModels();
       const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
       await manager.send(scope, created.id, 'stop before tool request');
       const firstWorker = workers[0]!;
@@ -676,6 +798,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
     });
     let secondManager: IrisAgentSessionManager | null = null;
     try {
+      await firstManager.listModels();
       const created = await firstManager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
       await firstManager.send(scope, created.id, 'pause');
       const run = firstWorker.last('run');
@@ -727,6 +850,214 @@ describe('IrisAgentSessionManager v2 timeline', () => {
     } finally {
       await firstManager.shutdown();
       await secondManager?.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it(
+    'reveals and supervises one interactive PTY without timing it out',
+    async () => {
+      const userData = await createTempDataDir('iris-agent-manager-terminal-');
+      const scope: ProjectScope = { root: userData, generation: 1 };
+      const worker = new FakeWorker();
+      const outputEvents: Array<{ terminalId: string; cursor: number }> = [];
+      const manager = new IrisAgentSessionManager(userData, projectManager(), {
+        workerFactory: () => worker,
+        modelCatalogLoader: async () => catalog,
+        terminalFactory: (options) => new FakeInteractiveTerminal(options) as unknown as AgentCommandPty,
+        terminalDisplayThresholdMs: 20,
+        supervisionIntervalMs: 30,
+      });
+      manager.on('terminalOutput', (event: { terminalId: string; cursor: number }) => {
+        outputEvents.push(event);
+      });
+      try {
+        await manager.listModels();
+        const created = await manager.createSession({
+          scope,
+          anchor: { kind: 'workspace', path: '.iris' },
+        });
+        await manager.send(scope, created.id, 'run an interactive command');
+        const run = worker.last('run');
+        const provider = providerCorrelation(run, 'interactive-terminal');
+        worker.emitMessage({
+          version: IRIS_AGENT_PROTOCOL_VERSION,
+          type: 'provider-attempt',
+          correlation: provider,
+          phase: 'started',
+          index: 1,
+        });
+        worker.emitMessage({
+          version: IRIS_AGENT_PROTOCOL_VERSION,
+          type: 'provider-message',
+          eventId: 'event-interactive-terminal',
+          correlation: provider,
+          message: {
+            role: 'assistant',
+            content: [{
+              type: 'toolCall',
+              id: 'tool-terminal',
+              name: 'terminal',
+              arguments: { command: 'interactive' },
+            }],
+            stopReason: 'toolUse',
+          },
+        });
+        await vi.waitFor(() => expect(worker.messages).toContainEqual(expect.objectContaining({
+          type: 'event-ack',
+          eventId: 'event-interactive-terminal',
+          ok: true,
+        })));
+        const command = [
+          "[Console]::Write('first')",
+          '$one = [Console]::ReadLine()',
+          "[Console]::Write('second:' + $one)",
+          '$two = [Console]::ReadLine()',
+          "[Console]::Write('done:' + $two)",
+        ].join('; ');
+        worker.emitMessage({
+          version: IRIS_AGENT_PROTOCOL_VERSION,
+          type: 'tool-request',
+          correlation: {
+            ...run.correlation,
+            toolCallId: 'tool-terminal',
+            operationId: 'operation-terminal',
+          },
+          input: {
+            tool: 'terminal',
+            operation: 'exec',
+            command,
+            intent: 'operation',
+            cwd: userData,
+          },
+        });
+
+        await vi.waitFor(async () => {
+          const terminal = (await manager.list(scope)).sessions[0]?.terminals[0];
+          expect(terminal).toMatchObject({ state: 'running', command, userInput: false });
+        }, { timeout: 5_000 });
+        const running = (await manager.list(scope)).sessions[0]!.terminals[0]!;
+        const replay = await manager.replayTerminal(scope, created.id, running.id, 80, 24);
+        expect(Buffer.from(replay.data, 'base64').toString('utf8')).toContain('first');
+        expect(outputEvents.some((event) => event.terminalId === running.id)).toBe(true);
+        expect(worker.messages.some((message) => message.type === 'tool-result')).toBe(false);
+
+        await vi.waitFor(() => expect(
+          worker.messages.filter((message) => message.type === 'supervise-terminal'),
+        ).toHaveLength(1), { timeout: 5_000 });
+        const firstSupervision = worker.last('supervise-terminal');
+        expect(firstSupervision.input.incrementalOutput).toContain('first');
+        worker.emitMessage({
+          version: IRIS_AGENT_PROTOCOL_VERSION,
+          type: 'terminal-supervision-result',
+          correlation: firstSupervision.correlation,
+          supervisionId: firstSupervision.supervisionId,
+          result: { outcome: 'normal' },
+        });
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        expect(worker.messages.filter((message) => message.type === 'supervise-terminal')).toHaveLength(1);
+
+        await manager.writeTerminal(scope, created.id, running.id, 'one\r');
+        await vi.waitFor(() => expect(
+          worker.messages.filter((message) => message.type === 'supervise-terminal'),
+        ).toHaveLength(2), { timeout: 5_000 });
+        const secondSupervision = worker.last('supervise-terminal');
+        expect(secondSupervision.input.incrementalOutput).toContain('second:one');
+        worker.emitMessage({
+          version: IRIS_AGENT_PROTOCOL_VERSION,
+          type: 'terminal-supervision-result',
+          correlation: secondSupervision.correlation,
+          supervisionId: secondSupervision.supervisionId,
+          result: { outcome: 'suspicious', evidence: 'unexpected repeated prompt' },
+        });
+        await vi.waitFor(async () => {
+          const projected = (await manager.list(scope)).sessions[0]!;
+          expect(projected.supervisionAlert).toMatchObject({
+            terminalId: running.id,
+            evidence: 'unexpected repeated prompt',
+          });
+          expect(projected.terminals[0]?.state).toBe('running');
+        });
+        expect(worker.messages.some((message) => message.type === 'tool-result')).toBe(false);
+        const persistedWhileWaiting = (await IrisAgentSessionStore.load({
+          userDataPath: userData,
+          projectRoot: scope.root,
+        })).get(created.id)!;
+        expect(persistedWhileWaiting.transcript.map((frame) => frame.role)).toEqual([
+          'user', 'assistant',
+        ]);
+
+        await manager.continueTerminalSupervision(scope, created.id, running.id);
+        expect((await manager.list(scope)).sessions[0]?.supervisionAlert).toBeUndefined();
+        await manager.writeTerminal(scope, created.id, running.id, 'two\r');
+        await vi.waitFor(() => expect(worker.last('tool-result')).toMatchObject({
+          ok: true,
+          result: { kind: 'terminal', exitCode: 0, terminalId: running.id },
+        }), { timeout: 5_000 });
+        await vi.waitFor(async () => {
+          expect((await manager.list(scope)).sessions[0]?.terminals[0]).toMatchObject({
+            id: running.id,
+            state: 'exited',
+            outcome: 'success',
+            userInput: true,
+          });
+        });
+        await expect(
+          manager.writeTerminal(scope, created.id, running.id, 'late\r'),
+        ).rejects.toThrow('no longer running');
+      } finally {
+        await manager.shutdown();
+        await removeTempDataDir(userData);
+      }
+    },
+    15_000,
+  );
+});
+
+describe('Iris Agent model catalog startup', () => {
+  it('creates a session without starting model discovery', async () => {
+    const userData = await createTempDataDir('iris-agent-manager-open-fast-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const loader = vi.fn(async () => catalog);
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      modelCatalogLoader: loader,
+    });
+    try {
+      const created = await manager.createSession({
+        scope,
+        anchor: { kind: 'workspace', path: '.iris' },
+      });
+      expect(created.model).toBeNull();
+      expect(loader).not.toHaveBeenCalled();
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('shares concurrent discovery and only reloads after an explicit refresh', async () => {
+    const userData = await createTempDataDir('iris-agent-manager-model-cache-');
+    let resolveFirst!: (value: IrisAgentModelCatalog) => void;
+    const firstLoad = new Promise<IrisAgentModelCatalog>((resolve) => { resolveFirst = resolve; });
+    const loader = vi.fn()
+      .mockImplementationOnce(() => firstLoad)
+      .mockResolvedValue(catalog);
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      modelCatalogLoader: loader,
+    });
+    try {
+      const first = manager.listModels();
+      const second = manager.listModels();
+      expect(loader).toHaveBeenCalledOnce();
+      resolveFirst(catalog);
+      await expect(Promise.all([first, second])).resolves.toEqual([catalog, catalog]);
+
+      await expect(manager.listModels()).resolves.toEqual(catalog);
+      expect(loader).toHaveBeenCalledOnce();
+      await expect(manager.listModels(true)).resolves.toEqual(catalog);
+      expect(loader).toHaveBeenCalledTimes(2);
+    } finally {
+      await manager.shutdown();
       await removeTempDataDir(userData);
     }
   });
@@ -782,6 +1113,7 @@ describe('Iris Agent remembered default model', () => {
       modelCatalogLoader: async () => multiModelCatalog,
     });
     try {
+      await manager.listModels();
       const created = await manager.createSession({
         scope,
         anchor: { kind: 'document', path: '.iris/issue/task.md' },
@@ -819,6 +1151,7 @@ describe('Iris Agent remembered default model', () => {
       modelCatalogLoader: async () => multiModelCatalog,
     });
     try {
+      await manager.listModels();
       const created = await manager.createSession({
         scope,
         anchor: { kind: 'workspace', path: '.iris' },

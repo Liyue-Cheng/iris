@@ -13,6 +13,7 @@ import {
   loadIrisProviderCatalog,
   normalizeIrisProviderContext,
   removeIrisProviderCredential,
+  resolveIrisModelBaseUrl,
   renderRawError,
   renderRawHttpFailure,
   restoreIrisPiHistory,
@@ -82,7 +83,7 @@ describe('Iris Pi adapter', () => {
       },
       write: { mkdir: vi.fn(async () => {}), writeFile: vi.fn(async () => {}) },
       terminal: {
-        exec: vi.fn(async (_command, _intent, _cwd, options) => {
+        exec: vi.fn(async (_command, _intent, _successExitCodes, _cwd, options) => {
           expect(currentIrisProviderToolCallId()).toBe('call-2');
           options.onData(Buffer.from('terminal output'));
           return { exitCode: 0 };
@@ -110,6 +111,10 @@ describe('Iris Pi adapter', () => {
     expect(tools[3]!.description.toLowerCase()).not.toContain('bash');
     expect(tools[3]!.promptGuidelines?.[0]).toContain('Do not emit Bash-only commands');
     expect(tools[3]!.parameters.required).toEqual(['command', 'intent']);
+    expect(Object.keys(tools[3]!.parameters.properties)).toEqual([
+      'command', 'intent', 'successExitCodes',
+    ]);
+    expect(tools[3]!.parameters.properties).not.toHaveProperty('timeout');
     const terminalResult = await tools[3]!.execute(
       'call-2',
       { command: 'git status', intent: 'information' },
@@ -120,6 +125,7 @@ describe('Iris Pi adapter', () => {
     expect(operations.terminal.exec).toHaveBeenCalledWith(
       'git status',
       'information',
+      [0],
       root,
       expect.objectContaining({ onData: expect.any(Function) }),
     );
@@ -572,11 +578,19 @@ describe('Iris Pi adapter', () => {
     }
   });
 
-  it('reports a failed provider model query without exposing its API key', async () => {
+  it('keeps healthy provider models when another provider query fails', async () => {
     const root = await mkdtemp(join(tmpdir(), 'iris-provider-model-query-'));
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn(async () => new Response('invalid key: sk-secret', { status: 401 }));
+    globalThis.fetch = vi.fn(async (input) => String(input).includes('healthy.example.com')
+      ? new Response(JSON.stringify({ data: [{ id: 'healthy-model' }] }), { status: 200 })
+      : new Response('upstream unavailable: sk-secret', { status: 502 }));
     try {
+      await addIrisAgentProviderProfile({
+        name: 'Healthy provider',
+        templateId: 'openai-compatible',
+        baseUrl: 'https://healthy.example.com/v1',
+        apiKey: 'sk-healthy',
+      }, root);
       await addIrisAgentProviderProfile({
         name: 'Unavailable provider',
         templateId: 'anthropic-compatible',
@@ -585,9 +599,63 @@ describe('Iris Pi adapter', () => {
       }, root);
 
       const catalog = await loadIrisModelCatalog(root, root);
+      expect(catalog.models).toContainEqual(expect.objectContaining({
+        modelId: 'healthy-model',
+        providerName: 'Healthy provider',
+      }));
       expect(catalog.models.some((model) => model.providerName === 'Unavailable provider')).toBe(false);
-      expect(catalog.error).toContain('Could not load models for Anthropic Compatible: HTTP 401');
+      expect(catalog.error).toContain(
+        'Unavailable provider: Could not load models for Anthropic Compatible: HTTP 502',
+      );
       expect(JSON.stringify(catalog)).not.toContain('sk-secret');
+
+      const profiles = await loadStoredIrisAgentProviderProfiles(root);
+      const healthy = profiles.find((profile) => profile.name === 'Healthy provider')!;
+      const fetchMock = vi.mocked(globalThis.fetch);
+      fetchMock.mockClear();
+      await expect(resolveIrisModelBaseUrl(root, root, {
+        provider: runtimeProviderId(healthy.id),
+        modelId: 'healthy-model',
+      })).resolves.toBe('https://healthy.example.com/v1');
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('starts custom provider model discovery concurrently', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'iris-provider-model-concurrent-'));
+    const originalFetch = globalThis.fetch;
+    let resolveSlow!: (response: Response) => void;
+    const slowResponse = new Promise<Response>((resolve) => { resolveSlow = resolve; });
+    globalThis.fetch = vi.fn(async (input) => String(input).includes('slow.example.com')
+      ? slowResponse
+      : new Response(JSON.stringify({ data: [{ id: 'fast-model' }] }), { status: 200 }));
+    try {
+      await addIrisAgentProviderProfile({
+        name: 'Slow provider',
+        templateId: 'openai-compatible',
+        baseUrl: 'https://slow.example.com/v1',
+        apiKey: 'sk-slow',
+      }, root);
+      await addIrisAgentProviderProfile({
+        name: 'Fast provider',
+        templateId: 'openai-compatible',
+        baseUrl: 'https://fast.example.com/v1',
+        apiKey: 'sk-fast',
+      }, root);
+
+      const pending = loadIrisModelCatalog(root, root);
+      await vi.waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2));
+      resolveSlow(new Response(JSON.stringify({ data: [{ id: 'slow-model' }] }), { status: 200 }));
+
+      await expect(pending).resolves.toMatchObject({
+        models: expect.arrayContaining([
+          expect.objectContaining({ modelId: 'slow-model', providerName: 'Slow provider' }),
+          expect.objectContaining({ modelId: 'fast-model', providerName: 'Fast provider' }),
+        ]),
+      });
     } finally {
       globalThis.fetch = originalFetch;
       await rm(root, { recursive: true, force: true });

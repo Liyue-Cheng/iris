@@ -41,6 +41,8 @@ import type {
   IrisAgentSessionChangedPayload,
   IrisAgentSessionDestroyedPayload,
   IrisAgentSessionInfo,
+  IrisAgentTerminalReplay,
+  IrisAgentTerminalOutputPayload,
   IrisScanResult,
   PingResult,
   ProjectOpenResult,
@@ -1102,10 +1104,10 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
 
   ipcMain.handle(
     CHANNELS.IRIS_AGENT_MODELS,
-    (event, payload: ProjectScopedPayload): Promise<IrisAgentModelCatalog> => {
+    (event, payload: { forceRefresh?: boolean } & ProjectScopedPayload): Promise<IrisAgentModelCatalog> => {
       const ctx = requireContext(event);
       requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_MODELS);
-      return ctx.agentSessionManager.listModels();
+      return ctx.agentSessionManager.listModels(payload.forceRefresh === true);
     },
   );
 
@@ -1206,6 +1208,60 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       );
       const error = await shell.openPath(target);
       if (error) throw new Error(`[${CHANNELS.IRIS_AGENT_OPEN_CONTEXT}] ${error}`);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_TERMINAL_REPLAY,
+    (
+      event,
+      payload: { sessionId: string; terminalId: string; cols: number; rows: number } & ProjectScopedPayload,
+    ): Promise<IrisAgentTerminalReplay> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_TERMINAL_REPLAY);
+      return ctx.agentSessionManager.replayTerminal(
+        scope, payload.sessionId, payload.terminalId, payload.cols, payload.rows,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_TERMINAL_INPUT,
+    (
+      event,
+      payload: { sessionId: string; terminalId: string; data: string } & ProjectScopedPayload,
+    ): Promise<void> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_TERMINAL_INPUT);
+      return ctx.agentSessionManager.writeTerminal(scope, payload.sessionId, payload.terminalId, payload.data);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_TERMINAL_RESIZE,
+    (
+      event,
+      payload: { sessionId: string; terminalId: string; cols: number; rows: number } & ProjectScopedPayload,
+    ): Promise<void> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_TERMINAL_RESIZE);
+      return ctx.agentSessionManager.resizeTerminal(
+        scope, payload.sessionId, payload.terminalId, payload.cols, payload.rows,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_SUPERVISION_CONTINUE,
+    (
+      event,
+      payload: { sessionId: string; terminalId: string } & ProjectScopedPayload,
+    ): Promise<IrisAgentSessionInfo> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_SUPERVISION_CONTINUE);
+      return ctx.agentSessionManager.continueTerminalSupervision(
+        scope, payload.sessionId, payload.terminalId,
+      );
     },
   );
 
@@ -1324,6 +1380,8 @@ export function wireBroadcasts(
     send(EVENTS.IRIS_AGENT_SESSION_CHANGED, e);
   const onAgentDestroyed = (e: IrisAgentSessionDestroyedPayload): void =>
     send(EVENTS.IRIS_AGENT_SESSION_DESTROYED, e);
+  const onAgentTerminalOutput = (e: IrisAgentTerminalOutputPayload): void =>
+    send(EVENTS.IRIS_AGENT_TERMINAL_OUTPUT, e);
   const onMaximize = (): void => send(EVENTS.WINDOW_MAXIMIZED_CHANGED, { maximized: true });
   const onUnmaximize = (): void => send(EVENTS.WINDOW_MAXIMIZED_CHANGED, { maximized: false });
 
@@ -1341,6 +1399,7 @@ export function wireBroadcasts(
   sessionManager.on('sessionDestroyed', onDestroyed);
   agentSessionManager.on('sessionChanged', onAgentChanged);
   agentSessionManager.on('sessionDestroyed', onAgentDestroyed);
+  agentSessionManager.on('terminalOutput', onAgentTerminalOutput);
   return () => {
     window.off('maximize', onMaximize);
     window.off('unmaximize', onUnmaximize);
@@ -1356,5 +1415,6 @@ export function wireBroadcasts(
     sessionManager.off('sessionDestroyed', onDestroyed);
     agentSessionManager.off('sessionChanged', onAgentChanged);
     agentSessionManager.off('sessionDestroyed', onAgentDestroyed);
+    agentSessionManager.off('terminalOutput', onAgentTerminalOutput);
   };
 }

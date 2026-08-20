@@ -1,5 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import { join } from 'node:path';
 import type { ProjectManager } from '../project-manager';
 import type { SettingsManager } from '../settings-manager';
 import { assembleAgentPrompt } from './prompt';
@@ -19,13 +21,22 @@ import {
   undoLatestIrisAgentTurn,
 } from './session-domain';
 import { IrisAgentToolHost, type IrisAgentToolHostResult } from './tool-host';
-import { resolveAgentCommandShell } from './command-pty';
+import {
+  AgentCommandPty,
+  resolveAgentCommandShell,
+  type AgentCommandPtyEvent,
+  type AgentCommandPtyOptions,
+} from './command-pty';
+import { TerminalMirror } from '../terminal/terminal-mirror';
+import { AgentSupervisionLog } from './supervision';
 import type {
   AgentProviderProxy,
   AgentCorrelation,
   AgentSessionRuntimeState,
   AgentToolOperationInput,
   AgentWorkerEvent,
+  AgentTerminalSupervisionInput,
+  AgentTerminalSupervisionResult,
 } from '@shared/agent-protocol';
 import type { AgentWorkerPort } from './worker-host';
 import type {
@@ -37,6 +48,8 @@ import type {
   IrisAgentSessionChangedPayload,
   IrisAgentSessionDestroyedPayload,
   IrisAgentSessionInfo,
+  IrisAgentTerminalOutputPayload,
+  IrisAgentTerminalReplay,
   ProjectScope,
 } from '@shared/types';
 import type {
@@ -78,6 +91,9 @@ export interface IrisAgentSessionManagerOptions {
     input: AgentToolOperationInput,
     correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'turnId' | 'toolCallId' | 'operationId'>>,
   ) => Promise<IrisAgentToolHostResult>;
+  terminalFactory?: (options: AgentCommandPtyOptions) => AgentCommandPty;
+  terminalDisplayThresholdMs?: number;
+  supervisionIntervalMs?: number;
 }
 
 export interface IrisAgentCommandPrecondition {
@@ -98,7 +114,26 @@ export class IrisAgentSessionManager extends EventEmitter {
   private readonly emittedProjections = new Map<string, IrisAgentSessionInfo>();
   private currentScope: ProjectScope | null = null;
   private readonly sessionMutationChains = new Map<string, Promise<void>>();
+  private modelCatalogCache: IrisAgentModelCatalog | null = null;
+  private modelCatalogLoad: { generation: number; promise: Promise<IrisAgentModelCatalog> } | null = null;
+  private modelCatalogGeneration = 0;
   private readonly commandShell = resolveAgentCommandShell(process.env);
+  private readonly terminals = new Map<string, {
+    sessionId: string;
+    terminal: AgentCommandPty;
+    outputPath: string;
+    cursor: number;
+    plainText: string;
+    running: boolean;
+    timer?: ReturnType<typeof setTimeout>;
+  }>();
+  private readonly pendingSupervisions = new Map<string, {
+    sessionId: string;
+    workerEpoch: number;
+    resolve: (result: AgentTerminalSupervisionResult) => void;
+    reject: (error: Error) => void;
+  }>();
+  private readonly supervisionLog = new AgentSupervisionLog();
   private shuttingDown = false;
 
   constructor(
@@ -121,9 +156,11 @@ export class IrisAgentSessionManager extends EventEmitter {
     this.currentScope = input.scope;
     const store = await this.ensureStore(input.scope.root);
     await this.verifyAnchor(input.anchor);
-    const catalog = await this.loadModelCatalog();
     const preferred = this.options.settingsManager?.get().experimental.irisAgentDefaultModel ?? null;
-    const selected = catalog.models.find((candidate) => sameModel(preferred, candidate)) ?? catalog.models[0];
+    const selected = this.modelCatalogCache
+      ? this.modelCatalogCache.models.find((candidate) => sameModel(preferred, candidate)) ??
+        this.modelCatalogCache.models[0] ?? null
+      : preferred;
     const aggregate = createEmptyAgentSession({
       id: randomUUID(),
       anchor: input.anchor,
@@ -137,8 +174,8 @@ export class IrisAgentSessionManager extends EventEmitter {
     return projectAgentSession(saved, input.scope.generation);
   }
 
-  async listModels(): Promise<IrisAgentModelCatalog> {
-    return this.loadModelCatalog();
+  async listModels(forceRefresh = false): Promise<IrisAgentModelCatalog> {
+    return this.loadModelCatalog(forceRefresh);
   }
 
   async setModel(
@@ -212,61 +249,70 @@ export class IrisAgentSessionManager extends EventEmitter {
     const store = await this.ensureStore(scope.root);
     let session = await this.requireSession(scope, sessionId);
     assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
-    await this.assertUsableModel(session);
+    this.assertUsableModel(session);
     if (isAgentSessionBusy(session)) throw new Error('Iris Agent session is already running.');
     if (session.state === 'paused') {
       await this.shutdownHost(sessionId);
       session = abandonOpenAgentTurn(await this.requireSession(scope, sessionId));
     }
-    const prepared = await this.preparePrompt(session, message);
-    let assembledInputAvailable = false;
-    try {
-      await store.savePromptSnapshot(session.id, prepared.turnId, prepared.prompt);
-      assembledInputAvailable = true;
-    } catch {
-      // The run remains valid when only its optional readable artifact cannot be written.
-    }
-    const host = await this.hostFor(session, store, scope);
-    await host.ensureStarted();
-    session = await this.requireSession(scope, sessionId);
+    const turnId = randomUUID();
     const now = Date.now();
     session.turns.push({
-      id: prepared.turnId,
+      id: turnId,
       userActivityId: randomUUID(),
       state: 'running',
-      assembledInputAvailable,
+      assembledInputAvailable: false,
       createdAt: now,
     });
     const turn = session.turns[session.turns.length - 1]!;
     session.timeline.push({
       id: turn.userActivityId,
       ordinal: session.nextOrdinal++,
-      turnId: turn.id,
+      turnId,
       kind: 'user',
       content: message,
-      assembledInputArtifactId: `assembled-input:${turn.id}`,
+      assembledInputArtifactId: `assembled-input:${turnId}`,
       createdAt: now,
     });
-    session.transcript.push({
-      id: `turn-input:${prepared.turnId}`,
-      turnId: turn.id,
-      role: 'user',
-      content: prepared.prompt,
-      createdAt: now,
-    });
-    session.requestFacts.push(prepared.facts);
-    session.currentTurnId = turn.id;
-    session.state = 'running';
-    const running = await store.commit(session);
+    session.currentTurnId = turnId;
+    session.state = 'starting';
+    let running = await store.commit(session);
     this.emitChanged(scope, running);
-    const correlation = activeTurnCorrelation(store.get(sessionId) ?? running, host.workerEpoch);
     try {
+      const prepared = await this.preparePrompt(running, message, turnId);
+      let assembledInputAvailable = false;
+      try {
+        await store.savePromptSnapshot(session.id, prepared.turnId, prepared.prompt);
+        assembledInputAvailable = true;
+      } catch {
+        // The run remains valid when only its optional readable artifact cannot be written.
+      }
+      const host = await this.hostFor(running, store, scope);
+      await host.ensureStarted();
+      session = await this.requireSession(scope, sessionId);
+      const acceptedTurn = session.turns.find((candidate) => candidate.id === turnId);
+      if (!acceptedTurn || acceptedTurn.state !== 'running' || session.currentTurnId !== turnId) {
+        throw new Error('The Iris Agent Turn changed while its runtime was starting.');
+      }
+      acceptedTurn.assembledInputAvailable = assembledInputAvailable;
+      session.transcript.push({
+        id: `turn-input:${prepared.turnId}`,
+        turnId,
+        role: 'user',
+        content: prepared.prompt,
+        createdAt: now,
+      });
+      session.requestFacts.push(prepared.facts);
+      session.state = 'running';
+      running = await store.commit(session);
+      this.emitChanged(scope, running);
+      const correlation = activeTurnCorrelation(running, host.workerEpoch);
       await host.post({ type: 'run', correlation, prompt: prepared.prompt });
+      return projectAgentSession(store.get(sessionId) ?? running, scope.generation);
     } catch (error) {
-      await this.pauseSessionExecution(sessionId, errorMessage(error), correlation, 'runtime');
+      await this.pauseSessionExecution(sessionId, errorMessage(error), undefined, 'runtime');
       throw error;
     }
-    return projectAgentSession(store.get(sessionId) ?? running, scope.generation);
   }
 
   async stop(
@@ -298,6 +344,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       }
       const latest = store.get(sessionId) ?? session;
       const correlation = activeTurnCorrelation(latest, latest.workerEpoch);
+      this.abortSessionTerminals(sessionId);
       await this.shutdownHost(sessionId);
       const paused = await this.pauseTurn(
         scope, store, store.get(sessionId) ?? latest, correlation, 'user', 'Paused by user.',
@@ -327,7 +374,7 @@ export class IrisAgentSessionManager extends EventEmitter {
         this.emitChanged(scope, session);
         if (!session.currentTurnId) return projectAgentSession(session, scope.generation);
       }
-      await this.assertUsableModel(session);
+      this.assertUsableModel(session);
       await this.shutdownHost(sessionId);
       const host = await this.hostFor(session, store, scope);
       await host.ensureStarted();
@@ -387,6 +434,85 @@ export class IrisAgentSessionManager extends EventEmitter {
     throw new Error('No context artifact is available for this Iris Agent turn.');
   }
 
+  async replayTerminal(
+    scope: ProjectScope,
+    sessionId: string,
+    terminalId: string,
+    cols: number,
+    rows: number,
+  ): Promise<IrisAgentTerminalReplay> {
+    const session = await this.requireSession(scope, sessionId);
+    const activity = terminalActivity(session, terminalId);
+    const artifactRef = activity ? terminalArtifactRef(session, activity) : undefined;
+    if (!activity || !artifactRef) throw new Error('Iris Agent terminal was not found.');
+    const live = this.terminals.get(terminalId);
+    if (live?.sessionId === sessionId) {
+      live.terminal.resize(cols, rows);
+      return live.terminal.replay();
+    }
+    const store = await this.ensureStore(scope.root);
+    const bytes = await fs.readFile(join(store.artifactRoot(sessionId), ...artifactRef.split('/')));
+    const mirror = new TerminalMirror(cols, rows, 5000);
+    try {
+      mirror.write(bytes.toString('utf8'));
+      await mirror.fence(250, () => undefined);
+      return { data: Buffer.from(mirror.serialize(5000), 'utf8').toString('base64'), cursor: bytes.length };
+    } finally {
+      mirror.dispose();
+    }
+  }
+
+  async writeTerminal(
+    scope: ProjectScope,
+    sessionId: string,
+    terminalId: string,
+    data: string,
+  ): Promise<void> {
+    const session = await this.requireSession(scope, sessionId);
+    if (!terminalActivity(session, terminalId)) throw new Error('Iris Agent terminal was not found.');
+    const live = this.terminals.get(terminalId);
+    if (!live || live.sessionId !== sessionId || !live.running) {
+      throw new Error('Iris Agent terminal is no longer running.');
+    }
+    live.terminal.write(data);
+    const activity = terminalActivity(session, terminalId);
+    if (activity && !activity.terminalUserInput) {
+      activity.terminalUserInput = true;
+      await this.commitAndEmit(scope, await this.ensureStore(scope.root), session);
+    }
+  }
+
+  async resizeTerminal(
+    scope: ProjectScope,
+    sessionId: string,
+    terminalId: string,
+    cols: number,
+    rows: number,
+  ): Promise<void> {
+    const session = await this.requireSession(scope, sessionId);
+    if (!terminalActivity(session, terminalId)) throw new Error('Iris Agent terminal was not found.');
+    const live = this.terminals.get(terminalId);
+    if (live?.sessionId === sessionId) live.terminal.resize(cols, rows);
+  }
+
+  async continueTerminalSupervision(
+    scope: ProjectScope,
+    sessionId: string,
+    terminalId: string,
+  ): Promise<IrisAgentSessionInfo> {
+    return this.runSessionCommand(sessionId, async () => {
+      const store = await this.ensureStore(scope.root);
+      const session = await this.requireSession(scope, sessionId);
+      if (session.terminalSupervisionAlert?.terminalId !== terminalId) {
+        return projectAgentSession(session, scope.generation);
+      }
+      delete session.terminalSupervisionAlert;
+      const saved = await this.commitAndEmit(scope, store, session);
+      this.scheduleTerminalSupervision(sessionId, terminalId);
+      return projectAgentSession(saved, scope.generation);
+    });
+  }
+
   async closeSession(
     scope: ProjectScope,
     sessionId: string,
@@ -397,6 +523,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       const session = await this.requireSession(scope, sessionId);
       assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
       await this.shutdownHost(sessionId);
+      this.abortSessionTerminals(sessionId);
       await store.delete(sessionId);
       this.emittedProjections.delete(sessionId);
       this.emit('sessionDestroyed', { scope, sessionId } satisfies IrisAgentSessionDestroyedPayload);
@@ -406,6 +533,7 @@ export class IrisAgentSessionManager extends EventEmitter {
   async closeProject(scope: ProjectScope): Promise<void> {
     const store = await this.ensureStore(scope.root);
     await Promise.allSettled(store.list().map((session) => this.runSessionCommand(session.id, async () => {
+      this.abortSessionTerminals(session.id);
       await this.shutdownHost(session.id);
       const latest = store.get(session.id);
       if (!latest || !isAgentSessionBusy(latest)) return;
@@ -427,15 +555,22 @@ export class IrisAgentSessionManager extends EventEmitter {
   }
 
   async reloadProviderConfiguration(): Promise<void> {
+    this.invalidateModelCatalog();
     const ids = [...this.hosts.keys()];
     await Promise.all(ids.map((id) => this.shutdownHost(id)));
   }
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    for (const terminal of this.terminals.values()) terminal.terminal.abort();
+    for (const pending of this.pendingSupervisions.values()) {
+      pending.reject(new Error('Iris Agent manager shut down during terminal supervision.'));
+    }
+    this.pendingSupervisions.clear();
     await Promise.allSettled([...this.hosts.values()].map((host) => host.shutdown('shutdown')));
     await Promise.allSettled([...this.sessionMutationChains.values()]);
     this.hosts.clear();
+    this.terminals.clear();
     this.sessionMutationChains.clear();
     this.emittedProjections.clear();
     await this.loaded?.store.flush();
@@ -443,7 +578,11 @@ export class IrisAgentSessionManager extends EventEmitter {
     this.loaded = null;
   }
 
-  private async preparePrompt(session: AgentSessionAggregate, userMessage: string): Promise<PreparedAgentTurn> {
+  private async preparePrompt(
+    session: AgentSessionAggregate,
+    userMessage: string,
+    turnId = randomUUID(),
+  ): Promise<PreparedAgentTurn> {
     const promptState = await this.projectManager.softwarePromptState();
     const anchorText = await this.readAnchorText(session.anchor);
     const assembled = assembleAgentPrompt({
@@ -453,7 +592,6 @@ export class IrisAgentSessionManager extends EventEmitter {
         ? { path: anchorText.path, text: anchorText.text }
         : { workspacePath: anchorText.workspacePath, text: anchorText.text },
     });
-    const turnId = randomUUID();
     const prompt = assembled.text + '\n\n<user-request>\n' + userMessage + '\n</user-request>';
     return {
       prompt,
@@ -530,12 +668,22 @@ export class IrisAgentSessionManager extends EventEmitter {
     });
     host.on('workerError', (error: Error) => {
       if (this.hosts.get(session.id) === host) {
+        this.rejectPendingSupervisions(
+          session.id,
+          host.workerEpoch,
+          'Iris Agent Worker failed during terminal supervision.',
+        );
         void this.enqueueSessionMutation(session.id, () =>
           this.pauseSessionExecution(session.id, error.message, undefined, 'worker'));
       }
     });
     host.on('crash', (code: number) => {
       if (this.hosts.get(session.id) === host) {
+        this.rejectPendingSupervisions(
+          session.id,
+          host.workerEpoch,
+          'Iris Agent Worker crashed during terminal supervision.',
+        );
         void this.enqueueSessionMutation(session.id, () => this.pauseSessionExecution(
           session.id, 'Iris Agent Worker crashed with code ' + String(code), undefined, 'worker'));
       }
@@ -600,6 +748,14 @@ export class IrisAgentSessionManager extends EventEmitter {
       case 'provider-attempt':
         await this.applyProviderAttemptEvent(scope, store, session, event);
         return;
+      case 'terminal-supervision-result': {
+        const pending = this.pendingSupervisions.get(event.supervisionId);
+        if (pending) {
+          this.pendingSupervisions.delete(event.supervisionId);
+          pending.resolve(event.result);
+        }
+        return;
+      }
       case 'execution-paused':
         await this.pauseSessionExecution(
           session.id,
@@ -702,7 +858,11 @@ export class IrisAgentSessionManager extends EventEmitter {
         inputSummary: compactToolInput(event.input),
         operation: event.input.operation,
         ...(event.input.tool === 'terminal'
-          ? { command: event.input.command, cwd: event.input.cwd }
+          ? {
+              command: event.input.command,
+              cwd: event.input.cwd,
+              terminalSuccessExitCodes: event.input.successExitCodes ?? [0],
+            }
           : {}),
         effectIds: [],
         createdAt: Date.now(),
@@ -731,6 +891,31 @@ export class IrisAgentSessionManager extends EventEmitter {
           projectRoot: scope.root,
           artifactRoot: store.artifactRoot(session.id),
           commandShell: this.commandShell,
+          displayThresholdMs: this.options.terminalDisplayThresholdMs ?? 3_000,
+          ...(this.options.terminalFactory
+            ? { terminalFactory: this.options.terminalFactory }
+            : {}),
+          onTerminalCreated: (terminal, context) => {
+            this.terminals.set(context.terminalId, {
+              sessionId: session.id,
+              terminal,
+              outputPath: context.outputPath,
+              cursor: 0,
+              plainText: '',
+              running: true,
+            });
+            void this.enqueueSessionMutation(session.id, () => this.recordTerminalStarted(
+              scope,
+              store,
+              session.id,
+              context.terminalId,
+              context.correlation,
+            ));
+            this.scheduleTerminalSupervision(session.id, context.terminalId);
+          },
+          onTerminalEvent: (terminalEvent, context) => {
+            this.handleTerminalEvent(scope, store, session.id, terminalEvent, context.correlation);
+          },
         }).execute(event.input, operationCorrelation);
     void execution.then((executed) => this.enqueueSessionMutation(session.id, () => this.settleToolOperation(
       scope,
@@ -752,6 +937,8 @@ export class IrisAgentSessionManager extends EventEmitter {
     executed: IrisAgentToolHostResult,
   ): Promise<void> {
     const correlation = event.correlation;
+    const terminalExecution = executed.result.kind === 'terminal' ? executed.result : null;
+    if (terminalExecution) this.releaseTerminal(terminalExecution.terminalId);
     const latest = store.get(sessionId);
     if (!latest) return;
     const target = latest.timeline.find(
@@ -761,17 +948,40 @@ export class IrisAgentSessionManager extends EventEmitter {
     const operation = latest.toolOperations.find((candidate) => candidate.id === correlation.operationId);
     if (!operation) return;
     if (operation.state !== 'running') {
+      const lateTerminalResult = terminalExecution !== null && target.tool === 'terminal';
+      if (lateTerminalResult) {
+        target.terminalId = terminalExecution.terminalId;
+        target.terminalState = 'exited';
+        if (target.state === 'canceled') target.terminalOutcome = 'canceled';
+        else if (executed.update.terminalOutcome) {
+          target.terminalOutcome = executed.update.terminalOutcome;
+        }
+        target.terminalCompletedAt = executed.update.terminalCompletedAt ?? executed.update.completedAt;
+        if (executed.update.terminalExitCode !== undefined) {
+          target.terminalExitCode = executed.update.terminalExitCode;
+        }
+        if (executed.update.terminalSuccessExitCodes !== undefined) {
+          target.terminalSuccessExitCodes = executed.update.terminalSuccessExitCodes;
+        }
+        if (executed.update.terminalOutputBytes !== undefined) {
+          target.terminalOutputBytes = executed.update.terminalOutputBytes;
+        }
+        if (executed.update.terminalOutputPreview !== undefined) {
+          target.terminalOutputPreview = executed.update.terminalOutputPreview;
+        }
+      }
       const lateEffects = executed.effects.filter(
         (effect) => !latest.effects.some((candidate) => candidate.id === effect.id),
       );
-      if (lateEffects.length === 0) return;
+      if (lateEffects.length === 0 && !lateTerminalResult) return;
       latest.effects.push(...lateEffects);
       await this.commitAndEmit(scope, store, latest);
       return;
     }
-    operation.state = executed.update.state === 'failed' ? 'failed' : 'completed';
+    const terminalResult = terminalExecution !== null;
+    operation.state = executed.update.state === 'failed' && !terminalResult ? 'failed' : 'completed';
     operation.completedAt = executed.update.completedAt;
-    if (executed.update.state === 'failed') {
+    if (operation.state === 'failed') {
       operation.error = executed.update.error ?? 'Iris Agent tool failed';
     }
     else operation.result = structuredClone(executed.result);
@@ -788,12 +998,15 @@ export class IrisAgentSessionManager extends EventEmitter {
     );
     if (target.state === 'running') target.effectIds.push(...newEffects.map((effect) => effect.id));
     latest.effects.push(...newEffects);
+    if (terminalResult && latest.terminalSupervisionAlert?.terminalId === target.terminalId) {
+      delete latest.terminalSupervisionAlert;
+    }
     if (latest.state === 'waiting-tool' && matchesActiveAgentTurn(latest, correlation)) latest.state = 'running';
     await this.commitAndEmit(scope, store, latest);
     const settled = store.get(sessionId) ?? latest;
     if (currentAgentTurn(settled)?.state !== 'running' || !matchesActiveAgentTurn(settled, correlation)) return;
     await this.hosts.get(sessionId)?.post(
-      executed.update.state === 'failed'
+      executed.update.state === 'failed' && !terminalResult
         ? {
             type: 'tool-result',
             correlation,
@@ -802,6 +1015,178 @@ export class IrisAgentSessionManager extends EventEmitter {
           }
         : { type: 'tool-result', correlation, ok: true, result: executed.result },
     );
+  }
+
+  private async recordTerminalStarted(
+    scope: ProjectScope,
+    store: IrisAgentSessionStore,
+    sessionId: string,
+    terminalId: string,
+    correlation: AgentCorrelation,
+  ): Promise<void> {
+    const session = store.get(sessionId);
+    if (!session || !correlation.toolCallId) return;
+    const activity = session.timeline.find(
+      (candidate): candidate is AgentToolActivity =>
+        candidate.kind === 'tool' && candidate.toolCallId === correlation.toolCallId,
+    );
+    if (!activity || activity.terminalId) return;
+    activity.terminalId = terminalId;
+    activity.terminalArtifactRef = `terminal/${terminalId}.log`;
+    activity.terminalState = 'running';
+    activity.terminalStartedAt = Date.now();
+    await this.commitAndEmit(scope, store, session);
+  }
+
+  private handleTerminalEvent(
+    scope: ProjectScope,
+    store: IrisAgentSessionStore,
+    sessionId: string,
+    event: AgentCommandPtyEvent,
+    correlation: AgentCorrelation,
+  ): void {
+    if (event.type === 'output' && event.cursor !== undefined && event.data) {
+      this.emit('terminalOutput', {
+        sessionId,
+        terminalId: event.terminalId,
+        cursor: event.cursor,
+        data: event.data,
+      } satisfies IrisAgentTerminalOutputPayload);
+      return;
+    }
+    if (event.type === 'completed') {
+      const terminal = this.terminals.get(event.terminalId);
+      if (terminal) {
+        terminal.running = false;
+        if (terminal.timer) clearTimeout(terminal.timer);
+        delete terminal.timer;
+      }
+      return;
+    }
+    if (event.type !== 'shown') return;
+    void this.enqueueSessionMutation(sessionId, async () => {
+      const session = store.get(sessionId);
+      if (!session || !correlation.toolCallId) return;
+      const activity = session.timeline.find(
+        (candidate): candidate is AgentToolActivity =>
+          candidate.kind === 'tool' && candidate.toolCallId === correlation.toolCallId,
+      );
+      if (!activity || activity.terminalRevealedAt) return;
+      activity.terminalId = event.terminalId;
+      activity.terminalArtifactRef ??= `terminal/${event.terminalId}.log`;
+      activity.terminalState = 'running';
+      activity.terminalStartedAt ??= Date.now();
+      activity.terminalRevealedAt = Date.now();
+      await this.commitAndEmit(scope, store, session);
+    });
+  }
+
+  private scheduleTerminalSupervision(sessionId: string, terminalId: string): void {
+    const terminal = this.terminals.get(terminalId);
+    if (!terminal || terminal.sessionId !== sessionId || !terminal.running || terminal.timer) return;
+    terminal.timer = setTimeout(() => {
+      delete terminal.timer;
+      void this.runTerminalSupervision(sessionId, terminalId).catch(() => {
+        this.scheduleTerminalSupervision(sessionId, terminalId);
+      });
+    }, this.options.supervisionIntervalMs ?? 20_000);
+  }
+
+  private async runTerminalSupervision(sessionId: string, terminalId: string): Promise<void> {
+    const terminal = this.terminals.get(terminalId);
+    if (!terminal || terminal.sessionId !== sessionId || !terminal.running) return;
+    const observation = await terminal.terminal.observation();
+    if (!observation.running) return;
+    if (observation.cursor <= terminal.cursor) {
+      this.scheduleTerminalSupervision(sessionId, terminalId);
+      return;
+    }
+    const cursorStart = terminal.cursor;
+    const overlapOutput = terminal.plainText.slice(-2_000);
+    const incrementalOutput = observation.text.startsWith(terminal.plainText)
+      ? observation.text.slice(terminal.plainText.length)
+      : observation.text.slice(-32_000);
+    terminal.cursor = observation.cursor;
+    terminal.plainText = observation.text;
+    if (!incrementalOutput.trim()) {
+      this.scheduleTerminalSupervision(sessionId, terminalId);
+      return;
+    }
+    const scope = this.currentScope;
+    const store = this.loaded?.store;
+    const session = store?.get(sessionId);
+    const activity = session ? terminalActivity(session, terminalId) : undefined;
+    if (!scope || !store || !session || !activity || activity.state !== 'running') return;
+    const input: AgentTerminalSupervisionInput = {
+      terminalId,
+      command: activity.command ?? activity.inputSummary,
+      cursorStart,
+      cursorEnd: observation.cursor,
+      overlapOutput,
+      incrementalOutput: incrementalOutput.slice(-32_000),
+      processState: 'running',
+    };
+    let result: AgentTerminalSupervisionResult;
+    try {
+      result = await this.requestTerminalSupervision(sessionId, input);
+    } catch {
+      this.scheduleTerminalSupervision(sessionId, terminalId);
+      return;
+    }
+    if (!terminal.running) return;
+    this.supervisionLog.record({
+      terminalId,
+      cursorStart,
+      cursorEnd: observation.cursor,
+      outcome: result.outcome,
+      ...(result.usageTokens === undefined ? {} : { usageTokens: result.usageTokens }),
+    });
+    if (result.outcome !== 'suspicious') {
+      this.scheduleTerminalSupervision(sessionId, terminalId);
+      return;
+    }
+    await this.enqueueSessionMutation(sessionId, async () => {
+      const latest = store.get(sessionId);
+      if (
+        !terminal.running || !latest ||
+        terminalActivity(latest, terminalId)?.state !== 'running'
+      ) return;
+      latest.terminalSupervisionAlert = {
+        terminalId,
+        evidence: result.evidence ?? 'The terminal supervisor detected suspicious output.',
+        createdAt: Date.now(),
+      };
+      await this.commitAndEmit(scope, store, latest);
+    });
+  }
+
+  private async requestTerminalSupervision(
+    sessionId: string,
+    input: AgentTerminalSupervisionInput,
+  ): Promise<AgentTerminalSupervisionResult> {
+    const host = this.hosts.get(sessionId);
+    if (!host) throw new Error('Iris Agent Worker is unavailable for terminal supervision.');
+    const supervisionId = randomUUID();
+    const result = new Promise<AgentTerminalSupervisionResult>((resolve, reject) => {
+      this.pendingSupervisions.set(supervisionId, {
+        sessionId,
+        workerEpoch: host.workerEpoch,
+        resolve,
+        reject,
+      });
+    });
+    try {
+      await host.post({
+        type: 'supervise-terminal',
+        correlation: { sessionId, workerEpoch: host.workerEpoch },
+        supervisionId,
+        input,
+      });
+    } catch (error) {
+      this.pendingSupervisions.delete(supervisionId);
+      throw error;
+    }
+    return result;
   }
 
   private async applyAssistantTextDelta(
@@ -955,6 +1340,7 @@ export class IrisAgentSessionManager extends EventEmitter {
     const store = await this.ensureStore(scope.root);
     const session = store.get(sessionId);
     if (!session?.currentTurnId) return;
+    this.abortSessionTerminals(sessionId);
     await this.shutdownHost(sessionId);
     const latest = store.get(sessionId) ?? session;
     if (currentAgentTurn(latest)?.state === 'paused') return;
@@ -987,23 +1373,46 @@ export class IrisAgentSessionManager extends EventEmitter {
     return session;
   }
 
-  private async assertUsableModel(session: AgentSessionAggregate): Promise<void> {
+  private assertUsableModel(session: AgentSessionAggregate): void {
     if (!session.model) throw new Error('Select an available provider/model before using Iris Agent.');
-    const catalog = await this.loadModelCatalog();
-    if (!catalog.models.some((candidate) => sameModel(session.model, candidate))) {
-      throw new Error(`The configured Iris Agent model is unavailable: ${session.model.provider}/${session.model.modelId}`);
-    }
   }
 
   private async verifyAnchor(anchor: IrisAgentAnchor): Promise<void> {
     if (anchor.kind === 'document') await this.projectManager.readDoc(anchor.path);
   }
 
-  private async loadModelCatalog(): Promise<IrisAgentModelCatalog> {
-    return this.options.modelCatalogLoader?.() ?? loadIrisModelCatalog(
+  private async loadModelCatalog(forceRefresh = false): Promise<IrisAgentModelCatalog> {
+    if (
+      forceRefresh &&
+      this.modelCatalogLoad?.generation !== this.modelCatalogGeneration
+    ) {
+      this.invalidateModelCatalog();
+    }
+    if (this.modelCatalogCache) return structuredClone(this.modelCatalogCache);
+    const generation = this.modelCatalogGeneration;
+    if (this.modelCatalogLoad?.generation === generation) {
+      return structuredClone(await this.modelCatalogLoad.promise);
+    }
+    const promise = (this.options.modelCatalogLoader?.() ?? loadIrisModelCatalog(
       irisPiAgentDir(),
       this.options.providerProfileRoot ?? this.userDataPath,
-    );
+    )).then((catalog) => {
+      if (this.modelCatalogGeneration === generation) {
+        this.modelCatalogCache = structuredClone(catalog);
+      }
+      return catalog;
+    });
+    this.modelCatalogLoad = { generation, promise };
+    try {
+      return structuredClone(await promise);
+    } finally {
+      if (this.modelCatalogLoad?.promise === promise) this.modelCatalogLoad = null;
+    }
+  }
+
+  private invalidateModelCatalog(): void {
+    this.modelCatalogGeneration += 1;
+    this.modelCatalogCache = null;
   }
 
   private async ensureStore(projectRoot: string): Promise<IrisAgentSessionStore> {
@@ -1018,7 +1427,43 @@ export class IrisAgentSessionManager extends EventEmitter {
   private async shutdownHost(sessionId: string): Promise<void> {
     const host = this.hosts.get(sessionId);
     if (host) this.hosts.delete(sessionId);
+    if (host) {
+      this.rejectPendingSupervisions(
+        sessionId,
+        host.workerEpoch,
+        'Iris Agent Worker stopped during terminal supervision.',
+      );
+    }
     await host?.shutdown('shutdown');
+  }
+
+  private rejectPendingSupervisions(
+    sessionId: string,
+    workerEpoch: number,
+    message: string,
+  ): void {
+    for (const [supervisionId, pending] of this.pendingSupervisions) {
+      if (pending.sessionId !== sessionId || pending.workerEpoch !== workerEpoch) continue;
+      this.pendingSupervisions.delete(supervisionId);
+      pending.reject(new Error(message));
+    }
+  }
+
+  private abortSessionTerminals(sessionId: string): void {
+    for (const terminal of this.terminals.values()) {
+      if (terminal.sessionId !== sessionId) continue;
+      if (terminal.timer) clearTimeout(terminal.timer);
+      terminal.running = false;
+      terminal.terminal.abort();
+    }
+  }
+
+  private releaseTerminal(terminalId: string): void {
+    const terminal = this.terminals.get(terminalId);
+    if (!terminal || terminal.running) return;
+    if (terminal.timer) clearTimeout(terminal.timer);
+    terminal.terminal.dispose();
+    this.terminals.delete(terminalId);
   }
 
   private runSessionCommand<T>(sessionId: string, command: () => Promise<T>): Promise<T> {
@@ -1280,6 +1725,25 @@ function sameModel(left: IrisAgentModelRef | null, right: IrisAgentModelRef): bo
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function terminalActivity(
+  session: AgentSessionAggregate,
+  terminalId: string,
+): AgentToolActivity | undefined {
+  return session.timeline.find(
+    (activity): activity is AgentToolActivity =>
+      activity.kind === 'tool' && activity.tool === 'terminal' && activity.terminalId === terminalId,
+  );
+}
+
+function terminalArtifactRef(
+  session: AgentSessionAggregate,
+  activity: AgentToolActivity,
+): string | undefined {
+  return activity.terminalArtifactRef ?? session.effects.find(
+    (effect) => effect.kind === 'terminal-output' && effect.toolActivityId === activity.id,
+  )?.artifactRef;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
