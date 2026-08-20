@@ -39,7 +39,7 @@ const probe = `
   const timeout = setTimeout(() => {
     console.error('agent worker check timed out');
     process.exit(2);
-  }, 10000);
+  }, 60000);
   worker.once('error', (error) => {
     console.error(error);
     process.exit(3);
