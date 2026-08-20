@@ -69,7 +69,6 @@ import {
 import {
   AppError,
   type AppErrorDomain,
-  type PromptNotReadyDetails,
 } from '@shared/app-error';
 
 /** Entry files Iris may write the `<iris-software>` block into. */
@@ -95,8 +94,7 @@ export class ProjectError<TDetails = unknown> extends AppError<TDetails> {
       | 'ReadFailed'
       | 'WriteConflict'
       | 'WriteFailed'
-      | 'InvalidPayload'
-      | 'PromptNotReady',
+      | 'InvalidPayload',
     message: string,
     options: {
       domain?: AppErrorDomain;
@@ -728,89 +726,6 @@ export class ProjectManager extends EventEmitter {
   /** Back-compatible alias: a repair now restores both managed layers. */
   async restoreProjectPromptEntry(relPath: string): Promise<SoftwarePromptState> {
     return this.syncSoftwareEntry(relPath);
-  }
-
-  /** Sessions only start after settings validation/migration and projection. */
-  async assertProjectSettingsReady(): Promise<void> {
-    const root = this.requireRoot();
-    if (!(await exists(join(root, '.iris')))) return;
-    const settings = await readProjectSettings(root);
-    if (this.projectPromptConflicts.length > 0) {
-      throw new ProjectError<PromptNotReadyDetails>(
-        'PromptNotReady',
-        'Resolve the project settings migration conflict before starting a terminal',
-        {
-          domain: 'prompt',
-          details: {
-            repairable: false,
-            issues: this.projectPromptConflicts.map((conflict) => ({
-              layer: 'project',
-              path: conflict.path,
-              state: 'conflict',
-            })),
-          },
-        },
-      );
-    }
-    if (!settings.exists || settings.error) {
-      throw new ProjectError<PromptNotReadyDetails>(
-        'PromptNotReady',
-        settings.error ?? 'Project settings is missing',
-        {
-          domain: 'prompt',
-          details: {
-            repairable: false,
-            issues: [{
-              layer: 'settings',
-              state: settings.exists ? 'invalid-settings' : 'missing',
-              message: settings.error ?? 'Project settings is missing',
-            }],
-          },
-        },
-      );
-    }
-    const state = await this.softwarePromptState();
-    const softwareReady = state.entries.every((entry) => entry.state === 'ok');
-    const projectReady =
-      state.project.state === 'synced' || state.project.state === 'missing';
-    if (!softwareReady || !projectReady) {
-      const issues: PromptNotReadyDetails['issues'] = [
-        ...state.entries
-          .filter((entry) => entry.state !== 'ok')
-          .map((entry) => ({
-            layer: 'software' as const,
-            path: entry.path,
-            state: entry.state,
-          })),
-        ...state.project.entries
-          .filter((entry) => entry.state !== 'synced')
-          .map((entry) => ({
-            layer: 'project' as const,
-            path: entry.path,
-            state: entry.state,
-            ...(entry.error ? { message: entry.error } : {}),
-          })),
-      ];
-      if (!projectReady && state.project.entries.length === 0) {
-        issues.push({
-          layer: 'project',
-          state: state.project.state,
-          ...(state.project.error ? { message: state.project.error } : {}),
-        });
-      }
-      const repairable = issues.length > 0 && issues.every(
-        (issue) =>
-          issue.state === 'missing' ||
-          issue.state === 'drifted' ||
-          issue.state === 'partial' ||
-          issue.state === 'write-failed',
-      );
-      throw new ProjectError<PromptNotReadyDetails>(
-        'PromptNotReady',
-        'Synchronize the participating agent entry files before starting a terminal',
-        { domain: 'prompt', details: { repairable, issues }, retryable: repairable },
-      );
-    }
   }
 
   /**

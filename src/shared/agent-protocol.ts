@@ -4,7 +4,7 @@ import type {
   IrisAgentProviderContextCall,
 } from './types';
 
-export const IRIS_AGENT_PROTOCOL_VERSION = 6 as const;
+export const IRIS_AGENT_PROTOCOL_VERSION = 11 as const;
 
 export type AgentToolName = 'read' | 'edit' | 'write' | 'terminal';
 export type AgentTerminalIntent = 'information' | 'operation';
@@ -12,8 +12,10 @@ export type AgentTerminalIntent = 'information' | 'operation';
 export interface AgentCorrelation {
   sessionId: string;
   workerEpoch?: number;
-  requestId?: string;
   turnId?: string;
+  providerCallId?: string;
+  attemptId?: string;
+  providerMessageId?: string;
   toolCallId?: string;
   operationId?: string;
   terminalId?: string;
@@ -24,10 +26,11 @@ export type AgentSessionRuntimeState =
   | 'ready'
   | 'running'
   | 'waiting-tool'
+  | 'retry-wait'
   | 'stopping'
   | 'idle'
   | 'interrupted'
-  | 'failed';
+  | 'paused';
 
 export interface AgentHistorySnapshot {
   revision: number;
@@ -104,15 +107,19 @@ export type AgentToolOperationResult =
 interface AgentProtocolEnvelope {
   version: typeof IRIS_AGENT_PROTOCOL_VERSION;
   correlation: AgentCorrelation;
+  eventId?: string;
 }
 
 export type AgentWorkerRequest = AgentProtocolEnvelope &
   (
     | { type: 'initialize'; history: AgentHistorySnapshot; runtime: AgentWorkerInitRuntime }
     | { type: 'run'; prompt: string }
+    | { type: 'resume'; providerCallOffset: number }
     | { type: 'abort'; reason: 'user' | 'project-switch' | 'app-quit' }
     | { type: 'tool-result'; ok: true; result: AgentToolOperationResult }
     | { type: 'tool-result'; ok: false; error: string }
+    | { type: 'event-ack'; eventId: string; ok: true }
+    | { type: 'event-ack'; eventId: string; ok: false; error: string }
     | { type: 'shutdown' }
   );
 
@@ -133,8 +140,21 @@ export type AgentWorkerEvent = AgentProtocolEnvelope &
         };
       }
     | { type: 'state'; state: AgentSessionRuntimeState }
-    | { type: 'stream'; event: unknown }
+    | { type: 'assistant-text-delta'; delta: string }
+    | { type: 'provider-message'; message: Record<string, unknown> }
     | { type: 'provider-context'; call: IrisAgentProviderContextCall }
+    | {
+        type: 'provider-attempt';
+        phase: 'started' | 'failed' | 'aborted' | 'completed';
+        index: number;
+        error?: string;
+      }
+    | {
+        type: 'execution-paused';
+        reason: 'provider-exhausted' | 'worker-crashed' | 'auth-required' | 'runtime-error';
+        message: string;
+      }
+    | { type: 'execution-settled' }
     | { type: 'tool-request'; input: AgentToolOperationInput }
     | { type: 'failure'; code: string; message: string }
     | { type: 'stopped'; reason: 'idle-timeout' | 'shutdown' }
@@ -148,11 +168,17 @@ export function isAgentWorkerRequest(value: unknown): value is AgentWorkerReques
       return isHistorySnapshot(value.history) && isInitRuntime(value.runtime);
     case 'run':
       return typeof value.prompt === 'string';
+    case 'resume':
+      return typeof value.providerCallOffset === 'number' &&
+        Number.isSafeInteger(value.providerCallOffset) && value.providerCallOffset >= 0;
     case 'abort':
       return value.reason === 'user' || value.reason === 'project-switch' || value.reason === 'app-quit';
     case 'tool-result':
       if (typeof value.ok !== 'boolean') return false;
       return value.ok ? isToolOperationResult(value.result) : typeof value.error === 'string';
+    case 'event-ack':
+      return typeof value.eventId === 'string' && value.eventId.length > 0 &&
+        typeof value.ok === 'boolean' && (value.ok || typeof value.error === 'string');
     case 'shutdown':
       return true;
     default:
@@ -170,7 +196,7 @@ function isCorrelation(value: unknown): value is AgentCorrelation {
   ) {
     return false;
   }
-  return ['requestId', 'turnId', 'toolCallId', 'operationId', 'terminalId'].every(
+  return ['turnId', 'providerCallId', 'attemptId', 'providerMessageId', 'toolCallId', 'operationId', 'terminalId'].every(
     (key) => value[key] === undefined || typeof value[key] === 'string',
   );
 }

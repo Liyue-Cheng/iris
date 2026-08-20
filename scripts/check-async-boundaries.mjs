@@ -78,7 +78,7 @@ const SAFE_VOID_CALLEES = new Map([
   ['runUserAction', 'normalizes and displays every rejection'],
   ['sendIrisAgentMessage', 'Iris Agent action boundary'],
   ['stopIrisAgent', 'Iris Agent action boundary'],
-  ['retryIrisAgent', 'Iris Agent action boundary'],
+  ['resumeIrisAgent', 'Iris Agent action boundary'],
   ['rewindIrisAgent', 'Iris Agent action boundary'],
   ['closeIrisAgent', 'Iris Agent action boundary'],
   ['offerPromptProjectionRepair', 'prompt health/action boundary'],

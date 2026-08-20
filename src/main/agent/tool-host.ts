@@ -11,19 +11,25 @@ import type {
   AgentToolOperationResult,
 } from '@shared/agent-protocol';
 import type {
-  IrisAgentFileEffect,
-  IrisAgentToolEvent,
-} from '@shared/types';
+  AgentEffect,
+  AgentDirectoryEffect,
+  AgentFileEffect,
+  AgentToolActivity,
+  AgentTerminalEffect,
+} from './session-model';
 
 export interface IrisAgentToolHostResult {
   result: AgentToolOperationResult;
-  event: IrisAgentToolEvent;
-  fileEffect?: IrisAgentFileEffect;
+  update: { state: AgentToolActivity['state']; completedAt: number } & Partial<Pick<
+    AgentToolActivity,
+    'resultSummary' | 'diff' | 'path' | 'terminalId' | 'error'
+  >>;
+  effects: AgentEffect[];
 }
 
 export interface IrisAgentToolHostOptions {
   projectRoot: string;
-  outputRoot: string;
+  artifactRoot: string;
   commandShell: AgentCommandShell;
   displayThresholdMs?: number;
 }
@@ -33,24 +39,16 @@ export class IrisAgentToolHost {
 
   async execute(
     input: AgentToolOperationInput,
-    correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'requestId' | 'turnId' | 'toolCallId'>>,
+    correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'turnId' | 'toolCallId' | 'operationId'>>,
   ): Promise<IrisAgentToolHostResult> {
     const started = Date.now();
-    const eventBase = {
-      id: correlation.toolCallId,
-      turnId: correlation.turnId,
-      requestId: correlation.requestId,
-      createdAt: started,
-      inputSummary: summarizeInput(input),
-      ...eventInputDetails(input),
-    };
     try {
       const executed = await this.executeUnchecked(input, correlation, started);
       return {
-        ...executed,
-        event: {
-          ...eventBase,
-          ...executed.event,
+        result: executed.result,
+        effects: executed.effects,
+        update: {
+          ...executed.update,
           state: 'completed',
           completedAt: Date.now(),
         },
@@ -59,9 +57,8 @@ export class IrisAgentToolHost {
       const message = err instanceof Error ? err.message : String(err);
       return {
         result: { kind: 'void' },
-        event: {
-          ...eventBase,
-          name: input.tool,
+        effects: [],
+        update: {
           state: 'failed',
           completedAt: Date.now(),
           error: message,
@@ -72,23 +69,12 @@ export class IrisAgentToolHost {
 
   private async executeUnchecked(
     input: AgentToolOperationInput,
-    correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'requestId' | 'turnId' | 'toolCallId'>>,
+    correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'turnId' | 'toolCallId' | 'operationId'>>,
     started: number,
   ): Promise<{
     result: AgentToolOperationResult;
-    event: Pick<
-      IrisAgentToolEvent,
-      | 'name'
-      | 'operation'
-      | 'terminalIntent'
-      | 'command'
-      | 'cwd'
-      | 'resultSummary'
-      | 'diff'
-      | 'path'
-      | 'terminalId'
-    >;
-    fileEffect?: IrisAgentFileEffect;
+    update: Partial<Pick<AgentToolActivity, 'resultSummary' | 'diff' | 'path' | 'terminalId'>>;
+    effects: AgentEffect[];
   }> {
     if (input.tool === 'terminal') return this.executeTerminal(input, correlation);
 
@@ -98,26 +84,45 @@ export class IrisAgentToolHost {
       await fs.access(target);
       return {
         result: { kind: 'void' },
-        event: { name: input.tool, path: relPath, resultSummary: 'access ok' },
+        update: { path: relPath, resultSummary: 'access ok' },
+        effects: [],
       };
     }
     if (input.operation === 'readFile') {
       const bytes = await fs.readFile(target);
       return {
         result: { kind: 'file', contentBase64: bytes.toString('base64') },
-        event: {
-          name: input.tool,
+        update: {
           path: relPath,
           resultSummary: String(bytes.byteLength) + ' bytes',
         },
+        effects: [],
       };
     }
     if (input.operation === 'mkdir') {
-      await this.assertWritableParent(target);
+      const existed = await fs.access(target).then(() => true, () => false);
+      const effectId = `directory--${correlation.operationId}`;
+      const artifactRef = `effects/${effectId}.json`;
+      if (!existed) {
+        await writeFileAtomic(join(this.options.artifactRoot, ...artifactRef.split('/')), JSON.stringify({
+          path: relPath,
+          operation: 'mkdir',
+        }, null, 2) + '\n');
+      }
       await fs.mkdir(target, { recursive: true });
+      const effects = existed ? [] : [{
+        id: effectId,
+        turnId: correlation.turnId,
+        toolActivityId: correlation.toolCallId,
+        kind: 'directory-create',
+        path: relPath,
+        artifactRef,
+        createdAt: started,
+      } satisfies AgentDirectoryEffect];
       return {
         result: { kind: 'void' },
-        event: { name: input.tool, path: relPath, resultSummary: 'directory ready' },
+        update: { path: relPath, resultSummary: 'directory ready' },
+        effects,
       };
     }
 
@@ -130,7 +135,6 @@ export class IrisAgentToolHost {
       throw new Error('Unsupported Iris Agent file operation.');
     }
     const content = input.content ?? '';
-    await this.assertWritableParent(target);
     const before = await fs.readFile(target, 'utf8').catch((err: NodeJS.ErrnoException) => {
       if (err.code === 'ENOENT') return null;
       throw err;
@@ -138,50 +142,58 @@ export class IrisAgentToolHost {
     if (before === null && isIrisManagedPath(relPath)) {
       throw new Error('Iris Agent cannot create new .iris documents without an explicit user request.');
     }
+    await this.assertWritableParent(target);
     if (before === content) {
       return {
         result: { kind: 'void' },
-        event: { name: input.tool, path: relPath, resultSummary: 'unchanged' },
+        update: { path: relPath, resultSummary: 'unchanged' },
+        effects: [],
       };
     }
-    await writeFileAtomic(target, content);
     const beforeSha = before === null ? null : sha256(before);
     const afterSha = sha256(content);
     const kind = input.tool === 'edit' ? 'edit' : 'write';
     const diff = generateUnifiedPatch(relPath, before ?? '', content);
+    const effectId = `file--${correlation.operationId}`;
+    const artifactRef = `effects/${effectId}.json`;
+    await writeFileAtomic(join(this.options.artifactRoot, ...artifactRef.split('/')), JSON.stringify({
+      path: relPath,
+      operation: kind,
+      beforeContent: before,
+      afterContent: content,
+      beforeSha256: beforeSha,
+      afterSha256: afterSha,
+    }, null, 2) + '\n');
+    await writeFileAtomic(target, content);
     return {
       result: { kind: 'void' },
-      event: {
-        name: input.tool,
-        operation: input.operation,
+      update: {
         path: relPath,
         resultSummary: before === null ? 'created' : 'updated',
         diff,
       },
-      fileEffect: {
-        id: randomUUID(),
+      effects: [{
+        id: effectId,
         turnId: correlation.turnId,
-        toolCallId: correlation.toolCallId,
+        toolActivityId: correlation.toolCallId,
+        kind: 'file-write',
         path: relPath,
-        kind,
+        operation: kind,
         beforeSha256: beforeSha,
         afterSha256: afterSha,
-        ...(before === null ? {} : { beforeContent: before }),
-        afterContent: content,
+        artifactRef,
         createdAt: started,
-      },
+      } satisfies AgentFileEffect],
     };
   }
 
   private async executeTerminal(
     input: Extract<AgentToolOperationInput, { tool: 'terminal' }>,
-    correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'requestId' | 'turnId' | 'toolCallId'>>,
+    correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'turnId' | 'toolCallId' | 'operationId'>>,
   ): Promise<{
     result: AgentToolOperationResult;
-    event: Pick<
-      IrisAgentToolEvent,
-      'name' | 'operation' | 'terminalIntent' | 'command' | 'cwd' | 'resultSummary' | 'path' | 'terminalId'
-    >;
+    update: Pick<AgentToolActivity, 'resultSummary' | 'path' | 'terminalId'>;
+    effects: AgentEffect[];
   }> {
     if (looksInteractive(input.command)) {
       throw new Error('Interactive terminal commands are not supported in this Iris Agent milestone.');
@@ -189,8 +201,7 @@ export class IrisAgentToolHost {
     const cwd = await this.resolveOperationPath(input.cwd);
     const terminalId = randomUUID();
     const outputPath = join(
-      this.options.outputRoot,
-      correlation.sessionId,
+      this.options.artifactRoot,
       'terminal',
       terminalId + '.log',
     );
@@ -217,18 +228,21 @@ export class IrisAgentToolHost {
         outputPath: result.outputPath,
         shown: result.shown,
       },
-      event: {
-        name: 'terminal',
-        operation: 'exec',
-        terminalIntent: input.intent,
-        command: input.command,
-        cwd: relCwd || '.',
+      update: {
         terminalId,
         path: relCwd || '.',
         resultSummary: this.options.commandShell.displayName +
           ' (' + this.options.commandShell.executable + '): exit ' +
           String(result.exitCode) + ', ' + String(result.outputBytes) + ' bytes',
       },
+      effects: [{
+        id: `terminal--${correlation.operationId}`,
+        turnId: correlation.turnId,
+        toolActivityId: correlation.toolCallId,
+        kind: 'terminal-output',
+        artifactRef: `terminal/${terminalId}.log`,
+        createdAt: Date.now(),
+      } satisfies AgentTerminalEffect],
     };
   }
 
@@ -245,7 +259,6 @@ export class IrisAgentToolHost {
   private async assertWritableParent(path: string): Promise<void> {
     const parent = dirname(path);
     assertInside(this.options.projectRoot, parent);
-    await fs.mkdir(parent, { recursive: true });
     const realParent = await fs.realpath(parent);
     assertInside(this.options.projectRoot, normalize(realParent));
   }
@@ -256,26 +269,6 @@ function assertInside(root: string, target: string): void {
   if (target !== normalizedRoot && !target.startsWith(normalizedRoot + sep)) {
     throw new Error('Iris Agent tool path is outside the active project.');
   }
-}
-
-function summarizeInput(input: AgentToolOperationInput): string {
-  if (input.tool === 'terminal') return input.command.slice(0, 220);
-  return (input.operation + ' ' + input.absolutePath).slice(0, 220);
-}
-
-function eventInputDetails(input: AgentToolOperationInput): Pick<
-  IrisAgentToolEvent,
-  'operation' | 'terminalIntent' | 'command' | 'cwd'
-> {
-  if (input.tool === 'terminal') {
-    return {
-      operation: 'exec',
-      terminalIntent: input.intent,
-      command: input.command,
-      cwd: input.cwd,
-    };
-  }
-  return { operation: input.operation };
 }
 
 function looksInteractive(command: string): boolean {

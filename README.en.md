@@ -14,7 +14,7 @@ Iris brings project documents, interactive agent terminals, Git state, and human
 
 Your project state stays in ordinary Markdown under `.iris/`. Your agents run in real PTYs at the project root. Git remains the collaboration and delivery layer. There is no Iris account, cloud database, API key, or proprietary project format.
 
-> Current version: `0.1.0-beta.7`. This is the stabilization baseline for the existing desktop workflow. Iris is Windows-first and currently ships for Windows x64.
+> Current version: `0.1.0-beta.8`. This is the stabilization baseline for the existing desktop workflow. Iris is Windows-first and currently ships for Windows x64.
 
 > This is the English product overview. Active development records and maintainer discussions are currently written primarily in Simplified Chinese. English bug reports and pull requests are welcome, but contributors may need translation support when following the live `.iris/` project record.
 
@@ -347,7 +347,7 @@ Key technologies include Electron, TypeScript, React 18, Tailwind CSS, Radix UI,
 
 ## Current Status
 
-Iris is beta software developed through daily dogfooding on its own repository. `0.1.0-beta.7` consolidates the filesystem protocol, project scoping, document workflow, terminal state recovery, and local Git fundamentals into the stabilization baseline for the current desktop application.
+Iris is beta software developed through daily dogfooding on its own repository. `0.1.0-beta.8` consolidates the filesystem protocol, project scoping, document workflow, terminal state recovery, and local Git fundamentals into the stabilization baseline for the current desktop application.
 
 From this release onward, `main` enters maintenance-focused development: bug fixes, reliability, compatibility, and necessary small experience improvements, rather than large-scale product restructuring. Embedded-agent exploration based on Pi or another future coding-agent runtime, potentially including a DeepSeek Code option, will proceed on a separate development branch. The runtime choice will depend on maturity and maintainability. The current `beta.7` release still coordinates external agent CLIs that users install and authenticate themselves; it does not embed a model or agent runtime.
 

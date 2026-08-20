@@ -215,7 +215,7 @@ describe('AgentWorkerHost', () => {
 
     const posted = host.post({
       type: 'run',
-      correlation: { sessionId: 'session-1', workerEpoch: 1, requestId: 'request-1', turnId: 'turn-1' },
+      correlation: { sessionId: 'session-1', workerEpoch: 1, turnId: 'turn-1' },
       prompt: 'first prompt',
     });
     await vi.waitFor(() => expect(worker.messages).toHaveLength(1));
@@ -250,7 +250,7 @@ describe('AgentWorkerHost', () => {
 
     const posted = host.post({
       type: 'run',
-      correlation: { sessionId: 'session-1', workerEpoch: 1, requestId: 'request-1', turnId: 'turn-1' },
+      correlation: { sessionId: 'session-1', workerEpoch: 1, turnId: 'turn-1' },
       prompt: 'must not run',
     });
     const rejected = expect(posted).rejects.toThrow(/cancelled|changed/);
@@ -267,3 +267,356 @@ describe('AgentWorkerHost', () => {
     expect(host.running).toBe(false);
   });
 });
+
+describe('Iris Agent Worker provider attempts', () => {
+  it('keeps retries inside one provider call and settles only after final success', async () => {
+    vi.resetModules();
+    const port = new EventEmitter() as EventEmitter & {
+      postMessage: ReturnType<typeof vi.fn>;
+      close: ReturnType<typeof vi.fn>;
+    };
+    port.postMessage = vi.fn();
+    port.postMessage.mockImplementation((message: unknown) => {
+      const event = message as AgentWorkerEvent;
+      const eventId = event.eventId;
+      if (eventId) {
+        queueMicrotask(() => port.emit('message', {
+          version: IRIS_AGENT_PROTOCOL_VERSION,
+          type: 'event-ack',
+          correlation: event.correlation,
+          eventId,
+          ok: true,
+        } satisfies AgentWorkerRequest));
+      }
+      if (event.type === 'tool-request') {
+        queueMicrotask(() => port.emit('message', {
+          version: IRIS_AGENT_PROTOCOL_VERSION,
+          type: 'tool-result',
+          correlation: event.correlation,
+          ok: true,
+          result: { kind: 'file', contentBase64: Buffer.from(event.correlation.toolCallId ?? '').toString('base64') },
+        } satisfies AgentWorkerRequest));
+      }
+    });
+    port.close = vi.fn();
+    let subscribe: ((event: unknown) => void) | undefined;
+    let providerHooks: {
+      onProviderPayload: (payload: unknown, model: ProviderModel) => Promise<void>;
+      onProviderFailure: (failure: string | null, model: ProviderModel) => void;
+      operations: {
+        read: { readFile: (absolutePath: string) => Promise<Buffer> };
+      };
+    } | undefined;
+    const pendingToolCallIds: string[] = [];
+    let runCount = 0;
+    let releaseAbortedRun: (() => void) | undefined;
+    const providerModel: ProviderModel = {
+      provider: 'openai',
+      id: 'gpt-test',
+      api: 'openai-responses',
+    };
+    const messages: Array<{ role?: unknown; stopReason?: unknown }> = [];
+    const prompt = vi.fn(async () => {
+      runCount += 1;
+      await providerHooks!.onProviderPayload({ model: 'gpt-test' }, providerModel);
+      subscribe!({
+        type: 'message_update',
+        assistantMessageEvent: { type: 'text_delta', delta: `partial-${runCount}` },
+      });
+      if (runCount === 1) {
+        providerHooks!.onProviderFailure('HTTP 503 overloaded', providerModel);
+        subscribe!({
+          type: 'message_end',
+          message: {
+            role: 'assistant',
+            content: [],
+            stopReason: 'error',
+            errorMessage: 'wrapped provider error',
+          },
+        });
+        subscribe!({ type: 'agent_end', willRetry: true });
+        subscribe!({ type: 'auto_retry_start', attempt: 1, delayMs: 1, maxAttempts: 2 });
+        subscribe!({ type: 'auto_retry_end', success: true, attempt: 1 });
+        await providerHooks!.onProviderPayload({ model: 'gpt-test' }, providerModel);
+        subscribe!({
+          type: 'message_update',
+          assistantMessageEvent: { type: 'text_delta', delta: 'final' },
+        });
+        subscribe!({
+          type: 'message_end',
+          message: {
+            id: 'provider-final',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'final' }],
+            stopReason: 'stop',
+          },
+        });
+        subscribe!({ type: 'agent_settled' });
+        return;
+      }
+      if (runCount === 2) throw new Error('network timeout');
+      if (runCount === 4) {
+        await providerHooks!.onProviderPayload({ model: 'gpt-test' }, providerModel);
+        subscribe!({
+          type: 'message_end',
+          message: {
+            role: 'assistant',
+            content: [
+              { type: 'toolCall', id: 'tool-a', name: 'read', arguments: { path: 'a.md' } },
+              { type: 'toolCall', id: 'tool-b', name: 'read', arguments: { path: 'b.md' } },
+            ],
+            stopReason: 'toolUse',
+          },
+        });
+        pendingToolCallIds.push('tool-a', 'tool-b');
+        await Promise.all([
+          providerHooks!.operations.read.readFile('a.md'),
+          providerHooks!.operations.read.readFile('b.md'),
+        ]);
+        subscribe!({
+          type: 'message_end',
+          message: {
+            role: 'toolResult', toolCallId: 'tool-a', toolName: 'read',
+            content: [{ type: 'text', text: 'a' }], isError: false,
+          },
+        });
+        subscribe!({
+          type: 'message_end',
+          message: {
+            role: 'toolResult', toolCallId: 'tool-b', toolName: 'read',
+            content: [{ type: 'text', text: 'b' }], isError: false,
+          },
+        });
+        await providerHooks!.onProviderPayload({ model: 'gpt-test' }, providerModel);
+        subscribe!({
+          type: 'message_end',
+          message: {
+            role: 'assistant', content: [{ type: 'text', text: 'both read' }], stopReason: 'stop',
+          },
+        });
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        releaseAbortedRun = resolve;
+      });
+    });
+    const session = {
+      state: { messages },
+      agent: {
+        state: { messages },
+        continue: vi.fn(async () => undefined),
+      },
+      prompt,
+      abort: vi.fn(async () => {
+        subscribe!({
+          type: 'message_end',
+          message: {
+            role: 'assistant',
+            content: [
+              { type: 'text', text: 'visible checkpoint' },
+              { type: 'toolCall', id: 'unfinished', name: 'read', arguments: {} },
+            ],
+            stopReason: 'aborted',
+          },
+        });
+        releaseAbortedRun?.();
+      }),
+      subscribe: vi.fn((listener: (event: unknown) => void) => {
+        subscribe = listener;
+        return () => undefined;
+      }),
+    };
+
+    vi.doMock('node:worker_threads', () => ({ parentPort: port }));
+    vi.doMock('./pi-adapter', () => ({
+      IRIS_PI_VERSION: 'test',
+      createIrisPiSession: vi.fn(async (options: typeof providerHooks) => {
+        providerHooks = options;
+        return {
+          session,
+          disposeProviderTransport: async () => undefined,
+        };
+      }),
+      currentIrisProviderToolCallId: () => pendingToolCallIds.shift(),
+      storedPiCredentialSecrets: () => [],
+      unwrapProviderErrorMessage: (wrapped: string, captured: string | null) => captured ?? wrapped,
+      normalizeIrisInterruptedAssistantMessage: (message: { content?: Array<{ type?: string; text?: string }> }) => ({
+        ...message,
+        content: message.content?.filter((block) => block.type === 'text') ?? [],
+        stopReason: 'stop',
+      }),
+    }));
+    vi.doMock('./provider-profiles', () => ({
+      loadStoredIrisAgentProviderProfiles: async () => [],
+    }));
+
+    await import('../agent-worker');
+    port.emit('message', {
+      version: IRIS_AGENT_PROTOCOL_VERSION,
+      type: 'initialize',
+      correlation: { sessionId: 'session-1', workerEpoch: 1 },
+      history: {
+        revision: 1,
+        anchor: { kind: 'workspace', path: '.iris' },
+        messages: [],
+      },
+      runtime: testRuntime,
+    } satisfies AgentWorkerRequest);
+    await vi.waitFor(() => expect(port.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'ready' }),
+    ));
+
+    const firstCorrelation = {
+      sessionId: 'session-1',
+      workerEpoch: 1,
+      turnId: 'turn-1',
+    };
+    port.emit('message', {
+      version: IRIS_AGENT_PROTOCOL_VERSION,
+      type: 'run',
+      correlation: firstCorrelation,
+      prompt: 'first',
+    } satisfies AgentWorkerRequest);
+    await vi.waitFor(() => expect(workerEvents(port)).toContainEqual(
+      expect.objectContaining({ type: 'execution-settled', correlation: firstCorrelation }),
+    ));
+
+    const firstEvents = workerEvents(port);
+    const attemptStarts = firstEvents.filter(
+      (event): event is Extract<AgentWorkerEvent, { type: 'provider-attempt' }> =>
+        event.type === 'provider-attempt' && event.phase === 'started',
+    );
+    expect(attemptStarts.map((event) => event.index)).toEqual([1, 2]);
+    expect(new Set(attemptStarts.map((event) => event.correlation.providerCallId)).size).toBe(1);
+    expect(new Set(attemptStarts.map((event) => event.correlation.attemptId)).size).toBe(2);
+    expect(firstEvents).toContainEqual(expect.objectContaining({ type: 'state', state: 'retry-wait' }));
+    expect(firstEvents).toContainEqual(expect.objectContaining({
+      type: 'provider-attempt',
+      phase: 'failed',
+      index: 1,
+      error: 'HTTP 503 overloaded',
+    }));
+    expect(firstEvents.filter((event) => event.type === 'execution-settled')).toHaveLength(1);
+    expect(firstEvents.filter((event) =>
+      event.type === 'provider-message' && event.message.stopReason === 'error')).toHaveLength(0);
+    const finalDelta = firstEvents.find(
+      (event): event is Extract<AgentWorkerEvent, { type: 'assistant-text-delta' }> =>
+        event.type === 'assistant-text-delta' && event.delta === 'final',
+    );
+    const finalMessage = firstEvents.find(
+      (event): event is Extract<AgentWorkerEvent, { type: 'provider-message' }> =>
+        event.type === 'provider-message' && event.message.id === 'provider-final',
+    );
+    expect(finalDelta?.correlation.providerMessageId).toBe(finalMessage?.correlation.providerMessageId);
+
+    port.postMessage.mockClear();
+    const secondCorrelation = {
+      sessionId: 'session-1',
+      workerEpoch: 1,
+      turnId: 'turn-2',
+    };
+    port.emit('message', {
+      version: IRIS_AGENT_PROTOCOL_VERSION,
+      type: 'run',
+      correlation: secondCorrelation,
+      prompt: 'second',
+    } satisfies AgentWorkerRequest);
+    await vi.waitFor(() => expect(workerEvents(port)).toContainEqual(expect.objectContaining({
+      type: 'execution-paused',
+      correlation: expect.objectContaining(secondCorrelation),
+      message: 'network timeout',
+    })));
+    const secondEvents = workerEvents(port);
+    expect(secondEvents).toContainEqual(expect.objectContaining({
+      type: 'provider-attempt',
+      phase: 'failed',
+      index: 1,
+      error: 'network timeout',
+    }));
+    expect(secondEvents.some((event) => event.type === 'execution-settled')).toBe(false);
+
+    port.postMessage.mockClear();
+    const thirdCorrelation = {
+      sessionId: 'session-1',
+      workerEpoch: 1,
+      turnId: 'turn-3',
+    };
+    port.emit('message', {
+      version: IRIS_AGENT_PROTOCOL_VERSION,
+      type: 'run',
+      correlation: thirdCorrelation,
+      prompt: 'third',
+    } satisfies AgentWorkerRequest);
+    await vi.waitFor(() => expect(workerEvents(port)).toContainEqual(expect.objectContaining({
+      type: 'provider-attempt',
+      phase: 'started',
+    })));
+    port.emit('message', {
+      version: IRIS_AGENT_PROTOCOL_VERSION,
+      type: 'abort',
+      correlation: thirdCorrelation,
+      reason: 'user',
+    } satisfies AgentWorkerRequest);
+    await vi.waitFor(() => expect(workerEvents(port)).toContainEqual(expect.objectContaining({
+      type: 'state',
+      state: 'interrupted',
+    })));
+    const abortedEvents = workerEvents(port);
+    expect(abortedEvents).toContainEqual(expect.objectContaining({
+      type: 'provider-attempt',
+      phase: 'aborted',
+      index: 1,
+    }));
+    expect(abortedEvents).toContainEqual(expect.objectContaining({
+      type: 'provider-message',
+      message: expect.objectContaining({
+        content: [{ type: 'text', text: 'visible checkpoint' }],
+        stopReason: 'stop',
+      }),
+    }));
+    expect(abortedEvents.some((event) => event.type === 'execution-settled')).toBe(false);
+
+    port.postMessage.mockClear();
+    const fourthCorrelation = {
+      sessionId: 'session-1',
+      workerEpoch: 1,
+      turnId: 'turn-4',
+    };
+    port.emit('message', {
+      version: IRIS_AGENT_PROTOCOL_VERSION,
+      type: 'run',
+      correlation: fourthCorrelation,
+      prompt: 'two tools',
+    } satisfies AgentWorkerRequest);
+    await vi.waitFor(() => expect(workerEvents(port)).toContainEqual(
+      expect.objectContaining({ type: 'execution-settled', correlation: fourthCorrelation }),
+    ));
+    const fourthEvents = workerEvents(port);
+    const toolRequests = fourthEvents.filter(
+      (event): event is Extract<AgentWorkerEvent, { type: 'tool-request' }> => event.type === 'tool-request',
+    );
+    expect(toolRequests.map((event) => event.correlation.toolCallId)).toEqual(['tool-a', 'tool-b']);
+    const toolResults = fourthEvents.filter(
+      (event): event is Extract<AgentWorkerEvent, { type: 'provider-message' }> =>
+        event.type === 'provider-message' && event.message.role === 'toolResult',
+    );
+    expect(toolResults).toHaveLength(2);
+    expect(new Set(toolResults.map((event) => event.correlation.providerMessageId)).size).toBe(2);
+    expect(toolResults.every((event) => event.correlation.providerCallId === undefined)).toBe(true);
+    const fourthStarts = fourthEvents.filter(
+      (event): event is Extract<AgentWorkerEvent, { type: 'provider-attempt' }> =>
+        event.type === 'provider-attempt' && event.phase === 'started',
+    );
+    expect(new Set(fourthStarts.map((event) => event.correlation.providerCallId)).size).toBe(2);
+  });
+});
+
+interface ProviderModel {
+  provider: string;
+  id: string;
+  api: string;
+}
+
+function workerEvents(port: { postMessage: ReturnType<typeof vi.fn> }): AgentWorkerEvent[] {
+  return port.postMessage.mock.calls.map(([event]) => event as AgentWorkerEvent);
+}

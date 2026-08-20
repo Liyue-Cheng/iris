@@ -83,6 +83,9 @@ export const DEFAULT_SETTINGS: Settings = {
     recentRoots: [],
     commandTrust: {},
   },
+  experimental: {
+    irisAgent: false,
+  },
   agents: AGENT_PRESETS.filter((preset) =>
     ['claude', 'codex', 'gemini', 'shell'].includes(preset.id),
   ).map((preset) => ({ ...preset })),
@@ -481,6 +484,9 @@ export function validateSettings(s: Settings): void {
       'InvalidSettings',
       'project.commandTrust must map absolute project roots to SHA-256 revisions',
     );
+  }
+  if (typeof s.experimental.irisAgent !== 'boolean') {
+    throw new SettingsError('InvalidSettings', 'experimental.irisAgent must be a boolean');
   }
   if (!Array.isArray(s.agents) || s.agents.length === 0) {
     throw new SettingsError('InvalidSettings', 'agents must be a non-empty array');

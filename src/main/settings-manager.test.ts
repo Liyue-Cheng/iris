@@ -84,6 +84,26 @@ describe('agent launcher settings', () => {
   });
 });
 
+describe('experimental feature settings', () => {
+  it('keeps Iris Agent disabled by default and when loading older settings', () => {
+    expect(DEFAULT_SETTINGS.experimental.irisAgent).toBe(false);
+    const legacy = structuredClone(DEFAULT_SETTINGS) as Partial<Settings>;
+    delete legacy.experimental;
+
+    const merged = deepMerge(DEFAULT_SETTINGS, legacy as DeepPartial<Settings>);
+
+    expect(merged.experimental.irisAgent).toBe(false);
+    expect(() => validateSettings(merged)).not.toThrow();
+  });
+
+  it('requires the Iris Agent feature flag to be boolean', () => {
+    const invalid = structuredClone(DEFAULT_SETTINGS);
+    invalid.experimental.irisAgent = 'yes' as unknown as boolean;
+
+    expect(() => validateSettings(invalid)).toThrow(/experimental\.irisAgent must be a boolean/);
+  });
+});
+
 describe('recent project settings', () => {
   it('adds older settings files with an empty recentRoots default', () => {
     const legacy = structuredClone(DEFAULT_SETTINGS) as Settings;

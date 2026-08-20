@@ -108,6 +108,11 @@ describe('software prompt invariants', () => {
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('Write plain CommonMark');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('<name>.assets/');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('Never delete an asset merely because');
+    expect(SOFTWARE_PROMPT_TEMPLATE).toContain('No unsolicited Iris-managed files');
+    expect(SOFTWARE_PROMPT_TEMPLATE).toContain(
+      'This restriction does not apply to project source, tests,',
+    );
+    expect(SOFTWARE_PROMPT_TEMPLATE).not.toContain('Never create a new file');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('entry file');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain(
       'The `labels:` frontmatter field is reserved and is not currently enabled.',

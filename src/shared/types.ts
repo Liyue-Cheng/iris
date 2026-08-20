@@ -96,6 +96,10 @@ export interface Settings {
      * canonical project root; value is the approved project-settings revision. */
     commandTrust: Record<string, string>;
   };
+  experimental: {
+    /** Embedded Iris Agent is still under development and opt-in. */
+    irisAgent: boolean;
+  };
   /**
    * Agent CLIs offered by the "open with X" gesture. The shell is dumb:
    * these are plain command lines run in the user's own shell — no SDKs,
@@ -613,11 +617,10 @@ export type IrisAgentRuntimeState =
   | 'ready'
   | 'running'
   | 'waiting-tool'
+  | 'retry-wait'
   | 'stopping'
   | 'idle'
-  | 'failed';
-
-export type IrisAgentMessageRole = 'user' | 'assistant' | 'tool';
+  | 'paused';
 
 export interface IrisAgentModelRef {
   provider: string;
@@ -670,97 +673,75 @@ export interface IrisAgentProviderProfileInfo {
   baseUrl: string;
 }
 
-export interface IrisAgentMessage {
+export type IrisAgentPauseReason = 'user' | 'provider' | 'auth' | 'worker' | 'restart' | 'runtime';
+
+export type IrisAgentCardState =
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'partial'
+  | 'stopped'
+  | 'unchanged';
+
+export interface IrisAgentUserView {
   id: string;
-  turnId: string;
-  role: IrisAgentMessageRole;
   content: string;
   createdAt: number;
-  compact?: boolean;
-  /** Retained for provider history reconstruction but hidden from the conversation UI. */
-  providerOnly?: boolean;
-  /** Exact Pi message used to reconstruct provider context after Worker replacement. */
-  providerMessage?: Record<string, unknown>;
+  contextAvailable: boolean;
+  contextTitle?: string;
 }
 
-export interface IrisAgentToolEvent {
+export interface IrisAgentLocalRetrievalItemView {
   id: string;
-  turnId: string;
-  requestId: string;
-  name: 'read' | 'edit' | 'write' | 'terminal';
-  state: 'running' | 'completed' | 'failed';
-  createdAt: number;
-  completedAt?: number;
-  inputSummary: string;
-  /** Low-level operation currently represented by this provider tool call. */
-  operation?: 'access' | 'readFile' | 'writeFile' | 'mkdir' | 'exec';
-  /** Model-declared terminal semantics. Legacy terminal events migrate to unknown. */
-  terminalIntent?: 'information' | 'operation' | 'unknown';
-  /** Exact command executed by the terminal tool; inputSummary remains display-only. */
-  command?: string;
-  cwd?: string;
-  resultSummary?: string;
-  error?: string;
-  diff?: string;
+  kind: 'file' | 'query';
+  label: string;
   path?: string;
-  terminalId?: string;
-}
-
-export interface IrisAgentFileEffect {
-  id: string;
-  turnId: string;
-  toolCallId: string;
-  path: string;
-  kind: 'edit' | 'write';
-  beforeSha256: string | null;
-  afterSha256: string;
-  beforeContent?: string;
-  afterContent: string;
-  createdAt: number;
-}
-
-export interface IrisAgentRequestFacts {
-  id: string;
-  turnId: string;
-  createdAt: number;
-  promptFingerprint: string;
-  layerFingerprints: {
-    agent: string;
-    software: string;
-    project: string;
-    anchor: string;
-  };
-  anchor: IrisAgentAnchor;
-  promptChars: number;
-  redacted: true;
-}
-
-export interface IrisAgentUndoReceipt {
-  commandId: string;
-  removedTurnId: string;
-  removedAt: number;
-  resultingRevision: number;
-  externalEffectsRetained: true;
-}
-
-export interface IrisAgentTurn {
-  id: string;
-  userMessageId: string;
-  assistantMessageId?: string;
-  requestId: string;
-  /** Previous terminal attempt replaced by this retry. */
-  retryOfTurnId?: string;
-  /** @deprecated Legacy assembled-input marker. Never interpret as provider context. */
-  promptAvailable?: true;
-  artifactSchemaVersion?: 1;
-  assembledInputAvailable?: true;
-  assembledInputLegacy?: true;
-  providerContextAvailable?: true;
-  providerCallCount?: number;
-  status: 'running' | 'completed' | 'failed' | 'stopped' | 'rewound';
-  createdAt: number;
-  completedAt?: number;
+  detail?: string;
+  state: 'running' | 'completed' | 'failed' | 'canceled';
   error?: string;
+}
+
+export type IrisAgentCardView =
+  | {
+      kind: 'local-retrieval';
+      id: string;
+      state: IrisAgentCardState;
+      items: IrisAgentLocalRetrievalItemView[];
+    }
+  | {
+      kind: 'file-change';
+      id: string;
+      state: IrisAgentCardState;
+      path: string;
+      action: 'created' | 'updated' | 'unchanged' | 'attempted';
+      diff?: string;
+      detail?: string;
+      error?: string;
+    }
+  | {
+      kind: 'terminal-operation';
+      id: string;
+      state: IrisAgentCardState;
+      command: string;
+      cwd: string;
+      detail?: string;
+      error?: string;
+    }
+  | {
+      kind: 'agent-reply';
+      id: string;
+      state: Extract<IrisAgentCardState, 'running' | 'completed' | 'failed' | 'stopped'>;
+      content: string;
+      error?: string;
+      excludedFromContext: boolean;
+    };
+
+export interface IrisAgentTurnView {
+  id: string;
+  state: 'active' | 'fulfilled' | 'abandoned';
+  user: IrisAgentUserView;
+  cards: IrisAgentCardView[];
+  canFork: boolean;
 }
 
 export interface IrisAgentSessionInfo {
@@ -780,20 +761,13 @@ export interface IrisAgentSessionInfo {
   updatedAt: number;
   /** Strictly monotonic canonical state revision. */
   revision: number;
-  /** Identifies the only Worker generation allowed to mutate this Session. */
-  workerEpoch: number;
-  activeTurnId: string | null;
-  /** Main-owned intent. While set, the target turn can only settle as stopped. */
-  stopRequestedTurnId?: string;
-  messages: IrisAgentMessage[];
-  turns: IrisAgentTurn[];
-  toolEvents: IrisAgentToolEvent[];
-  fileEffects: IrisAgentFileEffect[];
-  requestFacts: IrisAgentRequestFacts[];
-  undoReceipts?: IrisAgentUndoReceipt[];
-  /** Artifact deletions committed by Undo/Retry but not yet completed on disk. */
-  pendingArtifactCleanupTurnIds?: string[];
-  lastError?: string;
+  currentTurnId: string | null;
+  pause?: {
+    reason: IrisAgentPauseReason;
+    message: string;
+  };
+  turns: IrisAgentTurnView[];
+  canUndoLatestTurn: boolean;
   selfHostingEligible: false;
 }
 
@@ -815,13 +789,12 @@ export interface IrisAgentProviderContextCall {
 }
 
 export interface IrisAgentProviderContextBundle {
-  schemaVersion: 1;
+  schemaVersion: 2;
   kind: 'provider-context-bundle';
   sessionId: string;
   turnId: string;
-  requestId: string;
   createdAt: number;
-  assembledInput: { available: boolean; legacy: false };
+  assembledInput: { available: boolean };
   contextStage: 'provider-payload';
   compaction: 'disabled';
   runtimeIdentity?: {
@@ -847,9 +820,36 @@ export interface IrisAgentListSnapshot {
   sessions: IrisAgentSessionInfo[];
 }
 
+export type IrisAgentSessionHeaderView = Omit<IrisAgentSessionInfo, 'revision' | 'turns'>;
+export type IrisAgentTurnHeaderView = Omit<IrisAgentTurnView, 'cards'>;
+
+export type IrisAgentCardPatch =
+  | { operation: 'upsert'; index: number; card: IrisAgentCardView }
+  | { operation: 'remove'; cardId: string };
+
+export type IrisAgentTurnPatch =
+  | { operation: 'remove'; turnId: string }
+  | {
+      operation: 'upsert';
+      index: number;
+      turn: IrisAgentTurnHeaderView;
+      cards: IrisAgentCardPatch[];
+    };
+
+export type IrisAgentSessionProjectionUpdate =
+  | { kind: 'snapshot'; session: IrisAgentSessionInfo }
+  | {
+      kind: 'patch';
+      sessionId: string;
+      baseRevision: number;
+      revision: number;
+      session: IrisAgentSessionHeaderView;
+      turns: IrisAgentTurnPatch[];
+    };
+
 export interface IrisAgentSessionChangedPayload {
   scope: ProjectScope;
-  session: IrisAgentSessionInfo;
+  update: IrisAgentSessionProjectionUpdate;
 }
 
 export interface IrisAgentSessionDestroyedPayload {

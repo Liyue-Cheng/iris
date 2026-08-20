@@ -169,17 +169,6 @@ describe('project prompt disk synchronization', () => {
     expect((await readProjectSettings(dir)).exists).toBe(false);
     expect(await fs.readFile(join(dir, 'AGENTS.md'), 'utf8')).toBe(agents);
     expect(await fs.readFile(join(dir, 'CLAUDE.md'), 'utf8')).toBe(claude);
-    await expect(pm.assertProjectSettingsReady()).rejects.toMatchObject({
-      code: 'PromptNotReady',
-      domain: 'prompt',
-      details: {
-        repairable: false,
-        issues: expect.arrayContaining([
-          expect.objectContaining({ layer: 'project', path: 'AGENTS.md', state: 'conflict' }),
-          expect.objectContaining({ layer: 'project', path: 'CLAUDE.md', state: 'conflict' }),
-        ]),
-      },
-    } satisfies Partial<ProjectError>);
   });
 
   it('a CAS save commits JSON first, fans out, and empty text removes every mirror', async () => {
@@ -214,18 +203,8 @@ describe('project prompt disk synchronization', () => {
     await waitUntil(async () => (await pm.softwarePromptState()).project.state === 'drifted');
     expect((await readProjectSettings(dir)).settings.prompts.project).toBe('Initial');
     expect(parseProjectBlock(await fs.readFile(join(dir, 'AGENTS.md'), 'utf8'))?.body).toBe('Initial');
-    await expect(pm.assertProjectSettingsReady()).rejects.toMatchObject({
-      code: 'PromptNotReady',
-      domain: 'prompt',
-      details: {
-        repairable: true,
-        issues: expect.arrayContaining([
-          expect.objectContaining({ layer: 'project', path: 'CLAUDE.md', state: 'drifted' }),
-        ]),
-      },
-    } satisfies Partial<ProjectError>);
     await pm.restoreProjectPromptEntry('CLAUDE.md');
-    await expect(pm.assertProjectSettingsReady()).resolves.toBeUndefined();
+    expect((await pm.softwarePromptState()).project.state).toBe('synced');
   });
 
   it('keeps a new vendor entry untouched until explicit enrollment', async () => {
@@ -270,16 +249,6 @@ describe('project prompt disk synchronization', () => {
     await fs.writeFile(agentsPath, upsertProjectBlock(agents, 'Manual drift').text, 'utf8');
     await new Promise((resolve) => setTimeout(resolve, 350));
     expect(parseProjectBlock(await fs.readFile(agentsPath, 'utf8'))?.body).toBe('Manual drift');
-    await expect(pm.assertProjectSettingsReady()).rejects.toMatchObject({
-      code: 'PromptNotReady',
-      domain: 'prompt',
-      details: {
-        repairable: false,
-        issues: expect.arrayContaining([
-          expect.objectContaining({ layer: 'settings', state: 'invalid-settings' }),
-        ]),
-      },
-    } satisfies Partial<ProjectError>);
   });
 
   it('reports duplicate blocks and a single-entry projection failure without rolling back JSON', async () => {
@@ -315,7 +284,7 @@ describe('project prompt disk synchronization', () => {
     ].join('\n');
     await fs.appendFile(agentsPath, legacyProse, 'utf8');
 
-    await expect(pm.assertProjectSettingsReady()).resolves.toBeUndefined();
+    expect((await pm.softwarePromptState()).entries[0]?.state).toBe('ok');
     expect(await fs.readFile(agentsPath, 'utf8')).toContain(legacyProse);
   });
 

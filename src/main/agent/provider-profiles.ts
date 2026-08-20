@@ -130,20 +130,37 @@ export function profilesForRenderer(
 
 export function profileModelsConfig(
   sourceModels: ReturnType<ModelRuntime['getModels']>,
-  api?: IrisAgentProviderTemplate['api'],
+  api: IrisAgentProviderTemplate['api'],
+  modelIds: readonly string[],
 ) {
-  return sourceModels.map((model) => ({
-    id: model.id,
-    name: model.name,
-    api: api ?? model.api,
-    reasoning: model.reasoning,
-    input: [...model.input],
-    cost: model.cost,
-    contextWindow: model.contextWindow,
-    maxTokens: model.maxTokens,
-    ...(model.thinkingLevelMap ? { thinkingLevelMap: model.thinkingLevelMap } : {}),
-    ...(model.compat ? { compat: model.compat } : {}),
-  }));
+  const sourceById = new Map(sourceModels.map((model) => [model.id, model]));
+  return modelIds.map((id) => {
+    const model = sourceById.get(id);
+    if (!model) {
+      return {
+        id,
+        name: id,
+        api,
+        reasoning: false,
+        input: ['text'] as ('text' | 'image')[],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128_000,
+        maxTokens: 16_384,
+      };
+    }
+    return {
+      id: model.id,
+      name: model.name,
+      api,
+      reasoning: model.reasoning,
+      input: [...model.input],
+      cost: model.cost,
+      contextWindow: model.contextWindow,
+      maxTokens: model.maxTokens,
+      ...(model.thinkingLevelMap ? { thinkingLevelMap: model.thinkingLevelMap } : {}),
+      ...(model.compat ? { compat: model.compat } : {}),
+    };
+  });
 }
 
 function isStoredProfile(value: unknown): value is StoredIrisAgentProviderProfile {

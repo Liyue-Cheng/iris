@@ -5,13 +5,9 @@ import {
   type TerminalLayoutScope,
 } from '@renderer/stores/session-store';
 import type { SessionInfo } from '@shared/types';
-import type { PromptNotReadyDetails } from '@shared/app-error';
 import { editorStore } from '@renderer/stores/editor-store';
 import { projectStore } from '@renderer/stores/project-store';
-import { attemptAction, runUserAction, type UiAppError } from './action-runtime';
-import { notify } from '@renderer/stores/notification-store';
-import { actionDialog } from '@renderer/components/ui/confirm-dialog';
-import { openSettingsView } from '@renderer/components/settings/SettingsView';
+import { runUserAction } from './action-runtime';
 import { translate } from '@renderer/i18n';
 
 function initialTerminalDims(scope: TerminalLayoutScope): { cols: number; rows: number } {
@@ -67,65 +63,14 @@ async function performOpenWorkspaceSession(
   await projectStore.activateSession(created.id);
 }
 
-function promptDetails(error: UiAppError): PromptNotReadyDetails | null {
-  if (error.domain !== 'prompt' || error.code !== 'PromptNotReady') return null;
-  const details = error.details as Partial<PromptNotReadyDetails> | undefined;
-  if (!details || typeof details.repairable !== 'boolean' || !Array.isArray(details.issues)) {
-    return null;
-  }
-  return details as PromptNotReadyDetails;
-}
-
-function reportSessionFailure(title: string, dedupeKey: string, error: UiAppError): void {
-  notify({
-    dedupeKey,
-    title,
-    message: error.message,
-    domain: error.domain,
-    ...(error.incidentId !== undefined ? { incidentId: error.incidentId } : {}),
-  });
-}
-
 async function runSessionOpen(
   dedupeKey: string,
   operation: () => Promise<void>,
 ): Promise<void> {
-  const initial = await attemptAction(operation);
-  if (initial.status !== 'failed') return;
-  const details = promptDetails(initial.error);
-  if (!details) {
-    reportSessionFailure(translate('errors.sessionOpenFailed'), dedupeKey, initial.error);
-    return;
-  }
-
-  const issueLines = details.issues.map((issue) => {
-    const target = issue.path ?? '.iris/settings.json';
-    return `${target} · ${issue.layer}: ${issue.state}${issue.message ? `\n  ${issue.message}` : ''}`;
-  });
-  const result = await actionDialog({
-    title: translate('errors.promptNotReadyTitle'),
-    message: translate('errors.promptNotReadyMessage', { issues: issueLines.join('\n') }),
-    primaryText: details.repairable
-      ? translate('errors.syncAndStart')
-      : translate('errors.openPromptSettings'),
-    ...(details.repairable
-      ? { secondaryText: translate('errors.openPromptSettings') }
-      : {}),
-  });
-  if (result === 'secondary' || (result === 'primary' && !details.repairable)) {
-    openSettingsView('prompts');
-    return;
-  }
-  if (result !== 'primary') return;
-
-  // The repair and the single retry are one user action; never recurse.
-  const repaired = await attemptAction(async () => {
-    await pipeline.dispatch('prompt.sync-all', {});
-    await operation();
-  });
-  if (repaired.status === 'failed') {
-    reportSessionFailure(translate('errors.sessionOpenFailed'), dedupeKey, repaired.error);
-  }
+  await runUserAction(
+    { title: translate('errors.sessionOpenFailed'), dedupeKey },
+    operation,
+  );
 }
 
 export async function openSession(docPath: string | null, agentId: string): Promise<void> {

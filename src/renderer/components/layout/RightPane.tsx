@@ -108,6 +108,7 @@ export function RightPane(): JSX.Element {
   const settings = useSettings();
   const { phase, view, scan } = useProject();
   const agents = settings?.agents ?? [];
+  const irisAgentEnabled = settings?.experimental.irisAgent ?? false;
   const [launcherQuery, setLauncherQuery] = useState('');
   const [selectedItemIdByAnchor, setSelectedItemIdByAnchor] = useState<Record<string, string>>({});
   const visibleLaunchers = matchingLaunchers(agents, launcherQuery);
@@ -317,9 +318,11 @@ export function RightPane(): JSX.Element {
             <DropdownMenuLabel className="max-w-52 truncate">
               {isHub ? t('layout.workspaceFallback', { name: anchorName }) : t('layout.attachedTo', { name: anchorName })}
             </DropdownMenuLabel>
-            <DropdownMenuItem onClick={spawnIrisAgent}>
-              用 Iris Agent 打开
-            </DropdownMenuItem>
+            {irisAgentEnabled && (
+              <DropdownMenuItem onClick={spawnIrisAgent}>
+                用 Iris Agent 打开
+              </DropdownMenuItem>
+            )}
             <LauncherMenuItems agents={agents} onSelect={spawn} />
           </DropdownMenuContent>
         </DropdownMenu>
@@ -374,14 +377,16 @@ export function RightPane(): JSX.Element {
               </p>
             </div>
             <div className="flex max-h-[min(24rem,55vh)] w-64 flex-col gap-2 overflow-y-auto pr-1">
-              <Button
-                variant="default"
-                className="h-9 justify-start gap-2 px-4"
-                onClick={spawnIrisAgent}
-              >
-                <Bot className="!size-4" />
-                用 Iris Agent 打开
-              </Button>
+              {irisAgentEnabled && (
+                <Button
+                  variant="default"
+                  className="h-9 justify-start gap-2 px-4"
+                  onClick={spawnIrisAgent}
+                >
+                  <Bot className="!size-4" />
+                  用 Iris Agent 打开
+                </Button>
+              )}
               {agents.length > LAUNCHER_SEARCH_THRESHOLD && (
                 <Input
                   value={launcherQuery}

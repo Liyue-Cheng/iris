@@ -135,7 +135,8 @@ export async function openProject(root: string): Promise<void> {
   if (switchingRoot && (sessionStore.get().sessions.length > 0 || activeAgentSessions.length > 0)) {
     const sessions = sessionStore.get().sessions;
     const live = sessions.filter((session) => session.state !== 'exited').length +
-      activeAgentSessions.filter((session) => session.state !== 'idle' && session.state !== 'ready' && session.state !== 'failed').length;
+      activeAgentSessions.filter((session) =>
+        session.state !== 'idle' && session.state !== 'ready' && session.state !== 'paused').length;
     const confirmed = await confirmDialog({
       title: translate('layout.switchTitle'),
       message: live > 0

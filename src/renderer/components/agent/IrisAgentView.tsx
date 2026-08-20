@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   AlertTriangle,
   Bot,
@@ -20,71 +20,24 @@ import {
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type {
-  IrisAgentMessage,
+  IrisAgentCardState,
+  IrisAgentCardView,
   IrisAgentModelOption,
   IrisAgentSessionInfo,
-  IrisAgentToolEvent,
-  IrisAgentTurn,
+  IrisAgentUserView,
 } from '@shared/types';
 import { EVENTS } from '@shared/protocol';
 import { Button } from '@renderer/components/ui/button';
 import {
   branchIrisAgent,
   listIrisAgentModels,
-  retryIrisAgent,
+  resumeIrisAgent,
   rewindIrisAgent,
   openIrisAgentContext,
   sendIrisAgentMessage,
   setIrisAgentModel,
   stopIrisAgent,
 } from '@renderer/lib/iris-agent-actions';
-
-type CardState = 'running' | 'completed' | 'failed' | 'partial' | 'stopped' | 'unchanged';
-
-interface LocalRetrievalItem {
-  id: string;
-  kind: 'file' | 'query';
-  label: string;
-  path?: string;
-  detail?: string;
-  state: IrisAgentToolEvent['state'];
-  error?: string;
-}
-
-type IrisAgentCardView =
-  | {
-      kind: 'local-retrieval';
-      id: string;
-      state: CardState;
-      items: LocalRetrievalItem[];
-    }
-  | {
-      kind: 'file-change';
-      id: string;
-      state: CardState;
-      path: string;
-      action: 'created' | 'updated' | 'unchanged' | 'attempted';
-      diff?: string;
-      detail?: string;
-      error?: string;
-    }
-  | {
-      kind: 'terminal-operation';
-      id: string;
-      state: CardState;
-      command: string;
-      cwd: string;
-      detail?: string;
-      error?: string;
-      legacy: boolean;
-    }
-  | {
-      kind: 'final-response';
-      id: string;
-      state: CardState;
-      content: string;
-      error?: string;
-    };
 
 export function IrisAgentView({
   session,
@@ -97,10 +50,6 @@ export function IrisAgentView({
   const [models, setModels] = useState<IrisAgentModelOption[]>([]);
   const [modelError, setModelError] = useState<string | null>(null);
   const running = isSessionRunning(session);
-  const latestTurn = session.turns[session.turns.length - 1] ?? null;
-  const latestRetryableTurn =
-    latestTurn?.status === 'failed' || latestTurn?.status === 'stopped' ? latestTurn : null;
-  const canUndoLatestTurn = latestTurn !== null && latestTurn.status !== 'running';
   const statusText = statusLabel(session.state);
 
   useEffect(() => {
@@ -136,9 +85,19 @@ export function IrisAgentView({
           model.provider === session.model?.provider && model.modelId === session.model.modelId,
       )
     : false;
-  const turnCards = useMemo(() => projectIrisAgentCards(session), [session]);
   const openContext = (turnId: string): void => {
     openIrisAgentContext(session.id, turnId).catch(() => undefined);
+  };
+
+  const submitDraft = (): void => {
+    if (running) {
+      void stopIrisAgent(session.id);
+      return;
+    }
+    if (draft.trim() === '' || !selectedModelAvailable) return;
+    const text = draft;
+    setDraft('');
+    void sendIrisAgentMessage(session.id, text);
   };
 
   return (
@@ -188,30 +147,7 @@ export function IrisAgentView({
             </option>
           ))}
         </select>
-        {running ? (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 shrink-0"
-            onClick={() => void stopIrisAgent(session.id)}
-            title="停止"
-            aria-label="停止"
-          >
-            <Square className="!size-3.5" />
-          </Button>
-        ) : latestRetryableTurn && !latestRetryableTurn.error ? (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 shrink-0"
-            onClick={() => void retryIrisAgent(session.id)}
-            title="重试"
-            aria-label="重试"
-          >
-            <RotateCcw className="!size-3.5" />
-          </Button>
-        ) : null}
-        {!running && canUndoLatestTurn && (
+        {!running && session.canUndoLatestTurn && (
           <Button
             variant="ghost"
             size="icon"
@@ -225,8 +161,32 @@ export function IrisAgentView({
         )}
       </div>
 
+      {session.pause && (
+        <div className="flex shrink-0 items-start gap-2 border-b border-amber-500/30 bg-amber-500/8 px-3 py-2 text-xs">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+          <div className="min-w-0 flex-1">
+            <div className="font-medium">
+              {session.pause.reason === 'user' ? '已停止' : '请求已暂停'}
+            </div>
+            {session.pause.reason !== 'user' && (
+              <div className="mt-0.5 break-words text-muted-foreground">{session.pause.message}</div>
+            )}
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 shrink-0 bg-background"
+            onClick={() => void resumeIrisAgent(session.id)}
+          >
+            <RotateCcw className="!size-3.5" />
+            继续
+          </Button>
+        </div>
+      )}
+
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
-        {session.messages.length === 0 ? (
+        {session.turns.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
             <Bot className="h-9 w-9 text-muted-foreground/40" />
             <p>已固定当前 anchor。发送消息前会重新读取最新内容。</p>
@@ -234,30 +194,22 @@ export function IrisAgentView({
         ) : (
           <div className="space-y-4">
             {session.turns.map((turn) => {
-              const messages = session.messages.filter((message) => message.turnId === turn.id);
-              const userMessages = messages.filter((message) => message.role === 'user');
-              const cards = turnCards.get(turn.id) ?? [];
-              const artifactTitle = contextArtifactTitle(turn);
-              const canRetry = latestRetryableTurn?.id === turn.id;
               return (
                 <div key={turn.id} className="space-y-2">
-                  {userMessages.map((message) => (
-                    <UserMessage
-                      key={message.id}
-                      message={message}
-                      onOpenPrompt={artifactTitle ? () => openContext(turn.id) : undefined}
-                      artifactTitle={artifactTitle}
-                    />
-                  ))}
-                  {cards.map((card) => (
+                  <UserMessage
+                    message={turn.user}
+                    onOpenPrompt={turn.user.contextAvailable ? () => openContext(turn.id) : undefined}
+                    artifactTitle={turn.user.contextTitle}
+                  />
+                  {turn.cards.map((card) => (
                     <AgentActivityCard
                       key={card.id}
                       card={card}
-                      canRetry={canRetry}
-                      onRetry={() => void retryIrisAgent(session.id)}
+                      canRetry={false}
+                      onRetry={() => undefined}
                     />
                   ))}
-                  {!running && turn.status !== 'running' && (
+                  {turn.canFork && (
                     <div className="flex justify-end">
                       <Button
                         type="button"
@@ -287,15 +239,13 @@ export function IrisAgentView({
         className="shrink-0 border-t p-2"
         onSubmit={(event) => {
           event.preventDefault();
-          const text = draft;
-          setDraft('');
-          void sendIrisAgentMessage(session.id, text);
+          submitDraft();
         }}
       >
         <div className="flex gap-2">
           <textarea
             value={draft}
-            disabled={running || !selectedModelAvailable}
+            disabled={running}
             rows={2}
             className="min-h-10 flex-1 resize-none rounded-md border bg-background px-2 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
             placeholder={running
@@ -305,95 +255,25 @@ export function IrisAgentView({
                 : '先选择可用模型'}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault();
-                const text = draft;
-                setDraft('');
-                void sendIrisAgentMessage(session.id, text);
+                submitDraft();
               }
             }}
           />
           <Button
             type="submit"
             size="icon"
-            disabled={running || !selectedModelAvailable || draft.trim() === ''}
-            title="发送"
+            disabled={running ? false : !selectedModelAvailable || draft.trim() === ''}
+            title={running ? '停止' : '发送'}
+            aria-label={running ? '停止' : '发送'}
           >
-            <Send className="!size-4" />
+            {running ? <Square className="!size-4" /> : <Send className="!size-4" />}
           </Button>
         </div>
       </form>
     </div>
   );
-}
-
-export function projectIrisAgentCards(
-  session: IrisAgentSessionInfo,
-): Map<string, IrisAgentCardView[]> {
-  const result = new Map<string, IrisAgentCardView[]>();
-  for (const turn of session.turns) {
-    const cards: IrisAgentCardView[] = [];
-    const events = session.toolEvents.filter((event) => event.turnId === turn.id);
-    for (const event of events) {
-      if (isLocalRetrieval(event)) {
-        const item = localRetrievalItem(event);
-        const previous = cards[cards.length - 1];
-        if (previous?.kind === 'local-retrieval') {
-          previous.items.push(item);
-          previous.state = combinedState(previous.items.map((candidate) => candidate.state));
-        } else {
-          cards.push({
-            kind: 'local-retrieval',
-            id: `local:${event.id}`,
-            state: cardState(event.state),
-            items: [item],
-          });
-        }
-        continue;
-      }
-      if (event.name === 'edit' || event.name === 'write') {
-        const action = fileAction(event);
-        cards.push({
-          kind: 'file-change',
-          id: `file:${event.id}`,
-          state: event.state === 'failed'
-            ? 'failed'
-            : action === 'unchanged'
-              ? 'unchanged'
-              : cardState(event.state),
-          path: event.path ?? pathFromInputSummary(event.inputSummary),
-          action,
-          ...(event.diff ? { diff: event.diff } : {}),
-          ...(event.resultSummary ? { detail: event.resultSummary } : {}),
-          ...(event.error ? { error: event.error } : {}),
-        });
-        continue;
-      }
-      cards.push({
-        kind: 'terminal-operation',
-        id: `terminal:${event.id}`,
-        state: cardState(event.state),
-        command: event.command ?? event.inputSummary,
-        cwd: event.cwd ?? event.path ?? '.',
-        ...(event.resultSummary ? { detail: event.resultSummary } : {}),
-        ...(event.error ? { error: event.error } : {}),
-        legacy: event.terminalIntent === undefined || event.terminalIntent === 'unknown',
-      });
-    }
-
-    const assistant = session.messages.find(
-      (message) => message.turnId === turn.id && message.role === 'assistant' && !message.providerOnly,
-    );
-    cards.push({
-      kind: 'final-response',
-      id: `final:${turn.id}`,
-      state: turnState(turn),
-      content: assistant?.content ?? '',
-      ...(turn.error ? { error: turn.error } : {}),
-    });
-    result.set(turn.id, cards);
-  }
-  return result;
 }
 
 function AgentActivityCard({
@@ -412,8 +292,8 @@ function AgentActivityCard({
       return <FileChangeCard card={card} />;
     case 'terminal-operation':
       return <TerminalOperationCard card={card} />;
-    case 'final-response':
-      return <FinalResponseCard card={card} canRetry={canRetry} onRetry={onRetry} />;
+    case 'agent-reply':
+      return <AgentReplyCard card={card} canRetry={canRetry} onRetry={onRetry} />;
   }
 }
 
@@ -571,11 +451,6 @@ function TerminalOperationCard({
         </Button>
       ) : undefined}
     >
-      {card.legacy && (
-        <div className="border-t px-3 py-1.5 text-[11px] text-muted-foreground">
-          旧记录未声明类型，按操作终端显示；命令可能来自历史摘要。
-        </div>
-      )}
       <pre
         className={`${expanded ? 'max-h-none' : 'max-h-40'} overflow-auto border-t bg-background/70 p-3 whitespace-pre-wrap break-words font-mono text-xs leading-5`}
         aria-label="执行命令"
@@ -591,25 +466,27 @@ function TerminalOperationCard({
   );
 }
 
-function FinalResponseCard({
+function AgentReplyCard({
   card,
   canRetry,
   onRetry,
 }: {
-  card: Extract<IrisAgentCardView, { kind: 'final-response' }>;
+  card: Extract<IrisAgentCardView, { kind: 'agent-reply' }>;
   canRetry: boolean;
   onRetry: () => void;
 }): JSX.Element {
-  const placeholder = card.state === 'running'
-    ? '正在生成最终输出…'
-    : card.state === 'stopped'
-      ? '本轮已停止，没有最终输出。'
-      : '本轮没有最终输出。';
+  const placeholder = card.state === 'stopped' ? '本轮已暂停。' : '正在回复…';
   return (
     <CardFrame
       icon={<BotMessageSquare className="h-4 w-4" />}
-      title="最终输出"
-      {...(card.state === 'stopped' ? { summary: '已停止' } : {})}
+      title="Agent 回复"
+      summary={card.state === 'running'
+        ? '正在回复'
+        : card.state === 'stopped'
+          ? card.excludedFromContext ? '已暂停 · 未进入上下文' : '已暂停'
+          : card.excludedFromContext
+            ? '未进入上下文'
+            : '已回复'}
       state={card.state}
     >
       <div className="markdown-body min-w-0 border-t px-3 py-2.5 text-sm">
@@ -654,7 +531,7 @@ function CardFrame({
   icon: ReactNode;
   title: string;
   summary?: string;
-  state: CardState;
+  state: IrisAgentCardState;
   action?: ReactNode;
   children: ReactNode;
 }): JSX.Element {
@@ -680,7 +557,7 @@ function CardFrame({
   );
 }
 
-function CardStateIcon({ state }: { state: CardState }): JSX.Element {
+function CardStateIcon({ state }: { state: IrisAgentCardState }): JSX.Element {
   if (state === 'running') {
     return <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" aria-label="运行中" />;
   }
@@ -701,12 +578,12 @@ function UserMessage({
   onOpenPrompt,
   artifactTitle,
 }: {
-  message: IrisAgentMessage;
+  message: IrisAgentUserView;
   onOpenPrompt: (() => void) | undefined;
   artifactTitle: string | undefined;
 }): JSX.Element {
   return (
-    <div className="ml-5 rounded-md bg-muted px-3 py-2 text-sm">
+    <div className="rounded-md bg-muted px-3 py-2 text-sm">
       <div className="mb-1 flex h-6 items-start justify-between gap-2">
         <span className="text-[11px] font-medium uppercase text-muted-foreground">You</span>
         {onOpenPrompt && (
@@ -728,65 +605,6 @@ function UserMessage({
   );
 }
 
-function isLocalRetrieval(event: IrisAgentToolEvent): boolean {
-  return event.name === 'read' ||
-    (event.name === 'terminal' && event.terminalIntent === 'information');
-}
-
-function localRetrievalItem(event: IrisAgentToolEvent): LocalRetrievalItem {
-  if (event.name === 'read') {
-    return {
-      id: event.id,
-      kind: 'file',
-      label: event.path ?? pathFromInputSummary(event.inputSummary),
-      ...(event.resultSummary ? { detail: event.resultSummary } : {}),
-      state: event.state,
-      ...(event.error ? { error: event.error } : {}),
-    };
-  }
-  return {
-    id: event.id,
-    kind: 'query',
-    label: event.command ?? event.inputSummary,
-    path: event.cwd ?? event.path ?? '.',
-    ...(event.resultSummary ? { detail: event.resultSummary } : {}),
-    state: event.state,
-    ...(event.error ? { error: event.error } : {}),
-  };
-}
-
-function combinedState(states: IrisAgentToolEvent['state'][]): CardState {
-  if (states.includes('running')) return 'running';
-  if (states.includes('failed')) {
-    return states.every((state) => state === 'failed') ? 'failed' : 'partial';
-  }
-  return 'completed';
-}
-
-function cardState(state: IrisAgentToolEvent['state']): CardState {
-  return state;
-}
-
-function turnState(turn: IrisAgentTurn): CardState {
-  if (turn.status === 'rewound') return 'stopped';
-  return turn.status;
-}
-
-function fileAction(event: IrisAgentToolEvent): Extract<
-  IrisAgentCardView,
-  { kind: 'file-change' }
->['action'] {
-  if (event.resultSummary === 'created') return 'created';
-  if (event.resultSummary === 'updated') return 'updated';
-  if (event.resultSummary === 'unchanged') return 'unchanged';
-  return 'attempted';
-}
-
-function pathFromInputSummary(summary: string): string {
-  const space = summary.indexOf(' ');
-  return space >= 0 ? summary.slice(space + 1) : summary;
-}
-
 function diffStats(lines: string[]): string {
   let additions = 0;
   let deletions = 0;
@@ -805,20 +623,11 @@ function diffLineClass(line: string): string {
   return 'text-foreground/80';
 }
 
-function contextArtifactTitle(turn: IrisAgentTurn): string | undefined {
-  return turn.providerContextAvailable
-    ? `打开实际 Provider 上下文（${turn.providerCallCount ?? 1} 次调用）`
-    : turn.assembledInputLegacy || turn.promptAvailable
-      ? '打开组装输入（旧版）'
-      : turn.assembledInputAvailable
-        ? '打开本轮组装输入'
-        : undefined;
-}
-
 function isSessionRunning(session: IrisAgentSessionInfo): boolean {
   return session.state === 'starting' ||
     session.state === 'running' ||
     session.state === 'waiting-tool' ||
+    session.state === 'retry-wait' ||
     session.state === 'stopping';
 }
 
@@ -836,10 +645,12 @@ function statusLabel(state: IrisAgentSessionInfo['state']): string {
       return '生成中';
     case 'waiting-tool':
       return '工具执行中';
+    case 'retry-wait':
+      return '等待重试';
     case 'stopping':
       return '停止中';
-    case 'failed':
-      return '失败';
+    case 'paused':
+      return '已暂停';
     case 'idle':
       return '空闲';
   }

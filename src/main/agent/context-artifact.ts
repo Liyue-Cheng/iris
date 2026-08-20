@@ -3,6 +3,7 @@ import type {
   IrisAgentProviderContextCall,
   IrisJsonValue,
 } from '@shared/types';
+import type { AgentProviderAttempt } from './session-model';
 
 const SAFE_PAYLOAD_KEYS = new Set([
   'model', 'modelId', 'messages', 'input', 'contents', 'config', 'system', 'systemPrompt', 'system_instruction',
@@ -46,13 +47,13 @@ export function sanitizeProviderContextCall(
 export function renderProviderContextIndex(
   bundle: IrisAgentProviderContextBundle,
   calls: readonly IrisAgentProviderContextCall[],
+  attempts: readonly AgentProviderAttempt[] = [],
 ): string {
   return [
     'Iris Agent provider context bundle',
     `Schema: ${bundle.schemaVersion}`,
     `Session: ${bundle.sessionId}`,
     `Turn: ${bundle.turnId}`,
-    `Request: ${bundle.requestId}`,
     ...(bundle.runtimeIdentity
       ? [
           `App: ${bundle.runtimeIdentity.appVersion}`,
@@ -62,8 +63,17 @@ export function renderProviderContextIndex(
         ]
       : []),
     `Provider calls: ${bundle.calls.length}`,
+    `Provider attempts: ${attempts.length}`,
     '',
     JSON.stringify(bundle, null, 2),
+    ...(attempts.length > 0
+      ? [
+          '',
+          'Provider attempt audit',
+          '',
+          JSON.stringify(attempts, null, 2),
+        ]
+      : []),
     ...calls.flatMap((call) => ['', renderProviderContextCall(call).trimEnd()]),
     '',
   ].join('\n');

@@ -1,24 +1,28 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
 import type { ProjectManager } from '../project-manager';
 import { assembleAgentPrompt } from './prompt';
 import { AgentWorkerHost } from './worker-host';
 import { irisPiAgentDir, loadIrisModelCatalog, resolveIrisModelBaseUrl } from './pi-adapter';
 import { IrisAgentSessionStore } from './session-store';
 import {
+  abandonOpenAgentTurn,
   assertIrisAgentExpectedRevision,
   assertQuiescentIrisAgentSession,
   assertUndoableLatestIrisAgentTurn,
-  matchesActiveIrisAgentTurn,
-  settleIrisAgentTurnDomain,
+  completeActiveAgentTurn,
+  matchesActiveAgentTurn,
+  pauseActiveAgentTurn,
+  preparePausedAgentTurnForResume,
+  resumePausedAgentTurn,
   undoLatestIrisAgentTurn,
 } from './session-domain';
-import { IrisAgentToolHost } from './tool-host';
+import { IrisAgentToolHost, type IrisAgentToolHostResult } from './tool-host';
 import { resolveAgentCommandShell } from './command-pty';
 import type {
-  AgentSessionRuntimeState,
   AgentProviderProxy,
+  AgentCorrelation,
+  AgentSessionRuntimeState,
   AgentToolOperationInput,
   AgentWorkerEvent,
 } from '@shared/agent-protocol';
@@ -26,18 +30,28 @@ import type { AgentWorkerPort } from './worker-host';
 import type {
   IrisAgentAnchor,
   IrisAgentListSnapshot,
-  IrisAgentMessage,
   IrisAgentModelCatalog,
   IrisAgentModelRef,
-  IrisAgentRequestFacts,
-  IrisAgentRuntimeState,
+  IrisAgentPauseReason,
   IrisAgentSessionChangedPayload,
   IrisAgentSessionDestroyedPayload,
   IrisAgentSessionInfo,
-  IrisAgentToolEvent,
-  IrisAgentTurn,
   ProjectScope,
 } from '@shared/types';
+import type {
+  AgentReplyActivity,
+  AgentRequestFacts,
+  AgentSessionAggregate,
+  AgentToolActivity,
+} from './session-model';
+import {
+  cloneAgentSession,
+  createEmptyAgentSession,
+  currentAgentTurn,
+  diffAgentSessionProjection,
+  isAgentSessionBusy,
+  projectAgentSession,
+} from './session-model';
 import { SOFTWARE_PROMPT_TEMPLATE } from '../iris-templates';
 
 interface LoadedStore {
@@ -57,19 +71,30 @@ export interface IrisAgentSessionManagerOptions {
   modelCatalogLoader?: () => Promise<IrisAgentModelCatalog>;
   providerProfileRoot?: string;
   resolveProxy?: (url: string) => Promise<string>;
+  toolExecutor?: (
+    input: AgentToolOperationInput,
+    correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'turnId' | 'toolCallId' | 'operationId'>>,
+  ) => Promise<IrisAgentToolHostResult>;
 }
 
 export interface IrisAgentCommandPrecondition {
   commandId?: string;
   expectedRevision?: number;
+  expectedTurnId?: string;
+}
+
+interface PreparedAgentTurn {
+  prompt: string;
+  turnId: string;
+  facts: AgentRequestFacts;
 }
 
 export class IrisAgentSessionManager extends EventEmitter {
   private loaded: LoadedStore | null = null;
   private readonly hosts = new Map<string, AgentWorkerHost>();
+  private readonly emittedProjections = new Map<string, IrisAgentSessionInfo>();
   private currentScope: ProjectScope | null = null;
-  private readonly workerEventChains = new Map<string, Promise<void>>();
-  private readonly sessionCommandChains = new Map<string, Promise<void>>();
+  private readonly sessionMutationChains = new Map<string, Promise<void>>();
   private readonly commandShell = resolveAgentCommandShell(process.env);
   private shuttingDown = false;
 
@@ -84,12 +109,9 @@ export class IrisAgentSessionManager extends EventEmitter {
   async list(scope: ProjectScope): Promise<IrisAgentListSnapshot> {
     this.currentScope = scope;
     const store = await this.ensureStore(scope.root);
-    for (const session of store.list(scope)) {
-      if (session.pendingArtifactCleanupTurnIds?.length) {
-        await this.cleanupPendingArtifacts(store, session);
-      }
-    }
-    return { scope, sessions: store.list(scope) };
+    const sessions = store.list().map((session) => projectAgentSession(session, scope.generation));
+    for (const session of sessions) this.emittedProjections.set(session.id, structuredClone(session));
+    return { scope, sessions };
   }
 
   async createSession(input: CreateIrisAgentSessionInput): Promise<IrisAgentSessionInfo> {
@@ -97,34 +119,18 @@ export class IrisAgentSessionManager extends EventEmitter {
     const store = await this.ensureStore(input.scope.root);
     await this.verifyAnchor(input.anchor);
     const catalog = await this.loadModelCatalog();
-    const defaultModel = catalog.models[0];
-    const now = Date.now();
-    const session: IrisAgentSessionInfo = {
+    const selected = catalog.models[0];
+    const aggregate = createEmptyAgentSession({
       id: randomUUID(),
-      kind: 'iris-agent',
       anchor: input.anchor,
-      model: defaultModel
-        ? { provider: defaultModel.provider, modelId: defaultModel.modelId }
-        : null,
+      model: selected ? { provider: selected.provider, modelId: selected.modelId } : null,
       projectRoot: input.scope.root,
-      projectGeneration: input.scope.generation,
       displayName: 'Iris Agent',
-      state: 'ready',
-      createdAt: now,
-      updatedAt: now,
-      revision: 0,
-      workerEpoch: 0,
-      activeTurnId: null,
-      messages: [],
-      turns: [],
-      toolEvents: [],
-      fileEffects: [],
-      requestFacts: [],
-      selfHostingEligible: false,
-    };
-    const saved = store.upsert(session);
+      now: Date.now(),
+    });
+    const saved = await store.commit(aggregate);
     this.emitChanged(input.scope, saved);
-    return saved;
+    return projectAgentSession(saved, input.scope.generation);
   }
 
   async listModels(): Promise<IrisAgentModelCatalog> {
@@ -144,25 +150,16 @@ export class IrisAgentSessionManager extends EventEmitter {
       assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
       assertQuiescentIrisAgentSession(session);
       const catalog = await this.loadModelCatalog();
-      const available = catalog.models.some(
-        (candidate) =>
-          candidate.provider === model.provider && candidate.modelId === model.modelId,
-      );
-      if (!available) {
+      if (!catalog.models.some((candidate) => sameModel(model, candidate))) {
         throw new Error(`Iris Agent model is unavailable: ${model.provider}/${model.modelId}`);
       }
-      if (sameModel(session.model, model)) return session;
-
-      const host = this.hosts.get(sessionId);
-      if (host) this.hosts.delete(sessionId);
-      await host?.shutdown();
-      await this.drainWorkerEvents(sessionId);
+      if (sameModel(session.model, model)) return projectAgentSession(session, scope.generation);
+      await this.shutdownHost(sessionId);
       const latest = await this.requireSession(scope, sessionId);
-      assertQuiescentIrisAgentSession(latest);
-      const updated = store.upsert({ ...latest, model: { ...model }, lastError: '' });
-      await store.flush();
-      this.emitChanged(scope, updated);
-      return updated;
+      latest.model = { ...model };
+      const saved = await store.commit(latest);
+      this.emitChanged(scope, saved);
+      return projectAgentSession(saved, scope.generation);
     });
   }
 
@@ -177,10 +174,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       const store = await this.ensureStore(scope.root);
       const source = await this.requireSession(scope, sessionId);
       assertIrisAgentExpectedRevision(source, precondition.expectedRevision);
-      assertQuiescentIrisAgentSession(source);
-      const branchNumber = store.list(scope).filter(
-        (session) => session.parentSessionId === source.id,
-      ).length + 1;
+      const branchNumber = store.list().filter((session) => session.parentSessionId === source.id).length + 1;
       const branch = createIrisAgentBranch(
         source,
         throughTurnId,
@@ -188,10 +182,9 @@ export class IrisAgentSessionManager extends EventEmitter {
         `${source.displayName} Branch ${branchNumber}`,
         Date.now(),
       );
-      const saved = store.upsert(branch);
-      await store.flush();
+      const saved = await store.commit(branch);
       this.emitChanged(scope, saved);
-      return saved;
+      return projectAgentSession(saved, scope.generation);
     });
   }
 
@@ -201,111 +194,74 @@ export class IrisAgentSessionManager extends EventEmitter {
     message: string,
     precondition: IrisAgentCommandPrecondition = {},
   ): Promise<IrisAgentSessionInfo> {
-    return this.runSessionCommand(sessionId, () =>
-      this.sendSession(scope, sessionId, message, precondition));
+    return this.runSessionCommand(sessionId, () => this.sendSession(scope, sessionId, message, precondition));
   }
 
   private async sendSession(
     scope: ProjectScope,
     sessionId: string,
     message: string,
-    precondition: IrisAgentCommandPrecondition = {},
+    precondition: IrisAgentCommandPrecondition,
   ): Promise<IrisAgentSessionInfo> {
     this.currentScope = scope;
     const store = await this.ensureStore(scope.root);
-    const session = await this.requireSession(scope, sessionId);
+    let session = await this.requireSession(scope, sessionId);
     assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
-    if (!session.model) {
-      throw new Error('Select an available provider/model before sending an Iris Agent message.');
+    await this.assertUsableModel(session);
+    if (isAgentSessionBusy(session)) throw new Error('Iris Agent session is already running.');
+    if (session.state === 'paused') {
+      await this.shutdownHost(sessionId);
+      session = abandonOpenAgentTurn(await this.requireSession(scope, sessionId));
     }
-    const catalog = await this.loadModelCatalog();
-    if (!catalog.models.some((candidate) => sameModel(session.model, candidate))) {
-      throw new Error(
-        `The configured Iris Agent model is unavailable: ${session.model.provider}/${session.model.modelId}`,
-      );
-    }
-    if (!isStoppedState(session.state)) {
-      throw new Error('Iris Agent session is already running.');
-    }
-    return this.startTurn(scope, store, session, message);
-  }
-
-  private async startTurn(
-    scope: ProjectScope,
-    store: IrisAgentSessionStore,
-    session: IrisAgentSessionInfo,
-    message: string,
-    retryOfTurnId?: string,
-  ): Promise<IrisAgentSessionInfo> {
     const prepared = await this.preparePrompt(session, message);
     let assembledInputAvailable = false;
     try {
       await store.savePromptSnapshot(session.id, prepared.turnId, prepared.prompt);
       assembledInputAvailable = true;
     } catch {
-      // Artifact persistence is optional and must not prevent the Agent turn.
+      // The run remains valid when only its optional readable artifact cannot be written.
     }
-    if (this.shuttingDown) throw new Error('Iris Agent manager is shutting down.');
+    const host = await this.hostFor(session, store, scope);
+    await host.ensureStarted();
+    session = await this.requireSession(scope, sessionId);
     const now = Date.now();
-    const userMessage: IrisAgentMessage = {
-      id: randomUUID(),
-      turnId: prepared.turnId,
-      role: 'user',
-      content: message,
-      createdAt: now,
-    };
-    const assistantMessage: IrisAgentMessage = {
-      id: randomUUID(),
-      turnId: prepared.turnId,
-      role: 'assistant',
-      content: '',
-      createdAt: now,
-    };
-    const turn: IrisAgentTurn = {
+    session.turns.push({
       id: prepared.turnId,
-      userMessageId: userMessage.id,
-      assistantMessageId: assistantMessage.id,
-      requestId: prepared.requestId,
-      ...(retryOfTurnId ? { retryOfTurnId } : {}),
-      ...(assembledInputAvailable
-        ? { artifactSchemaVersion: 1 as const, assembledInputAvailable: true as const }
-        : {}),
-      status: 'running',
-      createdAt: now,
-    };
-    const running = store.upsert({
-      ...session,
+      userActivityId: randomUUID(),
       state: 'running',
-      activeTurnId: prepared.turnId,
-      messages: [...session.messages, userMessage, assistantMessage],
-      turns: [...session.turns, turn],
-      requestFacts: [...session.requestFacts, prepared.facts],
-      lastError: '',
+      assembledInputAvailable,
+      createdAt: now,
     });
-    await store.flush();
+    const turn = session.turns[session.turns.length - 1]!;
+    session.timeline.push({
+      id: turn.userActivityId,
+      ordinal: session.nextOrdinal++,
+      turnId: turn.id,
+      kind: 'user',
+      content: message,
+      assembledInputArtifactId: `assembled-input:${turn.id}`,
+      createdAt: now,
+    });
+    session.transcript.push({
+      id: `turn-input:${prepared.turnId}`,
+      turnId: turn.id,
+      role: 'user',
+      content: prepared.prompt,
+      createdAt: now,
+    });
+    session.requestFacts.push(prepared.facts);
+    session.currentTurnId = turn.id;
+    session.state = 'running';
+    const running = await store.commit(session);
     this.emitChanged(scope, running);
-    const host = this.hostFor(running, store);
-    const correlation = {
-      sessionId: session.id,
-      workerEpoch: host.workerEpoch,
-      requestId: prepared.requestId,
-      turnId: prepared.turnId,
-    };
+    const correlation = activeTurnCorrelation(store.get(sessionId) ?? running, host.workerEpoch);
     try {
-      await host.post({
-        type: 'run',
-        correlation,
-        prompt: prepared.prompt,
-      });
+      await host.post({ type: 'run', correlation, prompt: prepared.prompt });
     } catch (error) {
-      await this.markFailed(
-        session.id,
-        error instanceof Error ? error.message : String(error),
-        correlation,
-      );
+      await this.pauseSessionExecution(sessionId, errorMessage(error), correlation, 'runtime');
       throw error;
     }
-    return running;
+    return projectAgentSession(store.get(sessionId) ?? running, scope.generation);
   }
 
   async stop(
@@ -313,58 +269,36 @@ export class IrisAgentSessionManager extends EventEmitter {
     sessionId: string,
     precondition: IrisAgentCommandPrecondition = {},
   ): Promise<IrisAgentSessionInfo> {
-    return this.runSessionCommand(sessionId, () => this.stopSession(scope, sessionId, precondition));
-  }
-
-  private async stopSession(
-    scope: ProjectScope,
-    sessionId: string,
-    precondition: IrisAgentCommandPrecondition,
-  ): Promise<IrisAgentSessionInfo> {
-    this.currentScope = scope;
-    const store = await this.ensureStore(scope.root);
-    const session = await this.requireSession(scope, sessionId);
-    assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
-    const activeTurnId = session.activeTurnId;
-    if (!activeTurnId) return session;
-    if (session.stopRequestedTurnId === activeTurnId) return session;
-    const turn = session.turns.find((candidate) => candidate.id === activeTurnId);
-    if (!turn || turn.status !== 'running') return session;
-    const stopping = store.upsert({
-      ...session,
-      state: 'stopping',
-      stopRequestedTurnId: activeTurnId,
-    });
-    this.emitChanged(scope, stopping);
-    await store.flush();
-    const host = this.hosts.get(sessionId);
-    if (!host?.running) {
-      return this.settleActiveTurn(scope, store, stopping, {
-        sessionId,
-        workerEpoch: session.workerEpoch,
-        requestId: turn.requestId,
-        turnId: turn.id,
-      }, 'stopped', 'Stopped by user.');
-    }
-    const correlation = {
-      sessionId,
-      workerEpoch: session.workerEpoch,
-      requestId: turn.requestId,
-      turnId: turn.id,
-    };
-    try {
-      await host.post({ type: 'abort', correlation, reason: 'user' });
-    } catch {
-      return this.settleActiveTurn(
-        scope,
-        store,
-        store.get(sessionId) ?? stopping,
-        correlation,
-        'stopped',
-        'Stopped by user.',
+    return this.runSessionCommand(sessionId, async () => {
+      this.currentScope = scope;
+      const store = await this.ensureStore(scope.root);
+      const session = await this.requireSession(scope, sessionId);
+      if (precondition.expectedTurnId !== undefined) {
+        if (session.currentTurnId !== precondition.expectedTurnId) {
+          throw new Error('The Iris Agent Turn changed before Stop was applied.');
+        }
+      } else {
+        assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
+      }
+      const turn = currentAgentTurn(session);
+      if (!turn || (turn.state !== 'running' && turn.state !== 'pausing')) {
+        return projectAgentSession(session, scope.generation);
+      }
+      if (turn.state !== 'pausing') {
+        turn.state = 'pausing';
+        session.state = 'stopping';
+        session.stopRequestedTurnId = turn.id;
+        const stopping = await store.commit(session);
+        this.emitChanged(scope, stopping);
+      }
+      const latest = store.get(sessionId) ?? session;
+      const correlation = activeTurnCorrelation(latest, latest.workerEpoch);
+      await this.shutdownHost(sessionId);
+      const paused = await this.pauseTurn(
+        scope, store, store.get(sessionId) ?? latest, correlation, 'user', 'Paused by user.',
       );
-    }
-    return store.get(sessionId) ?? stopping;
+      return projectAgentSession(paused, scope.generation);
+    });
   }
 
   async retry(
@@ -372,48 +306,44 @@ export class IrisAgentSessionManager extends EventEmitter {
     sessionId: string,
     precondition: IrisAgentCommandPrecondition = {},
   ): Promise<IrisAgentSessionInfo> {
-    return this.runSessionCommand(sessionId, () => this.retrySession(scope, sessionId, precondition));
-  }
-
-  private async retrySession(
-    scope: ProjectScope,
-    sessionId: string,
-    precondition: IrisAgentCommandPrecondition,
-  ): Promise<IrisAgentSessionInfo> {
-    this.currentScope = scope;
-    const store = await this.ensureStore(scope.root);
-    const session = await this.requireSession(scope, sessionId);
-    assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
-    assertQuiescentIrisAgentSession(session);
-    const retryTurn = session.turns[session.turns.length - 1];
-    if (!retryTurn || (retryTurn.status !== 'failed' && retryTurn.status !== 'stopped')) {
-      throw new Error('Only the latest failed or stopped Iris Agent turn can be retried.');
-    }
-    const userMessage = session.messages.find((message) => message.id === retryTurn.userMessageId);
-    if (!userMessage) throw new Error('Retry source message is missing.');
-
-    const host = this.hosts.get(sessionId);
-    if (host) this.hosts.delete(sessionId);
-    await host?.shutdown();
-    await this.drainWorkerEvents(sessionId);
-
-    const latest = await this.requireSession(scope, sessionId);
-    assertQuiescentIrisAgentSession(latest);
-    const latestTurn = latest.turns[latest.turns.length - 1];
-    if (
-      latestTurn?.id !== retryTurn.id ||
-      (latestTurn.status !== 'failed' && latestTurn.status !== 'stopped')
-    ) {
-      throw new Error('The Iris Agent retry source changed before retry could start.');
-    }
-    const prefix = undoLatestIrisAgentTurn(
-      latest,
-      precondition.commandId ?? randomUUID(),
-    );
-    const running = await this.startTurn(scope, store, prefix, userMessage.content, retryTurn.id);
-    const cleaned = await this.cleanupPendingArtifacts(store, running);
-    this.emitChanged(scope, cleaned);
-    return cleaned;
+    return this.runSessionCommand(sessionId, async () => {
+      this.currentScope = scope;
+      const store = await this.ensureStore(scope.root);
+      let session = await this.requireSession(scope, sessionId);
+      assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
+      assertQuiescentIrisAgentSession(session);
+      const turn = session.turns.find((candidate) => candidate.id === session.currentTurnId);
+      if (!turn || turn.state !== 'paused') {
+        throw new Error('Only the latest paused Iris Agent turn can continue.');
+      }
+      const prepared = preparePausedAgentTurnForResume(session);
+      if (prepared !== session) {
+        session = await store.commit(prepared);
+        this.emitChanged(scope, session);
+        if (!session.currentTurnId) return projectAgentSession(session, scope.generation);
+      }
+      await this.assertUsableModel(session);
+      await this.shutdownHost(sessionId);
+      const host = await this.hostFor(session, store, scope);
+      await host.ensureStarted();
+      session = await this.requireSession(scope, sessionId);
+      const latestTurn = session.turns.find((candidate) => candidate.id === turn.id);
+      if (!latestTurn || latestTurn.state !== 'paused') throw new Error('The paused turn changed before Continue.');
+      const running = await store.commit(resumePausedAgentTurn(session));
+      this.emitChanged(scope, running);
+      const correlation = activeTurnCorrelation(running, host.workerEpoch);
+      try {
+        await host.post({
+          type: 'resume',
+          correlation,
+          providerCallOffset: running.providerCalls.length,
+        });
+      } catch (error) {
+        await this.pauseSessionExecution(sessionId, errorMessage(error), correlation, 'runtime');
+        throw error;
+      }
+      return projectAgentSession(store.get(sessionId) ?? running, scope.generation);
+    });
   }
 
   async rewind(
@@ -421,55 +351,34 @@ export class IrisAgentSessionManager extends EventEmitter {
     sessionId: string,
     precondition: IrisAgentCommandPrecondition = {},
   ): Promise<IrisAgentSessionInfo> {
-    return this.runSessionCommand(sessionId, () => this.rewindSession(scope, sessionId, precondition));
+    return this.runSessionCommand(sessionId, async () => {
+      this.currentScope = scope;
+      const store = await this.ensureStore(scope.root);
+      const session = await this.requireSession(scope, sessionId);
+      assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
+      assertUndoableLatestIrisAgentTurn(session);
+      await this.shutdownHost(sessionId);
+      const latest = await this.requireSession(scope, sessionId);
+      const saved = await store.commit(undoLatestIrisAgentTurn(
+        latest,
+        precondition.commandId ?? randomUUID(),
+      ));
+      this.emitChanged(scope, saved);
+      return projectAgentSession(saved, scope.generation);
+    });
   }
 
-  private async rewindSession(
-    scope: ProjectScope,
-    sessionId: string,
-    precondition: IrisAgentCommandPrecondition,
-  ): Promise<IrisAgentSessionInfo> {
-    this.currentScope = scope;
+  async getTurnArtifactPath(scope: ProjectScope, sessionId: string, turnId: string): Promise<string> {
     const store = await this.ensureStore(scope.root);
     const session = await this.requireSession(scope, sessionId);
-    assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
-    assertQuiescentIrisAgentSession(session);
-    assertUndoableLatestIrisAgentTurn(session);
-
-    const host = this.hosts.get(sessionId);
-    if (host) this.hosts.delete(sessionId);
-    await host?.shutdown();
-    await this.drainWorkerEvents(sessionId);
-
-    const latest = await this.requireSession(scope, sessionId);
-    assertQuiescentIrisAgentSession(latest);
-    assertUndoableLatestIrisAgentTurn(latest);
-    let rewound = store.upsert(undoLatestIrisAgentTurn(
-      latest,
-      precondition.commandId ?? randomUUID(),
-    ));
-    await store.flush();
-    rewound = await this.cleanupPendingArtifacts(store, rewound);
-    this.emitChanged(scope, rewound);
-    return rewound;
-  }
-
-  async getTurnArtifactPath(
-    scope: ProjectScope,
-    sessionId: string,
-    turnId: string,
-  ): Promise<string> {
-    const store = await this.ensureStore(scope.root);
-    const session = await this.requireSession(scope, sessionId);
-    const turn = session.turns.find((candidate) => candidate.id === turnId);
+    const turn = session.turns.find((candidate) => candidate.id === turnId && candidate.state !== 'removed');
     if (!turn) throw new Error('The Iris Agent turn was not found.');
-    if (turn.providerContextAvailable === true) {
+    const hasProviderContext = session.providerCalls.some((call) => call.turnId === turnId);
+    if (hasProviderContext) {
       await store.refreshProviderContextText(sessionId, turnId);
       return store.providerContextTextPath(sessionId, turnId);
     }
-    if (turn.assembledInputAvailable === true || turn.promptAvailable === true) {
-      return store.promptSnapshotPath(sessionId, turnId);
-    }
+    if (turn.assembledInputAvailable) return store.promptSnapshotPath(sessionId, turnId);
     throw new Error('No context artifact is available for this Iris Agent turn.');
   }
 
@@ -478,76 +387,58 @@ export class IrisAgentSessionManager extends EventEmitter {
     sessionId: string,
     precondition: IrisAgentCommandPrecondition = {},
   ): Promise<void> {
-    await this.runSessionCommand(sessionId, () => this.closeSessionNow(scope, sessionId, precondition));
-  }
-
-  private async closeSessionNow(
-    scope: ProjectScope,
-    sessionId: string,
-    precondition: IrisAgentCommandPrecondition,
-  ): Promise<void> {
-    const store = await this.ensureStore(scope.root);
-    const session = await this.requireSession(scope, sessionId);
-    assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
-    const host = this.hosts.get(sessionId);
-    if (host) this.hosts.delete(sessionId);
-    await host?.shutdown();
-    await this.drainWorkerEvents(sessionId);
-    store.delete(sessionId);
-    this.emit('sessionDestroyed', { scope, sessionId } satisfies IrisAgentSessionDestroyedPayload);
+    await this.runSessionCommand(sessionId, async () => {
+      const store = await this.ensureStore(scope.root);
+      const session = await this.requireSession(scope, sessionId);
+      assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
+      await this.shutdownHost(sessionId);
+      await store.delete(sessionId);
+      this.emittedProjections.delete(sessionId);
+      this.emit('sessionDestroyed', { scope, sessionId } satisfies IrisAgentSessionDestroyedPayload);
+    });
   }
 
   async closeProject(scope: ProjectScope): Promise<void> {
     const store = await this.ensureStore(scope.root);
-    const sessions = store.list(scope);
-    await Promise.allSettled(
-      sessions.map((session) => this.runSessionCommand(session.id, async () => {
-        const host = this.hosts.get(session.id);
-        if (host) this.hosts.delete(session.id);
-        await host?.shutdown('shutdown');
-        await this.drainWorkerEvents(session.id);
-      })),
-    );
-    await store.flush();
+    await Promise.allSettled(store.list().map((session) => this.runSessionCommand(session.id, async () => {
+      await this.shutdownHost(session.id);
+      const latest = store.get(session.id);
+      if (!latest || !isAgentSessionBusy(latest)) return;
+      await this.pauseTurn(
+        scope,
+        store,
+        latest,
+        activeTurnCorrelation(latest, latest.workerEpoch),
+        'runtime',
+        'Project closed before the Agent run settled.',
+      );
+    })));
   }
 
   assertProviderConfigurationChangeAllowed(): void {
-    const scope = this.currentScope;
-    const store = this.loaded?.store;
-    if (!scope || !store || this.loaded?.root !== scope.root) return;
-    if (store.list(scope).some((session) => !isStoppedState(session.state))) {
+    if (this.loaded?.store.list().some(isAgentSessionBusy)) {
       throw new Error('Stop all running Iris Agent Sessions before changing provider credentials.');
     }
   }
 
   async reloadProviderConfiguration(): Promise<void> {
-    const hosts = [...this.hosts.entries()];
-    this.hosts.clear();
-    await Promise.all(hosts.map(([, host]) => host.shutdown('shutdown')));
-    await Promise.all(hosts.map(([sessionId]) => this.drainWorkerEvents(sessionId)));
+    const ids = [...this.hosts.keys()];
+    await Promise.all(ids.map((id) => this.shutdownHost(id)));
   }
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
-    const pendingCommands = [...this.sessionCommandChains.values()];
     await Promise.allSettled([...this.hosts.values()].map((host) => host.shutdown('shutdown')));
-    await Promise.allSettled(pendingCommands);
-    await Promise.allSettled([...this.hosts.values()].map((host) => host.shutdown('shutdown')));
+    await Promise.allSettled([...this.sessionMutationChains.values()]);
     this.hosts.clear();
-    this.workerEventChains.clear();
-    this.sessionCommandChains.clear();
+    this.sessionMutationChains.clear();
+    this.emittedProjections.clear();
     await this.loaded?.store.flush();
     this.loaded?.store.destroy();
     this.loaded = null;
   }
 
-  private async preparePrompt(session: IrisAgentSessionInfo, userMessage: string): Promise<{
-    prompt: string;
-    turnId: string;
-    requestId: string;
-    facts: IrisAgentRequestFacts;
-  }> {
-    await this.projectManager.assertProjectSettingsReady();
+  private async preparePrompt(session: AgentSessionAggregate, userMessage: string): Promise<PreparedAgentTurn> {
     const promptState = await this.projectManager.softwarePromptState();
     const anchorText = await this.readAnchorText(session.anchor);
     const assembled = assembleAgentPrompt({
@@ -558,19 +449,17 @@ export class IrisAgentSessionManager extends EventEmitter {
         : { workspacePath: anchorText.workspacePath, text: anchorText.text },
     });
     const turnId = randomUUID();
-    const requestId = randomUUID();
     const prompt = assembled.text + '\n\n<user-request>\n' + userMessage + '\n</user-request>';
     return {
       prompt,
       turnId,
-      requestId,
       facts: {
-        id: requestId,
+        id: randomUUID(),
         turnId,
         createdAt: Date.now(),
         promptFingerprint: assembled.fingerprint,
         layerFingerprints: assembled.layerFingerprints,
-        anchor: session.anchor,
+        anchor: { ...session.anchor },
         promptChars: prompt.length,
         redacted: true,
       },
@@ -578,15 +467,14 @@ export class IrisAgentSessionManager extends EventEmitter {
   }
 
   private async readAnchorText(anchor: IrisAgentAnchor): Promise<
-    | { path: string; text: string }
-    | { workspacePath: string; text: string }
+    { path: string; text: string } | { workspacePath: string; text: string }
   > {
     if (anchor.kind === 'document') {
       try {
         const doc = await this.projectManager.readDoc(anchor.path);
         return { path: doc.path, text: doc.raw };
-      } catch (err) {
-        throw new Error('anchor-missing: ' + (err instanceof Error ? err.message : String(err)));
+      } catch (error) {
+        throw new Error('anchor-missing: ' + errorMessage(error));
       }
     }
     return {
@@ -595,12 +483,18 @@ export class IrisAgentSessionManager extends EventEmitter {
     };
   }
 
-  private hostFor(session: IrisAgentSessionInfo, store: IrisAgentSessionStore): AgentWorkerHost {
+  private async hostFor(
+    session: AgentSessionAggregate,
+    store: IrisAgentSessionStore,
+    scope: ProjectScope,
+  ): Promise<AgentWorkerHost> {
     const existing = this.hosts.get(session.id);
     if (existing) return existing;
     if (!session.model) throw new Error('Iris Agent Session has no configured model.');
-    const withEpoch = store.upsert({ ...session, workerEpoch: session.workerEpoch + 1 });
-    if (this.currentScope) this.emitChanged(this.currentScope, withEpoch);
+    const next = cloneAgentSession(session);
+    next.workerEpoch += 1;
+    const withEpoch = await store.commit(next);
+    this.emitChanged(scope, withEpoch);
     const host = new AgentWorkerHost(session.id, {
       loadHistory: async (sessionId) => store.history(sessionId),
       loadRuntime: async (sessionId) => {
@@ -624,20 +518,21 @@ export class IrisAgentSessionManager extends EventEmitter {
       },
       workerEpoch: withEpoch.workerEpoch,
       ...(this.options.workerFactory ? { workerFactory: this.options.workerFactory } : {}),
-      ...(this.options.workerIdleTimeoutMs === undefined
-        ? {}
-        : { idleTimeoutMs: this.options.workerIdleTimeoutMs }),
+      ...(this.options.workerIdleTimeoutMs === undefined ? {} : { idleTimeoutMs: this.options.workerIdleTimeoutMs }),
     });
     host.on('event', (event: AgentWorkerEvent) => {
-      if (this.hosts.get(session.id) !== host) return;
-      this.enqueueWorkerEvent(event);
+      if (this.hosts.get(session.id) === host) this.enqueueWorkerEvent(event);
     });
-    host.on('workerError', (err: Error) => {
-      if (this.hosts.get(session.id) === host) void this.markFailed(session.id, err.message);
+    host.on('workerError', (error: Error) => {
+      if (this.hosts.get(session.id) === host) {
+        void this.enqueueSessionMutation(session.id, () =>
+          this.pauseSessionExecution(session.id, error.message, undefined, 'worker'));
+      }
     });
     host.on('crash', (code: number) => {
       if (this.hosts.get(session.id) === host) {
-        void this.markFailed(session.id, 'Iris Agent Worker crashed with code ' + String(code));
+        void this.enqueueSessionMutation(session.id, () => this.pauseSessionExecution(
+          session.id, 'Iris Agent Worker crashed with code ' + String(code), undefined, 'worker'));
       }
     });
     this.hosts.set(session.id, host);
@@ -646,17 +541,29 @@ export class IrisAgentSessionManager extends EventEmitter {
 
   private enqueueWorkerEvent(event: AgentWorkerEvent): void {
     const sessionId = event.correlation.sessionId;
-    const previous = this.workerEventChains.get(sessionId) ?? Promise.resolve();
-    const next = previous
-      .then(() => this.handleWorkerEvent(event))
-      .catch((error) => this.markFailed(
-        sessionId,
-        error instanceof Error ? error.message : String(error),
-        event.correlation,
-      ));
-    this.workerEventChains.set(sessionId, next);
-    void next.finally(() => {
-      if (this.workerEventChains.get(sessionId) === next) this.workerEventChains.delete(sessionId);
+    void this.enqueueSessionMutation(sessionId, async () => {
+      try {
+        await this.handleWorkerEvent(event);
+        if (event.eventId) {
+          await this.hosts.get(sessionId)?.post({
+            type: 'event-ack',
+            correlation: event.correlation,
+            eventId: event.eventId,
+            ok: true,
+          });
+        }
+      } catch (error) {
+        if (event.eventId) {
+          await this.hosts.get(sessionId)?.post({
+            type: 'event-ack',
+            correlation: event.correlation,
+            eventId: event.eventId,
+            ok: false,
+            error: errorMessage(error),
+          }).catch(() => undefined);
+        }
+        await this.pauseSessionExecution(sessionId, errorMessage(error), event.correlation, 'runtime');
+      }
     });
   }
 
@@ -665,59 +572,62 @@ export class IrisAgentSessionManager extends EventEmitter {
     if (!scope) return;
     const store = await this.ensureStore(scope.root);
     const session = store.get(event.correlation.sessionId);
-    if (!session) return;
-    if (event.correlation.workerEpoch !== session.workerEpoch) return;
-    if (event.type === 'state') {
-      this.updateRuntimeState(scope, store, session, event.state, event.correlation);
-      return;
-    }
-    if (event.type === 'failure') {
-      await this.markFailed(session.id, event.message, event.correlation);
-      return;
-    }
-    if (event.type === 'ready') {
-      if (!session.activeTurnId) {
-        this.emitChanged(scope, store.upsert({ ...session, state: 'ready' }));
-      }
-      return;
-    }
-    if (event.type === 'stream') {
-      this.applyStreamEvent(scope, store, session, event.event, event.correlation);
-      return;
-    }
-    if (event.type === 'provider-context') {
-      try {
-        await this.persistProviderContext(scope, store, session, event);
-      } catch {
-        // Provider capture is diagnostic and cannot change turn execution semantics.
-      }
-      return;
-    }
-    if (event.type === 'tool-request') {
-      await this.handleToolRequest(scope, store, session, event);
-      return;
-    }
-    if (event.type === 'stopped') {
-      this.updateRuntimeState(scope, store, session, 'idle', event.correlation);
+    if (!session || event.correlation.workerEpoch !== session.workerEpoch) return;
+    switch (event.type) {
+      case 'state':
+        await this.applyRuntimeState(scope, store, session, event.state, event.correlation);
+        return;
+      case 'failure':
+        await this.pauseSessionExecution(session.id, event.message, event.correlation, 'runtime');
+        return;
+      case 'ready':
+        if (!session.currentTurnId) await this.commitAndEmit(scope, store, { ...session, state: 'ready' });
+        return;
+      case 'assistant-text-delta':
+        await this.applyAssistantTextDelta(scope, store, session, event.delta, event.correlation);
+        return;
+      case 'provider-message':
+        await this.applyProviderMessageEvent(scope, store, session, event.message, event.correlation);
+        return;
+      case 'provider-context':
+        await this.persistProviderContext(scope, store, session, event).catch(() => undefined);
+        return;
+      case 'provider-attempt':
+        await this.applyProviderAttemptEvent(scope, store, session, event);
+        return;
+      case 'execution-paused':
+        await this.pauseSessionExecution(
+          session.id,
+          event.message,
+          event.correlation,
+          mapPauseReason(event.reason),
+        );
+        return;
+      case 'execution-settled':
+        await this.completeRun(scope, store, session, event.correlation);
+        return;
+      case 'tool-request':
+        await this.handleToolRequest(scope, store, session, event);
+        return;
+      case 'stopped':
+        return;
     }
   }
 
   private async persistProviderContext(
     scope: ProjectScope,
     store: IrisAgentSessionStore,
-    session: IrisAgentSessionInfo,
+    session: AgentSessionAggregate,
     event: Extract<AgentWorkerEvent, { type: 'provider-context' }>,
   ): Promise<void> {
-    const { requestId, turnId } = event.correlation;
-    if (!requestId || !turnId) return;
+    const { turnId, providerCallId } = event.correlation;
+    if (!turnId || !providerCallId || !matchesActiveAgentTurn(session, event.correlation)) return;
     const turn = session.turns.find((candidate) => candidate.id === turnId);
-    if (!turn || turn.requestId !== requestId) return;
-    const bundle = await store.appendProviderContext(
+    await store.appendProviderContext(
       session.id,
       turnId,
-      requestId,
       event.call,
-      turn.assembledInputAvailable === true,
+      turn?.assembledInputAvailable === true,
       {
         appVersion: this.options.appVersion ?? 'unknown',
         protocolVersion: event.version,
@@ -726,264 +636,362 @@ export class IrisAgentSessionManager extends EventEmitter {
       },
     );
     const latest = store.get(session.id) ?? session;
-    const updated = store.upsert({
-      ...latest,
-      turns: latest.turns.map((candidate) => candidate.id === turnId
-        ? {
-            ...candidate,
-            artifactSchemaVersion: 1,
-            providerContextAvailable: true,
-            providerCallCount: bundle.calls.length,
-          }
-        : candidate),
-    });
-    this.emitChanged(scope, updated);
+    const call = latest.providerCalls.find((candidate) => candidate.id === providerCallId);
+    if (call) call.index = event.call.index;
+    await this.commitAndEmit(scope, store, latest);
   }
 
   private async handleToolRequest(
     scope: ProjectScope,
     store: IrisAgentSessionStore,
-    session: IrisAgentSessionInfo,
+    session: AgentSessionAggregate,
     event: Extract<AgentWorkerEvent, { type: 'tool-request' }>,
   ): Promise<void> {
     const correlation = event.correlation;
-    if (!correlation.requestId || !correlation.turnId || !correlation.toolCallId) return;
-    const current = store.get(session.id) ?? session;
-    if (!matchesActiveIrisAgentTurn(current, correlation)) return;
-    const host = new IrisAgentToolHost({
-      projectRoot: scope.root,
-      outputRoot: join(this.userDataPath, 'iris-agent-output'),
-      commandShell: this.commandShell,
-    });
-    const existingToolEvent = current.toolEvents.find(
-      (toolEvent) => toolEvent.id === correlation.toolCallId,
+    if (!correlation.turnId || !correlation.toolCallId || !correlation.operationId) return;
+    let current = store.get(session.id) ?? session;
+    if (!matchesActiveAgentTurn(current, correlation)) return;
+    const providerCallId = providerCallForToolCall(current, correlation.toolCallId);
+    if (!providerCallId) {
+      throw new Error('Tool Call does not belong to a committed assistant Provider message.');
+    }
+    const previousOperation = current.toolOperations.find(
+      (operation) => operation.id === correlation.operationId,
     );
-    const initialToolEvent: IrisAgentToolEvent = existingToolEvent
-      ? {
-          ...existingToolEvent,
-          state: 'running',
-          inputSummary: compactToolInput(event.input),
-          ...toolEventInputDetails(event.input),
-        }
-      : {
-          id: correlation.toolCallId,
-          turnId: correlation.turnId,
-          requestId: correlation.requestId,
-          name: toolName(event.input),
-          state: 'running',
-          createdAt: Date.now(),
-          inputSummary: compactToolInput(event.input),
-          ...toolEventInputDetails(event.input),
-        };
-    this.emitChanged(scope, store.upsert({
-      ...current,
-      state: 'waiting-tool',
-      toolEvents: existingToolEvent
-        ? current.toolEvents.map((toolEvent) =>
-            toolEvent.id === initialToolEvent.id ? initialToolEvent : toolEvent)
-        : [...current.toolEvents, initialToolEvent],
-    }));
-    const executed = await host.execute(event.input, {
-      sessionId: correlation.sessionId,
-      requestId: correlation.requestId,
+    if (previousOperation?.state === 'completed' && previousOperation.result) {
+      await this.hosts.get(session.id)?.post({
+        type: 'tool-result', correlation, ok: true, result: previousOperation.result,
+      });
+      return;
+    }
+    if (previousOperation?.state === 'failed') {
+      await this.hosts.get(session.id)?.post({
+        type: 'tool-result', correlation, ok: false,
+        error: previousOperation.error ?? 'Iris Agent tool failed',
+      });
+      return;
+    }
+    if (previousOperation) return;
+    let activity = current.timeline.find(
+      (candidate): candidate is AgentToolActivity =>
+        candidate.kind === 'tool' && candidate.toolCallId === correlation.toolCallId,
+    );
+    if (activity && activity.state !== 'running') {
+      await this.hosts.get(session.id)?.post({
+        type: 'tool-result', correlation, ok: false,
+        error: 'Iris Agent received a new operation for a settled tool activity.',
+      });
+      return;
+    }
+    if (!activity) {
+      activity = {
+        kind: 'tool',
+        id: correlation.toolCallId,
+        ordinal: current.nextOrdinal++,
+        turnId: correlation.turnId,
+        providerCallId,
+        toolCallId: correlation.toolCallId,
+        tool: event.input.tool,
+        ...(event.input.tool === 'terminal' ? { intent: event.input.intent } : {}),
+        state: 'running',
+        inputSummary: compactToolInput(event.input),
+        operation: event.input.operation,
+        ...(event.input.tool === 'terminal'
+          ? { command: event.input.command, cwd: event.input.cwd }
+          : {}),
+        effectIds: [],
+        createdAt: Date.now(),
+      };
+      current.timeline.push(activity);
+    }
+    current.toolOperations.push({
+      id: correlation.operationId,
+      toolActivityId: activity.id,
+      turnId: correlation.turnId,
+      input: structuredClone(event.input),
+      state: 'running',
+      createdAt: Date.now(),
+    });
+    current.state = 'waiting-tool';
+    current = await this.commitAndEmit(scope, store, current);
+    const operationCorrelation = {
+      sessionId: session.id,
       turnId: correlation.turnId,
       toolCallId: correlation.toolCallId,
-    });
-    const latest = store.get(session.id) ?? session;
-    const previousEvent = latest.toolEvents.find((toolEvent) => toolEvent.id === executed.event.id);
-    const completedEvent: IrisAgentToolEvent = {
-      ...previousEvent,
-      ...executed.event,
-      createdAt: previousEvent?.createdAt ?? executed.event.createdAt,
+      operationId: correlation.operationId,
     };
-    const toolEvents = latest.toolEvents.map((toolEvent) =>
-      toolEvent.id === completedEvent.id ? completedEvent : toolEvent,
+    const execution = this.options.toolExecutor
+      ? this.options.toolExecutor(event.input, operationCorrelation)
+      : new IrisAgentToolHost({
+          projectRoot: scope.root,
+          artifactRoot: store.artifactRoot(session.id),
+          commandShell: this.commandShell,
+        }).execute(event.input, operationCorrelation);
+    void execution.then((executed) => this.enqueueSessionMutation(session.id, () => this.settleToolOperation(
+      scope,
+      store,
+      session.id,
+      activity.id,
+      event,
+      executed,
+    ))).catch((error) => this.enqueueSessionMutation(session.id, () =>
+      this.pauseSessionExecution(session.id, errorMessage(error), correlation, 'runtime')));
+  }
+
+  private async settleToolOperation(
+    scope: ProjectScope,
+    store: IrisAgentSessionStore,
+    sessionId: string,
+    activityId: string,
+    event: Extract<AgentWorkerEvent, { type: 'tool-request' }>,
+    executed: IrisAgentToolHostResult,
+  ): Promise<void> {
+    const correlation = event.correlation;
+    const latest = store.get(sessionId);
+    if (!latest) return;
+    const target = latest.timeline.find(
+      (candidate): candidate is AgentToolActivity => candidate.kind === 'tool' && candidate.id === activityId,
     );
-    const fileEffects = executed.fileEffect
-      ? [...latest.fileEffects, executed.fileEffect]
-      : latest.fileEffects;
-    this.emitChanged(scope, store.upsert({
-      ...latest,
-      state: executed.event.state === 'failed' && !latest.stopRequestedTurnId
-        ? 'running'
-        : latest.state,
-      toolEvents,
-      fileEffects,
-    }));
-    await this.hosts.get(session.id)?.post(
-      executed.event.state === 'failed'
+    if (!target) return;
+    const operation = latest.toolOperations.find((candidate) => candidate.id === correlation.operationId);
+    if (!operation) return;
+    if (operation.state !== 'running') {
+      const lateEffects = executed.effects.filter(
+        (effect) => !latest.effects.some((candidate) => candidate.id === effect.id),
+      );
+      if (lateEffects.length === 0) return;
+      latest.effects.push(...lateEffects);
+      await this.commitAndEmit(scope, store, latest);
+      return;
+    }
+    operation.state = executed.update.state === 'failed' ? 'failed' : 'completed';
+    operation.completedAt = executed.update.completedAt;
+    if (executed.update.state === 'failed') {
+      operation.error = executed.update.error ?? 'Iris Agent tool failed';
+    }
+    else operation.result = structuredClone(executed.result);
+    const { state: _state, completedAt: _completedAt, ...activityUpdate } = executed.update;
+    if (target.state === 'running') {
+      Object.assign(target, activityUpdate);
+      if (executed.update.state === 'failed') {
+        target.state = 'failed';
+        target.completedAt = executed.update.completedAt;
+      }
+    }
+    const newEffects = executed.effects.filter(
+      (effect) => !latest.effects.some((candidate) => candidate.id === effect.id),
+    );
+    if (target.state === 'running') target.effectIds.push(...newEffects.map((effect) => effect.id));
+    latest.effects.push(...newEffects);
+    if (latest.state === 'waiting-tool' && matchesActiveAgentTurn(latest, correlation)) latest.state = 'running';
+    await this.commitAndEmit(scope, store, latest);
+    const settled = store.get(sessionId) ?? latest;
+    if (currentAgentTurn(settled)?.state !== 'running' || !matchesActiveAgentTurn(settled, correlation)) return;
+    await this.hosts.get(sessionId)?.post(
+      executed.update.state === 'failed'
         ? {
             type: 'tool-result',
             correlation,
             ok: false,
-            error: executed.event.error ?? 'Iris Agent tool failed',
+            error: executed.update.error ?? 'Iris Agent tool failed',
           }
-        : {
-            type: 'tool-result',
-            correlation,
-            ok: true,
-            result: executed.result,
-          },
+        : { type: 'tool-result', correlation, ok: true, result: executed.result },
     );
   }
 
-  private applyStreamEvent(
+  private async applyAssistantTextDelta(
     scope: ProjectScope,
     store: IrisAgentSessionStore,
-    session: IrisAgentSessionInfo,
-    event: unknown,
+    session: AgentSessionAggregate,
+    delta: string,
     correlation: AgentWorkerEvent['correlation'],
-  ): void {
+  ): Promise<void> {
     const latest = store.get(session.id) ?? session;
-    if (!matchesActiveIrisAgentTurn(latest, correlation)) return;
-    const withProviderMessage = this.applyProviderMessage(latest, event, correlation.turnId!);
-    if (withProviderMessage !== latest) {
-      session = store.upsert(withProviderMessage);
-      this.emitChanged(scope, session);
-    } else {
-      session = latest;
-    }
-    const delta = textDelta(event);
-    if (delta) {
-      const updated = this.updateAssistantMessage(session, (content) => content + delta);
-      this.emitChanged(scope, store.upsert(updated));
-      return;
-    }
-    const providerError = providerStopError(event);
-    if (providerError) {
-      this.settleActiveTurn(scope, store, session, correlation, 'failed', providerError);
-      return;
-    }
-    if (isEventType(event, 'agent_end') || isEventType(event, 'agent_settled')) {
-      this.settleActiveTurn(scope, store, session, correlation, 'completed');
-    }
+    if (!matchesActiveAgentTurn(latest, correlation) || !delta) return;
+    const reply = ensureReply(latest, correlation, Date.now());
+    if (!reply || reply.state !== 'streaming') return;
+    reply.content += delta;
+    await this.commitAndEmit(scope, store, latest);
   }
 
-  private applyProviderMessage(
-    session: IrisAgentSessionInfo,
-    event: unknown,
-    turnId: string,
-  ): IrisAgentSessionInfo {
-    const providerMessage = providerMessageFromEvent(event);
-    if (!providerMessage) return session;
-    return applyIrisAgentProviderMessage(session, providerMessage, turnId);
-  }
-
-  private updateAssistantMessage(
-    session: IrisAgentSessionInfo,
-    update: (content: string) => string,
-  ): IrisAgentSessionInfo {
-    const activeTurnId = session.activeTurnId;
-    if (!activeTurnId) return session;
-    const assistantMessageId = session.turns.find((turn) => turn.id === activeTurnId)
-      ?.assistantMessageId;
-    if (!assistantMessageId) return session;
-    return {
-      ...session,
-      messages: session.messages.map((message) =>
-        message.id === assistantMessageId
-          ? { ...message, content: update(message.content) }
-          : message,
-      ),
-    };
-  }
-
-  private settleActiveTurn(
+  private async applyProviderMessageEvent(
     scope: ProjectScope,
     store: IrisAgentSessionStore,
-    session: IrisAgentSessionInfo,
+    session: AgentSessionAggregate,
+    message: Record<string, unknown>,
     correlation: AgentWorkerEvent['correlation'],
-    requestedStatus: 'completed' | 'failed' | 'stopped',
-    message?: string,
-  ): IrisAgentSessionInfo {
+  ): Promise<void> {
     const latest = store.get(session.id) ?? session;
-    const settled = settleIrisAgentTurnDomain(latest, correlation, requestedStatus, message);
-    if (settled === latest) return latest;
-    const saved = store.upsert(settled);
-    this.hosts.get(latest.id)?.markIdle();
-    this.emitChanged(scope, saved);
+    if (!matchesActiveAgentTurn(latest, correlation)) return;
+    applyProviderMessage(latest, message, correlation);
+    await this.commitAndEmit(scope, store, latest);
+  }
+
+  private async applyProviderAttemptEvent(
+    scope: ProjectScope,
+    store: IrisAgentSessionStore,
+    session: AgentSessionAggregate,
+    event: Extract<AgentWorkerEvent, { type: 'provider-attempt' }>,
+  ): Promise<void> {
+    const { turnId, providerCallId, attemptId } = event.correlation;
+    if (!turnId || !providerCallId || !attemptId) return;
+    const latest = store.get(session.id) ?? session;
+    if (!matchesActiveAgentTurn(latest, event.correlation)) return;
+    const now = Date.now();
+    let call = latest.providerCalls.find((candidate) => candidate.id === providerCallId);
+    if (event.phase === 'started' && !call) {
+      call = {
+        id: providerCallId,
+        turnId,
+        index: latest.providerCalls.length + 1,
+        state: 'running',
+        attemptIds: [],
+        createdAt: now,
+      };
+      latest.providerCalls.push(call);
+    }
+    if (!call) return;
+    let attempt = latest.providerAttempts.find((candidate) => candidate.id === attemptId);
+    if (event.phase === 'started' && !attempt) {
+      attempt = {
+        id: attemptId,
+        providerCallId,
+        turnId,
+        index: event.index,
+        state: 'running',
+        createdAt: now,
+      };
+      latest.providerAttempts.push(attempt);
+      call.attemptIds.push(attemptId);
+    }
+    if (!attempt) return;
+    if (event.phase !== 'started') {
+      attempt.state = event.phase;
+      attempt.completedAt = now;
+      if (event.error) attempt.error = event.error;
+      if (event.phase === 'completed') {
+        call.state = 'completed';
+        call.completedAt = now;
+      }
+      if (event.phase === 'failed' || event.phase === 'aborted') {
+        const reply = latest.timeline.find(
+          (candidate): candidate is AgentReplyActivity =>
+            candidate.kind === 'reply' && candidate.providerAttemptId === attemptId &&
+            candidate.state === 'streaming',
+        );
+        if (reply) {
+          reply.state = event.phase === 'aborted' ? 'stopped' : 'failed';
+          reply.contextDisposition = 'excluded';
+          reply.completedAt = now;
+          if (event.error) reply.error = event.error;
+        }
+      }
+    }
+    await this.commitAndEmit(scope, store, latest);
+  }
+
+  private async applyRuntimeState(
+    scope: ProjectScope,
+    store: IrisAgentSessionStore,
+    session: AgentSessionAggregate,
+    state: AgentSessionRuntimeState,
+    correlation: AgentWorkerEvent['correlation'],
+  ): Promise<void> {
+    if (state === 'interrupted') {
+      await this.pauseSessionExecution(session.id, 'Paused by user.', correlation, 'user');
+      return;
+    }
+    if (session.currentTurnId && !matchesActiveAgentTurn(session, correlation)) return;
+    if (state === 'idle' && session.currentTurnId) return;
+    const mapped = mapRuntimeState(state);
+    if (!mapped || mapped === session.state) return;
+    session.state = mapped;
+    await this.commitAndEmit(scope, store, session);
+  }
+
+  private async completeRun(
+    scope: ProjectScope,
+    store: IrisAgentSessionStore,
+    session: AgentSessionAggregate,
+    correlation: AgentWorkerEvent['correlation'],
+  ): Promise<AgentSessionAggregate> {
+    const latest = store.get(session.id) ?? session;
+    const completed = completeActiveAgentTurn(latest, correlation);
+    if (completed === latest) return latest;
+    const saved = await this.commitAndEmit(scope, store, completed);
+    this.hosts.get(session.id)?.markIdle();
     return saved;
   }
 
-  private updateRuntimeState(
+  private async pauseTurn(
     scope: ProjectScope,
     store: IrisAgentSessionStore,
-    session: IrisAgentSessionInfo,
-    state: AgentSessionRuntimeState,
+    session: AgentSessionAggregate,
     correlation: AgentWorkerEvent['correlation'],
-  ): void {
-    if (state === 'interrupted') {
-      this.settleActiveTurn(scope, store, session, correlation, 'stopped', 'Stopped by user.');
-      return;
-    }
-    if (correlation.turnId && !matchesActiveIrisAgentTurn(session, correlation)) return;
-    if (session.activeTurnId && !matchesActiveIrisAgentTurn(session, correlation)) return;
-    if (session.stopRequestedTurnId === session.activeTurnId) return;
-    if (state === 'idle' && session.activeTurnId) return;
-    const mapped = mapRuntimeState(state);
-    if (!mapped) return;
-    this.emitChanged(scope, store.upsert({ ...session, state: mapped }));
+    reason: IrisAgentPauseReason,
+    message: string,
+  ): Promise<AgentSessionAggregate> {
+    const latest = store.get(session.id) ?? session;
+    const paused = pauseActiveAgentTurn(latest, correlation, reason, message);
+    if (paused === latest) return latest;
+    const saved = await this.commitAndEmit(scope, store, paused);
+    this.hosts.get(session.id)?.markIdle();
+    return saved;
   }
 
-  private async markFailed(
+  private async pauseSessionExecution(
     sessionId: string,
     message: string,
     correlation?: AgentWorkerEvent['correlation'],
+    reason: IrisAgentPauseReason = 'runtime',
   ): Promise<void> {
     const scope = this.currentScope;
     if (!scope) return;
     const store = await this.ensureStore(scope.root);
     const session = store.get(sessionId);
-    if (!session) return;
-    const activeTurn = session.turns.find((turn) => turn.id === session.activeTurnId);
-    const effectiveCorrelation = correlation ?? {
-      sessionId,
-      workerEpoch: session.workerEpoch,
-      ...(activeTurn ? { requestId: activeTurn.requestId, turnId: activeTurn.id } : {}),
-    };
-    this.settleActiveTurn(scope, store, session, effectiveCorrelation, 'failed', message);
+    if (!session?.currentTurnId) return;
+    await this.shutdownHost(sessionId);
+    const latest = store.get(sessionId) ?? session;
+    if (currentAgentTurn(latest)?.state === 'paused') return;
+    await this.pauseTurn(
+      scope,
+      store,
+      latest,
+      correlation ?? activeTurnCorrelation(latest, latest.workerEpoch),
+      reason,
+      message,
+    );
   }
 
-  private async requireSession(scope: ProjectScope, sessionId: string): Promise<IrisAgentSessionInfo> {
+  private async commitAndEmit(
+    scope: ProjectScope,
+    store: IrisAgentSessionStore,
+    session: AgentSessionAggregate,
+  ): Promise<AgentSessionAggregate> {
+    const saved = await store.commit(session);
+    this.emitChanged(scope, saved);
+    return saved;
+  }
+
+  private async requireSession(scope: ProjectScope, sessionId: string): Promise<AgentSessionAggregate> {
     const store = await this.ensureStore(scope.root);
     const session = store.get(sessionId);
     if (!session || session.projectRoot !== scope.root) {
       throw new Error('Iris Agent session is outside the active project scope.');
     }
-    if (session.projectGeneration !== scope.generation) {
-      return store.upsert({ ...session, projectGeneration: scope.generation });
-    }
     return session;
   }
 
-  private async cleanupPendingArtifacts(
-    store: IrisAgentSessionStore,
-    session: IrisAgentSessionInfo,
-  ): Promise<IrisAgentSessionInfo> {
-    const pending = [...new Set(session.pendingArtifactCleanupTurnIds ?? [])];
-    if (pending.length === 0) return store.get(session.id) ?? session;
-    const remaining: string[] = [];
-    for (const turnId of pending) {
-      try {
-        await store.deleteTurnArtifacts(session.id, turnId);
-      } catch {
-        remaining.push(turnId);
-      }
+  private async assertUsableModel(session: AgentSessionAggregate): Promise<void> {
+    if (!session.model) throw new Error('Select an available provider/model before using Iris Agent.');
+    const catalog = await this.loadModelCatalog();
+    if (!catalog.models.some((candidate) => sameModel(session.model, candidate))) {
+      throw new Error(`The configured Iris Agent model is unavailable: ${session.model.provider}/${session.model.modelId}`);
     }
-    const latest = store.get(session.id) ?? session;
-    if (remaining.length === pending.length) return latest;
-    const cleaned = store.upsert({
-      ...latest,
-      pendingArtifactCleanupTurnIds: remaining,
-    });
-    await store.flush();
-    return cleaned;
   }
 
   private async verifyAnchor(anchor: IrisAgentAnchor): Promise<void> {
-    if (anchor.kind === 'document') {
-      await this.projectManager.readDoc(anchor.path);
-    }
+    if (anchor.kind === 'document') await this.projectManager.readDoc(anchor.path);
   }
 
   private async loadModelCatalog(): Promise<IrisAgentModelCatalog> {
@@ -997,200 +1005,81 @@ export class IrisAgentSessionManager extends EventEmitter {
     if (this.loaded?.root === projectRoot) return this.loaded.store;
     await this.loaded?.store.flush();
     this.loaded?.store.destroy();
-    const store = await IrisAgentSessionStore.load({
-      userDataPath: this.userDataPath,
-      projectRoot,
-    });
+    const store = await IrisAgentSessionStore.load({ userDataPath: this.userDataPath, projectRoot });
     this.loaded = { root: projectRoot, store };
     return store;
   }
 
-  private async drainWorkerEvents(sessionId: string): Promise<void> {
-    await this.workerEventChains.get(sessionId)?.catch(() => undefined);
+  private async shutdownHost(sessionId: string): Promise<void> {
+    const host = this.hosts.get(sessionId);
+    if (host) this.hosts.delete(sessionId);
+    await host?.shutdown('shutdown');
   }
 
   private runSessionCommand<T>(sessionId: string, command: () => Promise<T>): Promise<T> {
-    const previous = this.sessionCommandChains.get(sessionId) ?? Promise.resolve();
-    const result = previous.catch(() => undefined).then(() => {
+    return this.enqueueSessionMutation(sessionId, () => {
       if (this.shuttingDown) throw new Error('Iris Agent manager is shutting down.');
       return command();
     });
+  }
+
+  private enqueueSessionMutation<T>(sessionId: string, mutation: () => Promise<T>): Promise<T> {
+    const previous = this.sessionMutationChains.get(sessionId) ?? Promise.resolve();
+    const result = previous.catch(() => undefined).then(mutation);
     const tail = result.then(() => undefined, () => undefined);
-    this.sessionCommandChains.set(sessionId, tail);
+    this.sessionMutationChains.set(sessionId, tail);
     void tail.finally(() => {
-      if (this.sessionCommandChains.get(sessionId) === tail) {
-        this.sessionCommandChains.delete(sessionId);
-      }
+      if (this.sessionMutationChains.get(sessionId) === tail) this.sessionMutationChains.delete(sessionId);
     });
     return result;
   }
 
-  private emitChanged(scope: ProjectScope, session: IrisAgentSessionInfo): void {
-    this.emit('sessionChanged', { scope, session } satisfies IrisAgentSessionChangedPayload);
+  private emitChanged(scope: ProjectScope, session: AgentSessionAggregate): void {
+    const projected = projectAgentSession(session, scope.generation);
+    const previous = this.emittedProjections.get(session.id) ?? null;
+    const update = diffAgentSessionProjection(previous, projected);
+    this.emittedProjections.set(session.id, structuredClone(projected));
+    this.emit('sessionChanged', {
+      scope,
+      update,
+    } satisfies IrisAgentSessionChangedPayload);
   }
 }
 
 export function createIrisAgentBranch(
-  source: IrisAgentSessionInfo,
+  source: AgentSessionAggregate,
   throughTurnId: string,
   id: string,
   displayName: string,
   now: number,
-): IrisAgentSessionInfo {
+): AgentSessionAggregate {
   assertQuiescentIrisAgentSession(source);
-  const turnIndex = source.turns.findIndex((turn) => turn.id === throughTurnId);
-  if (turnIndex < 0) throw new Error('The Iris Agent branch point was not found.');
-  const sourceTurn = source.turns[turnIndex]!;
-  if (sourceTurn.status === 'running') {
+  const index = source.turns.findIndex((turn) => turn.id === throughTurnId);
+  if (index < 0) throw new Error('The Iris Agent branch point was not found.');
+  if (source.turns[index]!.state !== 'fulfilled') {
     throw new Error('Cannot branch from an incomplete Iris Agent turn.');
   }
-  const turns = source.turns.slice(0, turnIndex + 1).map(withoutTurnArtifacts);
-  const turnIds = new Set(turns.map((turn) => turn.id));
-  const messages = source.messages
-    .filter((message) => turnIds.has(message.turnId))
-    .map((message) => ({
-      ...message,
-      ...(message.providerMessage ? { providerMessage: { ...message.providerMessage } } : {}),
-    }));
-  return {
+  const branch = createEmptyAgentSession({
     id,
-    kind: 'iris-agent',
-    anchor: { ...source.anchor },
-    model: source.model ? { ...source.model } : null,
-    parentSessionId: source.id,
-    forkedFromTurnId: throughTurnId,
+    anchor: source.anchor,
+    model: source.model,
     projectRoot: source.projectRoot,
-    projectGeneration: source.projectGeneration,
     displayName,
-    state: 'ready',
-    createdAt: now,
-    updatedAt: now,
-    revision: 0,
-    workerEpoch: 0,
-    activeTurnId: null,
-    messages,
-    turns,
-    toolEvents: [],
-    fileEffects: [],
-    requestFacts: [],
-    selfHostingEligible: false,
-  };
-}
-
-function withoutTurnArtifacts(turn: IrisAgentTurn): IrisAgentTurn {
-  const {
-    promptAvailable: _promptAvailable,
-    artifactSchemaVersion: _artifactSchemaVersion,
-    assembledInputAvailable: _assembledInputAvailable,
-    assembledInputLegacy: _assembledInputLegacy,
-    providerContextAvailable: _providerContextAvailable,
-    providerCallCount: _providerCallCount,
-    ...conversationTurn
-  } = turn;
-  return conversationTurn;
-}
-
-function sameModel(left: IrisAgentModelRef | null, right: IrisAgentModelRef): boolean {
-  return left?.provider === right.provider && left.modelId === right.modelId;
-}
-
-export function applyIrisAgentProviderMessage(
-  session: IrisAgentSessionInfo,
-  providerMessage: Record<string, unknown>,
-  turnId: string,
-): IrisAgentSessionInfo {
-  const turn = session.turns.find((candidate) => candidate.id === turnId);
-  if (!turn) return session;
-  const role = providerMessage.role;
-  if (role === 'user') {
-    return {
-      ...session,
-      messages: session.messages.map((message) => message.id === turn.userMessageId
-        ? { ...message, providerMessage: { ...providerMessage } }
-        : message),
-    };
-  }
-  if (role === 'assistant') {
-    const toolCallIds = providerAssistantToolCallIds(providerMessage);
-    if (providerMessage.stopReason === 'toolUse' && toolCallIds.length > 0) {
-      const id = `pi-assistant:${turnId}:${toolCallIds.map(encodeURIComponent).join(',')}`;
-      if (session.messages.some((message) => message.id === id)) return session;
-      return {
-        ...session,
-        messages: insertBeforeMessage(session.messages, turn.assistantMessageId, {
-          id,
-          turnId,
-          role: 'assistant',
-          content: providerMessageText(providerMessage) ?? '',
-          createdAt: typeof providerMessage.timestamp === 'number'
-            ? providerMessage.timestamp
-            : Date.now(),
-          providerOnly: true,
-          providerMessage: { ...providerMessage },
-        }),
-      };
-    }
-    const content = providerMessageText(providerMessage);
-    return {
-      ...session,
-      messages: session.messages.map((message) => message.id === turn.assistantMessageId
-        ? {
-            ...message,
-            ...(content !== null ? { content } : {}),
-            providerMessage: { ...providerMessage },
-          }
-        : message),
-    };
-  }
-  if (role !== 'toolResult') return session;
-  const toolCallId = typeof providerMessage.toolCallId === 'string'
-    ? providerMessage.toolCallId
-    : randomUUID();
-  const id = `pi-tool:${turnId}:${toolCallId}`;
-  if (session.messages.some((message) => message.id === id)) return session;
-  return {
-    ...session,
-    messages: insertBeforeMessage(session.messages, turn.assistantMessageId, {
-      id,
-      turnId,
-      role: 'tool',
-      content: providerMessageText(providerMessage) ?? '',
-      createdAt: typeof providerMessage.timestamp === 'number'
-        ? providerMessage.timestamp
-        : Date.now(),
-      providerMessage: { ...providerMessage },
-    }),
-  };
-}
-
-function insertBeforeMessage(
-  messages: IrisAgentSessionInfo['messages'],
-  beforeId: string | undefined,
-  message: IrisAgentSessionInfo['messages'][number],
-): IrisAgentSessionInfo['messages'] {
-  const index = beforeId ? messages.findIndex((candidate) => candidate.id === beforeId) : -1;
-  if (index < 0) return [...messages, message];
-  return [...messages.slice(0, index), message, ...messages.slice(index)];
-}
-
-function providerAssistantToolCallIds(message: Record<string, unknown>): string[] {
-  if (!Array.isArray(message.content)) return [];
-  return message.content.flatMap((block) =>
-    isRecord(block) && block.type === 'toolCall' && typeof block.id === 'string'
-      ? [block.id]
-      : []);
-}
-
-function mapRuntimeState(state: AgentSessionRuntimeState): IrisAgentRuntimeState | null {
-  if (state === 'interrupted') return 'idle';
-  if (state === 'starting' || state === 'ready' || state === 'running' || state === 'waiting-tool' || state === 'stopping' || state === 'idle' || state === 'failed') {
-    return state;
-  }
-  return null;
-}
-
-function isStoppedState(state: IrisAgentRuntimeState): boolean {
-  return state === 'ready' || state === 'idle' || state === 'failed';
+    now,
+  });
+  branch.parentSessionId = source.id;
+  branch.forkedFromTurnId = throughTurnId;
+  branch.turns = structuredClone(source.turns.slice(0, index + 1)).map((turn) => ({
+    ...turn,
+    assembledInputAvailable: false,
+  }));
+  const turnIds = new Set(branch.turns.map((turn) => turn.id));
+  branch.providerCalls = structuredClone(source.providerCalls.filter((call) => turnIds.has(call.turnId)));
+  branch.providerAttempts = structuredClone(source.providerAttempts.filter((attempt) => turnIds.has(attempt.turnId)));
+  branch.timeline = structuredClone(source.timeline.filter((activity) => turnIds.has(activity.turnId)));
+  branch.transcript = structuredClone(source.transcript.filter((frame) => turnIds.has(frame.turnId)));
+  branch.nextOrdinal = Math.max(0, ...branch.timeline.map((activity) => activity.ordinal)) + 1;
+  return branch;
 }
 
 export function parseElectronProxyRules(rules: string): AgentProviderProxy {
@@ -1217,91 +1106,175 @@ export function parseElectronProxyRules(rules: string): AgentProviderProxy {
   throw new Error('Windows returned an unsupported system proxy rule.');
 }
 
-export function applyIrisAgentMessageRewind(
-  session: IrisAgentSessionInfo,
-  _legacyTargetTurnId?: string,
-): IrisAgentSessionInfo {
+export function applyIrisAgentMessageRewind(session: AgentSessionAggregate): AgentSessionAggregate {
   return undoLatestIrisAgentTurn(session);
 }
 
-export function settleIrisAgentTurn(
-  session: IrisAgentSessionInfo,
-  correlation: { sessionId: string; workerEpoch?: number; requestId?: string; turnId?: string },
-  requestedStatus: 'completed' | 'failed' | 'stopped',
-  message?: string,
-): IrisAgentSessionInfo {
-  return settleIrisAgentTurnDomain(session, correlation, requestedStatus, message);
+export function completeIrisAgentTurn(
+  session: AgentSessionAggregate,
+  correlation: AgentWorkerEvent['correlation'],
+): AgentSessionAggregate {
+  return completeActiveAgentTurn(session, correlation);
 }
 
-function textDelta(event: unknown): string | null {
-  if (!isRecord(event) || event.type !== 'message_update') return null;
-  const assistantEvent = event.assistantMessageEvent;
-  if (!isRecord(assistantEvent) || assistantEvent.type !== 'text_delta') return null;
-  return typeof assistantEvent.delta === 'string' ? assistantEvent.delta : null;
+export function pauseIrisAgentTurn(
+  session: AgentSessionAggregate,
+  correlation: AgentWorkerEvent['correlation'],
+  reason: IrisAgentPauseReason,
+  message: string,
+): AgentSessionAggregate {
+  return pauseActiveAgentTurn(session, correlation, reason, message);
 }
 
-function providerStopError(event: unknown): string | null {
-  if (isRecord(event) && event.type === 'message_end' && isRecord(event.message)) {
-    return event.message.role === 'assistant' && event.message.stopReason === 'error'
-      ? (typeof event.message.errorMessage === 'string'
-          ? event.message.errorMessage
-          : 'Provider returned stopReason=error.')
-      : null;
+function activeTurnCorrelation(session: AgentSessionAggregate, workerEpoch: number) {
+  if (!session.currentTurnId) throw new Error('Iris Agent session has no active Turn.');
+  return {
+    sessionId: session.id,
+    workerEpoch,
+    turnId: session.currentTurnId,
+  };
+}
+
+function ensureReply(
+  session: AgentSessionAggregate,
+  correlation: AgentWorkerEvent['correlation'],
+  now: number,
+): AgentReplyActivity | null {
+  const { turnId, providerCallId, attemptId, providerMessageId } = correlation;
+  if (!turnId || !providerCallId || !attemptId || !providerMessageId) return null;
+  const existing = session.timeline.find(
+    (activity): activity is AgentReplyActivity =>
+      activity.kind === 'reply' && activity.providerMessageId === providerMessageId,
+  );
+  if (existing) return existing;
+  const reply: AgentReplyActivity = {
+    kind: 'reply',
+    id: `reply:${providerMessageId}`,
+    ordinal: session.nextOrdinal++,
+    turnId,
+    providerCallId,
+    providerAttemptId: attemptId,
+    providerMessageId,
+    state: 'streaming',
+    contextDisposition: 'pending',
+    content: '',
+    createdAt: now,
+  };
+  session.timeline.push(reply);
+  return reply;
+}
+
+function applyProviderMessage(
+  session: AgentSessionAggregate,
+  message: Record<string, unknown>,
+  correlation: AgentWorkerEvent['correlation'],
+): void {
+  const { turnId } = correlation;
+  if (!turnId) return;
+  const role = message.role;
+  const content = providerMessageText(message) ?? '';
+  const providerMessageId = correlation.providerMessageId ?? randomUUID();
+  const stopReason = typeof message.stopReason === 'string' ? message.stopReason : '';
+  if (role === 'assistant') {
+    const failed = stopReason === 'error';
+    const aborted = stopReason === 'aborted';
+    if (!failed && !aborted && !session.transcript.some((frame) => frame.id === providerMessageId)) {
+      if (correlation.providerCallId) {
+        session.transcript.push({
+          id: providerMessageId,
+          turnId,
+          role: 'assistant',
+          providerCallId: correlation.providerCallId,
+          content,
+          providerMessage: structuredClone(message),
+          createdAt: typeof message.timestamp === 'number' ? message.timestamp : Date.now(),
+        });
+      }
+    }
+    const reply = content.trim() !== '' ? ensureReply(session, { ...correlation, providerMessageId }, Date.now()) : null;
+    if (reply) {
+      reply.content = content;
+      reply.state = failed ? 'failed' : aborted ? 'stopped' : 'completed';
+      reply.contextDisposition = failed || aborted ? 'excluded' : 'committed';
+      reply.completedAt = Date.now();
+      if (failed && typeof message.errorMessage === 'string') reply.error = message.errorMessage;
+    }
+    return;
   }
-  if (!isRecord(event) || event.type !== 'message_update') return null;
-  const assistantEvent = event.assistantMessageEvent;
-  if (!isRecord(assistantEvent) || assistantEvent.type !== 'message_end') return null;
-  const stopReason = assistantEvent.stopReason;
-  return stopReason === 'error' ? 'Provider returned stopReason=error.' : null;
+  if (role !== 'toolResult') return;
+  if (session.transcript.some((frame) => frame.id === providerMessageId)) return;
+  const toolCallId = correlation.toolCallId ?? (typeof message.toolCallId === 'string' ? message.toolCallId : null);
+  if (!toolCallId) return;
+  session.transcript.push({
+    id: providerMessageId,
+    turnId,
+    role: 'tool',
+    toolCallId,
+    content,
+    providerMessage: structuredClone(message),
+    createdAt: typeof message.timestamp === 'number' ? message.timestamp : Date.now(),
+  });
+  if (role === 'toolResult') {
+    const toolCallId = typeof message.toolCallId === 'string' ? message.toolCallId : null;
+    const activity = toolCallId
+      ? session.timeline.find(
+          (candidate): candidate is AgentToolActivity =>
+            candidate.kind === 'tool' && candidate.toolCallId === toolCallId,
+        )
+      : null;
+    if (activity && activity.state === 'running') {
+      activity.state = message.isError === true ? 'failed' : 'completed';
+      activity.completedAt = typeof message.timestamp === 'number' ? message.timestamp : Date.now();
+      if (message.isError === true && content) activity.error = content;
+    }
+  }
 }
 
-function providerMessageFromEvent(event: unknown): Record<string, unknown> | null {
-  if (!isRecord(event) || event.type !== 'message_end' || !isRecord(event.message)) return null;
-  const role = event.message.role;
-  return role === 'user' || role === 'assistant' || role === 'toolResult'
-    ? event.message
-    : null;
+function providerCallForToolCall(session: AgentSessionAggregate, toolCallId: string): string | null {
+  for (let index = session.transcript.length - 1; index >= 0; index -= 1) {
+    const frame = session.transcript[index]!;
+    if (frame.role !== 'assistant' || !Array.isArray(frame.providerMessage?.content)) continue;
+    const ownsToolCall = frame.providerMessage.content.some(
+      (block) => isRecord(block) && block.type === 'toolCall' && block.id === toolCallId,
+    );
+    if (ownsToolCall) return frame.providerCallId;
+  }
+  return null;
 }
 
 function providerMessageText(message: Record<string, unknown>): string | null {
   if (typeof message.content === 'string') return message.content;
   if (!Array.isArray(message.content)) return null;
-  return message.content
-    .filter((part): part is Record<string, unknown> => isRecord(part))
-    .map((part) => {
-      if (part.type === 'text' && typeof part.text === 'string') return part.text;
-      return '';
-    })
-    .filter(Boolean)
-    .join('\n');
-}
-
-function isEventType(event: unknown, type: string): boolean {
-  return isRecord(event) && event.type === type;
-}
-
-function toolName(input: AgentToolOperationInput): IrisAgentToolEvent['name'] {
-  return input.tool;
+  return message.content.flatMap((part) =>
+    isRecord(part) && part.type === 'text' && typeof part.text === 'string' ? [part.text] : []).join('\n');
 }
 
 function compactToolInput(input: AgentToolOperationInput): string {
-  if (input.tool === 'terminal') return input.command.slice(0, 220);
-  return (input.operation + ' ' + input.absolutePath).slice(0, 220);
+  return input.tool === 'terminal'
+    ? input.command.slice(0, 220)
+    : (input.operation + ' ' + input.absolutePath).slice(0, 220);
 }
 
-function toolEventInputDetails(input: AgentToolOperationInput): Pick<
-  IrisAgentToolEvent,
-  'operation' | 'terminalIntent' | 'command' | 'cwd'
-> {
-  if (input.tool === 'terminal') {
-    return {
-      operation: 'exec',
-      terminalIntent: input.intent,
-      command: input.command,
-      cwd: input.cwd,
-    };
-  }
-  return { operation: input.operation };
+function mapRuntimeState(state: AgentSessionRuntimeState): AgentSessionAggregate['state'] | null {
+  if (state === 'interrupted') return null;
+  return state;
+}
+
+function mapPauseReason(
+  reason: Extract<AgentWorkerEvent, { type: 'execution-paused' }>['reason'],
+): IrisAgentPauseReason {
+  if (reason === 'auth-required') return 'auth';
+  if (reason === 'provider-exhausted') return 'provider';
+  if (reason === 'worker-crashed') return 'worker';
+  return 'runtime';
+}
+
+function sameModel(left: IrisAgentModelRef | null, right: IrisAgentModelRef): boolean {
+  return left?.provider === right.provider && left.modelId === right.modelId;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

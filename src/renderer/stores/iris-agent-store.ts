@@ -3,6 +3,7 @@ import { CHANNELS } from '@shared/protocol';
 import type {
   IrisAgentAnchor,
   IrisAgentListSnapshot,
+  IrisAgentSessionProjectionUpdate,
   IrisAgentSessionInfo,
   ProjectScope,
 } from '@shared/types';
@@ -72,6 +73,50 @@ export const irisAgentStore = {
     });
   },
 
+  handleProjectionUpdate(update: IrisAgentSessionProjectionUpdate): 'applied' | 'stale' | 'gap' {
+    if (update.kind === 'snapshot') {
+      this.handleChanged(update.session);
+      return 'applied';
+    }
+    const existing = state.sessions.find((session) => session.id === update.sessionId);
+    if (existing && existing.revision >= update.revision) return 'stale';
+    if (!existing || existing.revision !== update.baseRevision) return 'gap';
+    const next: IrisAgentSessionInfo = {
+      ...structuredClone(update.session),
+      revision: update.revision,
+      turns: structuredClone(existing.turns),
+    };
+    for (const turnPatch of update.turns) {
+      if (turnPatch.operation === 'remove') {
+        next.turns = next.turns.filter((turn) => turn.id !== turnPatch.turnId);
+        continue;
+      }
+      const previousTurn = next.turns.find((turn) => turn.id === turnPatch.turn.id);
+      const turn = {
+        ...structuredClone(turnPatch.turn),
+        cards: structuredClone(previousTurn?.cards ?? []),
+      };
+      for (const cardPatch of turnPatch.cards) {
+        if (cardPatch.operation === 'remove') {
+          turn.cards = turn.cards.filter((card) => card.id !== cardPatch.cardId);
+          continue;
+        }
+        turn.cards = upsertAt(
+          turn.cards.filter((card) => card.id !== cardPatch.card.id),
+          cardPatch.index,
+          structuredClone(cardPatch.card),
+        );
+      }
+      next.turns = upsertAt(
+        next.turns.filter((candidate) => candidate.id !== turn.id),
+        turnPatch.index,
+        turn,
+      );
+    }
+    this.handleChanged(next);
+    return 'applied';
+  },
+
   handleDestroyed(sessionId: string): void {
     const destroyed = state.sessions.find((session) => session.id === sessionId);
     const sessions = state.sessions.filter((session) => session.id !== sessionId);
@@ -128,6 +173,12 @@ export const irisAgentStore = {
     return state.sessions.some((session) => session.id === sessionId);
   },
 };
+
+function upsertAt<T>(items: T[], index: number, value: T): T[] {
+  const next = [...items];
+  next.splice(Math.min(Math.max(index, 0), next.length), 0, value);
+  return next;
+}
 
 async function pullIrisAgentSessions(scope: ProjectScope): Promise<void> {
   const snapshot = await window.api.invoke<

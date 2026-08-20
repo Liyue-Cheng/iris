@@ -31,6 +31,16 @@ function commandPrecondition(sessionId: string): { commandId: string; expectedRe
   return { commandId: crypto.randomUUID(), expectedRevision: session.revision };
 }
 
+function turnPrecondition(sessionId: string): {
+  commandId: string;
+  expectedRevision: number;
+  expectedTurnId: string;
+} {
+  const session = irisAgentStore.get().sessions.find((candidate) => candidate.id === sessionId);
+  if (!session?.currentTurnId) throw new Error('The Iris Agent Turn is no longer available.');
+  return { ...commandPrecondition(sessionId), expectedTurnId: session.currentTurnId };
+}
+
 export async function openIrisAgent(anchor: IrisAgentAnchor): Promise<IrisAgentSessionInfo | null> {
   const outcome = await attemptAction(async () => {
     if (!(await editorStore.flushBeforeSwitch('before-external-action'))) return null;
@@ -95,12 +105,13 @@ export async function stopIrisAgent(sessionId: string): Promise<void> {
     },
     async () => {
       const scope = scopeOrThrow();
-      const precondition = commandPrecondition(sessionId);
+      const precondition = turnPrecondition(sessionId);
       const session = await window.api.invoke<
         {
           sessionId: string;
           commandId: string;
           expectedRevision: number;
+          expectedTurnId: string;
           expectedScope: ProjectScope;
         },
         IrisAgentSessionInfo
@@ -110,11 +121,11 @@ export async function stopIrisAgent(sessionId: string): Promise<void> {
   );
 }
 
-export async function retryIrisAgent(sessionId: string): Promise<void> {
+export async function resumeIrisAgent(sessionId: string): Promise<void> {
   await runUserAction(
     {
-      title: 'Iris Agent 重试失败',
-      dedupeKey: 'iris-agent:retry:' + sessionId,
+      title: 'Iris Agent 恢复失败',
+      dedupeKey: 'iris-agent:resume:' + sessionId,
     },
     async () => {
       if (!(await editorStore.flushBeforeSwitch('before-external-action'))) return;

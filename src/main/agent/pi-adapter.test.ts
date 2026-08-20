@@ -4,8 +4,6 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { ModelRuntime, SessionManager } from '@earendil-works/pi-coding-agent';
 import { IRIS_AGENT_PROMPT } from './prompt';
-import { applyIrisAgentMessageRewind } from './session-manager';
-import type { IrisAgentSessionInfo } from '@shared/types';
 import {
   createIrisPiResourceLoader,
   createIrisPiToolDefinitions,
@@ -383,114 +381,6 @@ describe('Iris Pi adapter', () => {
     });
   });
 
-  it('keeps a rewound suffix out of the real provider transformation', async () => {
-    const session: IrisAgentSessionInfo = {
-      id: 'session-1',
-      kind: 'iris-agent',
-      anchor: { kind: 'workspace', path: '.iris' },
-      model: { provider: 'openai', modelId: 'gpt-test' },
-      projectRoot: process.cwd(),
-      projectGeneration: 1,
-      displayName: 'Iris Agent',
-      state: 'idle',
-      createdAt: 1,
-      updatedAt: 4,
-      revision: 4,
-      workerEpoch: 0,
-      activeTurnId: null,
-      messages: [
-        { id: 'u1', turnId: 'turn-1', role: 'user', content: 'kept question', createdAt: 1 },
-        { id: 'a1', turnId: 'turn-1', role: 'assistant', content: 'kept answer', createdAt: 2 },
-        { id: 'u2', turnId: 'turn-2', role: 'user', content: 'removed question', createdAt: 3 },
-        {
-          id: 'a2',
-          turnId: 'turn-2',
-          role: 'assistant',
-          content: 'removed answer',
-          createdAt: 4,
-          providerMessage: {
-            role: 'assistant',
-            content: [
-              { type: 'text', text: 'removed answer' },
-              { type: 'toolCall', id: 'removed-call', name: 'read', arguments: { path: 'removed.md' } },
-            ],
-            api: 'openai-responses',
-            provider: 'previous-provider',
-            model: 'previous-model',
-            usage: zeroUsage(),
-            stopReason: 'aborted',
-            timestamp: 4,
-          },
-        },
-        {
-          id: 't2',
-          turnId: 'turn-2',
-          role: 'tool',
-          content: 'removed tool result',
-          createdAt: 5,
-          providerMessage: {
-            role: 'toolResult',
-            toolCallId: 'removed-call',
-            toolName: 'read',
-            content: [{ type: 'text', text: 'removed tool result' }],
-            isError: false,
-            timestamp: 5,
-          },
-        },
-      ],
-      turns: [
-        {
-          id: 'turn-1',
-          userMessageId: 'u1',
-          assistantMessageId: 'a1',
-          requestId: 'request-1',
-          status: 'completed',
-          createdAt: 1,
-          completedAt: 2,
-        },
-        {
-          id: 'turn-2',
-          userMessageId: 'u2',
-          assistantMessageId: 'a2',
-          requestId: 'request-2',
-          status: 'completed',
-          createdAt: 3,
-          completedAt: 4,
-        },
-      ],
-      toolEvents: [],
-      fileEffects: [],
-      requestFacts: [],
-      selfHostingEligible: false,
-    };
-    const rewound = applyIrisAgentMessageRewind(session);
-    const manager = SessionManager.inMemory(process.cwd());
-    restoreIrisPiHistory(manager, {
-      revision: 5,
-      anchor: rewound.anchor,
-      messages: rewound.messages,
-    });
-    const restored = manager.buildSessionContext();
-    const payload = await captureDeepSeekProviderPayload(normalizeIrisProviderContext({
-      ...restored,
-      messages: [
-        ...restored.messages,
-        { role: 'user', content: 'request after rewind', timestamp: 5 },
-      ],
-    } as never));
-
-    expect(payload).toMatchObject({
-      messages: [
-        { role: 'user', content: 'kept question' },
-        { role: 'assistant', content: 'kept answer' },
-        { role: 'user', content: 'request after rewind' },
-      ],
-    });
-    expect(JSON.stringify(payload)).not.toContain('removed question');
-    expect(JSON.stringify(payload)).not.toContain('removed answer');
-    expect(JSON.stringify(payload)).not.toContain('removed tool result');
-  });
-
   it('drops empty stopped responses and their orphaned tool results', () => {
     const context = normalizeIrisProviderContext({
       messages: [
@@ -614,6 +504,12 @@ describe('Iris Pi adapter', () => {
 
   it('persists multiple profiles for one template and registers separate model providers', async () => {
     const root = await mkdtemp(join(tmpdir(), 'iris-provider-profiles-'));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toMatch(/\/v1\/models$/u);
+      expect(init?.headers).toMatchObject({ authorization: expect.stringMatching(/^Bearer sk-/u) });
+      return new Response(JSON.stringify({ data: [{ id: 'gpt-available' }] }), { status: 200 });
+    });
     try {
       await expect(addIrisAgentProviderProfile({
         name: 'Missing endpoint',
@@ -659,16 +555,41 @@ describe('Iris Pi adapter', () => {
       const modelCatalog = await loadIrisModelCatalog(root, root);
       const profileProviders = new Set(stored.map((profile) => runtimeProviderId(profile.id)));
       expect(profileProviders.size).toBe(2);
+      expect(modelCatalog.models.filter((model) => profileProviders.has(model.provider))).toEqual(expect.arrayContaining([
+        expect.objectContaining({ modelId: 'gpt-available', providerName: 'OpenAI primary' }),
+        expect.objectContaining({ modelId: 'gpt-available', providerName: 'OpenAI backup' }),
+      ]));
       expect(modelCatalog.models.some((model) =>
-        profileProviders.has(model.provider) && model.providerName === 'OpenAI primary')).toBe(true);
-      expect(modelCatalog.models.some((model) =>
-        profileProviders.has(model.provider) && model.providerName === 'OpenAI backup')).toBe(true);
+        profileProviders.has(model.provider) && model.modelId !== 'gpt-available')).toBe(false);
       expect(JSON.stringify(modelCatalog)).not.toContain('secret');
 
       const remaining = await removeIrisAgentProviderProfile(stored[0]!.id, root);
       expect(remaining).toHaveLength(1);
       expect(remaining[0]?.name).toBe('OpenAI backup');
     } finally {
+      globalThis.fetch = originalFetch;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a failed provider model query without exposing its API key', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'iris-provider-model-query-'));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => new Response('invalid key: sk-secret', { status: 401 }));
+    try {
+      await addIrisAgentProviderProfile({
+        name: 'Unavailable provider',
+        templateId: 'anthropic-compatible',
+        baseUrl: 'https://provider.example.com',
+        apiKey: 'sk-secret',
+      }, root);
+
+      const catalog = await loadIrisModelCatalog(root, root);
+      expect(catalog.models.some((model) => model.providerName === 'Unavailable provider')).toBe(false);
+      expect(catalog.error).toContain('Could not load models for Anthropic Compatible: HTTP 401');
+      expect(JSON.stringify(catalog)).not.toContain('sk-secret');
+    } finally {
+      globalThis.fetch = originalFetch;
       await rm(root, { recursive: true, force: true });
     }
   });

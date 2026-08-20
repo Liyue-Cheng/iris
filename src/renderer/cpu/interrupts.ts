@@ -63,7 +63,7 @@ export function wireInterrupts(): void {
   });
   window.api.on<IrisAgentSessionChangedPayload>(EVENTS.IRIS_AGENT_SESSION_CHANGED, (event) => {
     if (!sameProjectScope(event.scope, projectScopeState.get())) return;
-    irisAgentStore.handleChanged(event.session);
+    if (irisAgentStore.handleProjectionUpdate(event.update) === 'gap') void hydrateIrisAgentSessions();
   });
   window.api.on<IrisAgentSessionDestroyedPayload>(EVENTS.IRIS_AGENT_SESSION_DESTROYED, (event) => {
     if (!sameProjectScope(event.scope, projectScopeState.get())) return;

@@ -216,7 +216,7 @@ export async function loadIrisProviderCatalog(
   profileRoot: string,
 ): Promise<IrisAgentProviderCatalog> {
   try {
-    const runtime = await createIrisModelRuntime(agentDir, profileRoot);
+    const runtime = await createIrisModelRuntime(agentDir, profileRoot, false);
     const credentials = new Map(
       (await runtime.listCredentials()).map((credential) => [credential.providerId, credential]),
     );
@@ -412,24 +412,27 @@ function createProviderTransport(providerProxy: AgentProviderProxy): {
 async function createIrisModelRuntime(
   agentDir: string,
   profileRoot: string,
+  loadProfileModels = true,
 ): Promise<ModelRuntime> {
   const runtime = await ModelRuntime.create({
     authPath: join(agentDir, 'auth.json'),
     modelsPath: join(agentDir, 'models.json'),
   });
   const profiles = await loadProviderProfiles(profileRoot);
+  if (!loadProfileModels) return runtime;
   for (const profile of profiles) {
     const template = IRIS_AGENT_PROVIDER_TEMPLATES.find(
       (candidate) => candidate.id === profile.templateId,
     );
     if (!template) continue;
     const baseUrl = profile.baseUrl || template.defaultBaseUrl;
+    const modelIds = await fetchIrisProviderModelIds(template, baseUrl, profile.apiKey);
     runtime.registerProvider(runtimeProviderId(profile.id), {
       name: profile.name,
       ...(baseUrl ? { baseUrl } : {}),
       api: template.api,
       apiKey: profile.apiKey,
-      models: profileModelsConfig(runtime.getModels(template.sourceProvider), template.api),
+      models: profileModelsConfig(runtime.getModels(template.sourceProvider), template.api, modelIds),
     });
   }
   return runtime;
@@ -437,6 +440,50 @@ async function createIrisModelRuntime(
 
 function loadProviderProfiles(profileRoot: string) {
   return loadStoredIrisAgentProviderProfiles(profileRoot);
+}
+
+async function fetchIrisProviderModelIds(
+  template: typeof IRIS_AGENT_PROVIDER_TEMPLATES[number],
+  baseUrl: string,
+  apiKey: string,
+): Promise<string[]> {
+  const endpoint = new URL(
+    template.api === 'anthropic-messages' ? 'v1/models' : 'models',
+    `${baseUrl.replace(/\/+$/u, '')}/`,
+  );
+  const headers: Record<string, string> = template.api === 'anthropic-messages'
+    ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+    : { authorization: `Bearer ${apiKey}` };
+  let response: Response;
+  try {
+    response = await fetch(endpoint, { headers });
+  } catch (error) {
+    throw new Error(`Could not load models for ${template.name}: ${renderRawError(error)}`);
+  }
+  if (!response.ok) {
+    throw new Error(`Could not load models for ${template.name}: HTTP ${response.status} ${response.statusText}`);
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new Error(`Could not load models for ${template.name}: response was not valid JSON.`);
+  }
+  const data = body && typeof body === 'object' && !Array.isArray(body)
+    ? (body as { data?: unknown }).data
+    : undefined;
+  if (!Array.isArray(data)) {
+    throw new Error(`Could not load models for ${template.name}: response did not contain a model list.`);
+  }
+  const modelIds = [...new Set(data.flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const id = (item as { id?: unknown }).id;
+    return typeof id === 'string' && id.trim() ? [id.trim()] : [];
+  }))];
+  if (!modelIds.length) {
+    throw new Error(`Could not load models for ${template.name}: response contained no models.`);
+  }
+  return modelIds;
 }
 
 function toIrisModelOption(model: {
@@ -691,6 +738,14 @@ function providerSafeAssistantText(
     stopReason: 'stop',
     timestamp: message.timestamp,
   };
+}
+
+export function normalizeIrisInterruptedAssistantMessage(
+  message: unknown,
+): Record<string, unknown> | null {
+  if (!isPiMessage(message) || message.role !== 'assistant') return null;
+  return providerSafeAssistantText(message as unknown as IrisPiAssistantMessage) as unknown as
+    Record<string, unknown> | null;
 }
 
 function toPiHistoryMessage(

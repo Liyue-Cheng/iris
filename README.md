@@ -14,7 +14,7 @@ Iris 将项目文档、交互式 Agent 终端、Git 状态和人的注意力整�
 
 项目状态以普通 Markdown 文件保存在 `.iris/` 下。Agent 在项目根目录的真实 PTY 中运行，Git 仍然是协作与交付层。Iris 不需要账户、云端数据库、API Key，也不使用专有项目格式。
 
-> 当前版本：`0.1.0-beta.7`。这是现有桌面工作流的稳定化基线。Iris 以 Windows 为优先平台，目前提供 Windows x64 版本。
+> 当前版本：`0.1.0-beta.8`。这是现有桌面工作流的稳定化基线。Iris 以 Windows 为优先平台，目前提供 Windows x64 版本。
 
 ![Iris 工作区](docs/images/readme-overview.png)
 
@@ -343,7 +343,7 @@ src/shared/     跨进程模型、IPC channel 名称、Markdown 工具、
 
 ## 当前状态
 
-Iris 是一个通过自身仓库持续 dogfooding 开发的 beta 软件。`0.1.0-beta.7` 将文件系统协议、项目 scope、文档工作流、终端状态恢复和本地 Git 基础闭环收敛为当前桌面版本的稳定化基线。
+Iris 是一个通过自身仓库持续 dogfooding 开发的 beta 软件。`0.1.0-beta.8` 将文件系统协议、项目 scope、文档工作流、终端状态恢复和本地 Git 基础闭环收敛为当前桌面版本的稳定化基线。
 
 从这个版本起，`main` 进入稳定维护阶段，以 bug 修复、可靠性、兼容性和必要的小幅体验改进为主，不再承载大规模产品重构。基于 Pi 或未来其他代码 Agent 运行时（包括可能的 DeepSeek Code 方案）的内置 Agent 探索，将在独立开发分支推进；具体运行时会根据成熟度和可维护性选择。当前 `beta.7` 仍只协调用户已经安装并认证的外部 Agent CLI，不内置模型或 Agent 运行时。
 

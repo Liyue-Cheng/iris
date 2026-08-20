@@ -1,53 +1,115 @@
 import { createHash } from 'node:crypto';
-import { readFile, rm } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { JsonStore } from '../persistence';
+import { mkdir, open, readFile, readdir, rm, truncate } from 'node:fs/promises';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { writeFileAtomic } from '../atomic-write';
 import type { AgentHistorySnapshot } from '@shared/agent-protocol';
 import type {
-  IrisAgentAnchor,
-  IrisAgentMessage,
-  IrisAgentModelRef,
-  IrisAgentFileEffect,
-  IrisAgentRequestFacts,
-  IrisAgentRuntimeState,
-  IrisAgentSessionInfo,
-  IrisAgentToolEvent,
-  IrisAgentTurn,
   IrisAgentProviderContextBundle,
   IrisAgentProviderContextCall,
   ProjectScope,
 } from '@shared/types';
+import type { AgentSessionAggregate } from './session-model';
+import { cloneAgentSession, isAgentSessionQuiescent } from './session-model';
+import {
+  applyAgentDomainTransaction,
+  createAgentDomainTransaction,
+  isAgentDomainTransaction,
+  type AgentDomainTransaction,
+} from './session-events';
+import { isDeepStrictEqual } from 'node:util';
 import {
   renderProviderContextCall,
   renderProviderContextIndex,
   sanitizeProviderContextCall,
 } from './context-artifact';
 
-export const IRIS_AGENT_SESSION_STORE_VERSION = 5 as const;
+export const IRIS_AGENT_SESSION_STORE_VERSION = 2 as const;
+const STORE_MANIFEST_VERSION = 1 as const;
+const resetPromises = new Map<string, Promise<void>>();
 
-interface IrisAgentSessionStoreFile {
+interface ProjectIndex {
   version: typeof IRIS_AGENT_SESSION_STORE_VERSION;
   projectRoot: string;
-  sessions: IrisAgentSessionInfo[];
+  sessionIds: string[];
+}
+
+interface SessionSnapshot {
+  version: typeof IRIS_AGENT_SESSION_STORE_VERSION;
+  revision: number;
+  journalHash: string;
+  session: AgentSessionAggregate;
+}
+
+interface JournalRecord {
+  version: typeof IRIS_AGENT_SESSION_STORE_VERSION;
+  revision: number;
+  previousHash: string;
+  journalHash: string;
+  committedAt: number;
+  transaction: AgentDomainTransaction;
+}
+
+export function agentV2Root(userDataPath: string): string {
+  return join(resolve(userDataPath), 'iris-agent-v2');
+}
+
+export function agentV3Root(userDataPath: string): string {
+  return join(resolve(userDataPath), 'iris-agent-v3');
 }
 
 export function agentSessionStorePath(userDataPath: string, projectRoot: string): string {
-  return join(userDataPath, 'iris-agent-sessions', sha256(projectRoot).slice(0, 16) + '.json');
+  return join(agentV3Root(userDataPath), 'projects', projectKey(projectRoot), 'index.json');
+}
+
+export async function resetLegacyIrisAgentData(userDataPath: string): Promise<void> {
+  const resolvedUserData = resolve(userDataPath);
+  const existing = resetPromises.get(resolvedUserData);
+  if (existing) return existing;
+  const pending = (async () => {
+    const v3Root = agentV3Root(resolvedUserData);
+    const manifest = join(v3Root, 'manifest.json');
+    try {
+      const parsed: unknown = JSON.parse(await readFile(manifest, 'utf8'));
+      if (isRecord(parsed) && parsed.version === STORE_MANIFEST_VERSION && parsed.legacyResetCompleted === true) {
+        return;
+      }
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+    }
+    const legacyTargets = ['iris-agent-sessions', 'iris-agent-output', 'iris-agent-v2'].map((name) => {
+      const target = resolve(resolvedUserData, name);
+      assertExactChild(resolvedUserData, target, name);
+      return target;
+    });
+    for (const target of legacyTargets) await rm(target, { recursive: true, force: true });
+    await mkdir(v3Root, { recursive: true });
+    await writeFileAtomic(manifest, JSON.stringify({
+      version: STORE_MANIFEST_VERSION,
+      legacyResetCompleted: true,
+      createdAt: Date.now(),
+      removed: legacyTargets.map((target) => basename(target)),
+    }, null, 2) + '\n');
+  })();
+  resetPromises.set(resolvedUserData, pending);
+  try {
+    await pending;
+  } catch (error) {
+    resetPromises.delete(resolvedUserData);
+    throw error;
+  }
 }
 
 export class IrisAgentSessionStore {
-  private readonly store: JsonStore<IrisAgentSessionStoreFile>;
-  private file: IrisAgentSessionStoreFile;
+  private readonly sessions = new Map<string, AgentSessionAggregate>();
+  private readonly journalHashes = new Map<string, string>();
+  private index: ProjectIndex;
 
   private constructor(
     private readonly projectRoot: string,
-    private readonly filePath: string,
-    file: IrisAgentSessionStoreFile,
-    debounceMs = 150,
+    private readonly projectDir: string,
+    index: ProjectIndex,
   ) {
-    this.file = file;
-    this.store = new JsonStore(filePath, debounceMs);
+    this.index = index;
   }
 
   static async load(options: {
@@ -55,55 +117,122 @@ export class IrisAgentSessionStore {
     projectRoot: string;
     debounceMs?: number;
   }): Promise<IrisAgentSessionStore> {
-    const filePath = agentSessionStorePath(options.userDataPath, options.projectRoot);
-    const json = new JsonStore<IrisAgentSessionStoreFile>(filePath, options.debounceMs ?? 150);
-    const loaded = await json.load(defaultFile(options.projectRoot));
-    json.destroy();
-    const recovered = recoverInterrupted(validateFile(loaded.value, options.projectRoot));
-    const sessionStore = new IrisAgentSessionStore(
+    void options.debounceMs;
+    await resetLegacyIrisAgentData(options.userDataPath);
+    const projectDir = dirname(agentSessionStorePath(options.userDataPath, options.projectRoot));
+    await mkdir(join(projectDir, 'sessions'), { recursive: true });
+    const index = await readProjectIndex(join(projectDir, 'index.json'), options.projectRoot);
+    const store = new IrisAgentSessionStore(
       options.projectRoot,
-      filePath,
-      recovered,
-      options.debounceMs ?? 150,
+      projectDir,
+      index,
     );
-    sessionStore.store.set(recovered);
-    await sessionStore.store.flush();
-    return sessionStore;
-  }
-
-  list(scope: ProjectScope): IrisAgentSessionInfo[] {
-    return this.file.sessions
-      .filter((session) => session.projectRoot === scope.root)
-      .map((session) => withGeneration(session, scope.generation));
-  }
-
-  get(sessionId: string): IrisAgentSessionInfo | null {
-    return cloneSession(this.file.sessions.find((session) => session.id === sessionId) ?? null);
-  }
-
-  upsert(session: IrisAgentSessionInfo): IrisAgentSessionInfo {
-    const index = this.file.sessions.findIndex((item) => item.id === session.id);
-    const previousUpdatedAt = index >= 0 ? this.file.sessions[index]!.updatedAt : 0;
-    const previousRevision = index >= 0 ? this.file.sessions[index]!.revision : 0;
-    const updated = {
-      ...session,
-      updatedAt: Math.max(Date.now(), previousUpdatedAt + 1),
-      revision: previousRevision + 1,
+    const ids = new Set(index.sessionIds);
+    for (const directory of await readdir(join(projectDir, 'sessions'), { withFileTypes: true })) {
+      if (!directory.isDirectory()) continue;
+      const sessionDir = join(projectDir, 'sessions', directory.name);
+      const snapshot = await readSnapshot(join(sessionDir, 'snapshot.json'));
+      const discoveredId = snapshot?.session.id ?? await discoverSessionId(join(sessionDir, 'journal.ndjson'));
+      if (discoveredId && (!snapshot || snapshot.session.projectRoot === options.projectRoot)) ids.add(discoveredId);
+    }
+    for (const id of ids) {
+      const loaded = await store.loadSession(id);
+      if (!loaded) continue;
+      store.sessions.set(id, loaded.session);
+      store.journalHashes.set(id, loaded.journalHash);
+    }
+    store.index = {
+      version: IRIS_AGENT_SESSION_STORE_VERSION,
+      projectRoot: options.projectRoot,
+      sessionIds: [...store.sessions.keys()],
     };
-    const sessions = [...this.file.sessions];
-    if (index >= 0) sessions[index] = updated;
-    else sessions.push(updated);
-    this.file = { ...this.file, sessions };
-    this.store.set(this.file);
-    return cloneSession(updated)!;
+    await store.writeIndex();
+    for (const session of [...store.sessions.values()]) {
+      if (isInterrupted(session)) {
+        await store.commit(await recoverInterrupted(session, store.sessionDir(session.id), options.projectRoot));
+      }
+    }
+    return store;
   }
 
-  delete(sessionId: string): void {
-    this.file = {
-      ...this.file,
-      sessions: this.file.sessions.filter((session) => session.id !== sessionId),
+  list(_scope?: ProjectScope): AgentSessionAggregate[] {
+    return [...this.sessions.values()].map(cloneAgentSession);
+  }
+
+  get(sessionId: string): AgentSessionAggregate | null {
+    const session = this.sessions.get(sessionId);
+    return session ? cloneAgentSession(session) : null;
+  }
+
+  async commit(source: AgentSessionAggregate): Promise<AgentSessionAggregate> {
+    if (source.projectRoot !== this.projectRoot) {
+      throw new Error('Iris Agent session is outside this store project.');
+    }
+    const previous = this.sessions.get(source.id);
+    const now = Date.now();
+    const session = cloneAgentSession(source);
+    session.revision = previous ? previous.revision + 1 : Math.max(1, session.revision);
+    session.updatedAt = Math.max(now, (previous?.updatedAt ?? 0) + 1);
+    const transaction = createAgentDomainTransaction(previous ?? null, session);
+    const replayed = applyAgentDomainTransaction(previous ?? null, transaction);
+    if (!isDeepStrictEqual(replayed, session)) {
+      throw new Error('Iris Agent domain transaction did not reproduce the committed aggregate.');
+    }
+    const previousHash = this.journalHashes.get(session.id) ?? '';
+    const committedAt = now;
+    const hash = journalHash({
+      version: IRIS_AGENT_SESSION_STORE_VERSION,
+      revision: session.revision,
+      previousHash,
+      committedAt,
+      transaction,
+    });
+    const record: JournalRecord = {
+      version: IRIS_AGENT_SESSION_STORE_VERSION,
+      revision: session.revision,
+      previousHash,
+      journalHash: hash,
+      committedAt,
+      transaction,
     };
-    this.store.set(this.file);
+    const directory = this.sessionDir(session.id);
+    await mkdir(directory, { recursive: true });
+    const journal = await open(join(directory, 'journal.ndjson'), 'a');
+    try {
+      await journal.writeFile(JSON.stringify(record) + '\n', 'utf8');
+      await journal.sync();
+    } finally {
+      await journal.close();
+    }
+    const isNew = !previous;
+    this.sessions.set(session.id, session);
+    this.journalHashes.set(session.id, hash);
+    if (isNew) {
+      this.index = { ...this.index, sessionIds: [...this.index.sessionIds, session.id] };
+    }
+    if (isAgentSessionQuiescent(session)) {
+      await writeFileAtomic(join(directory, 'snapshot.json'), JSON.stringify({
+        version: IRIS_AGENT_SESSION_STORE_VERSION,
+        revision: session.revision,
+        journalHash: hash,
+        session,
+      } satisfies SessionSnapshot, null, 2) + '\n').catch(() => undefined);
+    }
+    if (isNew) await this.writeIndex().catch(() => undefined);
+    return cloneAgentSession(session);
+  }
+
+  async delete(sessionId: string): Promise<void> {
+    const directory = this.sessionDir(sessionId);
+    assertInside(this.projectDir, directory);
+    await rm(directory, { recursive: true, force: true });
+    this.sessions.delete(sessionId);
+    this.journalHashes.delete(sessionId);
+    this.index = {
+      ...this.index,
+      sessionIds: this.index.sessionIds.filter((candidate) => candidate !== sessionId),
+    };
+    await this.writeIndex();
   }
 
   async savePromptSnapshot(sessionId: string, turnId: string, prompt: string): Promise<void> {
@@ -111,89 +240,207 @@ export class IrisAgentSessionStore {
   }
 
   promptSnapshotPath(sessionId: string, turnId: string): string {
-    const projectKey = sha256(this.projectRoot).slice(0, 16);
-    const sessionKey = sha256(sessionId).slice(0, 16);
-    const turnKey = sha256(turnId).slice(0, 16);
-    return join(dirname(this.filePath), 'prompts', projectKey, sessionKey, `${turnKey}.txt`);
+    return join(this.turnArtifactDir(sessionId, turnId), 'assembled-input.txt');
   }
 
-  async deleteTurnArtifacts(sessionId: string, turnId: string): Promise<void> {
-    await Promise.all([
-      rm(this.promptSnapshotPath(sessionId, turnId), { force: true }),
-      rm(this.providerContextDir(sessionId, turnId), { recursive: true, force: true }),
-    ]);
+  artifactRoot(sessionId: string): string {
+    return join(this.sessionDir(sessionId), 'artifacts');
   }
 
   async appendProviderContext(
     sessionId: string,
     turnId: string,
-    requestId: string,
     call: IrisAgentProviderContextCall,
     assembledInputAvailable = true,
     runtimeIdentity?: NonNullable<IrisAgentProviderContextBundle['runtimeIdentity']>,
   ): Promise<IrisAgentProviderContextBundle> {
     const existing = await this.readProviderContextBundle(sessionId, turnId);
-    if (existing && existing.requestId !== requestId) {
-      throw new Error('Provider context request correlation does not match the stored bundle.');
-    }
-    const calls = existing?.calls ?? [];
     const sanitized = sanitizeProviderContextCall(call);
+    const calls = existing?.calls ?? [];
     const duplicate = calls.find((candidate) => candidate.index === sanitized.index);
     if (duplicate) return existing!;
-    if (sanitized.index !== calls.length + 1) {
-      throw new Error('Provider context calls must be persisted in order.');
-    }
-    const callBase = `call-${String(sanitized.index - 1).padStart(3, '0')}`;
+    const callBase = `call-${String(calls.length).padStart(3, '0')}`;
     const jsonFile = callBase + '.json';
     const textFile = callBase + '.txt';
     const callJson = JSON.stringify(sanitized, null, 2) + '\n';
-    const indexedCall = {
-      index: sanitized.index,
-      capturedAt: sanitized.capturedAt,
-      provider: sanitized.provider,
-      model: sanitized.model,
-      api: sanitized.api,
-      jsonFile,
-      textFile,
-      sha256: sha256(callJson),
-    };
-    const effectiveRuntimeIdentity = runtimeIdentity ?? existing?.runtimeIdentity;
     const bundle: IrisAgentProviderContextBundle = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       kind: 'provider-context-bundle',
       sessionId,
       turnId,
-      requestId,
       createdAt: existing?.createdAt ?? sanitized.capturedAt,
-      assembledInput: { available: assembledInputAvailable, legacy: false },
+      assembledInput: { available: assembledInputAvailable },
       contextStage: 'provider-payload',
       compaction: 'disabled',
-      ...(effectiveRuntimeIdentity ? { runtimeIdentity: effectiveRuntimeIdentity } : {}),
-      calls: [...calls, indexedCall],
+      ...(runtimeIdentity ?? existing?.runtimeIdentity
+        ? { runtimeIdentity: runtimeIdentity ?? existing!.runtimeIdentity }
+        : {}),
+      calls: [...calls, {
+        index: sanitized.index,
+        capturedAt: sanitized.capturedAt,
+        provider: sanitized.provider,
+        model: sanitized.model,
+        api: sanitized.api,
+        jsonFile,
+        textFile,
+        sha256: sha256(callJson),
+      }],
     };
-    await this.loadIndexedProviderCalls(sessionId, turnId, calls);
     const contextDir = this.providerContextDir(sessionId, turnId);
     await writeFileAtomic(join(contextDir, jsonFile), callJson);
     await writeFileAtomic(join(contextDir, textFile), renderProviderContextCall(sanitized));
-    // The index is the commit point: every referenced call and readable view exists first.
     await writeFileAtomic(this.providerContextJsonPath(sessionId, turnId), JSON.stringify(bundle, null, 2) + '\n');
-    try {
-      await this.refreshProviderContextText(sessionId, turnId);
-    } catch {
-      // The readable index is derived and will be regenerated when the user opens it.
-    }
+    await this.refreshProviderContextText(sessionId, turnId).catch(() => undefined);
     return bundle;
-  }
-
-  providerContextJsonPath(sessionId: string, turnId: string): string {
-    return join(this.providerContextDir(sessionId, turnId), 'index.json');
   }
 
   providerContextTextPath(sessionId: string, turnId: string): string {
     return join(this.providerContextDir(sessionId, turnId), 'index.txt');
   }
 
-  async readProviderContextBundle(
+  async refreshProviderContextText(sessionId: string, turnId: string): Promise<void> {
+    const bundle = await this.readProviderContextBundle(sessionId, turnId);
+    if (!bundle) throw new Error('Provider context bundle is unavailable.');
+    const calls = await this.loadIndexedProviderCalls(sessionId, turnId, bundle.calls);
+    const attempts = this.sessions.get(sessionId)?.providerAttempts.filter(
+      (attempt) => attempt.turnId === turnId,
+    ) ?? [];
+    await writeFileAtomic(
+      this.providerContextTextPath(sessionId, turnId),
+      renderProviderContextIndex(bundle, calls, attempts),
+    );
+  }
+
+  history(sessionId: string): AgentHistorySnapshot {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error('[IrisAgentSessionStore] unknown session ' + sessionId);
+    const includedTurns = new Set(
+      session.turns.filter((turn) => turn.state !== 'removed').map((turn) => turn.id),
+    );
+    return {
+      revision: session.revision,
+      anchor: { ...session.anchor },
+      messages: session.transcript
+        .filter((frame) => includedTurns.has(frame.turnId))
+        .map((frame) => ({
+          id: frame.id,
+          turnId: frame.turnId,
+          role: frame.role,
+          content: frame.content,
+          createdAt: frame.createdAt,
+          ...(frame.providerMessage ? { providerMessage: structuredClone(frame.providerMessage) } : {}),
+        })),
+    };
+  }
+
+  async flush(): Promise<void> {}
+
+  destroy(): void {}
+
+  get root(): string {
+    return this.projectRoot;
+  }
+
+  private async loadSession(sessionId: string): Promise<SessionSnapshot | null> {
+    const directory = this.sessionDir(sessionId);
+    const journalPath = join(directory, 'journal.ndjson');
+    try {
+      const rawJournal = await readFile(journalPath, 'utf8');
+      const lines = rawJournal.split(/\r?\n/u).filter(Boolean);
+      let previousHash = '';
+      const records: JournalRecord[] = [];
+      let partialTail = false;
+      for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index]!;
+        let value: unknown;
+        try {
+          value = JSON.parse(line);
+        } catch (error) {
+          if (index === lines.length - 1 && !rawJournal.endsWith('\n')) {
+            partialTail = true;
+            break;
+          }
+          throw new Error('Iris Agent journal contains a malformed record before its tail.', { cause: error });
+        }
+        if (!isJournalRecord(value)) {
+          throw new Error('Iris Agent journal contains an invalid record.');
+        }
+        if (value.previousHash !== previousHash) {
+          throw new Error('Iris Agent journal hash chain is broken.');
+        }
+        if (value.revision !== records.length + 1) {
+          throw new Error('Iris Agent journal revision sequence is broken.');
+        }
+        const expected = journalHash({
+          version: value.version,
+          revision: value.revision,
+          previousHash: value.previousHash,
+          committedAt: value.committedAt,
+          transaction: value.transaction,
+        });
+        if (expected !== value.journalHash) {
+          throw new Error('Iris Agent journal record hash is invalid.');
+        }
+        records.push(value);
+        previousHash = value.journalHash;
+      }
+      if (partialTail) {
+        const validPrefix = rawJournal.slice(0, rawJournal.lastIndexOf('\n') + 1);
+        await truncate(journalPath, Buffer.byteLength(validPrefix, 'utf8'));
+      }
+      if (records.length > 0) {
+        const snapshot = await readSnapshot(join(directory, 'snapshot.json'));
+        let session: AgentSessionAggregate | null = null;
+        let replayFrom = 0;
+        if (snapshot) {
+          const anchor = records[snapshot.revision - 1];
+          if (!anchor || anchor.journalHash !== snapshot.journalHash) {
+            throw new Error('Iris Agent snapshot is not anchored in its journal.');
+          }
+          session = cloneAgentSession(snapshot.session);
+          replayFrom = snapshot.revision;
+        }
+        for (const record of records.slice(replayFrom)) {
+          session = applyAgentDomainTransaction(session, record.transaction);
+          if (session.revision !== record.revision) {
+            throw new Error('Iris Agent journal transaction produced the wrong revision.');
+          }
+        }
+        const latest = records[records.length - 1]!;
+        if (session?.id !== sessionId || session.projectRoot !== this.projectRoot) return null;
+        return {
+          version: IRIS_AGENT_SESSION_STORE_VERSION,
+          revision: latest.revision,
+          journalHash: latest.journalHash,
+          session: cloneAgentSession(session),
+        };
+      }
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+    }
+    const snapshot = await readSnapshot(join(directory, 'snapshot.json'));
+    return snapshot?.session.id === sessionId && snapshot.session.projectRoot === this.projectRoot
+      ? snapshot
+      : null;
+  }
+
+  private sessionDir(sessionId: string): string {
+    return join(this.projectDir, 'sessions', sha256(sessionId).slice(0, 32));
+  }
+
+  private turnArtifactDir(sessionId: string, turnId: string): string {
+    return join(this.sessionDir(sessionId), 'artifacts', 'turns', sha256(turnId).slice(0, 32));
+  }
+
+  private providerContextDir(sessionId: string, turnId: string): string {
+    return join(this.turnArtifactDir(sessionId, turnId), 'provider-context');
+  }
+
+  private providerContextJsonPath(sessionId: string, turnId: string): string {
+    return join(this.providerContextDir(sessionId, turnId), 'index.json');
+  }
+
+  private async readProviderContextBundle(
     sessionId: string,
     turnId: string,
   ): Promise<IrisAgentProviderContextBundle | null> {
@@ -201,65 +448,9 @@ export class IrisAgentSessionStore {
       const value: unknown = JSON.parse(await readFile(this.providerContextJsonPath(sessionId, turnId), 'utf8'));
       return isProviderContextBundle(value) ? value : null;
     } catch (error) {
-      if (isNodeError(error) && error.code === 'ENOENT') return null;
+      if (isMissing(error)) return null;
       throw error;
     }
-  }
-
-  async refreshProviderContextText(sessionId: string, turnId: string): Promise<void> {
-    const bundle = await this.readProviderContextBundle(sessionId, turnId);
-    if (!bundle) throw new Error('Provider context bundle is unavailable.');
-    const calls = await this.loadIndexedProviderCalls(sessionId, turnId, bundle.calls);
-    await writeFileAtomic(
-      this.providerContextTextPath(sessionId, turnId),
-      renderProviderContextIndex(bundle, calls),
-    );
-  }
-
-  history(sessionId: string): AgentHistorySnapshot {
-    const session = this.file.sessions.find((item) => item.id === sessionId);
-    if (!session) throw new Error('[IrisAgentSessionStore] unknown session ' + sessionId);
-    return {
-      revision: session.revision,
-      anchor: session.anchor,
-      messages: session.messages
-        .filter((message) =>
-          !message.compact &&
-          message.turnId !== session.activeTurnId &&
-          (message.content.length > 0 || message.providerMessage !== undefined),
-        )
-        .map((message) => ({
-          id: message.id,
-          turnId: message.turnId,
-          role: message.role,
-          content: message.content,
-          createdAt: message.createdAt,
-          ...(message.providerMessage ? { providerMessage: { ...message.providerMessage } } : {}),
-        })),
-    };
-  }
-
-  async flush(): Promise<void> {
-    await this.store.flush();
-  }
-
-  destroy(): void {
-    this.store.destroy();
-  }
-
-  get root(): string {
-    return this.projectRoot;
-  }
-
-  private artifactPath(sessionId: string, turnId: string, suffix: string): string {
-    const projectKey = sha256(this.projectRoot).slice(0, 16);
-    const sessionKey = sha256(sessionId).slice(0, 16);
-    const turnKey = sha256(turnId).slice(0, 16);
-    return join(dirname(this.filePath), 'prompts', projectKey, sessionKey, turnKey + suffix);
-  }
-
-  private providerContextDir(sessionId: string, turnId: string): string {
-    return this.artifactPath(sessionId, turnId, '.context');
   }
 
   private async loadIndexedProviderCalls(
@@ -268,397 +459,232 @@ export class IrisAgentSessionStore {
     calls: IrisAgentProviderContextBundle['calls'],
   ): Promise<IrisAgentProviderContextCall[]> {
     return Promise.all(calls.map(async (indexed) => {
-      const raw = await readFile(
-        join(this.providerContextDir(sessionId, turnId), indexed.jsonFile),
-        'utf8',
-      );
-      if (sha256(raw) !== indexed.sha256) {
-        throw new Error('Stored provider context call hash does not match its index.');
-      }
+      const raw = await readFile(join(this.providerContextDir(sessionId, turnId), indexed.jsonFile), 'utf8');
+      if (sha256(raw) !== indexed.sha256) throw new Error('Stored provider context call hash mismatch.');
       const value: unknown = JSON.parse(raw);
       if (!isProviderContextCall(value)) throw new Error('Stored provider context call is invalid.');
       return value;
     }));
   }
-}
 
-function defaultFile(projectRoot: string): IrisAgentSessionStoreFile {
-  return {
-    version: IRIS_AGENT_SESSION_STORE_VERSION,
-    projectRoot,
-    sessions: [],
-  };
-}
-
-function validateFile(value: unknown, projectRoot: string): IrisAgentSessionStoreFile {
-  if (
-    !isRecord(value) ||
-    (value.version !== 1 &&
-      value.version !== 2 &&
-      value.version !== 3 &&
-      value.version !== 4 &&
-      value.version !== IRIS_AGENT_SESSION_STORE_VERSION)
-  ) {
-    return defaultFile(projectRoot);
+  private async writeIndex(): Promise<void> {
+    await writeFileAtomic(join(this.projectDir, 'index.json'), JSON.stringify(this.index, null, 2) + '\n');
   }
-  const sessions = Array.isArray(value.sessions)
-    ? value.sessions.filter(isSession).map(cloneSession).map(migrateLegacyArtifacts)
-    : [];
+}
+
+async function recoverInterrupted(
+  source: AgentSessionAggregate,
+  sessionDir: string,
+  projectRoot: string,
+): Promise<AgentSessionAggregate> {
+  const session = cloneAgentSession(source);
+  const turn = session.turns.find((candidate) => candidate.id === session.currentTurnId);
+  const now = Date.now();
+  if (turn) {
+    turn.state = 'paused';
+    turn.pauseReason = 'restart';
+    turn.error = 'Iris restarted before the Agent turn settled.';
+    for (const activity of session.timeline) {
+      if (activity.kind === 'reply' && activity.turnId === turn.id && activity.state === 'streaming') {
+        activity.state = 'stopped';
+        activity.contextDisposition = 'excluded';
+        activity.completedAt = now;
+      }
+      if (activity.kind === 'tool' && activity.turnId === turn.id && activity.state === 'running') {
+        activity.state = 'canceled';
+        activity.completedAt = now;
+      }
+    }
+    for (const operation of session.toolOperations) {
+      if (operation.turnId === turn.id && operation.state === 'running') {
+        const recovered = await recoverOperationEffect(operation, sessionDir, projectRoot);
+        if (recovered && !session.effects.some((effect) => effect.id === recovered.id)) {
+          session.effects.push(recovered);
+          const activity = session.timeline.find(
+            (candidate) => candidate.kind === 'tool' && candidate.id === operation.toolActivityId,
+          );
+          if (activity?.kind === 'tool' && !activity.effectIds.includes(recovered.id)) {
+            activity.effectIds.push(recovered.id);
+          }
+        }
+        operation.state = 'failed';
+        operation.error = 'Iris restarted before the tool operation settled.';
+        operation.completedAt = now;
+      }
+    }
+    for (const call of session.providerCalls) {
+      if (call.turnId === turn.id && call.state === 'running') {
+        call.state = 'failed';
+        call.error = turn.error;
+        call.completedAt = now;
+      }
+    }
+    for (const attempt of session.providerAttempts) {
+      if (attempt.turnId === turn.id && attempt.state === 'running') {
+        attempt.state = 'failed';
+        attempt.error = turn.error;
+        attempt.completedAt = now;
+      }
+    }
+  }
+  session.state = 'paused';
+  delete session.stopRequestedTurnId;
+  return session;
+}
+
+async function recoverOperationEffect(
+  operation: AgentSessionAggregate['toolOperations'][number],
+  sessionDir: string,
+  projectRoot: string,
+): Promise<AgentSessionAggregate['effects'][number] | null> {
+  const input = operation.input;
+  if (input.tool !== 'edit' && input.tool !== 'write') return null;
+  if (input.operation !== 'writeFile' && input.operation !== 'mkdir') return null;
+  const effectId = `${input.operation === 'mkdir' ? 'directory' : 'file'}--${operation.id}`;
+  const artifactRef = `effects/${effectId}.json`;
+  let artifact: unknown;
+  try {
+    artifact = JSON.parse(await readFile(join(sessionDir, 'artifacts', ...artifactRef.split('/')), 'utf8'));
+  } catch {
+    return null;
+  }
+  if (!isRecord(artifact) || typeof artifact.path !== 'string') return null;
+  const target = resolve(projectRoot, input.absolutePath);
+  assertInside(projectRoot, target);
+  if (input.operation === 'mkdir') {
+    const exists = await readdir(target).then(() => true, () => false);
+    return exists ? {
+      id: effectId,
+      turnId: operation.turnId,
+      toolActivityId: operation.toolActivityId,
+      kind: 'directory-create',
+      path: artifact.path,
+      artifactRef,
+      createdAt: operation.createdAt,
+    } : null;
+  }
+  if (typeof artifact.afterSha256 !== 'string' || typeof artifact.operation !== 'string') return null;
+  const content = await readFile(target, 'utf8').catch(() => null);
+  if (content === null || sha256(content) !== artifact.afterSha256) return null;
   return {
-    version: IRIS_AGENT_SESSION_STORE_VERSION,
-    projectRoot,
-    sessions: sessions.filter((session): session is IrisAgentSessionInfo => session !== null),
+    id: effectId,
+    turnId: operation.turnId,
+    toolActivityId: operation.toolActivityId,
+    kind: 'file-write',
+    path: artifact.path,
+    operation: artifact.operation === 'edit' ? 'edit' : 'write',
+    beforeSha256: typeof artifact.beforeSha256 === 'string' ? artifact.beforeSha256 : null,
+    afterSha256: artifact.afterSha256,
+    artifactRef,
+    createdAt: operation.createdAt,
   };
 }
 
-function recoverInterrupted(file: IrisAgentSessionStoreFile): IrisAgentSessionStoreFile {
-  return {
-    ...file,
-    sessions: file.sessions.map((session) => {
-      if (!isActiveRuntimeState(session.state)) return session;
-      const now = Date.now();
-      const stopped = session.state === 'stopping' || session.stopRequestedTurnId === session.activeTurnId;
-      const turns = session.turns.map((turn) =>
-        turn.id === session.activeTurnId && turn.status === 'running'
-          ? {
-              ...turn,
-              status: stopped ? 'stopped' as const : 'failed' as const,
-              completedAt: turn.completedAt ?? now,
-              error: turn.error ?? (stopped
-                ? 'Stopped by user.'
-                : 'Recovered after Iris restarted before the Agent turn settled.'),
-            }
-          : turn,
-      );
-      const { stopRequestedTurnId: _stopRequestedTurnId, ...rest } = session;
-      return {
-        ...rest,
-        state: stopped ? 'idle' : 'failed',
-        activeTurnId: null,
-        updatedAt: now,
-        lastError: stopped
-          ? 'Stopped by user.'
-          : 'Recovered after Iris restarted before the Agent turn settled.',
-        turns,
-      };
-    }),
-  };
+function isInterrupted(session: AgentSessionAggregate): boolean {
+  return session.state === 'starting' || session.state === 'running' || session.state === 'waiting-tool' ||
+    session.state === 'retry-wait' || session.state === 'stopping';
 }
 
-function withGeneration(session: IrisAgentSessionInfo, generation: number): IrisAgentSessionInfo {
-  return cloneSession({ ...session, projectGeneration: generation })!;
+async function readProjectIndex(path: string, projectRoot: string): Promise<ProjectIndex> {
+  try {
+    const value: unknown = JSON.parse(await readFile(path, 'utf8'));
+    if (isRecord(value) && value.version === IRIS_AGENT_SESSION_STORE_VERSION &&
+      value.projectRoot === projectRoot && Array.isArray(value.sessionIds) &&
+      value.sessionIds.every((id) => typeof id === 'string')) {
+      return value as unknown as ProjectIndex;
+    }
+  } catch (error) {
+    if (!isMissing(error)) throw error;
+  }
+  return { version: IRIS_AGENT_SESSION_STORE_VERSION, projectRoot, sessionIds: [] };
 }
 
-function cloneSession(session: IrisAgentSessionInfo | null): IrisAgentSessionInfo | null {
-  if (!session) return null;
-  return {
-    ...session,
-    anchor: { ...session.anchor },
-    model: session.model ? { ...session.model } : null,
-    messages: session.messages.map((message) => ({
-      ...message,
-      ...(message.providerMessage ? { providerMessage: { ...message.providerMessage } } : {}),
-    })),
-    turns: session.turns.map((turn) => ({ ...turn })),
-    toolEvents: session.toolEvents.map((event) => ({ ...event })),
-    fileEffects: session.fileEffects.map((effect) => ({ ...effect })),
-    ...(session.undoReceipts ? { undoReceipts: session.undoReceipts.map((receipt) => ({ ...receipt })) } : {}),
-    ...(session.pendingArtifactCleanupTurnIds
-      ? { pendingArtifactCleanupTurnIds: [...session.pendingArtifactCleanupTurnIds] }
-      : {}),
-    requestFacts: session.requestFacts.map((facts) => ({
-      ...facts,
-      anchor: { ...facts.anchor },
-      layerFingerprints: { ...facts.layerFingerprints },
-    })),
-  };
+async function readSnapshot(path: string): Promise<SessionSnapshot | null> {
+  try {
+    const value: unknown = JSON.parse(await readFile(path, 'utf8'));
+    return isSessionSnapshot(value) ? value : null;
+  } catch (error) {
+    if (isMissing(error)) return null;
+    if (error instanceof SyntaxError) return null;
+    throw error;
+  }
 }
 
-function isSession(value: unknown): value is IrisAgentSessionInfo {
-  if (!isRecord(value)) return false;
-  return (
-    typeof value.id === 'string' &&
-    value.kind === 'iris-agent' &&
-    isAnchor(value.anchor) &&
-    (value.model === undefined || value.model === null || isModelRef(value.model)) &&
-    (value.parentSessionId === undefined || typeof value.parentSessionId === 'string') &&
-    (value.forkedFromTurnId === undefined || typeof value.forkedFromTurnId === 'string') &&
-    typeof value.projectRoot === 'string' &&
-    typeof value.projectGeneration === 'number' &&
-    typeof value.displayName === 'string' &&
-    isRuntimeState(value.state) &&
-    typeof value.createdAt === 'number' &&
-    typeof value.updatedAt === 'number' &&
-    (value.revision === undefined ||
-      (typeof value.revision === 'number' && Number.isSafeInteger(value.revision) && value.revision >= 0)) &&
-    (value.workerEpoch === undefined ||
-      (typeof value.workerEpoch === 'number' && Number.isSafeInteger(value.workerEpoch) && value.workerEpoch >= 0)) &&
-    (typeof value.activeTurnId === 'string' || value.activeTurnId === null) &&
-    (value.stopRequestedTurnId === undefined || typeof value.stopRequestedTurnId === 'string') &&
-    Array.isArray(value.messages) &&
-    value.messages.every(isMessage) &&
-    Array.isArray(value.turns) &&
-    value.turns.every(isTurn) &&
-    Array.isArray(value.toolEvents) &&
-    value.toolEvents.every(isToolEvent) &&
-    Array.isArray(value.fileEffects) &&
-    value.fileEffects.every(isFileEffect) &&
-    Array.isArray(value.requestFacts) &&
-    value.requestFacts.every(isRequestFacts) &&
-    (value.undoReceipts === undefined ||
-      (Array.isArray(value.undoReceipts) && value.undoReceipts.every(isUndoReceipt))) &&
-    (value.pendingArtifactCleanupTurnIds === undefined ||
-      (Array.isArray(value.pendingArtifactCleanupTurnIds) &&
-        value.pendingArtifactCleanupTurnIds.every((turnId) => typeof turnId === 'string'))) &&
-    value.selfHostingEligible === false
-  );
+async function discoverSessionId(journalPath: string): Promise<string | null> {
+  try {
+    const firstLine = (await readFile(journalPath, 'utf8')).split(/\r?\n/u).find(Boolean);
+    if (!firstLine) return null;
+    const value: unknown = JSON.parse(firstLine);
+    if (!isJournalRecord(value)) return null;
+    const created = value.transaction.events[0];
+    return created?.type === 'session.created' && isRecord(created.session) && typeof created.session.id === 'string'
+      ? created.session.id
+      : null;
+  } catch {
+    return null;
+  }
 }
 
-function isAnchor(value: unknown): value is IrisAgentAnchor {
-  return (
-    isRecord(value) &&
-    typeof value.path === 'string' &&
-    (value.kind === 'document' || value.kind === 'workspace')
-  );
+function isSessionSnapshot(value: unknown): value is SessionSnapshot {
+  return isRecord(value) && value.version === IRIS_AGENT_SESSION_STORE_VERSION &&
+    typeof value.revision === 'number' && typeof value.journalHash === 'string' &&
+    isAgentSession(value.session);
 }
 
-function isModelRef(value: unknown): value is IrisAgentModelRef {
-  return (
-    isRecord(value) &&
-    typeof value.provider === 'string' && value.provider.length > 0 &&
-    typeof value.modelId === 'string' && value.modelId.length > 0
-  );
+function isJournalRecord(value: unknown): value is JournalRecord {
+  return isRecord(value) && value.version === IRIS_AGENT_SESSION_STORE_VERSION &&
+    typeof value.revision === 'number' && Number.isSafeInteger(value.revision) && value.revision > 0 &&
+    typeof value.previousHash === 'string' && typeof value.journalHash === 'string' &&
+    typeof value.committedAt === 'number' && isAgentDomainTransaction(value.transaction);
 }
 
-function isMessage(value: unknown): value is IrisAgentMessage {
-  return (
-    isRecord(value) &&
-    typeof value.id === 'string' &&
-    typeof value.turnId === 'string' &&
-    (value.role === 'user' || value.role === 'assistant' || value.role === 'tool') &&
-    typeof value.content === 'string' &&
-    typeof value.createdAt === 'number' &&
-    (value.compact === undefined || typeof value.compact === 'boolean') &&
-    (value.providerOnly === undefined || typeof value.providerOnly === 'boolean') &&
-    (value.providerMessage === undefined || isRecord(value.providerMessage))
-  );
-}
-
-function isTurn(value: unknown): value is IrisAgentTurn {
-  return (
-    isRecord(value) &&
-    typeof value.id === 'string' &&
-    typeof value.userMessageId === 'string' &&
-    typeof value.requestId === 'string' &&
-    (value.retryOfTurnId === undefined || typeof value.retryOfTurnId === 'string') &&
-    (value.promptAvailable === undefined || value.promptAvailable === true) &&
-    (value.artifactSchemaVersion === undefined || value.artifactSchemaVersion === 1) &&
-    (value.assembledInputAvailable === undefined || value.assembledInputAvailable === true) &&
-    (value.assembledInputLegacy === undefined || value.assembledInputLegacy === true) &&
-    (value.providerContextAvailable === undefined || value.providerContextAvailable === true) &&
-    (value.providerCallCount === undefined ||
-      (typeof value.providerCallCount === 'number' &&
-        Number.isSafeInteger(value.providerCallCount) && value.providerCallCount >= 0)) &&
-    (value.status === 'running' ||
-      value.status === 'completed' ||
-      value.status === 'failed' ||
-      value.status === 'stopped' ||
-      value.status === 'rewound') &&
-    typeof value.createdAt === 'number'
-  );
-}
-
-function migrateLegacyArtifacts(session: IrisAgentSessionInfo | null): IrisAgentSessionInfo | null {
-  if (!session) return null;
-  const legacy = session as IrisAgentSessionInfo & { revision?: number; workerEpoch?: number };
-  return {
-    ...session,
-    model: legacy.model ?? null,
-    revision: Number.isSafeInteger(legacy.revision) && legacy.revision! >= 0 ? legacy.revision! : 0,
-    workerEpoch: Number.isSafeInteger(legacy.workerEpoch) && legacy.workerEpoch! >= 0
-      ? legacy.workerEpoch!
-      : 0,
-    turns: session.turns.map((turn) => {
-      if (turn.promptAvailable !== true || turn.assembledInputAvailable === true) return turn;
-      const { promptAvailable: _legacy, ...rest } = turn;
-      return {
-        ...rest,
-        artifactSchemaVersion: 1,
-        assembledInputAvailable: true,
-        assembledInputLegacy: true,
-      };
-    }),
-    toolEvents: session.toolEvents.map((event) =>
-      event.name === 'terminal' && event.terminalIntent === undefined
-        ? { ...event, terminalIntent: 'unknown' as const }
-        : event),
-  };
+function isAgentSession(value: unknown): value is AgentSessionAggregate {
+  return isRecord(value) && value.kind === 'iris-agent' && typeof value.id === 'string' &&
+    typeof value.projectRoot === 'string' && typeof value.revision === 'number' &&
+    Array.isArray(value.turns) && Array.isArray(value.timeline) &&
+    Array.isArray(value.toolOperations) && Array.isArray(value.transcript) && Array.isArray(value.effects);
 }
 
 function isProviderContextBundle(value: unknown): value is IrisAgentProviderContextBundle {
-  return (
-    isRecord(value) &&
-    value.schemaVersion === 1 &&
-    value.kind === 'provider-context-bundle' &&
-    typeof value.sessionId === 'string' &&
-    typeof value.turnId === 'string' &&
-    typeof value.requestId === 'string' &&
-    typeof value.createdAt === 'number' &&
-    isRecord(value.assembledInput) &&
-    typeof value.assembledInput.available === 'boolean' &&
-    value.assembledInput.legacy === false &&
-    value.contextStage === 'provider-payload' &&
-    value.compaction === 'disabled' &&
-    (value.runtimeIdentity === undefined || isProviderContextRuntimeIdentity(value.runtimeIdentity)) &&
-    Array.isArray(value.calls) &&
-    value.calls.every(isProviderContextIndexCall)
-  );
-}
-
-function isProviderContextRuntimeIdentity(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    typeof value.appVersion === 'string' &&
-    typeof value.protocolVersion === 'number' && Number.isSafeInteger(value.protocolVersion) &&
-    typeof value.sessionRevision === 'number' && Number.isSafeInteger(value.sessionRevision) &&
-    value.sessionRevision >= 0 &&
-    typeof value.workerEpoch === 'number' && Number.isSafeInteger(value.workerEpoch) &&
-    value.workerEpoch >= 0
-  );
-}
-
-function isProviderContextIndexCall(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    typeof value.index === 'number' &&
-    Number.isSafeInteger(value.index) &&
-    value.index > 0 &&
-    typeof value.capturedAt === 'number' &&
-    typeof value.provider === 'string' &&
-    typeof value.model === 'string' &&
-    typeof value.api === 'string' &&
-    typeof value.jsonFile === 'string' && /^call-\d{3}\.json$/u.test(value.jsonFile) &&
-    typeof value.textFile === 'string' && /^call-\d{3}\.txt$/u.test(value.textFile) &&
-    typeof value.sha256 === 'string' && /^[a-f0-9]{64}$/u.test(value.sha256)
-  );
+  return isRecord(value) && value.schemaVersion === 2 && value.kind === 'provider-context-bundle' &&
+    typeof value.sessionId === 'string' && typeof value.turnId === 'string' && Array.isArray(value.calls);
 }
 
 function isProviderContextCall(value: unknown): value is IrisAgentProviderContextCall {
-  return (
-    isRecord(value) &&
-    typeof value.index === 'number' &&
-    Number.isSafeInteger(value.index) &&
-    value.index > 0 &&
-    typeof value.capturedAt === 'number' &&
-    typeof value.provider === 'string' &&
-    typeof value.model === 'string' &&
-    typeof value.api === 'string' &&
-    isJsonValue(value.payload)
-  );
+  return isRecord(value) && typeof value.index === 'number' && typeof value.capturedAt === 'number' &&
+    typeof value.provider === 'string' && typeof value.model === 'string' && typeof value.api === 'string' &&
+    'payload' in value;
 }
 
-function isJsonValue(value: unknown): boolean {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
-  if (typeof value === 'number') return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every(isJsonValue);
-  return isRecord(value) && Object.values(value).every(isJsonValue);
+function journalHash(value: Omit<JournalRecord, 'journalHash'>): string {
+  return sha256(JSON.stringify(value));
 }
 
-function isNodeError(value: unknown): value is NodeJS.ErrnoException {
-  return value instanceof Error && 'code' in value;
+function projectKey(projectRoot: string): string {
+  return sha256(resolve(projectRoot)).slice(0, 24);
 }
 
-function isToolEvent(value: unknown): value is IrisAgentToolEvent {
-  return (
-    isRecord(value) &&
-    typeof value.id === 'string' &&
-    typeof value.turnId === 'string' &&
-    typeof value.requestId === 'string' &&
-    (value.name === 'read' || value.name === 'edit' || value.name === 'write' || value.name === 'terminal') &&
-    (value.state === 'running' || value.state === 'completed' || value.state === 'failed') &&
-    typeof value.createdAt === 'number' &&
-    typeof value.inputSummary === 'string' &&
-    (value.operation === undefined ||
-      value.operation === 'access' ||
-      value.operation === 'readFile' ||
-      value.operation === 'writeFile' ||
-      value.operation === 'mkdir' ||
-      value.operation === 'exec') &&
-    (value.terminalIntent === undefined ||
-      value.terminalIntent === 'information' ||
-      value.terminalIntent === 'operation' ||
-      value.terminalIntent === 'unknown') &&
-    (value.command === undefined || typeof value.command === 'string') &&
-    (value.cwd === undefined || typeof value.cwd === 'string')
-  );
+function assertExactChild(parent: string, target: string, expectedName: string): void {
+  if (dirname(target) !== parent || basename(target) !== expectedName) {
+    throw new Error('Refusing to remove an unexpected Iris Agent legacy path.');
+  }
 }
 
-function isFileEffect(value: unknown): value is IrisAgentFileEffect {
-  return (
-    isRecord(value) &&
-    typeof value.id === 'string' &&
-    typeof value.turnId === 'string' &&
-    typeof value.toolCallId === 'string' &&
-    typeof value.path === 'string' &&
-    (value.kind === 'edit' || value.kind === 'write') &&
-    (typeof value.beforeSha256 === 'string' || value.beforeSha256 === null) &&
-    typeof value.afterSha256 === 'string' &&
-    typeof value.afterContent === 'string' &&
-    typeof value.createdAt === 'number'
-  );
+function assertInside(parent: string, target: string): void {
+  const rel = relative(resolve(parent), resolve(target));
+  if (rel === '' || rel === '..' || rel.startsWith('..' + sep)) {
+    throw new Error('Iris Agent storage path escaped its project store.');
+  }
 }
 
-function isRequestFacts(value: unknown): value is IrisAgentRequestFacts {
-  return (
-    isRecord(value) &&
-    typeof value.id === 'string' &&
-    typeof value.turnId === 'string' &&
-    typeof value.createdAt === 'number' &&
-    typeof value.promptFingerprint === 'string' &&
-    isRecord(value.layerFingerprints) &&
-    typeof value.layerFingerprints.agent === 'string' &&
-    typeof value.layerFingerprints.software === 'string' &&
-    typeof value.layerFingerprints.project === 'string' &&
-    typeof value.layerFingerprints.anchor === 'string' &&
-    isAnchor(value.anchor) &&
-    typeof value.promptChars === 'number' &&
-    value.redacted === true
-  );
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
 }
 
-function isUndoReceipt(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    typeof value.commandId === 'string' &&
-    typeof value.removedTurnId === 'string' &&
-    typeof value.removedAt === 'number' &&
-    typeof value.resultingRevision === 'number' &&
-    Number.isSafeInteger(value.resultingRevision) &&
-    value.resultingRevision >= 0 &&
-    value.externalEffectsRetained === true
-  );
-}
-
-function isRuntimeState(value: unknown): value is IrisAgentRuntimeState {
-  return (
-    value === 'starting' ||
-    value === 'ready' ||
-    value === 'running' ||
-    value === 'waiting-tool' ||
-    value === 'stopping' ||
-    value === 'idle' ||
-    value === 'failed'
-  );
-}
-
-function isActiveRuntimeState(value: IrisAgentRuntimeState): boolean {
-  return value === 'starting' || value === 'running' || value === 'waiting-tool' || value === 'stopping';
+function isMissing(error: unknown): boolean {
+  return isRecord(error) && error.code === 'ENOENT';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function sha256(text: string): string {
-  return createHash('sha256').update(text).digest('hex');
 }

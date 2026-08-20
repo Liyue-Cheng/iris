@@ -830,7 +830,6 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     ): Promise<SessionInfo> => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_OPEN);
-      await ctx.projectManager.assertProjectSettingsReady();
       return ctx.sessionManager.createSession({
         docPath: payload.docPath,
         workspacePath: payload.workspacePath ?? null,
@@ -998,7 +997,12 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     CHANNELS.IRIS_AGENT_STOP,
     (
       event,
-      payload: { sessionId: string; commandId?: string; expectedRevision?: number } & ProjectScopedPayload,
+      payload: {
+        sessionId: string;
+        commandId?: string;
+        expectedRevision?: number;
+        expectedTurnId?: string;
+      } & ProjectScopedPayload,
     ): Promise<IrisAgentSessionInfo> => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_STOP);
@@ -1007,6 +1011,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
         ...(payload.expectedRevision === undefined
           ? {}
           : { expectedRevision: payload.expectedRevision }),
+        ...(payload.expectedTurnId === undefined ? {} : { expectedTurnId: payload.expectedTurnId }),
       });
     },
   );

@@ -828,6 +828,7 @@ function IrisAgentSettingsPanel({
   setError: (message: string | null) => void;
 }): JSX.Element {
   const { t } = useTranslation();
+  const settings = useSettings();
   const [catalog, setCatalog] = useState<IrisAgentProviderCatalog | null>(null);
   const [templateId, setTemplateId] = useState('openai');
   const [profileName, setProfileName] = useState('');
@@ -919,6 +920,20 @@ function IrisAgentSettingsPanel({
       <PanelTitle description={t('settings.irisAgentDescription')}>
         {t('settings.irisAgent')}
       </PanelTitle>
+
+      <SettingGroup title={t('settings.experimentalFeatures')}>
+        <SettingRow
+          label={t('settings.enableIrisAgent')}
+          hint={t('settings.enableIrisAgentHint')}
+        >
+          <ToggleSwitch
+            checked={settings?.experimental.irisAgent ?? false}
+            onChange={(value) =>
+              void updateSettings({ experimental: { irisAgent: value } }, setError)
+            }
+          />
+        </SettingRow>
+      </SettingGroup>
 
       <SettingGroup title={t('settings.addProviderProfile')}>
         <SettingRow label={t('settings.providerTemplate')} hint={t('settings.providerTemplateHint')}>

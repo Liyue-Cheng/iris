@@ -14,6 +14,7 @@ import {
   IRIS_PI_VERSION,
   createIrisPiSession,
   currentIrisProviderToolCallId,
+  normalizeIrisInterruptedAssistantMessage,
   storedPiCredentialSecrets,
   unwrapProviderErrorMessage,
   type IrisToolHostOperations,
@@ -26,6 +27,11 @@ const workerPort = parentPort;
 
 type PendingTool = {
   resolve: (result: AgentToolOperationResult) => void;
+  reject: (error: Error) => void;
+};
+
+type PendingEventAck = {
+  resolve: () => void;
   reject: (error: Error) => void;
 };
 
@@ -45,7 +51,19 @@ let runtime:
 let currentCorrelation: AgentCorrelation = { sessionId: 'unknown' };
 let providerCallIndex = 0;
 let providerFailure: string | null = null;
+let currentProviderCallId: string | null = null;
+let currentAttemptId: string | null = null;
+let currentAttemptIndex = 0;
+let currentProviderMessageId: string | null = null;
+let terminalProviderFailure: string | null = null;
+let userAbortRequested = false;
+let pendingAssistantDelta: { correlation: AgentCorrelation; text: string } | null = null;
+let pendingAssistantDeltaTimer: NodeJS.Timeout | null = null;
 const pendingTools = new Map<string, PendingTool>();
+const pendingEventAcks = new Map<string, PendingEventAck>();
+let providerEventChain: Promise<void> = Promise.resolve();
+const ASSISTANT_DELTA_CHUNK_CHARS = 1024;
+const ASSISTANT_DELTA_FLUSH_MS = 16;
 
 workerPort.on('message', (message: unknown) => {
   void handleMessage(message).catch((err) => {
@@ -55,7 +73,7 @@ workerPort.on('message', (message: unknown) => {
       code: err instanceof Error ? err.name : 'WorkerError',
       message: err instanceof Error ? err.message : String(err),
     });
-    post({ type: 'state', correlation: currentCorrelation, state: 'failed' });
+    post({ type: 'state', correlation: currentCorrelation, state: 'paused' });
   });
 });
 
@@ -70,20 +88,36 @@ async function handleMessage(message: unknown): Promise<void> {
     return;
   }
 
+  if (message.type === 'event-ack') {
+    const pending = pendingEventAcks.get(message.eventId);
+    if (!pending) return;
+    pendingEventAcks.delete(message.eventId);
+    if (message.ok) pending.resolve();
+    else pending.reject(new Error(message.error));
+    return;
+  }
+
   if (message.type === 'initialize') {
     currentCorrelation = message.correlation;
     await initialize(message);
     return;
   }
   if (message.type === 'shutdown') {
+    flushAssistantDelta();
     await disposeRuntime();
     post({ type: 'stopped', correlation: message.correlation, reason: 'shutdown' });
     workerPort.close();
     return;
   }
   if (message.type === 'abort') {
-    await runtime?.session.abort();
-    post({ type: 'state', correlation: message.correlation, state: 'interrupted' });
+    userAbortRequested = true;
+    rejectPendingTools('Iris Agent tool operation was interrupted.');
+    try {
+      await runtime?.session.abort();
+    } finally {
+      abortCurrentProviderAttempt();
+      if (!runtime) post({ type: 'state', correlation: message.correlation, state: 'interrupted' });
+    }
     return;
   }
   if (message.type === 'tool-result') {
@@ -95,25 +129,79 @@ async function handleMessage(message: unknown): Promise<void> {
     currentCorrelation = message.correlation;
     providerCallIndex = 0;
     providerFailure = null;
-    post({ type: 'state', correlation: message.correlation, state: 'running' });
-    try {
-      await runtime.session.prompt(message.prompt, {
+    currentProviderCallId = null;
+    currentAttemptId = null;
+    currentAttemptIndex = 0;
+    currentProviderMessageId = null;
+    userAbortRequested = false;
+    providerEventChain = Promise.resolve();
+    flushAssistantDelta();
+    await runExecution(message.correlation, async () => {
+      await runtime!.session.prompt(message.prompt, {
         expandPromptTemplates: false,
         source: 'interactive',
       });
-      post({ type: 'state', correlation: message.correlation, state: 'idle' });
-    } catch (err) {
-      const wrapped = err instanceof Error ? err.message : String(err);
-      const failure = unwrapProviderErrorMessage(wrapped, providerFailure);
-      providerFailure = null;
-      post({
-        type: 'failure',
-        correlation: message.correlation,
-        code: err instanceof Error ? err.name : 'ProviderError',
-        message: failure,
-      });
-      post({ type: 'state', correlation: message.correlation, state: 'failed' });
+    });
+    return;
+  }
+  if (message.type === 'resume') {
+    if (!runtime) throw new Error('Iris Agent Worker has not been initialized');
+    currentCorrelation = message.correlation;
+    providerCallIndex = Math.max(providerCallIndex, message.providerCallOffset);
+    currentProviderCallId = null;
+    currentAttemptId = null;
+    currentAttemptIndex = 0;
+    currentProviderMessageId = null;
+    userAbortRequested = false;
+    providerEventChain = Promise.resolve();
+    flushAssistantDelta();
+    removeTrailingUncommittedAssistant(runtime.session.agent.state.messages);
+    await runExecution(message.correlation, () => runtime!.session.agent.continue());
+  }
+}
+
+async function runExecution(
+  correlation: AgentCorrelation,
+  execute: () => Promise<void>,
+): Promise<void> {
+  terminalProviderFailure = null;
+  post({ type: 'state', correlation, state: 'running' });
+  try {
+    await execute();
+    await providerEventChain;
+    flushAssistantDelta();
+    if (userAbortRequested) {
+      post({ type: 'state', correlation, state: 'interrupted' });
+      return;
     }
+    if (terminalProviderFailure) {
+      post({
+        type: 'execution-paused',
+        correlation: correlationWithAttempt(),
+        reason: providerPauseReason(terminalProviderFailure),
+        message: terminalProviderFailure,
+      });
+      post({ type: 'state', correlation, state: 'paused' });
+      return;
+    }
+    post({ type: 'execution-settled', correlation });
+    post({ type: 'state', correlation, state: 'idle' });
+  } catch (err) {
+    if (userAbortRequested) {
+      post({ type: 'state', correlation, state: 'interrupted' });
+      return;
+    }
+    const wrapped = err instanceof Error ? err.message : String(err);
+    const failure = unwrapProviderErrorMessage(wrapped, providerFailure);
+    providerFailure = null;
+    await failCurrentProviderAttempt(failure);
+    post({
+      type: 'execution-paused',
+      correlation: correlationWithAttempt(),
+      reason: providerPauseReason(failure),
+      message: failure,
+    });
+    post({ type: 'state', correlation, state: 'paused' });
   }
 }
 
@@ -138,15 +226,29 @@ async function initialize(message: Extract<AgentWorkerRequest, { type: 'initiali
     providerProxy: message.runtime.providerProxy,
     operations,
     history: message.history,
-    onProviderPayload: (payload, model) => {
-      if (!currentCorrelation.requestId || !currentCorrelation.turnId) return;
+    onProviderPayload: async (payload, model) => {
+      if (!currentCorrelation.turnId) return;
+      await providerEventChain;
+      if (!currentProviderCallId) {
+        currentProviderCallId = randomUUID();
+        currentAttemptIndex = 0;
+      }
+      currentAttemptId = randomUUID();
+      currentProviderMessageId = randomUUID();
+      currentAttemptIndex += 1;
+      await postDurable({
+        type: 'provider-attempt',
+        correlation: correlationWithAttempt(),
+        phase: 'started',
+        index: currentAttemptIndex,
+      });
       const payloadSecrets = collectKnownSecrets([
         storedPiCredentialSecrets(model.provider, message.runtime.agentDir),
         knownSecrets,
       ]);
       post({
         type: 'provider-context',
-        correlation: currentCorrelation,
+        correlation: correlationWithAttempt(),
         call: {
           index: ++providerCallIndex,
           capturedAt: Date.now(),
@@ -171,9 +273,7 @@ async function initialize(message: Extract<AgentWorkerRequest, { type: 'initiali
     },
   });
   const unsubscribe = result.session.subscribe((event) => {
-    const projected = projectProviderFailure(event, providerFailure);
-    if (projected.consumedFailure) providerFailure = null;
-    post({ type: 'stream', correlation: currentCorrelation, event: jsonSafeEvent(projected.event) });
+    providerEventChain = providerEventChain.then(() => handleProviderEvent(event));
   });
   runtime = {
     session: result.session,
@@ -265,7 +365,8 @@ function createWorkerOperations(): IrisToolHostOperations {
   };
 }
 
-function requestTool(input: AgentToolOperationInput): Promise<AgentToolOperationResult> {
+async function requestTool(input: AgentToolOperationInput): Promise<AgentToolOperationResult> {
+  await providerEventChain;
   const operationId = randomUUID();
   const toolCallId = currentIrisProviderToolCallId() ?? operationId;
   const correlation: AgentCorrelation = {
@@ -298,9 +399,10 @@ function settleTool(message: Extract<AgentWorkerRequest, { type: 'tool-result' }
 }
 
 async function disposeRuntime(): Promise<void> {
-  for (const [toolCallId, pending] of pendingTools) {
-    pendingTools.delete(toolCallId);
-    pending.reject(new Error('Iris Agent Worker disposed while a tool call was pending'));
+  rejectPendingTools('Iris Agent Worker disposed while a tool call was pending');
+  for (const [eventId, pending] of pendingEventAcks) {
+    pendingEventAcks.delete(eventId);
+    pending.reject(new Error('Iris Agent Worker disposed before a durable event was acknowledged.'));
   }
   if (!runtime) return;
   const current = runtime;
@@ -313,8 +415,134 @@ async function disposeRuntime(): Promise<void> {
   }
 }
 
+function rejectPendingTools(message: string): void {
+  for (const [operationId, pending] of pendingTools) {
+    pendingTools.delete(operationId);
+    pending.reject(new Error(message));
+  }
+}
+
 function post(event: AgentWorkerEventPayload): void {
   workerPort.postMessage({ ...event, version: IRIS_AGENT_PROTOCOL_VERSION } as AgentWorkerEvent);
+}
+
+function postDurable(event: AgentWorkerEventPayload): Promise<void> {
+  const eventId = randomUUID();
+  return new Promise<void>((resolve, reject) => {
+    pendingEventAcks.set(eventId, { resolve, reject });
+    workerPort.postMessage({ ...event, eventId, version: IRIS_AGENT_PROTOCOL_VERSION } as AgentWorkerEvent);
+  });
+}
+
+async function handleProviderEvent(event: unknown): Promise<void> {
+  const projected = projectProviderFailure(event, providerFailure);
+  if (projected.consumedFailure) providerFailure = null;
+  const delta = assistantTextDelta(projected.event);
+  if (delta) {
+    queueAssistantDelta(delta, correlationForProviderMessage(projected.event));
+    return;
+  }
+  flushAssistantDelta();
+  if (isAssistantMessageEnd(projected.event)) {
+    if (assistantStopReason(projected.event) === 'error') {
+      const failure = assistantError(projected.event);
+      terminalProviderFailure = failure;
+      if (currentAttemptId && currentProviderCallId) {
+        await postDurable({
+          type: 'provider-attempt',
+          correlation: correlationWithAttempt(),
+          phase: 'failed',
+          index: currentAttemptIndex,
+          error: failure,
+        });
+      }
+      currentAttemptId = null;
+      return;
+    }
+    if (assistantStopReason(projected.event) === 'aborted') {
+      const safeMessage = normalizeIrisInterruptedAssistantMessage(
+        isRecord(projected.event) ? projected.event.message : undefined,
+      );
+      if (safeMessage) {
+        await postDurable({
+          type: 'provider-message',
+          correlation: correlationForProviderMessage(projected.event),
+          message: safeMessage,
+        });
+      }
+      if (currentAttemptId && currentProviderCallId) {
+        await postDurable({
+          type: 'provider-attempt',
+          correlation: correlationWithAttempt(),
+          phase: 'aborted',
+          index: currentAttemptIndex,
+        });
+      }
+      terminalProviderFailure = null;
+      currentAttemptId = null;
+      return;
+    }
+    const message = messageFromEvent(projected.event);
+    if (message) {
+      await postDurable({
+        type: 'provider-message', correlation: correlationForProviderMessage(projected.event), message,
+      });
+    }
+    if (currentAttemptId && currentProviderCallId) {
+      await postDurable({
+        type: 'provider-attempt',
+        correlation: correlationWithAttempt(),
+        phase: 'completed',
+        index: currentAttemptIndex,
+      });
+    }
+    terminalProviderFailure = null;
+    currentProviderCallId = null;
+    currentAttemptId = null;
+    currentAttemptIndex = 0;
+    currentProviderMessageId = null;
+    return;
+  }
+  if (isEventType(projected.event, 'auto_retry_start')) {
+    post({ type: 'state', correlation: currentCorrelation, state: 'retry-wait' });
+    return;
+  }
+  if (isEventType(projected.event, 'auto_retry_end')) {
+    post({ type: 'state', correlation: currentCorrelation, state: 'running' });
+    return;
+  }
+  if (isEventType(projected.event, 'agent_end') || isEventType(projected.event, 'agent_settled')) return;
+  const message = messageFromEvent(projected.event);
+  if (message) {
+    await postDurable({
+      type: 'provider-message', correlation: correlationForProviderMessage(projected.event), message,
+    });
+  }
+}
+
+function queueAssistantDelta(delta: string, correlation: AgentCorrelation): void {
+  if (pendingAssistantDelta &&
+    pendingAssistantDelta.correlation.providerMessageId !== correlation.providerMessageId) {
+    flushAssistantDelta();
+  }
+  if (!pendingAssistantDelta) pendingAssistantDelta = { correlation: { ...correlation }, text: '' };
+  pendingAssistantDelta.text += delta;
+  if (pendingAssistantDelta.text.length >= ASSISTANT_DELTA_CHUNK_CHARS) {
+    flushAssistantDelta();
+    return;
+  }
+  if (!pendingAssistantDeltaTimer) {
+    pendingAssistantDeltaTimer = setTimeout(flushAssistantDelta, ASSISTANT_DELTA_FLUSH_MS);
+  }
+}
+
+function flushAssistantDelta(): void {
+  if (pendingAssistantDeltaTimer) clearTimeout(pendingAssistantDeltaTimer);
+  pendingAssistantDeltaTimer = null;
+  const pending = pendingAssistantDelta;
+  pendingAssistantDelta = null;
+  if (!pending?.text) return;
+  post({ type: 'assistant-text-delta', correlation: pending.correlation, delta: pending.text });
 }
 
 function jsonSafeEvent(event: unknown): unknown {
@@ -332,6 +560,101 @@ function jsonSafeEvent(event: unknown): unknown {
       summary: Object.prototype.toString.call(event),
     };
   }
+}
+
+function correlationWithAttempt(): AgentCorrelation {
+  return {
+    ...currentCorrelation,
+    ...(currentProviderCallId ? { providerCallId: currentProviderCallId } : {}),
+    ...(currentAttemptId ? { attemptId: currentAttemptId } : {}),
+  };
+}
+
+function correlationForProviderMessage(event: unknown): AgentCorrelation {
+  const message = isRecord(event) && isRecord(event.message) ? event.message : null;
+  const explicitId = message && typeof message.id === 'string' ? message.id : null;
+  if (message?.role === 'toolResult') {
+    return {
+      ...currentCorrelation,
+      providerMessageId: explicitId ?? randomUUID(),
+      ...(typeof message.toolCallId === 'string' ? { toolCallId: message.toolCallId } : {}),
+    };
+  }
+  if (!currentProviderMessageId && explicitId) currentProviderMessageId = explicitId;
+  if (!currentProviderMessageId) currentProviderMessageId = randomUUID();
+  return { ...correlationWithAttempt(), providerMessageId: currentProviderMessageId };
+}
+
+async function failCurrentProviderAttempt(error: string): Promise<void> {
+  if (!currentAttemptId || !currentProviderCallId) return;
+  await postDurable({
+    type: 'provider-attempt',
+    correlation: correlationWithAttempt(),
+    phase: 'failed',
+    index: currentAttemptIndex,
+    error,
+  });
+  currentAttemptId = null;
+  currentProviderMessageId = null;
+}
+
+function abortCurrentProviderAttempt(): void {
+  if (!currentAttemptId || !currentProviderCallId) return;
+  post({
+    type: 'provider-attempt',
+    correlation: correlationWithAttempt(),
+    phase: 'aborted',
+    index: currentAttemptIndex,
+  });
+  currentAttemptId = null;
+  currentProviderMessageId = null;
+}
+
+function isEventType(event: unknown, type: string): boolean {
+  return isRecord(event) && event.type === type;
+}
+
+function isAssistantMessageEnd(event: unknown): boolean {
+  return isRecord(event) && event.type === 'message_end' &&
+    isRecord(event.message) && event.message.role === 'assistant';
+}
+
+function assistantTextDelta(event: unknown): string | null {
+  if (!isRecord(event) || event.type !== 'message_update' || !isRecord(event.assistantMessageEvent)) return null;
+  return event.assistantMessageEvent.type === 'text_delta' && typeof event.assistantMessageEvent.delta === 'string'
+    ? event.assistantMessageEvent.delta
+    : null;
+}
+
+function messageFromEvent(event: unknown): Record<string, unknown> | null {
+  if (!isRecord(event) || event.type !== 'message_end' || !isRecord(event.message)) return null;
+  if (event.message.role !== 'assistant' && event.message.role !== 'toolResult') return null;
+  return jsonSafeEvent(event.message) as Record<string, unknown>;
+}
+
+function assistantStopReason(event: unknown): unknown {
+  return isRecord(event) && isRecord(event.message) ? event.message.stopReason : undefined;
+}
+
+function assistantError(event: unknown): string {
+  if (!isRecord(event) || !isRecord(event.message)) return 'Provider request failed.';
+  return typeof event.message.errorMessage === 'string'
+    ? event.message.errorMessage
+    : 'Provider request failed.';
+}
+
+function providerPauseReason(message: string): 'provider-exhausted' | 'auth-required' | 'runtime-error' {
+  if (/\b(?:401|403|unauthori[sz]ed|forbidden|authentication|api[ _-]?key)\b/iu.test(message)) {
+    return 'auth-required';
+  }
+  return /\b(?:provider|http|429|5\d\d|rate limit|overload|network|socket|fetch|timeout)\b/iu.test(message)
+    ? 'provider-exhausted'
+    : 'runtime-error';
+}
+
+function removeTrailingUncommittedAssistant(messages: Array<{ role?: unknown; stopReason?: unknown }>): void {
+  const last = messages[messages.length - 1];
+  if (last?.role === 'assistant' && (last.stopReason === 'error' || last.stopReason === 'aborted')) messages.pop();
 }
 
 export function projectProviderFailure(
