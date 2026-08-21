@@ -2,12 +2,13 @@
   <img src="build/wordmark.svg" alt="Iris" width="220">
 </p>
 
+<h1 align="center">鸢尾工坊 · Iris</h1>
+
 <p align="center">
   简体中文 · <a href="./README.en.md">English</a>
 </p>
 
 <p align="center">
-  <strong>鸢尾工坊 · Iris</strong><br>
   让项目记忆留在项目里。
 </p>
 
