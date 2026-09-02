@@ -1,6 +1,6 @@
 ---
 title: Git watcher 无界监听导致项目卡死
-status: In Progress
+status: Done
 ---
 
 ## Issue 定义

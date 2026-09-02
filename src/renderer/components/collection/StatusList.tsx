@@ -1,71 +1,23 @@
 /**
- * Status panel — "当前真相". Beyond a plain list it surfaces each status doc's
- * freshness: the software protocol requires `reflects: <sha>`; we compare it
- * to live git HEAD so a stale snapshot is obvious at a glance.
- * HEAD is a best-effort read (project:git-head) — when git is unavailable the
- * freshness column simply goes quiet.
+ * Status panel — "当前真相". Status documents are maintained current views;
+ * their collection is intentionally independent of Git metadata.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Archive, FileWarning, Plus } from 'lucide-react';
 import type { IrisWorkspace } from '@shared/types';
-import { CHANNELS } from '@shared/protocol';
 import { cn } from '@renderer/lib/utils';
 import { collectDocs, docDate } from '@renderer/lib/collect-docs';
 import { docDisplayTitle } from '@renderer/lib/doc-utils';
 import { setDocDragData } from '@renderer/lib/doc-drag';
 import { projectStore, useProject } from '@renderer/stores/project-store';
-import { sameProjectScope } from '@renderer/stores/project-scope-state';
 import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DocContextMenu } from '@renderer/components/doc/DocContextMenu';
 import { Button } from '@renderer/components/ui/button';
 import { PANEL_BAR, ROW_BASE } from './parts/layout';
 
-const GRID = 'minmax(0,1fr) auto minmax(0,96px) 76px';
+const GRID = 'minmax(0,1fr) minmax(0,96px) 76px';
 const statusListScroll = new Map<string, number>();
-
-/** Two shas refer to the same commit when one is a prefix of the other (≥7). */
-function shaMatch(a: string, b: string): boolean {
-  const x = a.trim().toLowerCase();
-  const y = b.trim().toLowerCase();
-  if (x.length < 7 || y.length < 7) return false;
-  return x.startsWith(y) || y.startsWith(x);
-}
-
-function reflectsOf(doc: { frontmatter: Record<string, unknown> | null }): string | null {
-  const v = doc.frontmatter?.['reflects'];
-  return typeof v === 'string' && v.trim() !== '' ? v.trim() : null;
-}
-
-function Freshness({ reflects, head }: { reflects: string | null; head: string | null }): JSX.Element {
-  const { t } = useTranslation();
-  if (!reflects) {
-    return <span className="text-[11px] text-muted-foreground/50">{t('collection.unmarked')}</span>;
-  }
-  const short = reflects.slice(0, 7);
-  if (!head) {
-    return (
-      <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-        {short}
-      </span>
-    );
-  }
-  const fresh = shaMatch(reflects, head);
-  return (
-    <span
-      title={`reflects ${short} · HEAD ${head.slice(0, 7)}`}
-      className={cn(
-        'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px]',
-        fresh
-          ? 'bg-[var(--rp-pine)]/15 text-[var(--rp-pine)]'
-          : 'bg-[var(--rp-gold)]/15 text-[var(--rp-gold)]',
-      )}
-    >
-      <span className="h-1.5 w-1.5 rounded-full bg-current" />
-      {fresh ? t('collection.current') : t('collection.stale')}
-    </span>
-  );
-}
 
 export function StatusList({
   root,
@@ -77,7 +29,6 @@ export function StatusList({
   selectedPath?: string | null;
 }): JSX.Element {
   const { t } = useTranslation();
-  const [head, setHead] = useState<string | null>(null);
   const { scope } = useProject();
   const listRef = useRef<HTMLDivElement | null>(null);
   const memoryKey = `${scope?.root ?? ''}\u0000${workspacePath ?? ''}`;
@@ -93,33 +44,6 @@ export function StatusList({
       statusListScroll.set(memoryKey, list.scrollTop);
     };
   }, [memoryKey]);
-
-  useEffect(() => {
-    let live = true;
-    const fetchHead = (): void => {
-      if (!scope) return;
-      window.api
-        .invoke<{ expectedScope: typeof scope }, { head: string | null }>(
-          CHANNELS.PROJECT_GIT_HEAD,
-          { expectedScope: scope },
-        )
-        .then((r) => {
-          if (live && sameProjectScope(scope, projectStore.get().scope)) {
-            setHead(r?.head ?? null);
-          }
-        })
-        .catch(() => {
-          /* not a repo / git missing — leave head null */
-        });
-    };
-    fetchHead();
-    // HEAD moves when the user commits; refresh when the window regains focus.
-    window.addEventListener('focus', fetchHead);
-    return () => {
-      live = false;
-      window.removeEventListener('focus', fetchHead);
-    };
-  }, [scope]);
 
   const rows = collectDocs(root, 'status', workspacePath);
   rows.sort(
@@ -192,7 +116,6 @@ export function StatusList({
                 )}
                 {item.archived && <Archive className="h-3 w-3 shrink-0 text-muted-foreground/60" />}
               </span>
-              <Freshness reflects={reflectsOf(item.doc)} head={head} />
               <span className="min-w-0 truncate text-[11px] text-muted-foreground">
                 {item.workspaceName}
               </span>

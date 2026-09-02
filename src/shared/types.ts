@@ -926,6 +926,17 @@ export interface DocImageResult {
 export type AssetHealth = 'referenced' | 'orphan' | 'missing' | 'unmanaged';
 export type AssetKind = 'image' | 'attachment';
 
+export type AssociatedPathKind = 'file' | 'directory';
+
+export interface AssociatedPathEntry {
+  /** The path as stored in the document's links.txt. */
+  path: string;
+  name: string;
+  kind: AssociatedPathKind | null;
+  exists: boolean;
+  size: number | null;
+}
+
 export interface AssetEntry {
   /** Project-relative disk path, or the resolved target for a missing item. */
   path: string;
@@ -945,6 +956,7 @@ export interface AssetInventory {
   directoryPath: string;
   assets: AssetEntry[];
   counts: Record<AssetHealth, number>;
+  associated: AssociatedPathEntry[];
 }
 
 export interface AssetImportPayload {

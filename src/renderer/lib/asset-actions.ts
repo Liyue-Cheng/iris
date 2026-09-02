@@ -1,4 +1,4 @@
-import type { AssetImportResult, AssetInventory } from '@shared/types';
+import type { AssetImportResult, AssetInventory, AssociatedPathEntry } from '@shared/types';
 import { CHANNELS } from '@shared/protocol';
 import { pipeline } from '@renderer/cpu';
 import { projectScopeState, sameProjectScope } from '@renderer/stores/project-scope-state';
@@ -32,6 +32,26 @@ export async function trashAsset(docPath: string, assetPath: string): Promise<vo
 
 export async function adoptAsset(docPath: string, source: string): Promise<AssetImportResult> {
   return pipeline.dispatch('asset.adopt', { docPath, source }) as Promise<AssetImportResult>;
+}
+
+export async function addAssociatedPath(docPath: string, targetPath: string): Promise<AssociatedPathEntry> {
+  return pipeline.dispatch('asset.link-add', { docPath, targetPath }) as Promise<AssociatedPathEntry>;
+}
+
+export async function removeAssociatedPath(docPath: string, targetPath: string): Promise<void> {
+  await pipeline.dispatch('asset.link-remove', { docPath, targetPath });
+}
+
+export async function openAssociatedPath(docPath: string, targetPath: string): Promise<void> {
+  await pipeline.dispatch('shell.open-associated-path', { docPath, targetPath });
+}
+
+export async function revealAssociatedPath(docPath: string, targetPath: string): Promise<void> {
+  await pipeline.dispatch('shell.reveal-associated-path', { docPath, targetPath });
+}
+
+export async function pickAssociatedPath(kind: 'file' | 'directory'): Promise<string | null> {
+  return window.api.invoke<{ kind: typeof kind }, string | null>(CHANNELS.DIALOG_PICK_ASSET_PATH, { kind });
 }
 
 export function markdownForAsset(asset: AssetImportResult | AssetInventory['assets'][number]): string {

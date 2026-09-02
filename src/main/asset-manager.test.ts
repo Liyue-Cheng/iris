@@ -117,6 +117,35 @@ describe('AssetManager', () => {
     ).rejects.toMatchObject({ code: 'Referenced' } satisfies Partial<AssetError>);
   });
 
+  it('stores external file and directory associations in links.txt without treating the index as an asset', async () => {
+    const external = join(dir, 'release.zip');
+    const folder = join(dir, 'html-output');
+    await fs.writeFile(external, 'zip placeholder', 'utf8');
+    await fs.mkdir(folder);
+
+    const first = await assets.addAssociated(dir, docPath, external);
+    const second = await assets.addAssociated(dir, docPath, folder);
+    await assets.addAssociated(dir, docPath, external);
+
+    expect(first).toMatchObject({ name: 'release.zip', kind: 'file', exists: true });
+    expect(second).toMatchObject({ name: 'html-output', kind: 'directory', exists: true });
+    const linksPath = join(dir, '.iris', 'issue', '测试 文档.assets', 'links.txt');
+    expect(await fs.readFile(linksPath, 'utf8')).toBe('release.zip\nhtml-output\n');
+
+    const inventory = await assets.list(dir, docPath);
+    expect(inventory.assets).toHaveLength(0);
+    expect(inventory.associated).toHaveLength(2);
+    expect(inventory.associated.map((entry) => entry.name)).toEqual(['release.zip', 'html-output']);
+
+    await fs.rm(external);
+    const missing = await assets.list(dir, docPath);
+    expect(missing.associated.find((entry) => entry.name === 'release.zip')).toMatchObject({ exists: false, kind: null });
+
+    await assets.removeAssociated(dir, docPath, external);
+    expect(await fs.access(folder)).toBeUndefined();
+    expect((await assets.list(dir, docPath)).associated).toHaveLength(1);
+  });
+
   it('adopts legacy local and data-image URLs with source-local Markdown edits', async () => {
     await fs.mkdir(join(dir, 'build'), { recursive: true });
     await fs.writeFile(join(dir, 'build', 'legacy.png'), png);

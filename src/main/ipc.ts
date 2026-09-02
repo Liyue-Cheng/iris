@@ -19,8 +19,6 @@ import {
 import { stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { CHANNELS, EVENTS, type WindowEditAction } from '@shared/protocol';
 import { mainT } from './i18n';
 import type {
@@ -110,8 +108,6 @@ import type {
   ServiceHealthChangedEvent,
 } from '@shared/app-error';
 import { serializeIpcError } from './ipc-error';
-
-const execFileP = promisify(execFile);
 
 type RawIpcHandler = (
   event: Electron.IpcMainInvokeEvent,
@@ -216,11 +212,6 @@ function requireSessionInScope(
     throw new Error(`[${channel}] session is outside the active project scope`);
   }
   return session;
-}
-
-/** Run a git subcommand in `cwd` with a short timeout; throws on failure. */
-function execFileGit(args: string[], cwd: string): Promise<{ stdout: string }> {
-  return execFileP('git', args, { cwd, timeout: 3000, windowsHide: true });
 }
 
 export function registerIpcHandlers(settingsManager: SettingsManager): void {
@@ -657,21 +648,6 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     },
   );
 
-  // Status-doc freshness (software prompt: reflects: <sha>). Best-effort
-  // read of the project's current HEAD; any failure (not a repo, no git on
-  // PATH, no project open) degrades to null and the UI just omits the badge.
-  ipcMain.handle(CHANNELS.PROJECT_GIT_HEAD, async (event, payload: ProjectScopedPayload): Promise<{ head: string | null }> => {
-    const ctx = requireContext(event);
-    const root = requireProjectScope(ctx, payload, CHANNELS.PROJECT_GIT_HEAD).root;
-    try {
-      const { stdout } = await execFileGit(['rev-parse', 'HEAD'], root);
-      const head = stdout.trim();
-      return { head: head.length > 0 ? head : null };
-    } catch {
-      return { head: null };
-    }
-  });
-
   ipcMain.handle(
     CHANNELS.GIT_STATUS,
     (event, payload: ProjectScopedPayload): Promise<GitSnapshot> => {
@@ -813,6 +789,45 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
         payload.assetPath,
         (path) => shell.trashItem(path),
       );
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.ASSET_LINK_ADD,
+    (event, payload: { docPath: string; targetPath: string } & ProjectScopedPayload) => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.ASSET_LINK_ADD);
+      return ctx.projectManager.addAssociatedPath(payload.docPath, payload.targetPath);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.ASSET_LINK_REMOVE,
+    async (event, payload: { docPath: string; targetPath: string } & ProjectScopedPayload): Promise<void> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.ASSET_LINK_REMOVE);
+      await ctx.projectManager.removeAssociatedPath(payload.docPath, payload.targetPath);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.ASSET_LINK_OPEN,
+    async (event, payload: { docPath: string; targetPath: string } & ProjectScopedPayload): Promise<void> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.ASSET_LINK_OPEN);
+      const target = await ctx.projectManager.resolveAssociatedPath(payload.docPath, payload.targetPath);
+      const error = await shell.openPath(target);
+      if (error) throw new Error(`[${CHANNELS.ASSET_LINK_OPEN}] ${error}`);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.ASSET_LINK_REVEAL,
+    async (event, payload: { docPath: string; targetPath: string } & ProjectScopedPayload): Promise<void> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.ASSET_LINK_REVEAL);
+      const target = await ctx.projectManager.resolveAssociatedPath(payload.docPath, payload.targetPath);
+      shell.showItemInFolder(target);
     },
   );
 
@@ -1316,6 +1331,18 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     if (result.canceled || result.filePaths.length === 0) return null;
     return result.filePaths[0] ?? null;
   });
+
+  ipcMain.handle(
+    CHANNELS.DIALOG_PICK_ASSET_PATH,
+    async (event, payload: { kind: 'file' | 'directory' }): Promise<string | null> => {
+      const parent = senderWindow(event);
+      const properties: Array<'openFile' | 'openDirectory'> = payload?.kind === 'directory' ? ['openDirectory'] : ['openFile'];
+      const options = { title: mainT(payload?.kind === 'directory' ? 'app.addAssociatedFolder' : 'app.addAssociatedFile'), properties };
+      const result = await (parent ? dialog.showOpenDialog(parent, options) : dialog.showOpenDialog(options));
+      if (result.canceled || result.filePaths.length === 0) return null;
+      return result.filePaths[0] ?? null;
+    },
+  );
 
   logger.info('ipc', 'handlers registered');
 }

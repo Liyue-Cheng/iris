@@ -133,6 +133,5 @@ export function docSkeleton(type: DocType, title: string): string {
   const lines = [`title: ${yamlScalar(title)}`];
   if (type === 'issue') lines.push(`status: ${ISSUE_STATUS.todo}`);
   if (type === 'report') lines.push(`status: ${REPORT_STATUS.active}`);
-  if (type === 'status') lines.push('reflects:');
   return `---\n${lines.join('\n')}\n---\n`;
 }

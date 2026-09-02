@@ -13,7 +13,7 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
-import type { AssetEntry, AssetHealth, AssetInventory } from '@shared/types';
+import type { AssetEntry, AssetHealth, AssetInventory, AssociatedPathEntry } from '@shared/types';
 import { EVENTS } from '@shared/protocol';
 import { cn } from '@renderer/lib/utils';
 import { confirmDialog } from '@renderer/components/ui/confirm-dialog';
@@ -24,9 +24,14 @@ import { writeClipboardText } from '@renderer/lib/clipboard';
 import { openProjectItem, revealProjectItem } from '@renderer/lib/shell-actions';
 import {
   adoptAsset,
+  addAssociatedPath,
   importAsset,
   listAssets,
   markdownForAsset,
+  openAssociatedPath,
+  pickAssociatedPath,
+  removeAssociatedPath,
+  revealAssociatedPath,
   trashAsset,
 } from '@renderer/lib/asset-actions';
 
@@ -138,7 +143,38 @@ export function AssetPanel({
     }
   };
 
+  const addAssociated = async (kind: 'file' | 'directory'): Promise<void> => {
+    if (busy) return;
+    const target = await pickAssociatedPath(kind);
+    if (!target) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await addAssociatedPath(docPath, target);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeAssociated = async (entry: AssociatedPathEntry): Promise<void> => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await removeAssociatedPath(docPath, entry.path);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const assets = inventory?.assets ?? [];
+  const associated = inventory?.associated ?? [];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -159,11 +195,17 @@ export function AssetPanel({
             {busy ? <Loader2 className="animate-spin" /> : <Upload />}
             {t('common.add')}
           </Button>
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => void addAssociated('file')}>
+            <File /> {t('editor.addAssociatedFile')}
+          </Button>
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => void addAssociated('directory')}>
+            <FolderOpen /> {t('editor.addAssociatedFolder')}
+          </Button>
           <IconAction label={t('common.refresh')} disabled={loading} onClick={() => void refresh()}>
             <RefreshCw className={cn(loading && 'animate-spin')} />
           </IconAction>
           <span className="ml-auto text-xs text-muted-foreground">
-            {inventory ? t('editor.assetCount', { count: assets.length }) : ''}
+            {inventory ? t('editor.assetCount', { count: assets.length + associated.length }) : ''}
           </span>
         </div>
 
@@ -179,12 +221,13 @@ export function AssetPanel({
             <div className="flex h-40 items-center justify-center">
               <Loader2 className="size-4 animate-spin text-muted-foreground" />
             </div>
-          ) : assets.length === 0 ? (
+          ) : assets.length === 0 && associated.length === 0 ? (
             <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
               {t('editor.noAssets')}
             </div>
           ) : (
-            assets.map((asset) => (
+            <>
+            {assets.map((asset) => (
               <AssetRow
                 key={`${asset.health}:${asset.path}:${asset.markdownUrl}`}
                 asset={asset}
@@ -192,7 +235,24 @@ export function AssetPanel({
                 onAdopt={() => void adoptLegacy(asset)}
                 onRemove={() => void removeOrphan(asset)}
               />
-            ))
+            ))}
+            {associated.length > 0 && (
+              <>
+                <div className="border-b bg-muted/30 px-5 py-2 text-xs font-medium text-muted-foreground">
+                  {t('editor.associatedAssets')}
+                </div>
+                {associated.map((entry) => (
+                  <AssociatedRow
+                    key={`associated:${entry.path}`}
+                    docPath={docPath}
+                    entry={entry}
+                    disabled={busy}
+                    onRemove={() => void removeAssociated(entry)}
+                  />
+                ))}
+              </>
+            )}
+            </>
           )}
         </div>
 
@@ -273,6 +333,44 @@ function AssetRow({
             <Trash2 />
           </IconAction>
         )}
+      </div>
+    </div>
+  );
+}
+
+function AssociatedRow({
+  docPath,
+  entry,
+  disabled,
+  onRemove,
+}: {
+  docPath: string;
+  entry: AssociatedPathEntry;
+  disabled: boolean;
+  onRemove: () => void;
+}): JSX.Element {
+  const { t } = useTranslation();
+  const canOpen = entry.exists;
+  return (
+    <div className="flex min-h-12 items-center gap-3 border-b px-5 py-2 last:border-b-0">
+      {entry.kind === 'directory' ? <FolderOpen className="size-4 shrink-0 text-muted-foreground" /> : <File className="size-4 shrink-0 text-muted-foreground" />}
+      <div className="min-w-0 flex-1">
+        <div className={cn('truncate text-sm', !entry.exists && 'text-destructive')} title={entry.path}>{entry.name}</div>
+        <div className="truncate text-[11px] text-muted-foreground" title={entry.path}>
+          {entry.exists ? t(entry.kind === 'directory' ? 'editor.associatedFolder' : 'editor.associatedFile') : t('editor.associatedMissing')}
+          {' · '}{entry.path}
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-0.5">
+        <IconAction label={t('common.reveal')} disabled={!canOpen} onClick={() => void revealAssociatedPath(docPath, entry.path)}>
+          <FolderOpen />
+        </IconAction>
+        <IconAction label={t('common.openDefault')} disabled={!canOpen} onClick={() => void openAssociatedPath(docPath, entry.path)}>
+          <ExternalLink />
+        </IconAction>
+        <IconAction label={t('editor.removeAssociated')} disabled={disabled} destructive onClick={onRemove}>
+          <Trash2 />
+        </IconAction>
       </div>
     </div>
   );

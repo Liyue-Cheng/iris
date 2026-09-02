@@ -107,6 +107,7 @@ describe('software prompt invariants', () => {
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('GFM task checkbox');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('Write plain CommonMark');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('<name>.assets/');
+    expect(SOFTWARE_PROMPT_TEMPLATE).toContain('`links.txt`');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('Never delete an asset merely because');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('No unsolicited Iris-managed files');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain(
@@ -122,12 +123,14 @@ describe('software prompt invariants', () => {
     expect(SOFTWARE_PROMPT_TEMPLATE).not.toContain('feeds the filter chips');
     expect(SOFTWARE_PROMPT_TEMPLATE).not.toContain('iris-user');
     expect(SOFTWARE_PROMPT_TEMPLATE).not.toContain('~/.iris/CONVENTIONS.md');
+    expect(SOFTWARE_PROMPT_TEMPLATE).not.toContain('reflects:');
+    expect(SOFTWARE_PROMPT_TEMPLATE).not.toContain('git HEAD');
   });
 
   it('keeps new-document skeletons aligned with the prompt', () => {
     expect(docSkeleton('issue', 'x')).toBe('---\ntitle: x\nstatus: Todo\n---\n');
     expect(docSkeleton('report', 'x')).toBe('---\ntitle: x\nstatus: Active\n---\n');
-    expect(docSkeleton('status', 'x')).toBe('---\ntitle: x\nreflects:\n---\n');
+    expect(docSkeleton('status', 'x')).toBe('---\ntitle: x\n---\n');
     expect(docSkeleton('misc', 'x')).toBe('---\ntitle: x\n---\n');
   });
 });

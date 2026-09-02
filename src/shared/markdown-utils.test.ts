@@ -35,9 +35,9 @@ describe('splitFrontmatter', () => {
 
 describe('setFrontmatterKey', () => {
   it('replaces only the target line, byte-preserving the rest', () => {
-    const fm = '---\ntitle: 服务边界设计\nstatus: todo\nreflects: a1b3c2 # stamp\n---\n';
+    const fm = '---\ntitle: 服务边界设计\nstatus: todo\nnote: a1b3c2 # metadata\n---\n';
     const out = setFrontmatterKey(fm, 'status', 'in_progress');
-    expect(out).toBe('---\ntitle: 服务边界设计\nstatus: in_progress\nreflects: a1b3c2 # stamp\n---\n');
+    expect(out).toBe('---\ntitle: 服务边界设计\nstatus: in_progress\nnote: a1b3c2 # metadata\n---\n');
   });
 
   it('inserts a missing key before the closing fence', () => {

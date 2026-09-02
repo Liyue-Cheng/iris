@@ -21,6 +21,7 @@ import type {
   AssetImportPayload,
   AssetImportResult,
   AssetInventory,
+  AssociatedPathEntry,
   ContextPreview,
   DocContent,
   DocImageResult,
@@ -316,6 +317,18 @@ export class ProjectManager extends EventEmitter {
 
   async adoptAsset(docPath: string, source: string): Promise<AssetImportResult> {
     return this.assetManager.adopt(this.requireRoot(), docPath, source);
+  }
+
+  async addAssociatedPath(docPath: string, targetPath: string): Promise<AssociatedPathEntry> {
+    return this.assetManager.addAssociated(this.requireRoot(), docPath, targetPath);
+  }
+
+  async removeAssociatedPath(docPath: string, targetPath: string): Promise<void> {
+    return this.assetManager.removeAssociated(this.requireRoot(), docPath, targetPath);
+  }
+
+  async resolveAssociatedPath(docPath: string, targetPath: string): Promise<string> {
+    return this.assetManager.resolveAssociated(this.requireRoot(), docPath, targetPath);
   }
 
   /** Compare-and-swap a document. expectedContent is the renderer's baseline;

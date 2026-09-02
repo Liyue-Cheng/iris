@@ -6,7 +6,7 @@ import { initializeMainI18n, mainT } from './i18n';
 import { SOFTWARE_PROMPT_TEMPLATE } from './iris-templates';
 import { docSkeleton } from './software-prompt';
 
-const WRITABLE_FRONTMATTER_KEYS = ['title:', 'status:', 'reflects:'] as const;
+const WRITABLE_FRONTMATTER_KEYS = ['title:', 'status:'] as const;
 const PROTOCOL_TAGS = [
   '<iris-software>',
   '<iris-project>',
@@ -28,7 +28,7 @@ describe('i18n protocol boundary', () => {
       'Canceled',
     ]);
     expect(REPORT_STATUSES).toEqual(['Active', 'Backlog']);
-    expect(WRITABLE_FRONTMATTER_KEYS).toEqual(['title:', 'status:', 'reflects:']);
+    expect(WRITABLE_FRONTMATTER_KEYS).toEqual(['title:', 'status:']);
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('`labels:` frontmatter field is reserved');
     expect(PROTOCOL_TAGS).toEqual([
       '<iris-software>',
@@ -61,7 +61,7 @@ describe('i18n protocol boundary', () => {
     expect(englishLocaleOutput).toEqual(chineseLocaleOutput);
     expect(englishLocaleOutput.issue).toContain('status: Todo');
     expect(englishLocaleOutput.report).toContain('status: Active');
-    expect(englishLocaleOutput.status).toContain('reflects:');
+    expect(englishLocaleOutput.status).toBe('---\ntitle: Current truth\n---\n');
     expect(englishLocaleOutput.focusScript).toContain('FOCUS_DOC');
     expect(englishLocaleOutput.focusScript).toContain('<iris-focus');
     expect(englishLocaleOutput.focusScript).toContain('<iris-workspace');

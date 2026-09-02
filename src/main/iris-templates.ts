@@ -36,8 +36,7 @@ depth. Any folder containing typed folders is a **workspace**; a document's
 type is decided by the nearest enclosing typed folder.
 
 - \`status/\` — Current state of the codebase — a mirror, not a record: rewrite
-  freely, keep in sync with reality. Every status doc carries
-  \`reflects: <git-commit-sha>\` in frontmatter.
+  freely, keep in sync with reality.
 - \`issue/\` — Things to do, bugs, open questions — the working record of a
   problem. Treat the body as a record: prefer appending updates; do not
   rewrite or delete existing content unprompted (frontmatter transitions and
@@ -53,8 +52,10 @@ type is decided by the nearest enclosing typed folder.
 Managed assets live beside their owner document in a companion directory:
 \`<name>.md\` owns \`<name>.assets/\`. Use standard relative Markdown links such
 as \`./<name>.assets/image--<hash>.png\`; do not add an assets manifest or
-frontmatter registry. Asset directories are opaque to document/workspace
-scanning.
+frontmatter registry for managed assets. A reserved \`links.txt\` inside the
+companion directory may list one external file or directory path per line; it
+is an association index, not an asset, and must not be imported or counted as
+one. Asset directories are opaque to document/workspace scanning.
 
 - Keep each asset owned by one document; copy it when another document needs
   an independent copy instead of linking across companion directories.
@@ -67,6 +68,10 @@ scanning.
 - Never delete an asset merely because its reference disappeared. It becomes
   an orphan and awaits explicit human cleanup. When a document is moved,
   copied, renamed, or human-deleted, handle its companion directory with it.
+- External paths in \`links.txt\` are references only: do not copy them, create
+  symlinks, or delete targets. Keep missing references so the user can relink
+  them; the document asset manager may open them with the operating system's
+  default application or reveal them in the file manager.
 
 ## What the app parses
 
@@ -75,7 +80,6 @@ ignored, and a misspelled key silently drops the field):
 
 - \`title:\` — display title; falls back to the filename when absent.
 - \`status:\` — drives the issue/report lenses and uses the state machine below.
-- \`reflects:\` — status docs only: the git commit sha the doc reflects.
 
 The \`labels:\` frontmatter field is reserved and is not currently enabled.
 Do not add, populate, edit, normalize, or remove it unless the user explicitly
@@ -83,7 +87,7 @@ asks to repair or migrate existing label metadata. Preserve an existing valid
 \`labels:\` field verbatim.
 
 A new issue starts as (a report starts with \`status: Active\`; a status doc
-carries \`reflects:\` instead of \`status:\`):
+does not require a status field):
 
 \`\`\`
 ---
@@ -135,24 +139,15 @@ it changed. Agents without a hook fall back to the environment variables.
    loading context is not a task.
 2. **Write-back scope.** Write results into the nearest workspace enclosing
    \`$FOCUS_DOC\`. Do not create new workspaces unless asked.
-3. **Stamping.** Status docs do not update themselves. Before ending any
-   work that changed the codebase, list the write-back workspace's
-   \`status/\` docs, update those your changes falsified, and restamp their
-   \`reflects:\` with current \`git HEAD\` — the change is not done until the
-   mirror is true again. After a git merge, do not hand-merge status docs —
-   regenerate and restamp.
-4. **No unsolicited Iris-managed files.** Never create a new document in a
+3. **No unsolicited Iris-managed files.** Never create a new document in a
    typed folder — reports included — or a new companion asset unless the user
    explicitly asks. This restriction does not apply to project source, tests,
    configuration, or other files needed for an authorized implementation task.
    Editing the focused document is always fine, as are frontmatter updates
    (e.g. \`status:\` transitions) on existing docs.
-5. **Naming.** New files in \`issue/\` and \`report/\` use a \`YYYY-MM-DD-<slug>\`
+4. **Naming.** New files in \`issue/\` and \`report/\` use a \`YYYY-MM-DD-<slug>\`
    prefix.
-6. **Trust calibration.** Before relying on a status doc, compare its
-   \`reflects:\` stamp to \`git HEAD\`; a large gap means treat it as a weak prior
-   and verify against the code.
-7. **Off-limits.** Never modify the \`<iris-software>\` or \`<iris-project>\`
+5. **Off-limits.** Never modify the \`<iris-software>\` or \`<iris-project>\`
    blocks. Never write outside typed
    folders. Never touch code directories unless explicitly asked.
 

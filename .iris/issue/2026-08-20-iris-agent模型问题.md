@@ -1,6 +1,6 @@
 ---
 title: iris agent模型问题
-status: In Review
+status: Done
 ---
 现在iris agent还是有一些问题的，最重要的就是选择模型之后没有保存，结果换一个窗口还是第一个模型，你现在要修复这个问题
 

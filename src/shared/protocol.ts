@@ -90,10 +90,6 @@ export const CHANNELS = {
   /** Queries (projection reads — not instructions). */
   PROJECT_SCAN: 'project:scan',
   PROJECT_RAW_TREE: 'project:raw-tree',
-  /** Query: current git HEAD sha of the project root (null when not a repo /
-   *  no project / git unavailable). Powers status-doc freshness (reflects:
-   *  stamp vs HEAD). Read-only — never mutates anything. */
-  PROJECT_GIT_HEAD: 'project:git-head',
   GIT_STATUS: 'git:status',
   GIT_REFRESH: 'git:refresh',
   GIT_STAGE: 'git:stage',
@@ -116,8 +112,13 @@ export const CHANNELS = {
   ASSET_IMPORT: 'asset:import',
   ASSET_ADOPT: 'asset:adopt',
   ASSET_TRASH: 'asset:trash',
+  ASSET_LINK_ADD: 'asset:link-add',
+  ASSET_LINK_REMOVE: 'asset:link-remove',
+  ASSET_LINK_OPEN: 'asset:link-open',
+  ASSET_LINK_REVEAL: 'asset:link-reveal',
   /** UI helper: native folder picker (returns a path or null; no side effect). */
   DIALOG_PICK_FOLDER: 'dialog:pick-folder',
+  DIALOG_PICK_ASSET_PATH: 'dialog:pick-asset-path',
   /** Session verbs (instruction-backed). */
   SESSION_OPEN: 'session:open',
   SESSION_CLOSE: 'session:close',

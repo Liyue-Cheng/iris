@@ -5,9 +5,10 @@
  */
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import { basename, dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { remark } from 'remark';
 import type {
+  AssociatedPathEntry,
   AssetEntry,
   AssetHealth,
   AssetImportPayload,
@@ -21,6 +22,7 @@ import { writeFileAtomic } from './atomic-write';
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.svg']);
+export const ASSOCIATED_PATHS_FILE = 'links.txt';
 
 interface MarkdownNode {
   type?: string;
@@ -86,6 +88,7 @@ export class AssetManager {
     try {
       const entries = await fs.readdir(directoryAbs, { withFileTypes: true });
       for (const entry of entries) {
+        if (entry.name === ASSOCIATED_PATHS_FILE) continue;
         if (!entry.isFile() || entry.isSymbolicLink()) continue;
         const abs = join(directoryAbs, entry.name);
         const key = normalize(abs);
@@ -161,12 +164,76 @@ export class AssetManager {
     }
 
     assets.sort((a, b) => healthRank(a.health) - healthRank(b.health) || a.name.localeCompare(b.name));
+    const associated = await this.readAssociated(projectRoot, directoryAbs);
     return {
       docPath,
       directoryPath,
       assets,
       counts: countHealth(assets),
+      associated,
     };
+  }
+
+  async addAssociated(projectRoot: string, docPath: string, targetPath: string): Promise<AssociatedPathEntry> {
+    await this.requireDocument(projectRoot, docPath);
+    const raw = (targetPath ?? '').trim();
+    if (!raw || /[\r\n\u0000]/.test(raw)) {
+      throw new AssetError('InvalidPayload', mainT('error.assetAssociationInvalid'));
+    }
+    const absolute = resolveAssociatedPath(projectRoot, raw);
+    const stat = await fs.stat(absolute).catch(() => null);
+    if (!stat || (!stat.isFile() && !stat.isDirectory())) {
+      throw new AssetError('InvalidPayload', mainT('error.assetAssociationMissing', { path: raw }));
+    }
+    const directoryAbs = resolveInside(projectRoot, companionPath(docPath));
+    await requireSafeDirectoryIfPresent(projectRoot, directoryAbs);
+    await fs.mkdir(directoryAbs, { recursive: true });
+    const stored = storeAssociatedPath(projectRoot, absolute);
+    const current = await readAssociatedLines(directoryAbs);
+    if (!current.some((line) => normalize(resolveAssociatedPath(projectRoot, line)) === normalize(absolute))) {
+      await writeFileAtomic(join(directoryAbs, ASSOCIATED_PATHS_FILE), `${[...current, stored].join('\n')}\n`);
+    }
+    return associatedEntry(stored, absolute, stat);
+  }
+
+  async removeAssociated(projectRoot: string, docPath: string, targetPath: string): Promise<void> {
+    await this.requireDocument(projectRoot, docPath);
+    const directoryAbs = resolveInside(projectRoot, companionPath(docPath));
+    await requireSafeDirectoryIfPresent(projectRoot, directoryAbs);
+    const current = await readAssociatedLines(directoryAbs);
+    const target = normalize(resolveAssociatedPath(projectRoot, targetPath ?? ''));
+    const next = current.filter((line) => normalize(resolveAssociatedPath(projectRoot, line)) !== target);
+    if (next.length === current.length) {
+      throw new AssetError('InvalidPayload', mainT('error.assetAssociationNotFound', { path: targetPath }));
+    }
+    const links = join(directoryAbs, ASSOCIATED_PATHS_FILE);
+    if (next.length === 0) await fs.rm(links, { force: true });
+    else await writeFileAtomic(links, `${next.join('\n')}\n`);
+  }
+
+  async resolveAssociated(projectRoot: string, docPath: string, targetPath: string): Promise<string> {
+    await this.requireDocument(projectRoot, docPath);
+    const directoryAbs = resolveInside(projectRoot, companionPath(docPath));
+    const current = await readAssociatedLines(directoryAbs);
+    const target = normalize(resolveAssociatedPath(projectRoot, targetPath ?? ''));
+    const stored = current.find((line) => normalize(resolveAssociatedPath(projectRoot, line)) === target);
+    if (!stored) throw new AssetError('InvalidPayload', mainT('error.assetAssociationNotFound', { path: targetPath }));
+    return resolveAssociatedPath(projectRoot, stored);
+  }
+
+  private async readAssociated(projectRoot: string, directoryAbs: string): Promise<AssociatedPathEntry[]> {
+    const lines = await readAssociatedLines(directoryAbs);
+    const entries: AssociatedPathEntry[] = [];
+    const seen = new Set<string>();
+    for (const stored of lines) {
+      const absolute = resolveAssociatedPath(projectRoot, stored);
+      const key = normalize(absolute);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const stat = await fs.stat(absolute).catch(() => null);
+      entries.push(associatedEntry(stored, absolute, stat));
+    }
+    return entries;
   }
 
   async import(
@@ -361,6 +428,42 @@ export class AssetManager {
 
 function companionPath(docPath: string): string {
   return join(dirname(docPath), `${basename(docPath, extname(docPath))}.assets`).split(sep).join('/');
+}
+
+async function readAssociatedLines(directoryAbs: string): Promise<string[]> {
+  try {
+    const raw = await fs.readFile(join(directoryAbs, ASSOCIATED_PATHS_FILE), 'utf8');
+    return raw.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
+  } catch (err) {
+    if (isNotFound(err)) return [];
+    throw new AssetError('ReadFailed', messageFor(mainT('error.assetList', { path: ASSOCIATED_PATHS_FILE }), err));
+  }
+}
+
+function resolveAssociatedPath(projectRoot: string, stored: string): string {
+  return normalize(isAbsolute(stored) ? stored : resolve(projectRoot, stored));
+}
+
+function storeAssociatedPath(projectRoot: string, absolute: string): string {
+  const rel = relative(projectRoot, absolute);
+  if (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)) {
+    return rel.split(sep).join('/');
+  }
+  return absolute;
+}
+
+function associatedEntry(
+  stored: string,
+  absolute: string,
+  stat: Awaited<ReturnType<typeof fs.stat>> | null,
+): AssociatedPathEntry {
+  return {
+    path: stored,
+    name: basename(absolute),
+    kind: stat?.isDirectory() ? 'directory' : stat?.isFile() ? 'file' : null,
+    exists: Boolean(stat?.isDirectory() || stat?.isFile()),
+    size: stat?.isFile() && typeof stat.size === 'number' ? stat.size : null,
+  };
 }
 
 function collectReferences(projectRoot: string, docPath: string, markdown: string): AssetReference[] {

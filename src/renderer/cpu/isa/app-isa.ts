@@ -50,6 +50,32 @@ export const appISA: Record<string, InstructionDefinition> = {
     config: { channel: CHANNELS.SHELL_OPEN_PATH, projectScoped: true },
   },
 
+  'shell.open-associated-path': {
+    meta: {
+      description: 'Open a registered external document asset with the system default application',
+      category: 'system',
+      resourceIdentifier: (p: { docPath: string }) => [projectScopeRead(), `doc:${p.docPath}`],
+      schedulingStrategy: 'read-write',
+      priority: 5,
+      timeout: 5000,
+    },
+    executor: 'ipc',
+    config: { channel: CHANNELS.ASSET_LINK_OPEN, projectScoped: true },
+  },
+
+  'shell.reveal-associated-path': {
+    meta: {
+      description: 'Reveal a registered external document asset in the system file manager',
+      category: 'system',
+      resourceIdentifier: (p: { docPath: string }) => [projectScopeRead(), `doc:${p.docPath}`],
+      schedulingStrategy: 'read-write',
+      priority: 5,
+      timeout: 5000,
+    },
+    executor: 'ipc',
+    config: { channel: CHANNELS.ASSET_LINK_REVEAL, projectScoped: true },
+  },
+
   'shell.open-external-url': {
     meta: {
       description: 'Open a validated URL in the operating-system handler',
