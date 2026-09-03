@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createEmptyAgentSession, projectAgentSession, type AgentToolActivity } from './session-model';
+import { assertIrisAgentCloseAllowed, assertIrisAgentExpectedRevision } from './session-domain';
 
 function terminalActivity(overrides: Partial<AgentToolActivity>): AgentToolActivity {
   return {
@@ -23,6 +24,22 @@ function terminalActivity(overrides: Partial<AgentToolActivity>): AgentToolActiv
 }
 
 describe('Iris Agent terminal projection', () => {
+  it('requires explicit confirmation when closing a busy session', () => {
+    const session = createEmptyAgentSession({
+      id: 'close-gate',
+      anchor: { kind: 'workspace', path: '.iris' },
+      model: { provider: 'openai', modelId: 'gpt-test' },
+      projectRoot: process.cwd(),
+      displayName: 'Iris Agent',
+      now: 1,
+    });
+    session.state = 'running';
+    expect(() => assertIrisAgentCloseAllowed(session)).toThrowError('requires explicit confirmation');
+    expect(() => assertIrisAgentCloseAllowed(session, true)).not.toThrow();
+    expect(() => assertIrisAgentExpectedRevision(session, session.revision - 1))
+      .toThrowError('changed before this command was applied');
+  });
+
   it('keeps short completed terminals available without marking them revealed', () => {
     const session = createEmptyAgentSession({
       id: 'session-1',

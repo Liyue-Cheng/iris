@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { buildSpawnEnv } from './pty-utils';
-import { resolveHostShell } from './session-manager';
+import { resolveHostShell } from './terminal-session-manager';
 import { logger } from './logger';
 
 const SPAWN_ENV_SKIP = ['ELECTRON_RUN_AS_NODE', 'ELECTRON_RENDERER_URL'];

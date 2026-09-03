@@ -41,7 +41,7 @@ Iris 的整个会话层不重写，从 Marina 复制后小改。Marina 已解决
 |-------------|-----------|------------|
 | `src/main/session-manager.ts` | PTY 池、会话状态机（idle ↔ active → exited）、防闪烁 | 锚定对象从 path 换成 doc；spawn 时注入 `FOCUS_DOC` 环境变量 |
 | `src/main/path-manager.ts` | 锚定模型：对象↔会话绑定创建时确定、终生不变，一对象任意多会话 | `pathId` → 文档相对路径；三分类（收藏/临时/最近）可简化 |
-| `src/shared/types.ts` | `SessionInfo` / `SessionState` / 树结构等数据模型 | 同上改名 |
+| `src/shared/types.ts` | `TerminalSessionInfo` / `SessionState` / 树结构等数据模型 | 同上改名 |
 | `src/main/settings-manager.ts` | 设置持久化 | 存储位置改 `~/.iris/` |
 | electron-vite 工程脚手架 | 三进程 tsconfig、构建、smoke 测试脚本 | 起项目时整体照搬 |
 

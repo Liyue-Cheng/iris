@@ -11,6 +11,7 @@ import { IrisAgentSessionStore } from './session-store';
 import {
   abandonOpenAgentTurn,
   assertIrisAgentExpectedRevision,
+  assertIrisAgentCloseAllowed,
   assertQuiescentIrisAgentSession,
   assertUndoableLatestIrisAgentTurn,
   completeActiveAgentTurn,
@@ -55,6 +56,7 @@ import type {
 import type {
   AgentReplyActivity,
   AgentRequestFacts,
+  AgentUserActivity,
   AgentSessionAggregate,
   AgentToolActivity,
 } from './session-model';
@@ -67,6 +69,7 @@ import {
   projectAgentSession,
 } from './session-model';
 import { SOFTWARE_PROMPT_TEMPLATE } from '../iris-templates';
+import { AppError } from '@shared/app-error';
 
 interface LoadedStore {
   root: string;
@@ -100,6 +103,8 @@ export interface IrisAgentCommandPrecondition {
   commandId?: string;
   expectedRevision?: number;
   expectedTurnId?: string;
+  /** Explicit user intent allowing close of a currently busy Agent. */
+  confirmBusy?: boolean;
 }
 
 interface PreparedAgentTurn {
@@ -223,6 +228,28 @@ export class IrisAgentSessionManager extends EventEmitter {
         randomUUID(),
         `${source.displayName} Branch ${branchNumber}`,
         Date.now(),
+      );
+      const saved = await store.commit(branch);
+      this.emitChanged(scope, saved);
+      return projectAgentSession(saved, scope.generation);
+    });
+  }
+
+  async branchFromInput(
+    scope: ProjectScope,
+    sessionId: string,
+    throughTurnId: string,
+    precondition: IrisAgentCommandPrecondition = {},
+  ): Promise<IrisAgentSessionInfo> {
+    return this.runSessionCommand(sessionId, async () => {
+      this.currentScope = scope;
+      const store = await this.ensureStore(scope.root);
+      const source = await this.requireSession(scope, sessionId);
+      assertIrisAgentExpectedRevision(source, precondition.expectedRevision);
+      assertQuiescentIrisAgentSession(source);
+      const branchNumber = store.list().filter((candidate) => candidate.parentSessionId === source.id).length + 1;
+      const branch = createIrisAgentInputBranch(
+        source, throughTurnId, randomUUID(), `${source.displayName} Branch ${branchNumber}`, Date.now(),
       );
       const saved = await store.commit(branch);
       this.emitChanged(scope, saved);
@@ -367,6 +394,21 @@ export class IrisAgentSessionManager extends EventEmitter {
       const turn = session.turns.find((candidate) => candidate.id === session.currentTurnId);
       if (!turn || turn.state !== 'paused') {
         throw new Error('Only the latest paused Iris Agent turn can continue.');
+      }
+      if (!session.providerCalls.some((call) => call.turnId === turn.id) &&
+        !session.transcript.some((frame) => frame.turnId === turn.id)) {
+        const userActivity = session.timeline.find((activity): activity is AgentUserActivity =>
+          activity.id === turn.userActivityId && activity.kind === 'user');
+        const message = userActivity?.content;
+        if (!message) throw new Error('The paused input is missing.');
+        const cleaned = structuredClone(session);
+        cleaned.turns = cleaned.turns.filter((candidate) => candidate.id !== turn.id);
+        cleaned.timeline = cleaned.timeline.filter((activity) => activity.turnId !== turn.id);
+        cleaned.currentTurnId = null;
+        cleaned.state = 'idle';
+        const saved = await store.commit(cleaned);
+        this.emitChanged(scope, saved);
+        return this.sendSession(scope, sessionId, message, {});
       }
       const prepared = preparePausedAgentTurnForResume(session);
       if (prepared !== session) {
@@ -522,6 +564,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       const store = await this.ensureStore(scope.root);
       const session = await this.requireSession(scope, sessionId);
       assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
+      assertIrisAgentCloseAllowed(session, precondition.confirmBusy === true);
       await this.shutdownHost(sessionId);
       this.abortSessionTerminals(sessionId);
       await store.delete(sessionId);
@@ -552,6 +595,10 @@ export class IrisAgentSessionManager extends EventEmitter {
     if (this.loaded?.store.list().some(isAgentSessionBusy)) {
       throw new Error('Stop all running Iris Agent Sessions before changing provider credentials.');
     }
+  }
+
+  countBusySessions(): number {
+    return this.loaded?.store.list().filter(isAgentSessionBusy).length ?? 0;
   }
 
   async reloadProviderConfiguration(): Promise<void> {
@@ -1368,7 +1415,11 @@ export class IrisAgentSessionManager extends EventEmitter {
     const store = await this.ensureStore(scope.root);
     const session = store.get(sessionId);
     if (!session || session.projectRoot !== scope.root) {
-      throw new Error('Iris Agent session is outside the active project scope.');
+      throw new AppError(
+        'session',
+        'SessionNotFound',
+        'Iris Agent session is outside the active project scope.',
+      );
     }
     return session;
   }
@@ -1494,6 +1545,45 @@ export class IrisAgentSessionManager extends EventEmitter {
       update,
     } satisfies IrisAgentSessionChangedPayload);
   }
+}
+
+export function createIrisAgentInputBranch(
+  source: AgentSessionAggregate,
+  throughTurnId: string,
+  id: string,
+  displayName: string,
+  now: number,
+): AgentSessionAggregate {
+  assertQuiescentIrisAgentSession(source);
+  const index = source.turns.findIndex((turn) => turn.id === throughTurnId);
+  if (index < 0) throw new Error('The Iris Agent branch point was not found.');
+  const sourceTurn = source.turns[index]!;
+  if (sourceTurn.state !== 'fulfilled' && sourceTurn.state !== 'paused') {
+    throw new Error('Cannot branch from an active Iris Agent turn.');
+  }
+  const branch = createEmptyAgentSession({
+    id, anchor: source.anchor, model: source.model, projectRoot: source.projectRoot, displayName, now,
+  });
+  branch.parentSessionId = source.id;
+  branch.forkedFromTurnId = throughTurnId;
+  branch.turns = structuredClone(source.turns.slice(0, index + 1)).map((turn, turnIndex) =>
+    turnIndex === index
+      ? { ...turn, state: 'paused' as const, pauseReason: 'user' as const, error: '等待继续。', assembledInputAvailable: false }
+      : { ...turn, assembledInputAvailable: false },
+  );
+  const turnIds = new Set(branch.turns.slice(0, -1).map((turn) => turn.id));
+  branch.providerCalls = structuredClone(source.providerCalls.filter((call) => turnIds.has(call.turnId)));
+  branch.providerAttempts = structuredClone(source.providerAttempts.filter((attempt) => turnIds.has(attempt.turnId)));
+  branch.timeline = structuredClone(source.timeline.filter((activity) => turnIds.has(activity.turnId) || activity.id === sourceTurn.userActivityId));
+  const forkedTurn = branch.turns[branch.turns.length - 1]!;
+  const user = source.timeline.find((activity) => activity.id === sourceTurn.userActivityId);
+  if (!user) throw new Error('The Iris Agent input was not found.');
+  branch.timeline = branch.timeline.filter((activity) => activity.turnId !== throughTurnId);
+  branch.timeline.push({ ...structuredClone(user), turnId: forkedTurn.id, createdAt: now });
+  branch.currentTurnId = forkedTurn.id;
+  branch.state = 'paused';
+  branch.nextOrdinal = Math.max(0, ...branch.timeline.map((activity) => activity.ordinal)) + 1;
+  return branch;
 }
 
 export function createIrisAgentBranch(

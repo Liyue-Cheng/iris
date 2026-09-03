@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   DefaultResourceLoader,
   ModelRuntime,
-  SessionManager,
+  SessionManager as PiSessionManager,
   SettingsManager,
   VERSION,
   createAgentSession,
@@ -368,7 +368,7 @@ export async function createIrisPiSession(
     ...piOptions
   } = options;
   const resourceLoader = await createIrisPiResourceLoader(cwd, agentDir);
-  const sessionManager = SessionManager.inMemory(cwd);
+  const sessionManager = PiSessionManager.inMemory(cwd);
   restoreIrisPiHistory(sessionManager, history);
   const modelRuntime = await createIrisModelRuntime(agentDir, providerProfileRoot, {
     kind: 'selected',
@@ -591,7 +591,7 @@ function defaultToolShell(): AgentCommandShell {
 }
 
 export function restoreIrisPiHistory(
-  sessionManager: SessionManager,
+  sessionManager: PiSessionManager,
   history: AgentHistorySnapshot,
 ): void {
   for (const item of history.messages) {
@@ -823,9 +823,9 @@ export function normalizeIrisInterruptedAssistantMessage(
 
 function toPiHistoryMessage(
   item: AgentHistorySnapshot['messages'][number],
-): Parameters<SessionManager['appendMessage']>[0] {
+): Parameters<PiSessionManager['appendMessage']>[0] {
   if (isPiMessage(item.providerMessage)) {
-    return item.providerMessage as unknown as Parameters<SessionManager['appendMessage']>[0];
+    return item.providerMessage as unknown as Parameters<PiSessionManager['appendMessage']>[0];
   }
   if (item.role === 'assistant') {
     return {

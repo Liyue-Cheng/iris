@@ -4,17 +4,18 @@ import type {
   IrisDoc,
   IrisScanResult,
   ProjectScope,
-  SessionInfo,
+  TerminalSessionInfo,
 } from '@shared/types';
 import { appISA } from '@renderer/cpu/isa/app-isa';
 import { docISA } from '@renderer/cpu/isa/doc-isa';
 import { PROJECT_SCOPE_RESOURCE } from '@renderer/cpu/isa/project-resources';
 import { projectScopeState } from '@renderer/stores/project-scope-state';
 import {
-  selectedSessionIdForAnchor,
   sessionStore,
   workspaceAnchorKey,
 } from '@renderer/stores/session-store';
+import { sessionViewStore } from '@renderer/stores/session-view-store';
+import { terminalSessionKey } from '@renderer/lib/session-projection';
 
 let projectISA: typeof import('@renderer/cpu/isa/project-isa').projectISA;
 let editorStore: typeof import('@renderer/stores/editor-store').editorStore;
@@ -38,8 +39,8 @@ beforeAll(async () => {
 function session(
   scope: ProjectScope,
   id: string,
-  overrides: Partial<SessionInfo> = {},
-): SessionInfo {
+  overrides: Partial<TerminalSessionInfo> = {},
+): TerminalSessionInfo {
   return {
     id,
     docPath: null,
@@ -68,6 +69,7 @@ beforeEach(() => {
   projectScopeState.set(null);
   projectScopeState.setSwitching(false);
   sessionStore.reset([], null);
+  sessionViewStore.clear();
   documentNavigationStore.clear();
 });
 
@@ -194,11 +196,11 @@ describe('session selection by anchor', () => {
       scope,
     );
 
-    sessionStore.select('a-1');
-    sessionStore.select('b-1');
+    sessionViewStore.select(scope, docA, terminalSessionKey('a-1'));
+    sessionViewStore.select(scope, docB, terminalSessionKey('b-1'));
 
-    expect(selectedSessionIdForAnchor(docA)).toBe('a-1');
-    expect(selectedSessionIdForAnchor(docB)).toBe('b-1');
+    expect(sessionViewStore.selected(scope, docA)).toBe('terminal:a-1');
+    expect(sessionViewStore.selected(scope, docB)).toBe('terminal:b-1');
   });
 
   it('forgets a remembered terminal after it is closed', () => {
@@ -213,10 +215,10 @@ describe('session selection by anchor', () => {
       scope,
     );
 
-    sessionStore.select('a-1');
+    sessionViewStore.select(scope, docPath, terminalSessionKey('a-1'));
     sessionStore.handleDestroyed('a-1');
 
-    expect(selectedSessionIdForAnchor(docPath)).toBe('a-2');
+    expect(sessionViewStore.selected(scope, docPath)).toBe('terminal:a-1');
   });
 
   it('does not let lifecycle state changes steal an explicit selection', () => {
@@ -231,10 +233,10 @@ describe('session selection by anchor', () => {
       scope,
     );
 
-    sessionStore.select('a-1');
+    sessionViewStore.select(scope, docPath, terminalSessionKey('a-1'));
     sessionStore.handlePatch('a-2', { state: 'active' });
 
-    expect(selectedSessionIdForAnchor(docPath)).toBe('a-1');
+    expect(sessionViewStore.selected(scope, docPath)).toBe('terminal:a-1');
   });
 
   it('does not let a newly created sibling steal an explicit selection', () => {
@@ -242,11 +244,11 @@ describe('session selection by anchor', () => {
     const docPath = '.iris/issue/a.md';
     projectScopeState.set(scope);
     sessionStore.reset([session(scope, 'a-1', { docPath })], scope);
-    sessionStore.select('a-1');
+    sessionViewStore.select(scope, docPath, terminalSessionKey('a-1'));
 
     sessionStore.handleCreated(session(scope, 'a-2', { docPath }));
 
-    expect(selectedSessionIdForAnchor(docPath)).toBe('a-1');
+    expect(sessionViewStore.selected(scope, docPath)).toBe('terminal:a-1');
   });
 
   it('moves an explicit selection with a re-anchored session', () => {
@@ -255,12 +257,12 @@ describe('session selection by anchor', () => {
     const workspacePath = '.iris/spike';
     projectScopeState.set(scope);
     sessionStore.reset([session(scope, 'a-1', { docPath })], scope);
-    sessionStore.select('a-1');
+    sessionViewStore.select(scope, docPath, terminalSessionKey('a-1'));
 
     sessionStore.handlePatch('a-1', { docPath: null, workspacePath });
 
-    expect(selectedSessionIdForAnchor(docPath)).toBeNull();
-    expect(selectedSessionIdForAnchor(workspaceAnchorKey(workspacePath))).toBe('a-1');
+    expect(sessionViewStore.selected(scope, docPath)).toBe('terminal:a-1');
+    expect(sessionViewStore.selected(scope, workspaceAnchorKey(workspacePath))).toBeNull();
   });
 
   it('clears anchor selections across project generations', () => {
@@ -268,14 +270,12 @@ describe('session selection by anchor', () => {
     const second = { root: 'E:\\project-b', generation: 3 };
     projectScopeState.set(first);
     sessionStore.reset([session(first, 'a-1')], first);
-    sessionStore.select('a-1');
+    sessionViewStore.select(first, workspaceAnchorKey('.iris'), terminalSessionKey('a-1'));
 
     projectScopeState.set(second);
     sessionStore.reset([session(second, 'b-1')], second);
 
-    expect(sessionStore.get().selectedSessionIdByAnchor).toEqual({
-      [workspaceAnchorKey('.iris')]: 'b-1',
-    });
+    expect(sessionViewStore.selected(second, workspaceAnchorKey('.iris'))).toBeNull();
   });
 });
 
@@ -288,7 +288,7 @@ describe('session activation transaction', () => {
     await expect(projectStore.activateSession('root-1')).resolves.toBe(true);
 
     expect(projectStore.get().view).toEqual({ kind: 'root' });
-    expect(selectedSessionIdForAnchor(workspaceAnchorKey('.iris'))).toBe('root-1');
+    expect(sessionViewStore.selected(scope, workspaceAnchorKey('.iris'))).toBe('terminal:root-1');
   });
 
   it('uses the same activation transaction for a sub-workspace', async () => {
@@ -302,7 +302,7 @@ describe('session activation transaction', () => {
     await expect(projectStore.activateSession('workspace-1')).resolves.toBe(true);
 
     expect(projectStore.get().view).toEqual({ kind: 'workspace', path: workspacePath });
-    expect(selectedSessionIdForAnchor(workspaceAnchorKey(workspacePath))).toBe('workspace-1');
+    expect(sessionViewStore.selected(scope, workspaceAnchorKey(workspacePath))).toBe('terminal:workspace-1');
   });
 
   it('changes neither view nor selection when leaving the editor is rejected', async () => {
@@ -313,15 +313,15 @@ describe('session activation transaction', () => {
       scope,
     );
     await projectStore.selectDoc(docPath);
-    sessionStore.select('doc-1');
-    const rootSelectionBefore = selectedSessionIdForAnchor(workspaceAnchorKey('.iris'));
+    sessionViewStore.select(scope, docPath, terminalSessionKey('doc-1'));
+    const rootSelectionBefore = sessionViewStore.selected(scope, workspaceAnchorKey('.iris'));
     vi.spyOn(editorStore, 'flushBeforeSwitch').mockResolvedValue(false);
 
     await expect(projectStore.activateSession('root-1')).resolves.toBe(false);
 
     expect(projectStore.get().view).toEqual({ kind: 'doc', path: docPath });
-    expect(selectedSessionIdForAnchor(docPath)).toBe('doc-1');
-    expect(selectedSessionIdForAnchor(workspaceAnchorKey('.iris'))).toBe(rootSelectionBefore);
+    expect(sessionViewStore.selected(scope, docPath)).toBe('terminal:doc-1');
+    expect(sessionViewStore.selected(scope, workspaceAnchorKey('.iris'))).toBe(rootSelectionBefore);
   });
 
   it('keeps the latest intent when an older navigation gate resolves later', async () => {
@@ -336,7 +336,7 @@ describe('session activation transaction', () => {
       scope,
     );
     await projectStore.selectDoc(docPath);
-    sessionStore.select('doc-1');
+    sessionViewStore.select(scope, docPath, terminalSessionKey('doc-1'));
     const gate = deferredBoolean();
     vi.spyOn(editorStore, 'flushBeforeSwitch').mockReturnValue(gate.promise);
 
@@ -346,7 +346,7 @@ describe('session activation transaction', () => {
 
     await expect(staleActivation).resolves.toBe(false);
     expect(projectStore.get().view).toEqual({ kind: 'doc', path: docPath });
-    expect(selectedSessionIdForAnchor(docPath)).toBe('doc-2');
+    expect(sessionViewStore.selected(scope, docPath)).toBe('terminal:doc-2');
   });
 });
 

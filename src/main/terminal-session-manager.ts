@@ -1,5 +1,5 @@
 /**
- * @file src/main/session-manager.ts
+ * @file src/main/terminal-session-manager.ts
  * @purpose PTY session pool — Marina's session layer ported with the anchor
  *   changed from path to document (technical-design.md 复用 Marina).
  *
@@ -38,7 +38,7 @@ import type {
   AgentConfig,
   ProjectScope,
   SessionExitedPayload,
-  SessionInfo,
+  TerminalSessionInfo,
   SessionOutputPayload,
   SessionReplaySnapshot,
   SessionStateChangedPayload,
@@ -121,7 +121,7 @@ export type PtySpawnFn = (
   },
 ) => IPty;
 
-export class SessionManagerError extends Error {
+export class TerminalSessionError extends Error {
   constructor(
     public readonly code:
       | 'SessionNotFound'
@@ -132,8 +132,8 @@ export class SessionManagerError extends Error {
     message: string,
     public readonly details?: Record<string, unknown>,
   ) {
-    super(`[SessionManager] ${code}: ${message}`);
-    this.name = 'SessionManagerError';
+    super(`[TerminalSessionManager] ${code}: ${message}`);
+    this.name = 'TerminalSessionError';
   }
 }
 
@@ -201,7 +201,7 @@ export function resolveHostShell(env: Record<string, string>): {
   };
 }
 
-export class SessionManager extends EventEmitter {
+export class TerminalSessionManager extends EventEmitter {
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly replayCoordinator = new ReplayCoordinator();
   private readonly spawnFn: PtySpawnFn;
@@ -226,11 +226,11 @@ export class SessionManager extends EventEmitter {
     this.ptyExitWaitMs = options?.ptyExitWaitMs ?? PTY_EXIT_WAIT_MS;
   }
 
-  createSession(input: CreateSessionInput): SessionInfo {
+  createSession(input: CreateSessionInput): TerminalSessionInfo {
     const settings = this.settingsManager.get();
     const agent: AgentConfig | undefined = settings.agents.find((a) => a.id === input.agentId);
     if (!agent) {
-      throw new SessionManagerError(
+      throw new TerminalSessionError(
         'AgentNotFound',
         mainT('error.agentNotFound', { agentId: input.agentId }),
       );
@@ -239,7 +239,7 @@ export class SessionManager extends EventEmitter {
   }
 
   /** Start one project toolbar command as a fresh project-root hub PTY. */
-  createCommandSession(input: CreateCommandSessionInput): SessionInfo {
+  createCommandSession(input: CreateCommandSessionInput): TerminalSessionInfo {
     const launcher: AgentConfig = {
       id: `project-action:${input.actionIndex}`,
       label: input.description,
@@ -259,20 +259,20 @@ export class SessionManager extends EventEmitter {
     );
   }
 
-  private createConfiguredSession(input: CreateSessionInput, agent: AgentConfig): SessionInfo {
+  private createConfiguredSession(input: CreateSessionInput, agent: AgentConfig): TerminalSessionInfo {
     const dims = validateDimensions(input.cols, input.rows);
     const cwd = input.projectRoot;
     try {
       if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
-        throw new SessionManagerError(
+        throw new TerminalSessionError(
           'CwdNotAccessible',
           mainT('error.projectRootInvalid', { cwd }),
           { cwd },
         );
       }
     } catch (err) {
-      if (err instanceof SessionManagerError) throw err;
-      throw new SessionManagerError(
+      if (err instanceof TerminalSessionError) throw err;
+      throw new TerminalSessionError(
         'CwdNotAccessible',
         mainT('error.projectRootReadFailed', { cwd }),
         { cwd },
@@ -312,7 +312,7 @@ export class SessionManager extends EventEmitter {
         useConptyDll: process.platform === 'win32',
       });
     } catch (err) {
-      throw new SessionManagerError(
+      throw new TerminalSessionError(
         'PtySpawnFailed',
         mainT('error.ptySpawnFailed', {
           shellPath: host.file,
@@ -325,7 +325,7 @@ export class SessionManager extends EventEmitter {
     }
 
     const sessionId = randomUUID();
-    const info: SessionInfo = {
+    const info: TerminalSessionInfo = {
       id: sessionId,
       docPath: input.docPath,
       // Doc sessions carry no hub grouping; hub sessions default to the root
@@ -433,7 +433,12 @@ export class SessionManager extends EventEmitter {
   /** Close & destroy (user gesture or app quit) — the only removal path. */
   closeSession(sessionId: string): Promise<void> {
     const managed = this.sessions.get(sessionId);
-    if (!managed) return Promise.resolve();
+    if (!managed) {
+      return Promise.reject(new TerminalSessionError(
+        'SessionNotFound',
+        `Terminal session ${sessionId} does not exist.`,
+      ));
+    }
     return this.destroySession(managed, 'user-closed');
   }
 
@@ -444,7 +449,7 @@ export class SessionManager extends EventEmitter {
    * explicitly tolerates that ("没被读，人补一句话就行"). Used by the
    * delete-file gesture to keep orphaned terminals alive under the root.
    */
-  reanchor(sessionId: string, docPath: string | null): SessionInfo {
+  reanchor(sessionId: string, docPath: string | null): TerminalSessionInfo {
     const managed = this.sessions.get(sessionId);
     if (!managed) throw new Error(`[session:reanchor] unknown session ${sessionId}`);
     managed.info.docPath = docPath;
@@ -481,11 +486,15 @@ export class SessionManager extends EventEmitter {
     });
   }
 
-  list(): SessionInfo[] {
+  list(): TerminalSessionInfo[] {
     return [...this.sessions.values()].map((m) => ({ ...m.info }));
   }
 
-  get(sessionId: string): SessionInfo | null {
+  busyCount(): number {
+    return [...this.sessions.values()].filter((managed) => managed.info.state !== 'exited').length;
+  }
+
+  get(sessionId: string): TerminalSessionInfo | null {
     const m = this.sessions.get(sessionId);
     return m ? { ...m.info } : null;
   }
@@ -864,7 +873,7 @@ export class SessionManager extends EventEmitter {
 
   diagnostics(): Array<{
     sessionId: string;
-    state: SessionInfo['state'];
+    state: TerminalSessionInfo['state'];
     processState: SessionRecord['processState'];
     output: TerminalOutputPump['diagnostics'];
     mirror: TerminalMirror['diagnostics'];
@@ -994,7 +1003,7 @@ export class SessionManager extends EventEmitter {
     this.emitStateChanged(managed, { terminalTitle: cleaned });
   }
 
-  private emitStateChanged(managed: SessionRecord, patch: Partial<SessionInfo>): void {
+  private emitStateChanged(managed: SessionRecord, patch: Partial<TerminalSessionInfo>): void {
     const payload: SessionStateChangedPayload = {
       scope: this.scopeOf(managed),
       sessionId: managed.info.id,

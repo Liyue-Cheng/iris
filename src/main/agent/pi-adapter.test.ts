@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { ModelRuntime, SessionManager } from '@earendil-works/pi-coding-agent';
+import { ModelRuntime, SessionManager as PiSessionManager } from '@earendil-works/pi-coding-agent';
 import { IRIS_AGENT_PROMPT } from './prompt';
 import {
   createIrisPiResourceLoader,
@@ -133,7 +133,7 @@ describe('Iris Pi adapter', () => {
   });
 
   it('injects persisted provider messages and tool results into Pi context', () => {
-    const manager = SessionManager.inMemory(process.cwd());
+    const manager = PiSessionManager.inMemory(process.cwd());
     restoreIrisPiHistory(manager, {
       revision: 9,
       anchor: { kind: 'workspace', path: '.iris' },
@@ -348,7 +348,7 @@ describe('Iris Pi adapter', () => {
   });
 
   it('keeps a persisted stopped partial after Pi session restoration and provider transformation', async () => {
-    const manager = SessionManager.inMemory(process.cwd());
+    const manager = PiSessionManager.inMemory(process.cwd());
     restoreIrisPiHistory(manager, {
       revision: 2,
       anchor: { kind: 'workspace', path: '.iris' },
@@ -423,7 +423,7 @@ describe('Iris Pi adapter', () => {
   });
 
   it('normalizes legacy assistant text restored without a provider message', () => {
-    const manager = SessionManager.inMemory(process.cwd());
+    const manager = PiSessionManager.inMemory(process.cwd());
     restoreIrisPiHistory(manager, {
       revision: 1,
       anchor: { kind: 'workspace', path: '.iris' },

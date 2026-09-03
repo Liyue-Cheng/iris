@@ -29,8 +29,9 @@ import {
 } from './settings-manager';
 import { ProjectManager } from './project-manager';
 import { GitManager } from './git-manager';
-import { SessionManager } from './session-manager';
+import { TerminalSessionManager } from './terminal-session-manager';
 import { IrisAgentSessionManager } from './agent/session-manager';
+import { countBusySessions, type SessionLifecycleParticipant } from './session-lifecycle';
 import { ensureFocusScriptCurrent } from './agent-injection';
 import { registerIpcHandler, registerIpcHandlers, wireBroadcasts } from './ipc';
 import {
@@ -123,7 +124,7 @@ app.on('second-instance', (_event, argv, workingDirectory) => {
 });
 
 // SettingsManager is machine-level — one instance shared across all windows.
-// ProjectManager + SessionManager are per-window (see window-context.ts):
+// ProjectManager + TerminalSessionManager are per-window (see window-context.ts):
 // each window binds one project and owns its own watcher + PTY pool.
 const settingsManager = new SettingsManager(new JsonStore(settingsFilePath()));
 
@@ -131,19 +132,31 @@ const settingsManager = new SettingsManager(new JsonStore(settingsFilePath()));
 function createWindowContext(win: BrowserWindow, initialRoot: string | null): WindowContext {
   const projectManager = new ProjectManager();
   const gitManager = new GitManager();
-  const sessionManager = new SessionManager(settingsManager);
+  const terminalSessionManager = new TerminalSessionManager(settingsManager);
   const agentSessionManager = new IrisAgentSessionManager(app.getPath('userData'), projectManager, {
     appVersion: app.getVersion(),
     providerProfileRoot: appDataDir(),
     settingsManager,
     resolveProxy: (url) => electronSession.defaultSession.resolveProxy(url),
   });
+  const sessionParticipants: readonly SessionLifecycleParticipant[] = [
+    {
+      name: 'terminal sessions',
+      busyCount: () => terminalSessionManager.busyCount(),
+      shutdown: () => terminalSessionManager.shutdown(),
+    },
+    {
+      name: 'iris-agent sessions',
+      busyCount: () => agentSessionManager.countBusySessions(),
+      shutdown: () => agentSessionManager.shutdown(),
+    },
+  ];
   let ctx: WindowContext;
   const unwire = wireBroadcasts(
     settingsManager,
     projectManager,
     gitManager,
-    sessionManager,
+    terminalSessionManager,
     agentSessionManager,
     () => ctx.projectScope,
     () => ctx.outputAttachment,
@@ -153,8 +166,9 @@ function createWindowContext(win: BrowserWindow, initialRoot: string | null): Wi
     win,
     projectManager,
     gitManager,
-    sessionManager,
+    terminalSessionManager,
     agentSessionManager,
+    sessionParticipants,
     projectRoot: initialRoot,
     projectScope: null,
     projectSwitching: false,
@@ -175,6 +189,21 @@ let isQuitting = false;
 const contextCleanupPromises = new Map<number, Promise<void>>();
 const pendingContextDisposals = new Set<Promise<void>>();
 
+function sessionParticipantsFor(ctx: WindowContext): readonly SessionLifecycleParticipant[] {
+  return ctx.sessionParticipants ?? [
+    {
+      name: 'terminal sessions',
+      busyCount: () => ctx.terminalSessionManager.busyCount(),
+      shutdown: () => ctx.terminalSessionManager.shutdown(),
+    },
+    {
+      name: 'iris-agent sessions',
+      busyCount: () => ctx.agentSessionManager.countBusySessions(),
+      shutdown: () => ctx.agentSessionManager.shutdown(),
+    },
+  ];
+}
+
 /** Stop every backend owned by a window exactly once. The promise is shared by
  * the close handler, the closed-event disposer and before-quit so no caller can
  * race Electron teardown against PTY process-tree termination. */
@@ -182,13 +211,13 @@ function shutdownWindowContext(ctx: WindowContext): Promise<void> {
   const existing = contextCleanupPromises.get(ctx.win.id);
   if (existing) return existing;
   const cleanup = ctx.projectSwitchTail.catch(() => undefined).then(async () => {
+    const participants = sessionParticipantsFor(ctx);
     const results = await Promise.allSettled([
-      ctx.sessionManager.shutdown(),
-      ctx.agentSessionManager.shutdown(),
+      ...participants.map((participant) => participant.shutdown()),
       ctx.projectManager.close(),
       ctx.gitManager.close(),
     ]);
-    const names = ['sessions', 'iris-agent sessions', 'project watcher', 'git watcher'];
+    const names = [...participants.map((participant) => participant.name), 'project watcher', 'git watcher'];
     results.forEach((result, index) => {
       if (result.status === 'rejected') {
         logger.warn(
@@ -351,13 +380,13 @@ function createWindow(initialRoot: string | null): BrowserWindow {
   win.on('unresponsive', () => {
     logger.error(
       'window',
-      `unresponsive terminal=${JSON.stringify(ctx.sessionManager.diagnostics())}`,
+      `unresponsive terminal=${JSON.stringify(ctx.terminalSessionManager.diagnostics())}`,
     );
   });
   win.on('responsive', () => {
     logger.info(
       'window',
-      `responsive terminal=${JSON.stringify(ctx.sessionManager.diagnostics())}`,
+      `responsive terminal=${JSON.stringify(ctx.terminalSessionManager.diagnostics())}`,
     );
   });
   win.on('closed', () => disposeWindowContext(win.id));
@@ -420,7 +449,8 @@ function createWindow(initialRoot: string | null): BrowserWindow {
     if (settingsManager.get().behavior.confirmOnQuit) {
       // This window's own sessions only — closing one window must not count
       // another window's live agents.
-      const live = ctx.sessionManager.list().filter((s) => s.state !== 'exited').length;
+      const participants = sessionParticipantsFor(ctx);
+      const live = countBusySessions(participants);
       if (live > 0) {
         const choice = dialog.showMessageBoxSync(win, {
           type: 'warning',

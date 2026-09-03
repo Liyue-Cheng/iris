@@ -100,6 +100,8 @@ const VALID_THEMES: ThemeId[] = [
   'rose-pine',
   'rose-pine-dawn',
   'rose-pine-moon',
+  'saas-light',
+  'saas-dark',
   'cutie',
   'business',
   'ubuntu',
@@ -109,10 +111,16 @@ const VALID_THEMES: ThemeId[] = [
   'tokyo-night',
   'catppuccin-mocha',
   'catppuccin-latte',
-  'tokyo-night-day',
-  'light-pink',
-  'fairyfloss',
 ];
+
+/** Themes removed after they shipped, mapped to their closest survivor. A
+ *  settings file still naming one would otherwise fail validation and block
+ *  startup, so initialize() rewrites it instead. */
+const RETIRED_THEMES: Record<string, ThemeId> = {
+  'tokyo-night-day': 'saas-light',
+  'light-pink': 'saas-light',
+  fairyfloss: 'rose-pine-moon',
+};
 
 const VALID_LOCALES: LocalePreference[] = ['system', 'zh-CN', 'en-US'];
 
@@ -148,6 +156,8 @@ export class SettingsManager extends EventEmitter {
           ('injection' in agent || 'onExit' in agent),
       );
     const merged = normalizeAgentSettings(loaded);
+    const retiredTheme = RETIRED_THEMES[merged.appearance.theme];
+    if (retiredTheme) merged.appearance.theme = retiredTheme;
     if (merged.version !== 1) {
       throw new SettingsError(
         'IncompatibleVersion',
@@ -157,7 +167,7 @@ export class SettingsManager extends EventEmitter {
     }
     validateSettings(merged);
     this.settings = merged;
-    if (hadLegacyAgentFields && result.source === 'main') {
+    if ((hadLegacyAgentFields || retiredTheme) && result.source === 'main') {
       this.store.set(structuredClone(merged));
     }
     return result.source;

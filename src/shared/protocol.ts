@@ -148,6 +148,7 @@ export const CHANNELS = {
   IRIS_AGENT_RETRY: 'iris-agent:retry',
   IRIS_AGENT_REWIND: 'iris-agent:rewind',
   IRIS_AGENT_BRANCH: 'iris-agent:branch',
+  IRIS_AGENT_BRANCH_INPUT: 'iris-agent:branch-input',
   IRIS_AGENT_SET_MODEL: 'iris-agent:set-model',
   IRIS_AGENT_MODELS: 'iris-agent:models',
   IRIS_AGENT_PROVIDERS: 'iris-agent:providers',

@@ -1,6 +1,8 @@
 import { CHANNELS, EVENTS } from '@shared/protocol';
 import type {
   DocContent,
+  IrisAgentTerminalOutputPayload,
+  IrisAgentTerminalReplay,
   ProjectScope,
   SessionOutputPayload,
   SessionReplaySnapshot,
@@ -18,6 +20,7 @@ export interface TerminalTransport {
   requestReplay(cols: number, rows: number): Promise<SessionReplaySnapshot>;
   sendInput(text: string): Promise<void>;
   resize(cols: number, rows: number): Promise<void>;
+  dispose(): void;
   readDocument(path: string): Promise<DocContent>;
   onWindowMaximized(listener: () => void): () => void;
 }
@@ -47,6 +50,8 @@ export class ElectronTerminalTransport implements TerminalTransport {
       attachmentId: this.attachmentId,
     });
   }
+
+  dispose(): void {}
 
   async acknowledge(seq: number): Promise<void> {
     await window.api.invoke(CHANNELS.SESSION_OUTPUT_ACK, {
@@ -94,6 +99,58 @@ export class ElectronTerminalTransport implements TerminalTransport {
   onWindowMaximized(listener: () => void): () => void {
     return window.api.on<{ maximized: boolean }>(EVENTS.WINDOW_MAXIMIZED_CHANGED, listener);
   }
+}
+
+/** Agent-terminal transport adapted to the shared replay/runtime contract. */
+export class IrisAgentTerminalTransport implements TerminalTransport {
+  readonly windowsBuild = window.api.windowsBuild;
+
+  constructor(
+    private readonly sessionId: string,
+    private readonly terminalId: string,
+    private readonly scope: ProjectScope,
+  ) {}
+
+  async attach(): Promise<void> {}
+  async detach(): Promise<void> {}
+  dispose(): void {}
+  async acknowledge(_seq: number): Promise<void> {}
+
+  onOutput(listener: (payload: SessionOutputPayload) => void): () => void {
+    return window.api.on<IrisAgentTerminalOutputPayload>(EVENTS.IRIS_AGENT_TERMINAL_OUTPUT, (payload) => {
+      if (payload.sessionId !== this.sessionId || payload.terminalId !== this.terminalId) return;
+      listener({ scope: this.scope, sessionId: this.sessionId, data: payload.data, seq: payload.cursor });
+    });
+  }
+
+  async requestReplay(cols: number, rows: number): Promise<SessionReplaySnapshot> {
+    const replay = await window.api.invoke<{
+      sessionId: string; terminalId: string; cols: number; rows: number; expectedScope: ProjectScope;
+    }, IrisAgentTerminalReplay>(CHANNELS.IRIS_AGENT_TERMINAL_REPLAY, {
+      sessionId: this.sessionId, terminalId: this.terminalId, cols, rows, expectedScope: this.scope,
+    });
+    return { data: replay.data, lastSeq: replay.cursor, cols, rows };
+  }
+
+  sendInput(data: string): Promise<void> {
+    return window.api.invoke(CHANNELS.IRIS_AGENT_TERMINAL_INPUT, {
+      sessionId: this.sessionId, terminalId: this.terminalId, data, expectedScope: this.scope,
+    });
+  }
+
+  resize(cols: number, rows: number): Promise<void> {
+    return window.api.invoke(CHANNELS.IRIS_AGENT_TERMINAL_RESIZE, {
+      sessionId: this.sessionId, terminalId: this.terminalId, cols, rows, expectedScope: this.scope,
+    });
+  }
+
+  readDocument(path: string): Promise<DocContent> {
+    return window.api.invoke<{ path: string; expectedScope: ProjectScope }, DocContent>(CHANNELS.DOC_READ, {
+      path, expectedScope: this.scope,
+    });
+  }
+
+  onWindowMaximized(_listener: () => void): () => void { return () => undefined; }
 }
 
 export function getTerminalDroppedFilePath(file: File): string {

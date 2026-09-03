@@ -5,8 +5,9 @@ import { IrisAgentView } from '@renderer/components/agent/IrisAgentView';
 import {
   irisAgentAnchorKey,
   irisAgentStore,
-  selectedIrisAgentIdForAnchor,
 } from '@renderer/stores/iris-agent-store';
+import { sessionViewStore } from '@renderer/stores/session-view-store';
+import { irisAgentSessionKey } from '@renderer/lib/session-projection';
 import { projectScopeState } from '@renderer/stores/project-scope-state';
 import type { IrisAgentSessionInfo, ProjectScope } from '@shared/types';
 
@@ -48,6 +49,7 @@ describe('irisAgentStore v2 projection', () => {
   beforeEach(() => {
     projectScopeState.set(scope);
     irisAgentStore.reset([], scope);
+    sessionViewStore.clear();
   });
 
   it('keeps sticky anchor selection and rejects an older snapshot', () => {
@@ -56,9 +58,9 @@ describe('irisAgentStore v2 projection', () => {
     irisAgentStore.handleChanged(first);
     irisAgentStore.handleChanged(second);
     const key = irisAgentAnchorKey(first.anchor);
-    expect(selectedIrisAgentIdForAnchor(key)).toBe('a');
-    irisAgentStore.select('b');
-    expect(selectedIrisAgentIdForAnchor(key)).toBe('b');
+    expect(sessionViewStore.selected(scope, key)).toBeNull();
+    sessionViewStore.select(scope, key, irisAgentSessionKey('b'));
+    expect(sessionViewStore.selected(scope, key)).toBe('iris-agent:b');
 
     const newer = { ...second, state: 'running' as const, revision: 10 };
     irisAgentStore.handleChanged(newer);

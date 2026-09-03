@@ -15,12 +15,14 @@ import type {
   ProjectOpenResult,
   ProjectScope,
   RawTreeNode,
-  SessionInfo,
+  TerminalSessionInfo,
 } from '@shared/types';
 import { CHANNELS } from '@shared/protocol';
 import { editorStore } from './editor-store';
 import { sessionAnchorKey, sessionStore, workspaceAnchorKey } from './session-store';
 import { projectScopeState, sameProjectScope } from './project-scope-state';
+import { sessionViewStore } from './session-view-store';
+import { terminalSessionKey } from '@renderer/lib/session-projection';
 import { healthStore } from './health-store';
 import { findDocByPath } from '@renderer/lib/doc-utils';
 import { documentNavigationStore } from './document-navigation-store';
@@ -146,7 +148,7 @@ function currentAnchorKey(): string | null {
   return null;
 }
 
-function sessionStillMatches(sessionId: string, anchorKey: string): SessionInfo | null {
+function sessionStillMatches(sessionId: string, anchorKey: string): TerminalSessionInfo | null {
   const scope = state.scope;
   const session = sessionStore.get().sessions.find((candidate) => candidate.id === sessionId);
   if (
@@ -163,7 +165,10 @@ function sessionStillMatches(sessionId: string, anchorKey: string): SessionInfo 
 
 function selectPreparedSession(sessionId: string | undefined, anchorKey: string): boolean {
   if (!sessionId) return true;
-  return sessionStillMatches(sessionId, anchorKey) !== null && sessionStore.select(sessionId);
+  const session = sessionStillMatches(sessionId, anchorKey);
+  if (!session || !state.scope) return false;
+  sessionViewStore.select(state.scope, anchorKey, terminalSessionKey(sessionId));
+  return true;
 }
 
 async function navigateToHub(
@@ -337,6 +342,7 @@ export const projectStore = {
     }
     beginNavigationIntent();
     collectionSelectionByScope.clear();
+    sessionViewStore.clear();
     editorStore.closeSession();
     projectScopeState.set(scope);
     projectScopeState.setSwitching(false);

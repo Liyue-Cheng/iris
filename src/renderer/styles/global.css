@@ -26,6 +26,20 @@
   --status-blocked: var(--rp-love);
   --status-hold: var(--rp-gold);
   --status-done: var(--rp-pine);
+
+  /* Agent card theme colors */
+  --iris-card-files: var(--rp-iris);
+  --iris-card-files-from: #8B5CF6;
+  --iris-card-files-to: #A78BFA;
+  --iris-card-operations: var(--rp-pine);
+  --iris-card-operations-from: #10B981;
+  --iris-card-operations-to: #34D399;
+  --iris-card-retrievals: var(--rp-foam);
+  --iris-card-retrievals-from: #3B82F6;
+  --iris-card-retrievals-to: #60A5FA;
+  --iris-card-message: var(--rp-gold);
+  --iris-card-message-from: #F59E0B;
+  --iris-card-message-to: #FBBF24;
 }
 
 .iris-badge {
@@ -79,6 +93,18 @@ button:focus-visible .iris-status-badge {
 
   to {
     opacity: 0;
+  }
+}
+
+@keyframes iris-card-enter {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+
+  to {
+    opacity: 1;
+    max-height: 2000px;
   }
 }
 
@@ -745,6 +771,10 @@ button:focus-visible .iris-status-badge {
     animation: none;
   }
 
+  .iris-agent-card {
+    animation: none !important;
+  }
+
   .iris-pixel-scene *,
   .iris-pixel-scene:hover .iris-pixel-backdrop {
     animation: none !important;
@@ -902,6 +932,49 @@ button:focus-visible .iris-status-badge {
   --ring: var(--rp-iris);
   --radius: 0.5rem;
 
+  color-scheme: dark;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+ * SaaS Light / SaaS Dark — plain neutral product palettes (white and
+ * black), blue accent. Written in the same semantic token vocabulary as
+ * the Marina palettes below so the shared adapter covers them.
+ * ────────────────────────────────────────────────────────────────── */
+[data-theme='saas-light'] {
+  --color-bg-primary: #ffffff;
+  --color-bg-secondary: #fafafa;
+  --color-bg-elevated: #f4f4f5;
+  --color-bg-hover: #f1f1f3;
+  --color-bg-active: #dcdce0;
+  --color-bg-strong: #b4b4bb;
+  --color-text-primary: #18181b;
+  --color-text-secondary: #52525b;
+  --color-text-muted: #71717a;
+  --color-danger: #dc2626;
+  --color-warning: #b45309;
+  --color-success: #15803d;
+  --color-info: #0e7490;
+  --color-accent-secondary: #ea580c;
+  --color-accent-special: #2563eb;
+  color-scheme: light;
+}
+
+[data-theme='saas-dark'] {
+  --color-bg-primary: #0a0a0a;
+  --color-bg-secondary: #121214;
+  --color-bg-elevated: #1a1a1d;
+  --color-bg-hover: #1f1f23;
+  --color-bg-active: #2a2a2f;
+  --color-bg-strong: #3f3f46;
+  --color-text-primary: #ededed;
+  --color-text-secondary: #a1a1aa;
+  --color-text-muted: #8b8b93;
+  --color-danger: #f87171;
+  --color-warning: #fbbf24;
+  --color-success: #4ade80;
+  --color-info: #38bdf8;
+  --color-accent-secondary: #fb923c;
+  --color-accent-special: #60a5fa;
   color-scheme: dark;
 }
 
@@ -1079,64 +1152,9 @@ button:focus-visible .iris-status-badge {
   color-scheme: light;
 }
 
-[data-theme='tokyo-night-day'] {
-  --color-bg-primary: #e1e2e7;
-  --color-bg-secondary: #d0d5e3;
-  --color-bg-elevated: #c4c8da;
-  --color-bg-hover: #d8dae0;
-  --color-bg-active: #b6bdcf;
-  --color-bg-strong: #a8adc0;
-  --color-text-primary: #3760bf;
-  --color-text-secondary: #4d5996;
-  --color-text-muted: #555f8c;
-  --color-danger: #c64343;
-  --color-warning: #8c6c3e;
-  --color-success: #587539;
-  --color-info: #007197;
-  --color-accent-secondary: #b15c00;
-  --color-accent-special: #9854f1;
-  color-scheme: light;
-}
-
-[data-theme='light-pink'] {
-  --color-bg-primary: #f5f5f5;
-  --color-bg-secondary: #f5f0f3;
-  --color-bg-elevated: #f5e3ef;
-  --color-bg-hover: #ede5ed;
-  --color-bg-active: #f1dde9;
-  --color-bg-strong: #ffb8ca;
-  --color-text-primary: #54494b;
-  --color-text-secondary: #736a6d;
-  --color-text-muted: #7d6770;
-  --color-danger: #d2304b;
-  --color-warning: #b08b35;
-  --color-success: #4d8a5e;
-  --color-info: #1f6e89;
-  --color-accent-secondary: #9466aa;
-  --color-accent-special: #ff7ab3;
-  color-scheme: light;
-}
-
-[data-theme='fairyfloss'] {
-  --color-bg-primary: #5a5475;
-  --color-bg-secondary: #464258;
-  --color-bg-elevated: #514c66;
-  --color-bg-hover: #4a4361;
-  --color-bg-active: #6959aa;
-  --color-bg-strong: #716799;
-  --color-text-primary: #f8f8f2;
-  --color-text-secondary: #bcb3e7;
-  --color-text-muted: #a186cf;
-  --color-danger: #ff857f;
-  --color-warning: #ffea00;
-  --color-success: #c2ffdf;
-  --color-info: #9673d3;
-  --color-accent-secondary: #ffb8d1;
-  --color-accent-special: #c5a3ff;
-  color-scheme: dark;
-}
-
-/* Shared Iris token adapter for the additional Marina palettes. */
+/* Shared Iris token adapter for the semantic-token palettes above. */
+[data-theme='saas-light'],
+[data-theme='saas-dark'],
 [data-theme='cutie'],
 [data-theme='business'],
 [data-theme='ubuntu'],
@@ -1145,10 +1163,7 @@ button:focus-visible .iris-status-badge {
 [data-theme='dracula'],
 [data-theme='tokyo-night'],
 [data-theme='catppuccin-mocha'],
-[data-theme='catppuccin-latte'],
-[data-theme='tokyo-night-day'],
-[data-theme='light-pink'],
-[data-theme='fairyfloss'] {
+[data-theme='catppuccin-latte'] {
   --background: var(--color-bg-primary);
   --foreground: var(--color-text-primary);
   --card: var(--color-bg-secondary);

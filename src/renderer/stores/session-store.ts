@@ -11,7 +11,7 @@
 import { useSyncExternalStore } from 'react';
 import type {
   ProjectScope,
-  SessionInfo,
+  TerminalSessionInfo,
   SessionListSnapshot,
   SessionState,
 } from '@shared/types';
@@ -22,9 +22,7 @@ import { healthStore } from './health-store';
 export interface SessionStoreState {
   scope: ProjectScope | null;
   /** insertion-ordered */
-  sessions: SessionInfo[];
-  /** Sticky user selection per document/workspace anchor. */
-  selectedSessionIdByAnchor: Readonly<Record<string, string>>;
+  sessions: TerminalSessionInfo[];
   /** Sessions whose input/resize IPC has failed since the last successful I/O. */
   disconnectedSessionIds: ReadonlySet<string>;
 }
@@ -32,7 +30,6 @@ export interface SessionStoreState {
 let state: SessionStoreState = {
   scope: null,
   sessions: [],
-  selectedSessionIdByAnchor: {},
   disconnectedSessionIds: new Set(),
 };
 const subscribers = new Set<() => void>();
@@ -46,29 +43,12 @@ function setState(patch: Partial<SessionStoreState>): void {
   emit();
 }
 
-function reconcileSelections(
-  sessions: SessionInfo[],
-  previous: Readonly<Record<string, string>>,
-): Record<string, string> {
-  const selections = { ...previous };
-  for (const [anchorKey, sessionId] of Object.entries(selections)) {
-    const selected = sessions.find((session) => session.id === sessionId);
-    if (!selected || sessionAnchorKey(selected) !== anchorKey) delete selections[anchorKey];
-  }
-  for (let index = sessions.length - 1; index >= 0; index -= 1) {
-    const session = sessions[index]!;
-    const anchorKey = sessionAnchorKey(session);
-    if (!selections[anchorKey]) selections[anchorKey] = session.id;
-  }
-  return selections;
-}
-
 export const sessionStore = {
   get(): SessionStoreState {
     return state;
   },
 
-  handleCreated(info: SessionInfo): void {
+  handleCreated(info: TerminalSessionInfo): void {
     const scope = projectScopeState.get();
     if (
       !scope ||
@@ -78,82 +58,30 @@ export const sessionStore = {
       return;
     }
     const sessions = [...state.sessions.filter((s) => s.id !== info.id), info];
-    setState({
-      scope,
-      sessions,
-      selectedSessionIdByAnchor: reconcileSelections(
-        sessions,
-        state.selectedSessionIdByAnchor,
-      ),
-    });
+    setState({ scope, sessions });
   },
 
-  handlePatch(sessionId: string, patch: Partial<SessionInfo>): void {
-    const current = state.sessions.find((s) => s.id === sessionId);
-    const updated = current ? { ...current, ...patch } : null;
-    let selections: Record<string, string> = { ...state.selectedSessionIdByAnchor };
-    if (current && updated) {
-      const currentAnchorKey = sessionAnchorKey(current);
-      const updatedAnchorKey = sessionAnchorKey(updated);
-      if (currentAnchorKey !== updatedAnchorKey) {
-        if (selections[currentAnchorKey] === sessionId) {
-          delete selections[currentAnchorKey];
-          selections[updatedAnchorKey] = sessionId;
-        }
-      }
-    }
+  handlePatch(sessionId: string, patch: Partial<TerminalSessionInfo>): void {
     const sessions = state.sessions.map((s) => (s.id === sessionId ? { ...s, ...patch } : s));
-    setState({
-      sessions,
-      selectedSessionIdByAnchor: reconcileSelections(sessions, selections),
-    });
+    setState({ sessions });
   },
 
   handleDestroyed(sessionId: string): void {
-    const destroyed = state.sessions.find((s) => s.id === sessionId);
     const sessions = state.sessions.filter((s) => s.id !== sessionId);
-    // Fallback prefers a sibling under the same anchor — the right pane's
-    // list is filtered by anchor, so jumping to another anchor's session
-    // would land on an invisible row.
-    const destroyedKey = destroyed ? sessionAnchorKey(destroyed) : undefined;
-    const sibling = destroyedKey
-      ? [...sessions].reverse().find((s) => sessionAnchorKey(s) === destroyedKey)
-      : undefined;
-    const selections = { ...state.selectedSessionIdByAnchor };
-    if (destroyedKey && selections[destroyedKey] === sessionId) {
-      if (sibling) selections[destroyedKey] = sibling.id;
-      else delete selections[destroyedKey];
-    }
     setState({
       sessions,
-      selectedSessionIdByAnchor: reconcileSelections(sessions, selections),
       disconnectedSessionIds: new Set(
         [...state.disconnectedSessionIds].filter((id) => id !== sessionId),
       ),
     });
   },
 
-  select(sessionId: string): boolean {
-    const session = state.sessions.find((s) => s.id === sessionId);
-    if (session) {
-      setState({
-        selectedSessionIdByAnchor: {
-          ...state.selectedSessionIdByAnchor,
-          [sessionAnchorKey(session)]: sessionId,
-        },
-      });
-      return true;
-    }
-    return false;
-  },
-
   /** Replace the whole projection with a fresh main-process snapshot
    *  (boot hydration, project open, desync self-heal). */
   reset(
-    sessions: SessionInfo[] = [],
+    sessions: TerminalSessionInfo[] = [],
     scope: ProjectScope | null = projectScopeState.get(),
   ): void {
-    const scopeChanged = !scope || !sameProjectScope(state.scope, scope);
     const filtered = scope
       ? sessions.filter(
           (session) =>
@@ -161,14 +89,9 @@ export const sessionStore = {
             session.projectGeneration === scope.generation,
         )
       : [];
-    const selections = reconcileSelections(
-      filtered,
-      scopeChanged ? {} : state.selectedSessionIdByAnchor,
-    );
     setState({
       scope,
       sessions: filtered,
-      selectedSessionIdByAnchor: selections,
       disconnectedSessionIds: new Set(
         [...state.disconnectedSessionIds].filter((id) =>
           filtered.some((session) => session.id === id),
@@ -201,32 +124,13 @@ export const sessionStore = {
  * two namespaces stay disjoint. This is the load-bearing decoupling: a hub
  * session groups by workspace WITHOUT carrying a FOCUS_DOC.
  */
-export function sessionAnchorKey(s: Pick<SessionInfo, 'docPath' | 'workspacePath'>): string {
+export function sessionAnchorKey(s: Pick<TerminalSessionInfo, 'docPath' | 'workspacePath'>): string {
   return s.docPath != null ? s.docPath : `ws:${s.workspacePath ?? '.iris'}`;
 }
 
 /** Anchor key for a workspace hub (project root = '.iris'). */
 export function workspaceAnchorKey(workspacePath: string): string {
   return `ws:${workspacePath}`;
-}
-
-/** Sticky explicit selection, falling back to the newest session only when absent. */
-export function selectedSessionIdForAnchor(anchorKey: string): string | null {
-  const selectedSessionId = state.selectedSessionIdByAnchor[anchorKey];
-  if (
-    selectedSessionId &&
-    state.sessions.some(
-      (session) =>
-        session.id === selectedSessionId && sessionAnchorKey(session) === anchorKey,
-    )
-  ) {
-    return selectedSessionId;
-  }
-
-  return (
-    [...state.sessions].reverse().find((session) => sessionAnchorKey(session) === anchorKey)?.id ??
-    null
-  );
 }
 
 /**
@@ -297,7 +201,7 @@ function terminalLayoutScopeKey(scope: TerminalLayoutScope): string {
 
 /** Derive the geometry bucket from the session's immutable anchor. */
 export function terminalLayoutScope(
-  session: Pick<SessionInfo, 'docPath' | 'workspacePath'>,
+  session: Pick<TerminalSessionInfo, 'docPath' | 'workspacePath'>,
 ): TerminalLayoutScope {
   if (session.docPath !== null) return { kind: 'doc-right-pane' };
   if (session.workspacePath && session.workspacePath !== '.iris') {
@@ -348,7 +252,7 @@ export function useSessions(): SessionStoreState {
  * 'exited'; no sessions → null.
  */
 export function aggregateAnchorState(
-  sessions: SessionInfo[],
+  sessions: TerminalSessionInfo[],
   anchorKey: string,
 ): SessionState | null {
   let best: SessionState | null = null;
@@ -362,6 +266,6 @@ export function aggregateAnchorState(
 }
 
 /** Doc-row dot aggregation — a doc session's anchor key IS its doc path. */
-export function aggregateDocState(sessions: SessionInfo[], docPath: string): SessionState | null {
+export function aggregateDocState(sessions: TerminalSessionInfo[], docPath: string): SessionState | null {
   return aggregateAnchorState(sessions, docPath);
 }

@@ -22,6 +22,7 @@ const SAFE_VOID_CALLEES = new Map([
   ['chooseFolder', 'welcome view catches and renders inline errors'],
   ['chooseFolderInNewWindow', 'welcome view catches and renders inline errors'],
   ['closeSession', 'session action boundary'],
+  ['closeProjectedSession', 'session projection action boundary'],
   ['copyText', 'about panel renders clipboard failure inline'],
   ['create', 'creation dialogs catch and retain user input'],
   ['editorStore.handleDiskChange', 'editor store owns conflict/error state'],
@@ -155,6 +156,31 @@ const failures = [];
 for (const sourceFile of program.getSourceFiles()) {
   const normalized = sourceFile.fileName.replace(/\\/g, '/');
   if (!normalized.includes('/src/renderer/') || normalized.endsWith('.test.ts')) continue;
+
+  if (
+    normalized.endsWith('/components/layout/RightPane.tsx') ||
+    normalized.endsWith('/components/lens/LensTree.tsx')
+  ) {
+    const forbiddenImports = new Set([
+      'useSessions',
+      'useIrisAgentSessions',
+      'closeSession',
+      'closeIrisAgent',
+    ]);
+    for (const statement of sourceFile.statements) {
+      if (!ts.isImportDeclaration(statement)) continue;
+      const bindings = statement.importClause?.namedBindings;
+      if (!bindings || !ts.isNamedImports(bindings)) continue;
+      for (const binding of bindings.elements) {
+        if (!forbiddenImports.has(binding.name.text)) continue;
+        const position = sourceFile.getLineAndCharacterOfPosition(binding.getStart(sourceFile));
+        failures.push(
+          `${normalized}:${position.line + 1}:${position.character + 1} ` +
+          `session-aware surfaces must use SessionProjection (${binding.name.text})`,
+        );
+      }
+    }
+  }
 
   const visit = (node) => {
     if (

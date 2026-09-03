@@ -45,3 +45,7 @@ desktop.ini
 
 # Claude Code local state (machine-specific permission grants etc.)
 .claude/
+
+# Test fixtures that are themselves standalone git repos (opened by Iris for manual testing)
+# These are kept on disk but not tracked — they carry their own .git and shouldn't be gitlinks.
+fixtures/agent-test-demo/

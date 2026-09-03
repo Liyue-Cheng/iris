@@ -9,10 +9,13 @@ import type {
 } from '@shared/types';
 import { editorStore } from '@renderer/stores/editor-store';
 import { projectStore } from '@renderer/stores/project-store';
-import { irisAgentStore } from '@renderer/stores/iris-agent-store';
+import { irisAgentAnchorKey, irisAgentStore } from '@renderer/stores/iris-agent-store';
+import { sessionViewStore } from '@renderer/stores/session-view-store';
+import { irisAgentSessionKey } from './session-projection';
 import { attemptAction, runUserAction } from './action-runtime';
 import { notify } from '@renderer/stores/notification-store';
 import { confirmDialog } from '@renderer/components/ui/confirm-dialog';
+import { sessionCloseOutcome, type SessionCloseOutcome } from './session-close-outcome';
 
 function scopeOrThrow(): ProjectScope {
   const scope = projectStore.get().scope;
@@ -51,7 +54,7 @@ export async function openIrisAgent(anchor: IrisAgentAnchor): Promise<IrisAgentS
       IrisAgentSessionInfo
     >(CHANNELS.IRIS_AGENT_OPEN, projectScoped(scope, { anchor }));
     irisAgentStore.handleChanged(session);
-    irisAgentStore.select(session.id);
+    sessionViewStore.select(scope, irisAgentAnchorKey(session.anchor), irisAgentSessionKey(session.id));
     return session;
   });
   if (outcome.status === 'ok') return outcome.value;
@@ -179,6 +182,7 @@ export async function rewindIrisAgent(sessionId: string): Promise<void> {
 export async function branchIrisAgent(
   sessionId: string,
   throughTurnId: string,
+  fromInput = false,
 ): Promise<IrisAgentSessionInfo | null> {
   const outcome = await attemptAction(async () => {
     const scope = scopeOrThrow();
@@ -192,19 +196,19 @@ export async function branchIrisAgent(
         expectedScope: ProjectScope;
       },
       IrisAgentSessionInfo
-    >(CHANNELS.IRIS_AGENT_BRANCH, projectScoped(scope, {
+    >(fromInput ? CHANNELS.IRIS_AGENT_BRANCH_INPUT : CHANNELS.IRIS_AGENT_BRANCH, projectScoped(scope, {
       sessionId,
       throughTurnId,
       ...precondition,
     }));
     irisAgentStore.handleChanged(session);
-    irisAgentStore.select(session.id);
+    sessionViewStore.select(scope, irisAgentAnchorKey(session.anchor), irisAgentSessionKey(session.id));
     return session;
   });
   if (outcome.status === 'ok') return outcome.value;
   if (outcome.status === 'failed') {
     notify({
-      dedupeKey: `iris-agent:branch:${sessionId}:${throughTurnId}`,
+      dedupeKey: `iris-agent:branch:${fromInput ? 'input' : 'reply'}:${sessionId}:${throughTurnId}`,
       title: 'Iris Agent 分支失败',
       message: outcome.error.message,
       domain: outcome.error.domain,
@@ -339,25 +343,49 @@ export async function continueIrisAgentTerminalSupervision(
   irisAgentStore.handleChanged(session);
 }
 
-export async function closeIrisAgent(sessionId: string): Promise<void> {
-  await runUserAction(
+export async function closeIrisAgent(sessionId: string): Promise<SessionCloseOutcome> {
+  let userCancelled = false;
+  const outcome = await runUserAction(
     {
       title: 'Iris Agent 关闭失败',
       dedupeKey: 'iris-agent:close:' + sessionId,
     },
     async () => {
+      const current = irisAgentStore.get().sessions.find((session) => session.id === sessionId);
+      if (!current) throw new Error('The Iris Agent session is no longer available.');
+      const running = current.state === 'starting' ||
+        current.state === 'running' ||
+        current.state === 'waiting-tool' ||
+        current.state === 'retry-wait' ||
+        current.state === 'stopping';
+      let confirmBusy = false;
+      if (running) {
+        const confirmed = await confirmDialog({
+          title: '关闭正在运行的 Iris Agent？',
+          message: 'Agent 仍在工作。关闭会话将停止当前任务并移除该会话。',
+          confirmText: '停止并关闭',
+          tone: 'destructive',
+        });
+        if (!confirmed) {
+          userCancelled = true;
+          return;
+        }
+        confirmBusy = true;
+      }
       const scope = scopeOrThrow();
       const precondition = commandPrecondition(sessionId);
       await window.api.invoke<{
-        sessionId: string;
-        commandId: string;
-        expectedRevision: number;
-        expectedScope: ProjectScope;
+          sessionId: string;
+          commandId: string;
+          expectedRevision: number;
+          confirmBusy?: boolean;
+          expectedScope: ProjectScope;
       }, void>(
         CHANNELS.IRIS_AGENT_CLOSE,
-        projectScoped(scope, { sessionId, ...precondition }),
+        projectScoped(scope, { sessionId, ...precondition, ...(confirmBusy ? { confirmBusy: true } : {}) }),
       );
       irisAgentStore.handleDestroyed(sessionId);
     },
   );
+  return userCancelled ? { status: 'cancelled' } : sessionCloseOutcome(outcome);
 }

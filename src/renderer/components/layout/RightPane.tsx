@@ -16,24 +16,21 @@ import { Bot, ChevronDown, Plus, X, FileText, FolderRoot, SquareTerminal } from 
 import { useTranslation } from 'react-i18next';
 import type { AgentConfig } from '@shared/types';
 import {
-  useSessions,
-  selectedSessionIdForAnchor,
-  sessionAnchorKey,
   workspaceAnchorKey,
 } from '@renderer/stores/session-store';
+import { sessionViewStore, useSelectedSessionView } from '@renderer/stores/session-view-store';
 import {
-  irisAgentAnchorKey,
-  irisAgentStore,
-  selectedIrisAgentIdForAnchor,
-  useIrisAgentSessions,
-} from '@renderer/stores/iris-agent-store';
+  sessionProjectionAnchorKey,
+  useSessionProjectionState,
+  type SessionKey,
+} from '@renderer/lib/session-projection';
 import { useSettings } from '@renderer/stores/settings-store';
 import { projectStore, useProject } from '@renderer/stores/project-store';
-import { closeSession, openSession, openWorkspaceSession } from '@renderer/lib/session-actions';
-import { closeIrisAgent, openIrisAgent } from '@renderer/lib/iris-agent-actions';
+import { openSession, openWorkspaceSession } from '@renderer/lib/session-actions';
+import { openIrisAgent } from '@renderer/lib/iris-agent-actions';
+import { closeProjectedSession } from '@renderer/lib/session-projection-actions';
 import { docDisplayTitle, findDocByPath } from '@renderer/lib/doc-utils';
-import { TerminalView } from '@renderer/components/terminal/TerminalView';
-import { IrisAgentView } from '@renderer/components/agent/IrisAgentView';
+import { ProjectedSessionView } from '@renderer/components/layout/ProjectedSessionView';
 import { Button } from '@renderer/components/ui/button';
 import { Input } from '@renderer/components/ui/input';
 import { SessionDot } from '@renderer/components/ui/session-dot';
@@ -103,14 +100,12 @@ export function LauncherMenuItems({
 
 export function RightPane(): JSX.Element {
   const { t } = useTranslation();
-  const { sessions: terminalSessions } = useSessions();
-  const { sessions: agentSessions } = useIrisAgentSessions();
+  const { projections, terminalSessions, agentSessions } = useSessionProjectionState();
   const settings = useSettings();
-  const { phase, view, scan } = useProject();
+  const { phase, view, scan, scope } = useProject();
   const agents = settings?.agents ?? [];
   const irisAgentEnabled = settings?.experimental.irisAgent ?? false;
   const [launcherQuery, setLauncherQuery] = useState('');
-  const [selectedItemIdByAnchor, setSelectedItemIdByAnchor] = useState<Record<string, string>>({});
   const visibleLaunchers = matchingLaunchers(agents, launcherQuery);
   const projectReady = phase === 'ready';
 
@@ -144,38 +139,20 @@ export function RightPane(): JSX.Element {
     else void openSession(selectedPath, agentId);
   };
 
-  const visibleSessions =
-    !projectReady || anchorKey === null
-      ? []
-      : terminalSessions.filter((s) => sessionAnchorKey(s) === anchorKey);
-  const visibleAgentSessions =
-    !projectReady || anchorKey === null
-      ? []
-      : agentSessions.filter((s) => irisAgentAnchorKey(s.anchor) === anchorKey);
-  const visibleItems = [
-    ...visibleSessions.map((session) => ({ kind: 'terminal' as const, session, createdAt: session.createdAt })),
-    ...visibleAgentSessions.map((session) => ({ kind: 'iris-agent' as const, session, createdAt: session.createdAt })),
-  ].sort((a, b) => a.createdAt - b.createdAt);
+  const visibleItems = !projectReady || anchorKey === null
+    ? []
+    : projections.filter((session) => sessionProjectionAnchorKey(session.anchor) === anchorKey);
   // Never show a terminal whose session is outside the current anchor; if
   // the staged id points elsewhere but this anchor HAS sessions, fall back
   // to the newest one (display-level only — no state mutation in render).
-  const selectedItemId = anchorKey ? selectedItemIdByAnchor[anchorKey] : undefined;
-  const fallbackTerminalId = anchorKey ? selectedSessionIdForAnchor(anchorKey) : null;
-  const fallbackAgentId = anchorKey ? selectedIrisAgentIdForAnchor(anchorKey) : null;
-  const shownItem =
-    visibleItems.find((item) => item.session.id === selectedItemId) ??
-    visibleItems.find((item) => item.kind === 'iris-agent' && item.session.id === fallbackAgentId) ??
-    visibleItems.find((item) => item.kind === 'terminal' && item.session.id === fallbackTerminalId) ??
-    visibleItems[visibleItems.length - 1] ??
-    null;
-  const shownSession = shownItem?.kind === 'terminal' ? shownItem.session : null;
-  const shownAgentSession = shownItem?.kind === 'iris-agent' ? shownItem.session : null;
+  const selectedItemId = useSelectedSessionView(scope, anchorKey);
+  const shownItem = visibleItems.find((item) => item.key === selectedItemId) ?? visibleItems.at(-1) ?? null;
 
   const selectItem = (kind: 'terminal' | 'iris-agent', sessionId: string): void => {
     if (!anchorKey) return;
-    setSelectedItemIdByAnchor((current) => ({ ...current, [anchorKey]: sessionId }));
+    const sessionKey: SessionKey = kind === 'terminal' ? `terminal:${sessionId}` : `iris-agent:${sessionId}`;
+    if (scope) sessionViewStore.select(scope, anchorKey, sessionKey);
     if (kind === 'terminal') void projectStore.activateSession(sessionId);
-    else irisAgentStore.select(sessionId);
   };
 
   const spawnIrisAgent = (): void => {
@@ -185,9 +162,7 @@ export function RightPane(): JSX.Element {
         ? { kind: 'document' as const, path: selectedPath }
         : { kind: 'workspace' as const, path: '.iris' };
     void openIrisAgent(anchor).then((session) => {
-      if (session && anchorKey) {
-        setSelectedItemIdByAnchor((current) => ({ ...current, [anchorKey]: session.id }));
-      }
+      if (session && anchorKey && scope) sessionViewStore.select(scope, anchorKey, `iris-agent:${session.id}`);
     });
   };
 
@@ -207,7 +182,7 @@ export function RightPane(): JSX.Element {
                       className="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm px-1.5 py-1 text-left text-[13px] hover:bg-muted/60"
                     >
                       {shownItem.kind === 'terminal' ? (
-                        <SessionDot state={shownItem.session.state} />
+                        <SessionDot state={shownItem.indicator} />
                       ) : (
                         <Bot className="h-3.5 w-3.5 shrink-0 text-primary" />
                       )}
@@ -217,12 +192,12 @@ export function RightPane(): JSX.Element {
                           so the title bar shows only the live title. */}
                       <span className="min-w-0 truncate font-medium">
                         {shownItem.kind === 'terminal'
-                          ? (shownItem.session.terminalTitle ?? shownItem.session.displayName)
-                          : shownItem.session.displayName}
+                          ? shownItem.title
+                          : shownItem.title}
                       </span>
-                      {shownItem.kind === 'terminal' && shownItem.session.state === 'exited' && (
+                      {shownItem.kind === 'terminal' && shownItem.indicator === 'exited' && (
                         <span className="shrink-0 text-[11px] text-muted-foreground/60">
-                          exit {shownItem.session.exitCode}
+                          exited
                         </span>
                       )}
                       {visibleItems.length > 1 && (
@@ -242,27 +217,27 @@ export function RightPane(): JSX.Element {
                     </DropdownMenuLabel>
                     {visibleItems.map((item) => (
                       <DropdownMenuItem
-                        key={item.session.id}
-                        onClick={() => selectItem(item.kind, item.session.id)}
+                        key={item.key}
+                        onClick={() => selectItem(item.kind, item.id)}
                         className="flex items-center gap-1.5"
                       >
                         {item.kind === 'terminal' ? (
-                          <SessionDot state={item.session.state} />
+                          <SessionDot state={item.indicator} />
                         ) : (
                           <Bot className="h-3.5 w-3.5 shrink-0 text-primary" />
                         )}
-                        <span className="shrink-0 font-medium">{item.session.displayName}</span>
-                        {item.kind === 'terminal' && item.session.terminalTitle && (
+                        <span className="shrink-0 font-medium">{item.title}</span>
+                        {item.kind === 'terminal' && item.subtitle !== item.title && (
                           <span className="min-w-0 truncate text-[11px] text-muted-foreground/70">
-                            {item.session.terminalTitle}
+                            {item.subtitle}
                           </span>
                         )}
-                        {item.kind === 'terminal' && item.session.state === 'exited' && (
+                        {item.kind === 'terminal' && item.indicator === 'exited' && (
                           <span className="shrink-0 text-[11px] text-muted-foreground/60">
-                            exit {item.session.exitCode}
+                            exited
                           </span>
                         )}
-                        {item.session.id === shownItem.session.id && (
+                        {item.key === shownItem.key && (
                           <span className="shrink-0 text-[11px] text-muted-foreground/60">{t('common.current')}</span>
                         )}
                         <button
@@ -270,8 +245,7 @@ export function RightPane(): JSX.Element {
                           title={t('layout.closeSession')}
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (item.kind === 'terminal') void closeSession(item.session.id);
-                            else void closeIrisAgent(item.session.id);
+                            void closeProjectedSession(item);
                           }}
                           className="ml-auto shrink-0 rounded-sm p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
                         >
@@ -286,8 +260,7 @@ export function RightPane(): JSX.Element {
             <ContextMenuContent>
               <ContextMenuItem
                 onClick={() => {
-                  if (shownItem.kind === 'terminal') void closeSession(shownItem.session.id);
-                  else void closeIrisAgent(shownItem.session.id);
+                  void closeProjectedSession(shownItem);
                 }}
               >
                 {t('layout.closeSession')}
@@ -339,16 +312,12 @@ export function RightPane(): JSX.Element {
             排版混乱 regression; the replay-on-switch it tried to avoid was only
             ever slow because dev ran a stale asar bundle (see issue
             2026-06-25-开发版与安装版实例隔离). */}
-        {shownSession && (
+        {shownItem && (
           <div className="absolute inset-0">
-            <TerminalView key={shownSession.id} sessionId={shownSession.id} />
-          </div>
-        )}
-        {shownAgentSession && (
-          <div className="absolute inset-0">
-            <IrisAgentView
-              key={shownAgentSession.id}
-              session={shownAgentSession}
+            <ProjectedSessionView
+              projection={shownItem}
+              terminalSession={terminalSessions.find((session) => session.id === shownItem.id) ?? null}
+              agentSession={agentSessions.find((session) => session.id === shownItem.id) ?? null}
               onForked={(session) => selectItem('iris-agent', session.id)}
             />
           </div>

@@ -9,7 +9,7 @@
  */
 import type { InstructionDefinition } from 'front-cpu';
 import { CHANNELS } from '@shared/protocol';
-import type { SessionInfo } from '@shared/types';
+import type { TerminalSessionInfo } from '@shared/types';
 import { sessionStore } from '@renderer/stores/session-store';
 import { projectScopeRead } from './project-resources';
 
@@ -26,7 +26,7 @@ export const sessionISA: Record<string, InstructionDefinition> = {
     },
     executor: 'ipc',
     config: { channel: CHANNELS.SESSION_OPEN, projectScoped: true },
-    commit: async (result: SessionInfo) => {
+    commit: async (result: TerminalSessionInfo) => {
       sessionStore.handleCreated(result);
     },
   },
@@ -45,7 +45,7 @@ export const sessionISA: Record<string, InstructionDefinition> = {
     },
     executor: 'ipc',
     config: { channel: CHANNELS.SESSION_REANCHOR, projectScoped: true },
-    commit: async (result: SessionInfo) => {
+    commit: async (result: TerminalSessionInfo) => {
       // The state-changed broadcast carries the same patch; applying the
       // authoritative result here just removes the visible lag.
       sessionStore.handlePatch(result.id, { docPath: result.docPath });

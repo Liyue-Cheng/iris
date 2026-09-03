@@ -1,5 +1,5 @@
 import type { IDisposable, IPty } from 'node-pty';
-import type { SessionInfo } from '@shared/types';
+import type { TerminalSessionInfo } from '@shared/types';
 import type { SessionActivityController } from './session-activity';
 import type { TerminalOutputPump } from './output-pump';
 import type { TerminalMirror } from './terminal-mirror';
@@ -9,7 +9,7 @@ import type { TerminalFlightRecorder } from './flight-recorder';
 import type { TerminalProcessState } from '@shared/terminal/process-reducer';
 
 export interface SessionRecord {
-  info: SessionInfo;
+  info: TerminalSessionInfo;
   pty: IPty | null;
   disposables: IDisposable[];
   output: TerminalOutputPump;

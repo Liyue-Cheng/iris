@@ -73,6 +73,7 @@ import {
   type BrowserTerminal,
 } from '@renderer/terminal/xterm-adapter';
 import { TerminalContextMenu } from './TerminalContextMenu';
+import { TerminalSurface } from './TerminalSurface';
 import { TerminalSearchBar } from './TerminalSearchBar';
 
 const onWindows = navigator.platform.toLowerCase().includes('win');
@@ -584,6 +585,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       host.removeEventListener('mousedown', beginAlternateSelection, true);
       document.removeEventListener('mouseup', endAlternateSelection, true);
       searchResultsDisposable?.dispose();
+      transport.dispose();
       xtermAdapter.dispose();
       termRef.current = null;
       xtermAdapterRef.current = null;
@@ -655,15 +657,14 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
           }
         }}
       >
-        <div
-            ref={hostRef}
-            className="h-full w-full px-1 pt-1"
+        <TerminalSurface
+            hostRef={hostRef}
+            revealed={hostRevealed}
             // P2: opacity (not visibility) keeps the host focusable while the
             // replay paints under cover, so the terminal can take keyboard
             // focus and feed the PTY before reveal. Reveal still happens only
             // after the fence + RAF, so the first VISIBLE frame is the final
             // state (SCROLL-1 anti-flicker intact).
-            style={hostRevealed ? undefined : { opacity: 0 }}
           // behavior.terminalRightClick='paste': preventDefault makes Radix's
           // composed trigger handler bail (defaultPrevented check), so the
           // menu never opens — right click goes straight to the single paste

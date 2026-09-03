@@ -10,7 +10,7 @@ const path = require('path');
 module.exports = {
   darkMode: [
     'selector',
-    '[data-theme="rose-pine"], [data-theme="rose-pine-moon"], [data-theme="business"], [data-theme="ubuntu"], [data-theme="windows-terminal"], [data-theme="one-dark-pro"], [data-theme="dracula"], [data-theme="tokyo-night"], [data-theme="catppuccin-mocha"], [data-theme="fairyfloss"]',
+    '[data-theme="rose-pine"], [data-theme="rose-pine-moon"], [data-theme="saas-dark"], [data-theme="business"], [data-theme="ubuntu"], [data-theme="windows-terminal"], [data-theme="one-dark-pro"], [data-theme="dracula"], [data-theme="tokyo-night"], [data-theme="catppuccin-mocha"]',
   ],
   content: [path.join(__dirname, 'src/renderer/**/*.{ts,tsx,html}')],
   theme: {

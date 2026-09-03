@@ -53,7 +53,7 @@ import type {
   RecentProject,
   SessionExitedPayload,
   SessionDestroyedPayload,
-  SessionInfo,
+  TerminalSessionInfo,
   SessionListSnapshot,
   SessionOutputPayload,
   SessionStateChangedPayload,
@@ -64,7 +64,7 @@ import type {
 import { appDataDir, type SettingsManager } from './settings-manager';
 import type { ProjectManager } from './project-manager';
 import type { GitManager } from './git-manager';
-import type { SessionManager } from './session-manager';
+import type { TerminalSessionManager } from './terminal-session-manager';
 import type { IrisAgentSessionManager } from './agent/session-manager';
 import {
   detachTerminalOutput,
@@ -187,8 +187,8 @@ function resolveProjectItemPath(scope: ProjectScope, itemPath: string, channel: 
   return target;
 }
 
-function sessionsForScope(ctx: WindowContext, scope: ProjectScope): SessionInfo[] {
-  return ctx.sessionManager
+function sessionsForScope(ctx: WindowContext, scope: ProjectScope): TerminalSessionInfo[] {
+  return ctx.terminalSessionManager
     .list()
     .filter(
       (session) =>
@@ -202,8 +202,8 @@ function requireSessionInScope(
   sessionId: string,
   scope: ProjectScope,
   channel: string,
-): SessionInfo {
-  const session = ctx.sessionManager.get(sessionId);
+): TerminalSessionInfo {
+  const session = ctx.terminalSessionManager.get(sessionId);
   if (
     !session ||
     session.projectRoot !== scope.root ||
@@ -535,7 +535,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       }
 
       if (action.terminal === 'iris') {
-        const session = ctx.sessionManager.createCommandSession({
+        const session = ctx.terminalSessionManager.createCommandSession({
           actionIndex: payload.actionIndex,
           description: action.description,
           command: action.command,
@@ -844,10 +844,10 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
         cols: number;
         rows: number;
       } & ProjectScopedPayload,
-    ): Promise<SessionInfo> => {
+    ): Promise<TerminalSessionInfo> => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_OPEN);
-      return ctx.sessionManager.createSession({
+      return ctx.terminalSessionManager.createSession({
         docPath: payload.docPath,
         workspacePath: payload.workspacePath ?? null,
         agentId: payload.agentId,
@@ -865,7 +865,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_CLOSE);
       requireSessionInScope(ctx, payload.sessionId, scope, CHANNELS.SESSION_CLOSE);
-      return ctx.sessionManager.closeSession(payload.sessionId);
+      return ctx.terminalSessionManager.closeSession(payload.sessionId);
     },
   );
 
@@ -874,11 +874,11 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     (
       event,
       payload: { sessionId: string; docPath: string | null } & ProjectScopedPayload,
-    ): SessionInfo => {
+    ): TerminalSessionInfo => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_REANCHOR);
       requireSessionInScope(ctx, payload.sessionId, scope, CHANNELS.SESSION_REANCHOR);
-      return ctx.sessionManager.reanchor(payload.sessionId, payload.docPath);
+      return ctx.terminalSessionManager.reanchor(payload.sessionId, payload.docPath);
     },
   );
 
@@ -888,7 +888,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_INPUT);
       requireSessionInScope(ctx, payload.sessionId, scope, CHANNELS.SESSION_INPUT);
-      return ctx.sessionManager.sendInput(payload.sessionId, payload.data);
+      return ctx.terminalSessionManager.sendInput(payload.sessionId, payload.data);
     },
   );
 
@@ -901,7 +901,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_RESIZE);
       requireSessionInScope(ctx, payload.sessionId, scope, CHANNELS.SESSION_RESIZE);
-      return ctx.sessionManager.resize(payload.sessionId, payload.cols, payload.rows);
+      return ctx.terminalSessionManager.resize(payload.sessionId, payload.cols, payload.rows);
     },
   );
 
@@ -915,9 +915,9 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_OUTPUT_ATTACH);
       requireSessionInScope(ctx, payload.sessionId, scope, CHANNELS.SESSION_OUTPUT_ATTACH);
       if (ctx.outputAttachment) {
-        ctx.sessionManager.detachOutput(ctx.outputAttachment.attachmentId);
+        ctx.terminalSessionManager.detachOutput(ctx.outputAttachment.attachmentId);
       }
-      ctx.sessionManager.attachOutput(payload.sessionId, payload.attachmentId);
+      ctx.terminalSessionManager.attachOutput(payload.sessionId, payload.attachmentId);
       ctx.outputAttachment = {
         sessionId: payload.sessionId,
         attachmentId: payload.attachmentId,
@@ -930,7 +930,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     CHANNELS.SESSION_OUTPUT_DETACH,
     (event, payload: { attachmentId: string }) => {
       const ctx = requireContext(event);
-      ctx.sessionManager.detachOutput(payload.attachmentId);
+      ctx.terminalSessionManager.detachOutput(payload.attachmentId);
       ctx.outputAttachment = detachTerminalOutput(ctx.outputAttachment, payload.attachmentId);
     },
   );
@@ -948,7 +948,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_OUTPUT_ACK);
       requireSessionInScope(ctx, payload.sessionId, scope, CHANNELS.SESSION_OUTPUT_ACK);
-      ctx.sessionManager.acknowledgeOutput(
+      ctx.terminalSessionManager.acknowledgeOutput(
         payload.sessionId,
         payload.attachmentId,
         payload.seq,
@@ -1081,6 +1081,28 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_BRANCH);
       return ctx.agentSessionManager.branch(scope, payload.sessionId, payload.throughTurnId, {
+        ...(payload.commandId ? { commandId: payload.commandId } : {}),
+        ...(payload.expectedRevision === undefined
+          ? {}
+          : { expectedRevision: payload.expectedRevision }),
+      });
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_BRANCH_INPUT,
+    (
+      event,
+      payload: {
+        sessionId: string;
+        throughTurnId: string;
+        commandId?: string;
+        expectedRevision?: number;
+      } & ProjectScopedPayload,
+    ): Promise<IrisAgentSessionInfo> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_BRANCH_INPUT);
+      return ctx.agentSessionManager.branchFromInput(scope, payload.sessionId, payload.throughTurnId, {
         ...(payload.commandId ? { commandId: payload.commandId } : {}),
         ...(payload.expectedRevision === undefined
           ? {}
@@ -1284,7 +1306,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     CHANNELS.IRIS_AGENT_CLOSE,
     (
       event,
-      payload: { sessionId: string; commandId?: string; expectedRevision?: number } & ProjectScopedPayload,
+      payload: { sessionId: string; commandId?: string; expectedRevision?: number; confirmBusy?: boolean } & ProjectScopedPayload,
     ): Promise<void> => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_CLOSE);
@@ -1293,6 +1315,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
         ...(payload.expectedRevision === undefined
           ? {}
           : { expectedRevision: payload.expectedRevision }),
+        ...(payload.confirmBusy === true ? { confirmBusy: true } : {}),
       });
     },
   );
@@ -1315,7 +1338,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_SCROLLBACK);
       requireSessionInScope(ctx, payload.sessionId, scope, CHANNELS.SESSION_SCROLLBACK);
-      return ctx.sessionManager.prepareReplay(
+      return ctx.terminalSessionManager.prepareReplay(
         payload.sessionId,
         payload.cols,
         payload.rows,
@@ -1352,7 +1375,7 @@ export function wireBroadcasts(
   settingsManager: SettingsManager,
   projectManager: ProjectManager,
   gitManager: GitManager,
-  sessionManager: SessionManager,
+  terminalSessionManager: TerminalSessionManager,
   agentSessionManager: IrisAgentSessionManager,
   getProjectScope: () => ProjectScope | null,
   getOutputAttachment: () => TerminalOutputAttachment | null,
@@ -1420,10 +1443,10 @@ export function wireBroadcasts(
   gitManager.on('changed', onGitChanged);
   gitManager.on('healthChanged', onHealthChanged);
   projectManager.on('healthChanged', onHealthChanged);
-  sessionManager.on('sessionOutput', onOutput);
-  sessionManager.on('sessionStateChanged', onState);
-  sessionManager.on('sessionExited', onExited);
-  sessionManager.on('sessionDestroyed', onDestroyed);
+  terminalSessionManager.on('sessionOutput', onOutput);
+  terminalSessionManager.on('sessionStateChanged', onState);
+  terminalSessionManager.on('sessionExited', onExited);
+  terminalSessionManager.on('sessionDestroyed', onDestroyed);
   agentSessionManager.on('sessionChanged', onAgentChanged);
   agentSessionManager.on('sessionDestroyed', onAgentDestroyed);
   agentSessionManager.on('terminalOutput', onAgentTerminalOutput);
@@ -1436,10 +1459,10 @@ export function wireBroadcasts(
     gitManager.off('changed', onGitChanged);
     gitManager.off('healthChanged', onHealthChanged);
     projectManager.off('healthChanged', onHealthChanged);
-    sessionManager.off('sessionOutput', onOutput);
-    sessionManager.off('sessionStateChanged', onState);
-    sessionManager.off('sessionExited', onExited);
-    sessionManager.off('sessionDestroyed', onDestroyed);
+    terminalSessionManager.off('sessionOutput', onOutput);
+    terminalSessionManager.off('sessionStateChanged', onState);
+    terminalSessionManager.off('sessionExited', onExited);
+    terminalSessionManager.off('sessionDestroyed', onDestroyed);
     agentSessionManager.off('sessionChanged', onAgentChanged);
     agentSessionManager.off('sessionDestroyed', onAgentDestroyed);
     agentSessionManager.off('terminalOutput', onAgentTerminalOutput);

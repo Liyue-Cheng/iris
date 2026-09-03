@@ -3,7 +3,7 @@ import type {
   ProjectOpenResult,
   ProjectScope,
   ProjectSettingsSnapshot,
-  SessionInfo,
+  TerminalSessionInfo,
 } from '@shared/types';
 import type { WindowContext } from './window-context';
 import { logger } from './logger';
@@ -17,8 +17,8 @@ function sameScope(a: ProjectScope | null, b: ProjectScope | null): boolean {
   return a?.root === b?.root && a?.generation === b?.generation;
 }
 
-function sessionsForScope(ctx: WindowContext, scope: ProjectScope): SessionInfo[] {
-  return ctx.sessionManager
+function sessionsForScope(ctx: WindowContext, scope: ProjectScope): TerminalSessionInfo[] {
+  return ctx.terminalSessionManager
     .list()
     .filter(
       (session) =>
@@ -77,7 +77,7 @@ export function enqueueProjectSwitch(
       // complete preflight above, finish forward under the main-side gate.
       if (current) {
         await Promise.all([
-          ctx.sessionManager.closeProject(current),
+          ctx.terminalSessionManager.closeProject(current),
           ctx.agentSessionManager.closeProject(current),
         ]);
       }

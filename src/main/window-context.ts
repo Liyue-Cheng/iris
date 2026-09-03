@@ -2,7 +2,7 @@
  * @file src/main/window-context.ts
  * @purpose Per-window project + session ownership (VS Code-style multi-window).
  *   Each BrowserWindow binds one project and owns its own ProjectManager (one
- *   chokidar watcher) and SessionManager (its PTY pool). SettingsManager stays
+ *   chokidar watcher) and TerminalSessionManager (its PTY pool). SettingsManager stays
  *   a single machine-level instance shared across all windows.
  *
  * This module is a pure registry keyed by BrowserWindow.id — no manager
@@ -14,8 +14,9 @@
  */
 import { BrowserWindow, type IpcMainInvokeEvent, type WebContents } from 'electron';
 import type { ProjectManager } from './project-manager';
-import type { SessionManager } from './session-manager';
+import type { TerminalSessionManager } from './terminal-session-manager';
 import type { IrisAgentSessionManager } from './agent/session-manager';
+import type { SessionLifecycleParticipant } from './session-lifecycle';
 import type { SettingsManager } from './settings-manager';
 import type { GitManager } from './git-manager';
 import type { ProjectScope } from '@shared/types';
@@ -24,8 +25,9 @@ import type { TerminalOutputAttachment } from './terminal/output-attachment';
 export interface WindowContext {
   readonly win: BrowserWindow;
   readonly projectManager: ProjectManager;
-  readonly sessionManager: SessionManager;
+  readonly terminalSessionManager: TerminalSessionManager;
   readonly agentSessionManager: IrisAgentSessionManager;
+  readonly sessionParticipants?: readonly SessionLifecycleParticipant[];
   readonly gitManager: GitManager;
   /** Project bound to this window (null when none open yet). Updated on
    *  project:open so WINDOW_BOOTSTRAP and persistence see the current root. */

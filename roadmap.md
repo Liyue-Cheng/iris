@@ -217,6 +217,6 @@ M1 起，每个里程碑开工前先把本路线图对应小节过一遍，把�
 
 **目标**：VS Code 式多窗口——多开窗口，各管一个项目。同时根治「再次启动叠窗/崩溃/残留进程」。产品负责人 2026-06-23 拍板，覆盖定义书原「v1 不做多项目管理」的范围。
 
-**架构**：一个主进程 + N 个窗口，每窗口一套 `ProjectManager`/`SessionManager`/文件监听；`SettingsManager` 机器级全局共享。IPC 按 `event.sender` 路由（`src/main/window-context.ts`）。渲染层 store 模块级单例随窗口独立 JS 上下文天然隔离。
+**架构**：一个主进程 + N 个窗口，每窗口一套 `ProjectManager`/`TerminalSessionManager`/文件监听；`SettingsManager` 机器级全局共享。IPC 按 `event.sender` 路由（`src/main/window-context.ts`）。渲染层 store 模块级单例随窗口独立 JS 上下文天然隔离。
 
 代码已交付（typecheck + build + smoke + 单测全过），手工验收清单见 issue「多窗口/多项目（v1.1）」。后续候选：看板视图、过期标签、插件/集成（均仍走「最薄外壳」原则）。

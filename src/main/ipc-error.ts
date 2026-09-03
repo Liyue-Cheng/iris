@@ -28,7 +28,7 @@ function inferredDomain(channel: string, error: Error): AppErrorDomain {
   if (error.name === 'ProjectError') return 'project';
   if (error.name === 'AssetError') return 'asset';
   if (error.name === 'GitError') return 'git';
-  if (error.name === 'SessionManagerError') return 'session';
+  if (error.name === 'TerminalSessionError') return 'session';
   if (error.name === 'SystemTerminalError') return 'session';
   return DOMAIN_BY_PREFIX[channel.split(':')[0] ?? ''] ?? 'internal';
 }

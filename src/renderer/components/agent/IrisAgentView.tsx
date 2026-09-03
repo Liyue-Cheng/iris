@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import {
   AlertTriangle,
   Bot,
@@ -27,11 +27,17 @@ import type {
   IrisAgentModelOption,
   IrisAgentSessionInfo,
   IrisAgentUserView,
-  IrisAgentTerminalOutputPayload,
   IrisAgentTerminalView,
+  ProjectScope,
 } from '@shared/types';
 import { EVENTS } from '@shared/protocol';
 import { Button } from '@renderer/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@renderer/components/ui/dialog';
 import {
   branchIrisAgent,
   listIrisAgentModels,
@@ -41,13 +47,24 @@ import {
   sendIrisAgentMessage,
   setIrisAgentModel,
   stopIrisAgent,
-  replayIrisAgentTerminal,
-  resizeIrisAgentTerminal,
   writeIrisAgentTerminal,
   continueIrisAgentTerminalSupervision,
 } from '@renderer/lib/iris-agent-actions';
 import { BrowserXtermAdapter } from '@renderer/terminal/xterm-adapter';
-import { getSettings } from '@renderer/stores/settings-store';
+import { IrisAgentTerminalTransport } from '@renderer/terminal/terminal-transport';
+import { TerminalReplayController } from '@renderer/terminal/replay-controller';
+import { TerminalSessionRuntime } from '@renderer/terminal/terminal-runtime';
+import { TerminalViewportController } from '@renderer/terminal/viewport-controller';
+import { TerminalContextMenu } from '@renderer/components/terminal/TerminalContextMenu';
+import { TerminalSurface } from '@renderer/components/terminal/TerminalSurface';
+import { TerminalSearchBar } from '@renderer/components/terminal/TerminalSearchBar';
+import { readClipboardText, writeClipboardText } from '@renderer/lib/clipboard';
+import { getSettings, useSettings } from '@renderer/stores/settings-store';
+import { projectScopeState } from '@renderer/stores/project-scope-state';
+import { irisAgentSessionKey } from '@renderer/lib/session-projection';
+import { SessionViewportController } from '@renderer/lib/session-viewport';
+
+const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 export function IrisAgentView({
   session,
@@ -60,8 +77,11 @@ export function IrisAgentView({
   const [models, setModels] = useState<IrisAgentModelOption[]>([]);
   const [modelError, setModelError] = useState<string | null>(null);
   const [modelsLoading, setModelsLoading] = useState(true);
+  const [showErrorDialog, setShowErrorDialog] = useState(false);
   const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(null);
   const [hiddenTerminalIds, setHiddenTerminalIds] = useState<Set<string>>(() => new Set());
+  const messagesRef = useRef<HTMLDivElement | null>(null);
+  const messagesContentRef = useRef<HTMLDivElement | null>(null);
   const knownTerminalIds = useRef(new Set(session.terminals.map((terminal) => terminal.id)));
   const modelRequest = useRef(0);
   const autoSelectingModel = useRef<string | null>(null);
@@ -84,6 +104,20 @@ export function IrisAgentView({
       setSelectedTerminalId(added.id);
     }
   }, [session.terminals]);
+
+  // Restore the Session viewport before the first paint and keep its bottom
+  // anchor stable while Markdown/cards change their measured height.
+  useIsomorphicLayoutEffect(() => {
+    const viewport = messagesRef.current;
+    const content = messagesContentRef.current;
+    if (!viewport || !content) return;
+    const controller = new SessionViewportController(
+      irisAgentSessionKey(session.id),
+      viewport,
+      content,
+    );
+    return () => controller.dispose();
+  }, [session.id]);
 
   const refreshModels = useCallback((forceRefresh = false): void => {
     const request = ++modelRequest.current;
@@ -158,20 +192,75 @@ export function IrisAgentView({
 
   return (
     <div className="flex h-full flex-col bg-background">
-      <div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
-        <Bot className="h-4 w-4 text-primary" />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium">Iris Agent</div>
-          <div className="truncate text-[11px] text-muted-foreground">
-            {statusText} · 当前版本尚不具备自举资格
+      <Dialog open={showErrorDialog} onOpenChange={setShowErrorDialog}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+              {models.length > 0 ? '部分供应商模型加载失败' : '模型加载失败'}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="mt-4 max-h-96 overflow-auto rounded-md bg-muted/50 p-3 text-xs">
+            <pre className="whitespace-pre-wrap break-words font-mono text-muted-foreground">
+              {modelError}
+            </pre>
           </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setShowErrorDialog(false)}
+            >
+              关闭
+            </Button>
+            <Button
+              variant="default"
+              disabled={modelsLoading}
+              onClick={() => {
+                refreshModels(true);
+                setShowErrorDialog(false);
+              }}
+            >
+              {modelsLoading ? (
+                <>
+                  <RotateCcw className="mr-2 h-4 w-4 animate-spin" />
+                  重新加载中…
+                </>
+              ) : (
+                <>
+                  <RotateCcw className="mr-2 h-4 w-4" />
+                  重新加载
+                </>
+              )}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-card/60 px-3">
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+          <Bot className="h-4 w-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[13px] font-semibold">Iris Agent</div>
+          <div className="truncate text-[11px] text-muted-foreground">{statusText}</div>
         </div>
+        {modelError && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            title={models.length > 0 ? '部分供应商模型加载失败，点击查看详情' : '模型加载失败，点击查看详情'}
+            onClick={() => setShowErrorDialog(true)}
+          >
+            <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+          </Button>
+        )}
         <select
           value={selectedModelValue}
           disabled={running || models.length === 0}
           aria-label="Provider and model"
           title={modelError ?? 'Provider and model'}
-          className="h-7 w-40 max-w-[40%] min-w-0 shrink rounded border border-border bg-background px-1.5 text-xs outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
+          className="h-7 w-44 max-w-[42%] min-w-0 shrink rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
           onChange={(event) => {
             const model = models.find(
               (candidate) => modelValue(candidate.provider, candidate.modelId) === event.target.value,
@@ -221,46 +310,20 @@ export function IrisAgentView({
         )}
       </div>
 
-      {modelError && (
-        <div className="flex shrink-0 items-start gap-2 border-b border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
-          <div className="min-w-0 flex-1">
-            <div className="font-medium">
-              {models.length > 0 ? '部分供应商模型加载失败' : '模型加载失败'}
-            </div>
-            <div className="mt-0.5 max-h-20 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">
-              {modelError}
-            </div>
-          </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 shrink-0"
-            disabled={modelsLoading}
-            title="重新加载模型"
-            aria-label="重新加载模型"
-            onClick={() => refreshModels(true)}
-          >
-            <RotateCcw className={`!size-3.5 ${modelsLoading ? 'animate-spin' : ''}`} />
-          </Button>
-        </div>
-      )}
-
       {visibleTerminals.length > 0 && (
-        <div className="flex h-9 shrink-0 items-end gap-0.5 overflow-x-auto border-b bg-muted/30 px-2 pt-1">
+        <div className="flex h-10 shrink-0 items-end gap-1 overflow-x-auto border-b bg-muted/20 px-2 pt-1">
           <button
             type="button"
-            className={`h-8 shrink-0 border-b-2 px-3 text-xs ${selectedTerminal ? 'border-transparent text-muted-foreground' : 'border-primary text-foreground'}`}
+            className={`h-9 shrink-0 rounded-t-sm border-b-2 px-3 text-xs font-medium transition-colors ${selectedTerminal ? 'border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground' : 'border-primary bg-background text-foreground'}`}
             onClick={() => setSelectedTerminalId(null)}
           >
-            Agent
+            对话
           </button>
           {visibleTerminals.map((terminal) => (
             <button
               key={terminal.id}
               type="button"
-              className={`flex h-8 max-w-48 shrink-0 items-center gap-1.5 border-b-2 px-2 text-xs ${selectedTerminal?.id === terminal.id ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground'}`}
+              className={`flex h-9 max-w-52 shrink-0 items-center gap-1.5 rounded-t-sm border-b-2 px-2.5 text-xs transition-colors ${selectedTerminal?.id === terminal.id ? 'border-primary bg-background text-foreground' : 'border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground'}`}
               onClick={() => setSelectedTerminalId(terminal.id)}
             >
               <SquareTerminal className="h-3.5 w-3.5 shrink-0" />
@@ -358,28 +421,45 @@ export function IrisAgentView({
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
-        {session.turns.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
-            <Bot className="h-9 w-9 text-muted-foreground/40" />
-            <p>已固定当前 anchor。发送消息前会重新读取最新内容。</p>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {session.turns.map((turn) => {
-              return (
-                <div key={turn.id} className="space-y-2">
+      <div
+        ref={messagesRef}
+        className="min-h-0 flex-1 overflow-y-auto px-3 py-3"
+        style={{ overflowAnchor: 'none' }}
+      >
+        <div ref={messagesContentRef} className="min-h-full">
+          {session.turns.length === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
+              <Bot className="h-9 w-9 text-muted-foreground/40" />
+              <p>已固定当前 anchor。发送消息前会重新读取最新内容。</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {session.turns.map((turn) => {
+                return (
+                  <div key={turn.id} className="space-y-2">
                   <UserMessage
                     message={turn.user}
                     onOpenPrompt={turn.user.contextAvailable ? () => openContext(turn.id) : undefined}
                     artifactTitle={turn.user.contextTitle}
+                    {...(turn.canForkFromInput ? { onFork: () => {
+                      branchIrisAgent(session.id, turn.id, true).then((forked) => {
+                        if (forked) onForked?.(forked);
+                      }).catch(() => undefined);
+                    } } : {})}
                   />
-                  {turn.cards.map((card) => (
+                  {groupAgentCards(turn.cards).map((group) => group.kind === 'file-group' ? (
+                    <FileChangeGroupCard key={group.cards[0]!.id} cards={group.cards} />
+                  ) : (
                     <AgentActivityCard
-                      key={card.id}
-                      card={card}
+                      key={group.card.id}
+                      card={group.card}
                       canRetry={false}
                       onRetry={() => undefined}
+                      {...(group.card.kind === 'agent-reply' && turn.canFork ? { onFork: () => {
+                        branchIrisAgent(session.id, turn.id).then((forked) => {
+                          if (forked) onForked?.(forked);
+                        }).catch(() => undefined);
+                      } } : {})}
                       onOpenTerminal={(terminalId) => {
                         setHiddenTerminalIds((current) => {
                           const next = new Set(current);
@@ -390,30 +470,12 @@ export function IrisAgentView({
                       }}
                     />
                   ))}
-                  {turn.canFork && (
-                    <div className="flex justify-end">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 text-muted-foreground"
-                        title="从本轮创建对话分支"
-                        aria-label="从本轮创建对话分支"
-                        onClick={() => {
-                          branchIrisAgent(session.id, turn.id).then((forked) => {
-                            if (forked) onForked?.(forked);
-                          }).catch(() => undefined);
-                        }}
-                      >
-                        <GitBranch className="!size-3.5" />
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       <form
@@ -467,10 +529,35 @@ function AgentTerminalPane({
   terminal: IrisAgentTerminalView;
 }): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const adapterRef = useRef<BrowserXtermAdapter | null>(null);
+  const settings = useSettings();
+  const [hostRevealed, setHostRevealed] = useState(false);
+  const [contextHasSelection, setContextHasSelection] = useState(false);
+  const [searchVisible, setSearchVisible] = useState(false);
+  const [searchText, setSearchText] = useState('');
+  const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
+  const [searchResults, setSearchResults] = useState({ matches: 0, current: 0 });
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  const closeSearch = useCallback(() => {
+    setSearchVisible(false);
+    adapterRef.current?.search.clearDecorations();
+    adapterRef.current?.terminal.focus();
+  }, []);
+
+  const performSearch = useCallback((direction: 'next' | 'previous') => {
+    const search = adapterRef.current?.search;
+    if (!search || !searchText) return;
+    const options = { caseSensitive: searchCaseSensitive };
+    if (direction === 'next') search.findNext(searchText, options);
+    else search.findPrevious(searchText, options);
+  }, [searchCaseSensitive, searchText]);
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    const scope: ProjectScope | null = projectScopeState.get();
+    if (!scope) return;
     const settings = getSettings();
     const adapter = new BrowserXtermAdapter({
       fontFamily: settings?.appearance.terminalFontFamily ?? "'Cascadia Mono', 'Consolas', monospace",
@@ -481,71 +568,149 @@ function AgentTerminalPane({
       windowsBuild: window.api.windowsBuild,
       openLink: () => undefined,
     });
+    adapterRef.current = adapter;
     adapter.open(host);
     const term = adapter.terminal;
-    adapter.fit.fit();
-    let disposed = false;
-    let replayed = false;
-    let replayCursor = 0;
-    const queued: IrisAgentTerminalOutputPayload[] = [];
-    const unsubscribe = window.api.on<IrisAgentTerminalOutputPayload>(
-      EVENTS.IRIS_AGENT_TERMINAL_OUTPUT,
-      (payload) => {
-        if (payload.sessionId !== sessionId || payload.terminalId !== terminal.id) return;
-        if (!replayed) {
-          queued.push(payload);
-          return;
-        }
-        if (payload.cursor >= replayCursor) term.write(decodeBase64(payload.data));
-      },
-    );
+    const runtime = new TerminalSessionRuntime(`${sessionId}:${terminal.id}`, scope);
+    const viewport = new TerminalViewportController(adapter.fit, 150);
+    const transport = new IrisAgentTerminalTransport(sessionId, terminal.id, scope);
+    const replayController = new TerminalReplayController(runtime, transport, {
+      get cols() { return term.cols; },
+      get rows() { return term.rows; },
+      write: (data, callback) => term.write(data, callback),
+      scrollToBottom: () => term.scrollToBottom(),
+      beginSynchronizedReplay: () => adapter.beginSynchronizedReplay(),
+      endSynchronizedReplay: (callback) => adapter.endSynchronizedReplay(callback),
+    }, viewport, {
+      chunkBytes: 16 * 1024,
+      timeoutMs: 5000,
+      reveal: () => setHostRevealed(true),
+      warn: (message, error) => console.warn(message, error),
+    });
+    viewport.observe(host);
+    const unsubscribe = transport.onOutput((payload) => replayController.onOutput(payload));
     const dataDisposable = term.onData((data) => {
-      void writeIrisAgentTerminal(sessionId, terminal.id, data).catch(() => undefined);
+      viewport.flushBeforeInput();
+      void transport.sendInput(data).catch(() => undefined);
     });
     const resizeDisposable = term.onResize(({ cols, rows }) => {
       if (cols < 20 || rows < 5) return;
-      void resizeIrisAgentTerminal(sessionId, terminal.id, cols, rows).catch(() => undefined);
+      if (viewport.replayInProgress) return;
+      void transport.resize(cols, rows).catch(() => undefined);
     });
-    const observer = new ResizeObserver(() => adapter.fit.fit());
-    observer.observe(host);
-    void replayIrisAgentTerminal(sessionId, terminal.id, term.cols, term.rows).then((snapshot) => {
-      if (disposed) return;
-      replayCursor = snapshot.cursor;
-      term.write(decodeBase64(snapshot.data), () => {
-        if (disposed) return;
-        replayed = true;
-        for (const payload of queued) {
-          if (payload.cursor >= replayCursor) term.write(decodeBase64(payload.data));
-        }
-        queued.length = 0;
-        term.scrollToBottom();
-        term.focus();
-      });
-    }).catch((error: unknown) => {
-      if (!disposed) term.writeln(`\r\nUnable to replay terminal: ${error instanceof Error ? error.message : String(error)}`);
-      replayed = true;
-      replayCursor = 0;
-      for (const payload of queued) term.write(decodeBase64(payload.data));
-      queued.length = 0;
+    const searchDisposable = adapter.search.onDidChangeResults?.((results) => {
+      const matches = results?.resultCount ?? 0;
+      const index = results?.resultIndex ?? -1;
+      setSearchResults({ matches, current: matches > 0 && index >= 0 ? index + 1 : 0 });
     });
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type === 'keydown' && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+        setSearchVisible(true);
+        requestAnimationFrame(() => searchInputRef.current?.focus());
+        return false;
+      }
+      return true;
+    });
+    // async-boundary: handled - replay controller degrades and reveals on transport failure.
+    void replayController.start().catch(() => undefined);
     return () => {
-      disposed = true;
-      observer.disconnect();
       unsubscribe();
       dataDisposable.dispose();
       resizeDisposable.dispose();
+      searchDisposable?.dispose();
+      runtime.dispose();
+      viewport.dispose();
+      // async-boundary: handled - detach is best-effort during unmount.
+      void transport.detach().catch(() => undefined);
+      transport.dispose();
       adapter.dispose();
+      adapterRef.current = null;
     };
   }, [sessionId, terminal.id]);
 
-  return <div ref={hostRef} className="min-h-0 flex-1 bg-black p-1" />;
-}
+  useEffect(() => {
+    const adapter = adapterRef.current;
+    if (!adapter || !settings) return;
+    adapter.updateAppearance({
+      themeId: settings.appearance.theme,
+      fontFamily: settings.appearance.terminalFontFamily,
+      fontSize: settings.appearance.terminalFontSize,
+      lineHeight: settings.appearance.terminalLineHeight,
+    });
+    adapter.fit.fit();
+  }, [settings]);
 
-function decodeBase64(value: string): Uint8Array {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return bytes;
+  useEffect(() => {
+    const search = adapterRef.current?.search;
+    if (!search || !searchVisible) return;
+    if (!searchText) {
+      search.clearDecorations();
+      setSearchResults({ matches: 0, current: 0 });
+      return;
+    }
+    performSearch('next');
+  }, [performSearch, searchText, searchVisible]);
+
+  const copySelection = (): void => {
+    const term = adapterRef.current?.terminal;
+    if (!term) return;
+    const selection = term.getSelection();
+    if (selection) void writeClipboardText(selection);
+    term.focus();
+  };
+
+  const pasteClipboard = (): void => {
+    // async-boundary: handled - clipboard helper reports read failures and terminal input handles its rejection.
+    void readClipboardText().then((text) => {
+      if (text === null) return;
+      void writeIrisAgentTerminal(sessionId, terminal.id, text).catch(() => undefined);
+      adapterRef.current?.terminal.focus();
+    });
+  };
+
+  return (
+    <div className="relative min-h-0 flex-1 bg-background">
+      <TerminalContextMenu
+        hasSelection={contextHasSelection}
+        onCopy={copySelection}
+        onPaste={pasteClipboard}
+        onClear={() => {
+          adapterRef.current?.terminal.clear();
+          adapterRef.current?.terminal.focus();
+        }}
+        onSearch={() => {
+          setSearchVisible(true);
+          requestAnimationFrame(() => searchInputRef.current?.focus());
+        }}
+        onOpenChange={(open) => {
+          if (open) setContextHasSelection(!!adapterRef.current?.terminal.getSelection());
+          else if (!searchVisible) requestAnimationFrame(() => adapterRef.current?.terminal.focus());
+        }}
+      >
+        <TerminalSurface
+          hostRef={hostRef}
+          revealed={hostRevealed}
+          onContextMenu={(event) => {
+            if ((getSettings()?.behavior.terminalRightClick ?? 'menu') !== 'paste') return;
+            event.preventDefault();
+            pasteClipboard();
+          }}
+        />
+      </TerminalContextMenu>
+      {searchVisible && (
+        <TerminalSearchBar
+          inputRef={searchInputRef}
+          text={searchText}
+          caseSensitive={searchCaseSensitive}
+          results={searchResults}
+          onTextChange={setSearchText}
+          onCaseSensitiveChange={setSearchCaseSensitive}
+          onSearch={performSearch}
+          onClose={closeSearch}
+        />
+      )}
+    </div>
+  );
 }
 
 function terminalTitle(terminal: IrisAgentTerminalView): string {
@@ -558,21 +723,28 @@ function AgentActivityCard({
   canRetry,
   onRetry,
   onOpenTerminal,
+  onFork,
 }: {
   card: IrisAgentCardView;
   canRetry: boolean;
   onRetry: () => void;
   onOpenTerminal: (terminalId: string) => void;
+  onFork?: () => void;
 }): JSX.Element {
   switch (card.kind) {
     case 'local-retrieval':
       return <LocalRetrievalCard card={card} onOpenTerminal={onOpenTerminal} />;
     case 'file-change':
-      return <FileChangeCard card={card} />;
+      return <FileChangeGroupCard cards={[card]} />;
     case 'terminal-operation':
       return <TerminalOperationCard card={card} onOpenTerminal={onOpenTerminal} />;
     case 'agent-reply':
-      return <AgentReplyCard card={card} canRetry={canRetry} onRetry={onRetry} />;
+      return <AgentReplyCard
+        card={card}
+        canRetry={canRetry}
+        onRetry={onRetry}
+        {...(onFork ? { onFork } : {})}
+      />;
   }
 }
 
@@ -595,8 +767,9 @@ function LocalRetrievalCard({
         .join(' · ');
   return (
     <CardFrame
+      cardType="retrievals"
       icon={<FolderSearch className="h-4 w-4" />}
-      title="本地获取"
+      title="信息检索"
       summary={failed > 0 ? `${summary} · ${failed} 项失败` : summary}
       state={card.state}
       action={card.items.length > 5 ? (
@@ -613,27 +786,27 @@ function LocalRetrievalCard({
         </Button>
       ) : undefined}
     >
-      <div className="divide-y divide-border/60">
+      <div className="divide-y divide-border/60 bg-[var(--iris-card-retrievals)]/[0.02]">
         {!expanded && card.items.length > 5 && (
-          <div className="px-3 py-1.5 text-[11px] text-muted-foreground">
+          <div className="border-t border-border/40 bg-muted/10 px-4 py-2 text-center text-[11px] text-muted-foreground">
             另有 {card.items.length - 5} 项
           </div>
         )}
         {visibleItems.map((item) => (
-          <div key={item.id} className="min-w-0 px-3 py-2 text-xs">
-            <div className="flex min-w-0 items-start gap-2">
+          <div key={item.id} className="min-w-0 px-4 py-2.5 text-xs">
+            <div className="flex min-w-0 items-start gap-2.5">
               {item.kind === 'file'
-                ? <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                : <SquareTerminal className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                ? <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--iris-card-retrievals)]" />
+                : <SquareTerminal className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--iris-card-retrievals)]" />}
               <div className="min-w-0 flex-1">
-                <div className="break-all font-mono text-[11px] text-foreground/90">{item.label}</div>
-                <div className={`mt-0.5 flex items-center gap-1 text-[11px] ${item.state === 'failed' ? 'text-destructive' : 'text-muted-foreground'}`}>
+                <div className="break-all font-mono text-[11px] text-foreground">{item.label}</div>
+                <div className={`mt-1 flex items-center gap-1.5 text-[11px] ${item.state === 'failed' ? 'text-destructive' : 'text-muted-foreground'}`}>
                   <RetrievalStateIcon state={item.state} />
                   <span>{retrievalStateLabel(item.state)}</span>
                 </div>
                 {item.state === 'failed' && item.error && (
-                  <details className="mt-1 text-[11px] text-destructive">
-                    <summary className="cursor-pointer select-none">展开失败原因</summary>
+                  <details className="mt-1.5 text-[11px] text-destructive">
+                    <summary className="cursor-pointer select-none font-medium">展开失败原因</summary>
                     <div className="mt-1 whitespace-pre-wrap break-words">{item.error}</div>
                     {item.errorDetail && (
                       <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded border border-destructive/20 bg-background p-2 font-mono text-[10px] text-foreground">
@@ -663,65 +836,85 @@ function LocalRetrievalCard({
   );
 }
 
-function FileChangeCard({
-  card,
+type FileChangeCardView = Extract<IrisAgentCardView, { kind: 'file-change' }>;
+
+function FileChangeGroupCard({
+  cards,
 }: {
-  card: Extract<IrisAgentCardView, { kind: 'file-change' }>;
+  cards: FileChangeCardView[];
 }): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
-  const lines = card.diff?.split('\n') ?? [];
-  const stats = diffStats(lines);
-  const long = lines.length > 24;
-  const verb = card.action === 'created'
-    ? '创建'
-    : card.action === 'updated'
-      ? '修改'
-      : card.action === 'unchanged'
-        ? '未改变'
-        : '尝试写入';
+  const additions = cards.reduce((total, card) => total + diffLineStats(card.diff).additions, 0);
+  const deletions = cards.reduce((total, card) => total + diffLineStats(card.diff).deletions, 0);
+  const summary = `${cards.length} 个文件${additions || deletions ? ` · +${additions} -${deletions}` : ''}`;
   return (
     <CardFrame
+      cardType="files"
       icon={<FileDiff className="h-4 w-4" />}
-      title="文件写入"
-      summary={`${verb} ${card.path}${stats ? ` · ${stats}` : ''}`}
-      state={card.state}
-      action={long ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6"
-          title={expanded ? '收起 diff' : '展开完整 diff'}
-          aria-label={expanded ? '收起 diff' : '展开完整 diff'}
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded ? <ChevronDown className="!size-3.5" /> : <ChevronRight className="!size-3.5" />}
-        </Button>
-      ) : undefined}
+      title="文件变更"
+      summary={summary}
+      state={groupState(cards)}
     >
-      {card.diff ? (
-        <pre
-          className={`${expanded ? 'max-h-none' : 'max-h-72'} overflow-auto border-t bg-background/70 p-2 font-mono text-[11px] leading-5`}
-          aria-label={`文件差异 ${card.path}`}
-        >
-          {lines.map((line, index) => (
-            <span key={`${index}:${line}`} className={`${diffLineClass(line)} block min-w-max whitespace-pre`}>
-              {line || ' '}
-            </span>
-          ))}
-        </pre>
-      ) : (
-        <div className="border-t px-3 py-2 text-xs text-muted-foreground">
-          {card.error ?? (card.action === 'unchanged' ? '内容与现有文件一致。' : card.detail)}
-        </div>
-      )}
-      {card.error && card.diff && (
-        <div className="border-t border-destructive/30 px-3 py-2 text-xs text-destructive">
-          {card.error}
-        </div>
-      )}
+      <div className="divide-y divide-border/60 border-t bg-[var(--iris-card-files)]/[0.02]">
+        {cards.map((card) => {
+          const stats = diffLineStats(card.diff);
+          const action = card.action === 'created' ? '创建' : card.action === 'updated' ? '修改' : card.action === 'unchanged' ? '未改变' : '写入失败';
+          return (
+            <div key={card.id} className="flex min-h-9 items-center gap-2 px-4 py-2 text-xs">
+              <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={card.path}>{card.path}</span>
+              {(stats.additions || stats.deletions) ? (
+                <span className="shrink-0 font-mono text-[11px] font-semibold">
+                  <span className="text-emerald-600 dark:text-emerald-400">+{stats.additions}</span>
+                  {' '}
+                  <span className="text-red-600 dark:text-red-400">-{stats.deletions}</span>
+                </span>
+              ) : (
+                <span className="shrink-0 text-[11px] text-muted-foreground">{action}</span>
+              )}
+              {card.error && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label={card.error} />}
+            </div>
+          );
+        })}
+      </div>
     </CardFrame>
   );
+}
+
+function groupAgentCards(cards: IrisAgentCardView[]): Array<
+  | { kind: 'file-group'; cards: FileChangeCardView[] }
+  | { kind: 'single'; card: Exclude<IrisAgentCardView, FileChangeCardView> }
+> {
+  const groups: Array<{ kind: 'file-group'; cards: FileChangeCardView[] } | { kind: 'single'; card: Exclude<IrisAgentCardView, FileChangeCardView> }> = [];
+  for (const card of cards) {
+    if (card.kind === 'file-change') {
+      const previous = groups.at(-1);
+      if (previous?.kind === 'file-group') previous.cards.push(card);
+      else groups.push({ kind: 'file-group', cards: [card] });
+    } else {
+      groups.push({ kind: 'single', card });
+    }
+  }
+  return groups;
+}
+
+function diffLineStats(diff: string | undefined): { additions: number; deletions: number } {
+  if (!diff) return { additions: 0, deletions: 0 };
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+') && !line.startsWith('+++')) additions += 1;
+    if (line.startsWith('-') && !line.startsWith('---')) deletions += 1;
+  }
+  return { additions, deletions };
+}
+
+function groupState(cards: FileChangeCardView[]): IrisAgentCardState {
+  if (cards.some((card) => card.state === 'failed')) return 'failed';
+  if (cards.some((card) => card.state === 'partial')) return 'partial';
+  if (cards.some((card) => card.state === 'running')) return 'running';
+  if (cards.some((card) => card.state === 'stopped')) return 'stopped';
+  if (cards.every((card) => card.state === 'unchanged')) return 'unchanged';
+  return 'completed';
 }
 
 function TerminalOperationCard({
@@ -735,8 +928,9 @@ function TerminalOperationCard({
   const multiline = card.command.split('\n').length > 6 || card.command.length > 420;
   return (
     <CardFrame
+      cardType="operations"
       icon={<SquareTerminal className="h-4 w-4" />}
-      title="操作终端"
+      title="执行命令"
       summary={cardStateLabel(card.state)}
       state={card.state}
       action={multiline ? (
@@ -754,34 +948,33 @@ function TerminalOperationCard({
       ) : undefined}
     >
       <pre
-        className={`${expanded ? 'max-h-none' : 'max-h-40'} overflow-auto border-t bg-background/70 p-3 whitespace-pre-wrap break-words font-mono text-xs leading-5`}
+        className={`${expanded ? 'max-h-none' : 'max-h-40'} overflow-auto border-t bg-[var(--iris-card-operations)]/[0.02] p-4 whitespace-pre-wrap break-words font-mono text-xs leading-5`}
         aria-label="执行命令"
       >
         {card.command}
       </pre>
       {card.error && (
-        <details className="border-t border-destructive/30 px-3 py-2 text-xs text-destructive">
-          <summary className="cursor-pointer select-none">展开失败原因</summary>
-          <div className="mt-1 whitespace-pre-wrap break-words">{card.error}</div>
+        <details className="border-t border-destructive/30 bg-destructive/5 px-4 py-2.5 text-xs text-destructive">
+          <summary className="cursor-pointer select-none font-medium">展开失败原因</summary>
+          <div className="mt-1.5 whitespace-pre-wrap break-words">{card.error}</div>
           {card.errorDetail && (
-            <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-destructive/20 bg-background p-2 font-mono text-[10px] text-foreground">
+            <pre className="mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-destructive/20 bg-background p-2 font-mono text-[10px] text-foreground">
               {card.errorDetail}
             </pre>
           )}
         </details>
       )}
       {card.terminalId && (
-        <div className="flex justify-end border-t px-2 py-1">
+        <div className="flex justify-end border-t border-border/40 bg-muted/10 px-3 py-1.5">
           <Button
             type="button"
             variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            title="打开终端"
-            aria-label="打开终端"
+            size="sm"
+            className="h-6 text-[11px]"
             onClick={() => onOpenTerminal(card.terminalId!)}
           >
-            <SquareTerminal className="!size-3.5" />
+            <SquareTerminal className="mr-1 !size-3" />
+            查看终端输出
           </Button>
         </div>
       )}
@@ -793,16 +986,19 @@ function AgentReplyCard({
   card,
   canRetry,
   onRetry,
+  onFork,
 }: {
   card: Extract<IrisAgentCardView, { kind: 'agent-reply' }>;
   canRetry: boolean;
   onRetry: () => void;
+  onFork?: () => void;
 }): JSX.Element {
   const placeholder = card.state === 'stopped' ? '本轮已暂停。' : '正在回复…';
   return (
     <CardFrame
+      cardType="message"
       icon={<BotMessageSquare className="h-4 w-4" />}
-      title="Agent 回复"
+      title="AI 回复"
       summary={card.state === 'running'
         ? '正在回复'
         : card.state === 'stopped'
@@ -811,28 +1007,41 @@ function AgentReplyCard({
             ? '未进入上下文'
             : '已回复'}
       state={card.state}
+      action={onFork ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6 text-muted-foreground"
+          title="从此回复创建对话分支"
+          aria-label="从此回复创建对话分支"
+          onClick={onFork}
+        >
+          <GitBranch className="!size-3.5" />
+        </Button>
+      ) : undefined}
     >
-      <div className="markdown-body min-w-0 border-t px-3 py-2.5 text-sm">
+      <div className="markdown-body min-w-0 border-t bg-[var(--iris-card-message)]/[0.02] px-4 py-3 text-[13px] leading-relaxed">
         {card.content
           ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{card.content}</ReactMarkdown>
           : <span className="text-muted-foreground">{placeholder}</span>}
       </div>
       {card.error && (
-        <div className="border-t border-destructive/30 bg-destructive/5 px-3 py-2.5">
+        <div className="border-t border-destructive/30 bg-destructive/5 px-4 py-3">
           <div className="flex items-start gap-2 text-xs text-destructive">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span className="whitespace-pre-wrap break-words">{card.error}</span>
           </div>
           {canRetry && (
-            <div className="mt-2 flex justify-end">
+            <div className="mt-2.5 flex justify-end">
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                className="border-destructive/40 bg-background text-destructive hover:bg-destructive/10 hover:text-destructive"
+                className="h-7 border-destructive/40 bg-background text-destructive hover:bg-destructive/10 hover:text-destructive"
                 onClick={onRetry}
               >
-                <RotateCcw className="!size-3.5" />
+                <RotateCcw className="mr-1.5 !size-3.5" />
                 重试
               </Button>
             </div>
@@ -843,7 +1052,10 @@ function AgentReplyCard({
   );
 }
 
+type CardType = 'files' | 'operations' | 'retrievals' | 'message';
+
 function CardFrame({
+  cardType,
   icon,
   title,
   summary,
@@ -851,6 +1063,7 @@ function CardFrame({
   action,
   children,
 }: {
+  cardType: CardType;
   icon: ReactNode;
   title: string;
   summary?: string;
@@ -858,15 +1071,46 @@ function CardFrame({
   action?: ReactNode;
   children: ReactNode;
 }): JSX.Element {
+  // 根据状态决定边框和背景样式
+  const getStateStyles = () => {
+    if (state === 'running') {
+      return 'border-2 border-[var(--iris-card-' + cardType + ')] bg-[var(--iris-card-' + cardType + ')]/[0.03]';
+    }
+    if (state === 'completed' || state === 'unchanged') {
+      return 'border-l-[3px] border-l-emerald-500/70 border-t border-r border-b border-border/80 bg-emerald-500/[0.03]';
+    }
+    if (state === 'failed') {
+      return 'border-l-[4px] border-l-destructive border-t border-r border-b border-border/80 bg-destructive/[0.05]';
+    }
+    if (state === 'partial') {
+      return 'border-l-[3px] border-l-amber-500 border-t border-r border-b border-border/80 bg-amber-500/[0.03]';
+    }
+    if (state === 'stopped') {
+      return 'border border-border/60 bg-muted/[0.02]';
+    }
+    return 'border border-border/80';
+  };
+
+  // 顶栏渐变背景
+  const headerGradient = {
+    files: 'linear-gradient(135deg, var(--iris-card-files-from) 0%, var(--iris-card-files-to) 100%)',
+    operations: 'linear-gradient(135deg, var(--iris-card-operations-from) 0%, var(--iris-card-operations-to) 100%)',
+    retrievals: 'linear-gradient(135deg, var(--iris-card-retrievals-from) 0%, var(--iris-card-retrievals-to) 100%)',
+    message: 'linear-gradient(135deg, var(--iris-card-message-from) 0%, var(--iris-card-message-to) 100%)',
+  };
+
   return (
-    <section className="overflow-hidden rounded-md border border-border/80 bg-card" aria-label={title}>
-      <div className="flex min-h-9 items-center gap-2 px-3 py-1.5">
-        <span className="shrink-0 text-muted-foreground">{icon}</span>
+    <section className={`iris-agent-card overflow-hidden rounded-lg ${getStateStyles()} transition-all duration-200 animate-[iris-card-enter_0.25s_ease-out]`} aria-label={title}>
+      <div
+        className="flex min-h-10 items-center gap-2 px-4 py-2"
+        style={{ background: headerGradient[cardType], opacity: 0.85 }}
+      >
+        <span className="shrink-0 text-white/90">{icon}</span>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-baseline gap-2">
-            <h3 className="shrink-0 text-xs font-medium">{title}</h3>
+            <h3 className="shrink-0 text-[13px] font-semibold text-white">{title}</h3>
             {summary && (
-              <span className="min-w-0 truncate text-[11px] text-muted-foreground" title={summary}>
+              <span className="min-w-0 truncate text-[11px] text-white/70" title={summary}>
                 {summary}
               </span>
             )}
@@ -882,18 +1126,18 @@ function CardFrame({
 
 function CardStateIcon({ state }: { state: IrisAgentCardState }): JSX.Element {
   if (state === 'running') {
-    return <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" aria-label="运行中" />;
+    return <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin text-white/80" aria-label="运行中" />;
   }
   if (state === 'failed') {
-    return <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="失败" />;
+    return <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-white/90" aria-label="失败" />;
   }
   if (state === 'partial') {
-    return <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" aria-label="部分失败" />;
+    return <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-white/90" aria-label="部分失败" />;
   }
   if (state === 'stopped') {
-    return <Square className="h-3 w-3 shrink-0 text-muted-foreground" aria-label="已停止" />;
+    return <Square className="h-3 w-3 shrink-0 text-white/80" aria-label="已停止" />;
   }
-  return <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label={state === 'unchanged' ? '无变化' : '完成'} />;
+  return <Check className="h-3.5 w-3.5 shrink-0 text-white/90" aria-label={state === 'unchanged' ? '无变化' : '完成'} />;
 }
 
 function RetrievalStateIcon({
@@ -925,15 +1169,31 @@ function UserMessage({
   message,
   onOpenPrompt,
   artifactTitle,
+  onFork,
 }: {
   message: IrisAgentUserView;
   onOpenPrompt: (() => void) | undefined;
   artifactTitle: string | undefined;
+  onFork?: (() => void) | undefined;
 }): JSX.Element {
   return (
     <div className="rounded-md bg-muted px-3 py-2 text-sm">
       <div className="mb-1 flex h-6 items-start justify-between gap-2">
         <span className="text-[11px] font-medium uppercase text-muted-foreground">You</span>
+        <div className="flex items-center gap-1">
+        {onFork && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="-mr-1 -mt-1 h-6 w-6 shrink-0 text-muted-foreground"
+            title="从此输入重新开始"
+            aria-label="从此输入重新开始"
+            onClick={onFork}
+          >
+            <GitBranch className="!size-3.5" />
+          </Button>
+        )}
         {onOpenPrompt && (
           <Button
             type="button"
@@ -947,28 +1207,11 @@ function UserMessage({
             <FileText className="!size-3.5" />
           </Button>
         )}
+        </div>
       </div>
       <div className="whitespace-pre-wrap break-words">{message.content}</div>
     </div>
   );
-}
-
-function diffStats(lines: string[]): string {
-  let additions = 0;
-  let deletions = 0;
-  for (const line of lines) {
-    if (line.startsWith('+') && !line.startsWith('+++')) additions += 1;
-    if (line.startsWith('-') && !line.startsWith('---')) deletions += 1;
-  }
-  return additions > 0 || deletions > 0 ? `+${additions} -${deletions}` : '';
-}
-
-function diffLineClass(line: string): string {
-  if (line.startsWith('+++') || line.startsWith('---')) return 'text-muted-foreground';
-  if (line.startsWith('+')) return 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
-  if (line.startsWith('-')) return 'bg-red-500/10 text-red-700 dark:text-red-300';
-  if (line.startsWith('@@')) return 'bg-muted/60 text-muted-foreground';
-  return 'text-foreground/80';
 }
 
 function isSessionRunning(session: IrisAgentSessionInfo): boolean {

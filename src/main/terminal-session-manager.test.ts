@@ -14,7 +14,7 @@ import {
   removeIrisHookHandlers,
 } from './agent-injection';
 import { logger } from './logger';
-import { SessionManager, type CreateSessionInput, type PtySpawnFn } from './session-manager';
+import { TerminalSessionManager, type CreateSessionInput, type PtySpawnFn } from './terminal-session-manager';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -95,7 +95,7 @@ async function spawnEnvFor(
     capturedEnv = { ...options.env };
     return fakePty();
   };
-  const manager = new SessionManager(fakeSettingsManager(), {
+  const manager = new TerminalSessionManager(fakeSettingsManager(), {
     spawnFn,
     processTreeKillFn: null,
     ptyExitWaitMs: 0,
@@ -123,7 +123,7 @@ describe('session context environment', () => {
         advanced: { activeIdleThresholdSeconds: 2 },
       }),
     } as unknown as SettingsManager;
-    const manager = new SessionManager(settingsManager, {
+    const manager = new TerminalSessionManager(settingsManager, {
       spawnFn: (_file, args) => {
         capturedArgs = [...args];
         return fakePty();
@@ -156,7 +156,7 @@ describe('session context environment', () => {
     let capturedArgs: string[] = [];
     let capturedCwd = '';
     let capturedEnv: Record<string, string> = {};
-    const manager = new SessionManager(fakeSettingsManager(), {
+    const manager = new TerminalSessionManager(fakeSettingsManager(), {
       spawnFn: (_file, args, options) => {
         capturedArgs = [...args];
         capturedCwd = options.cwd;
@@ -225,7 +225,7 @@ describe('session context environment', () => {
 
 describe('session shutdown', () => {
   it('drains only the requested project generation and remains reusable', async () => {
-    const manager = new SessionManager(fakeSettingsManager(), {
+    const manager = new TerminalSessionManager(fakeSettingsManager(), {
       spawnFn: () => fakePty(),
       processTreeKillFn: null,
       ptyExitWaitMs: 0,
@@ -266,7 +266,7 @@ describe('session shutdown', () => {
     vi.mocked(controlled.pty.kill).mockImplementation(() => {
       order.push('pty.kill');
     });
-    const manager = new SessionManager(fakeSettingsManager(), {
+    const manager = new TerminalSessionManager(fakeSettingsManager(), {
       spawnFn,
       processTreeKillFn,
       ptyExitWaitMs: 100,
@@ -295,7 +295,7 @@ describe('session shutdown', () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     const controlled = controllablePty();
     vi.mocked(controlled.pty.kill).mockImplementation(() => controlled.emitExit());
-    const manager = new SessionManager(fakeSettingsManager(), {
+    const manager = new TerminalSessionManager(fakeSettingsManager(), {
       spawnFn: () => controlled.pty,
       processTreeKillFn: vi.fn().mockRejectedValue(new Error('taskkill failed')),
       ptyExitWaitMs: 100,
@@ -318,6 +318,14 @@ describe('session shutdown', () => {
       expect.any(Error),
     );
     expect(manager.list()).toEqual([]);
+  });
+
+  it('returns the shared not-found error when closing an unknown terminal session', async () => {
+    const manager = new TerminalSessionManager(fakeSettingsManager());
+    await expect(manager.closeSession('missing')).rejects.toMatchObject({
+      name: 'TerminalSessionError',
+      code: 'SessionNotFound',
+    });
   });
 });
 
@@ -460,7 +468,7 @@ describe('terminal scrollback compatibility', () => {
   it('emits only for the attached runtime and rejects stale detach tokens', async () => {
     const controlled = controllablePty();
     vi.mocked(controlled.pty.kill).mockImplementation(() => controlled.emitExit());
-    const manager = new SessionManager(fakeSettingsManager(), {
+    const manager = new TerminalSessionManager(fakeSettingsManager(), {
       spawnFn: () => controlled.pty,
       processTreeKillFn: null,
       ptyExitWaitMs: 100,
@@ -502,7 +510,7 @@ describe('terminal scrollback compatibility', () => {
   it('answers OSC color queries in main and removes them from renderer output', async () => {
     const controlled = controllablePty();
     vi.mocked(controlled.pty.kill).mockImplementation(() => controlled.emitExit());
-    const manager = new SessionManager(fakeSettingsManager(), {
+    const manager = new TerminalSessionManager(fakeSettingsManager(), {
       spawnFn: () => controlled.pty,
       processTreeKillFn: null,
       ptyExitWaitMs: 100,
@@ -532,7 +540,7 @@ describe('terminal scrollback compatibility', () => {
   it('preserves history when a synchronized Codex redraw clears the display', async () => {
     const controlled = controllablePty();
     vi.mocked(controlled.pty.kill).mockImplementation(() => controlled.emitExit());
-    const manager = new SessionManager(fakeSettingsManager(), {
+    const manager = new TerminalSessionManager(fakeSettingsManager(), {
       spawnFn: () => controlled.pty,
       processTreeKillFn: null,
       ptyExitWaitMs: 100,

@@ -4,12 +4,12 @@ import type {
   IrisScanResult,
   ProjectScope,
   ProjectSettingsSnapshot,
-  SessionInfo,
+  TerminalSessionInfo,
 } from '@shared/types';
 import type { WindowContext } from './window-context';
 import type { ProjectManager, PreparedProject } from './project-manager';
 import type { GitManager } from './git-manager';
-import type { SessionManager } from './session-manager';
+import type { TerminalSessionManager } from './terminal-session-manager';
 import type { IrisAgentSessionManager } from './agent/session-manager';
 import { enqueueProjectSwitch } from './project-switch';
 
@@ -23,7 +23,7 @@ function scan(root: string): IrisScanResult {
   };
 }
 
-function session(scope: ProjectScope): SessionInfo {
+function session(scope: ProjectScope): TerminalSessionInfo {
   return {
     id: 'session-a',
     docPath: null,
@@ -59,7 +59,7 @@ function projectSettings(description = 'toolbar action'): ProjectSettingsSnapsho
   };
 }
 
-function harness(initial: ProjectScope | null, sessions: SessionInfo[] = []) {
+function harness(initial: ProjectScope | null, sessions: TerminalSessionInfo[] = []) {
   let managerRoot = initial?.root ?? null;
   const prepareOpen = vi.fn(async (root: string): Promise<PreparedProject> => ({
     root,
@@ -76,10 +76,10 @@ function harness(initial: ProjectScope | null, sessions: SessionInfo[] = []) {
     activatePrepared,
   } as unknown as ProjectManager;
   const closeProject = vi.fn(async () => undefined);
-  const sessionManager = {
+  const terminalSessionManager = {
     list: () => sessions,
     closeProject,
-  } as unknown as SessionManager;
+  } as unknown as TerminalSessionManager;
   const closeAgentProject = vi.fn(async () => undefined);
   const agentSessionManager = {
     closeProject: closeAgentProject,
@@ -90,7 +90,7 @@ function harness(initial: ProjectScope | null, sessions: SessionInfo[] = []) {
   const ctx = {
     win: {} as WindowContext['win'],
     projectManager,
-    sessionManager,
+    terminalSessionManager,
     agentSessionManager,
     gitManager,
     projectRoot: initial?.root ?? null,

@@ -3,13 +3,19 @@ import type { AgentCorrelation } from '@shared/agent-protocol';
 import type { IrisAgentPauseReason } from '@shared/types';
 import type { AgentSessionAggregate, AgentToolActivity } from './session-model';
 import { cloneAgentSession, currentAgentTurn, isAgentSessionQuiescent } from './session-model';
+import { AppError } from '@shared/app-error';
 
 export function assertIrisAgentExpectedRevision(
   session: AgentSessionAggregate,
   expectedRevision?: number,
 ): void {
   if (expectedRevision !== undefined && session.revision !== expectedRevision) {
-    throw new Error('The Iris Agent session changed before this command was applied.');
+    throw new AppError(
+      'session',
+      'SessionRevisionConflict',
+      'The Iris Agent session changed before this command was applied.',
+      { retryable: true },
+    );
   }
 }
 
@@ -17,6 +23,20 @@ export function assertQuiescentIrisAgentSession(session: AgentSessionAggregate):
   if (!isAgentSessionQuiescent(session)) {
     throw new Error('Iris Agent session is still running.');
   }
+}
+
+/** Main-process close gate: renderer confirmation is only an intent signal. */
+export function assertIrisAgentCloseAllowed(
+  session: AgentSessionAggregate,
+  confirmBusy = false,
+): void {
+  if (isAgentSessionQuiescent(session) || confirmBusy) return;
+  throw new AppError(
+    'session',
+    'SessionCloseConfirmationRequired',
+    'The Iris Agent session is still working and requires explicit confirmation before closing.',
+    { retryable: true },
+  );
 }
 
 export function assertUndoableLatestIrisAgentTurn(session: AgentSessionAggregate): void {

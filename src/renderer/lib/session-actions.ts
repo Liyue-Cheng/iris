@@ -4,11 +4,12 @@ import {
   getLastTerminalDims,
   type TerminalLayoutScope,
 } from '@renderer/stores/session-store';
-import type { SessionInfo } from '@shared/types';
+import type { TerminalSessionInfo } from '@shared/types';
 import { editorStore } from '@renderer/stores/editor-store';
 import { projectStore } from '@renderer/stores/project-store';
 import { runUserAction } from './action-runtime';
 import { translate } from '@renderer/i18n';
+import { sessionCloseOutcome, type SessionCloseOutcome } from './session-close-outcome';
 
 function initialTerminalDims(scope: TerminalLayoutScope): { cols: number; rows: number } {
   return getLastTerminalDims(projectStore.get().scan?.projectRoot, scope);
@@ -26,7 +27,7 @@ async function performOpenSession(docPath: string | null, agentId: string): Prom
   const { cols, rows } = initialTerminalDims(scope);
   const created = await pipeline.dispatch<
     { docPath: string | null; agentId: string; cols: number; rows: number },
-    SessionInfo
+    TerminalSessionInfo
   >('session.open', { docPath, agentId, cols, rows });
   await projectStore.activateSession(created.id);
 }
@@ -52,7 +53,7 @@ async function performOpenWorkspaceSession(
       cols: number;
       rows: number;
     },
-    SessionInfo
+    TerminalSessionInfo
   >('session.open', {
     docPath: null,
     workspacePath,
@@ -87,12 +88,13 @@ export async function openWorkspaceSession(workspacePath: string, agentId: strin
   );
 }
 
-export async function closeSession(sessionId: string): Promise<void> {
-  await runUserAction(
+export async function closeSession(sessionId: string): Promise<SessionCloseOutcome> {
+  const outcome = await runUserAction(
     {
       title: translate('errors.sessionCloseFailed'),
       dedupeKey: `session:close:${sessionId}`,
     },
     () => pipeline.dispatch('session.close', { sessionId }),
   );
+  return sessionCloseOutcome(outcome);
 }

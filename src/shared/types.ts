@@ -10,6 +10,8 @@ export type ThemeId =
   | 'rose-pine'
   | 'rose-pine-dawn'
   | 'rose-pine-moon'
+  | 'saas-light'
+  | 'saas-dark'
   | 'cutie'
   | 'business'
   | 'ubuntu'
@@ -18,10 +20,7 @@ export type ThemeId =
   | 'dracula'
   | 'tokyo-night'
   | 'catppuccin-mocha'
-  | 'catppuccin-latte'
-  | 'tokyo-night-day'
-  | 'light-pink'
-  | 'fairyfloss';
+  | 'catppuccin-latte';
 
 export type EditorConflictPolicy = 'ask' | 'overwrite';
 export type LocalePreference = 'system' | 'zh-CN' | 'en-US';
@@ -463,7 +462,7 @@ export interface ProjectPromptUpdateResult {
 }
 
 export type ProjectCommandRunResult =
-  | { kind: 'iris'; session: SessionInfo }
+  | { kind: 'iris'; session: TerminalSessionInfo }
   | { kind: 'system'; pid: number };
 
 /** Renderer boot distinguishes a requested first open from an already-live project. */
@@ -528,7 +527,7 @@ export interface DocContent {
  */
 export type SessionState = 'active' | 'idle' | 'exited';
 
-export interface SessionInfo {
+export interface TerminalSessionInfo {
   id: string;
   /**
    * The anchor (借鉴 Marina 的 path↔会话 → 文档↔会话): doc rel path, fixed
@@ -585,7 +584,7 @@ export interface SessionReplaySnapshot {
 export interface SessionStateChangedPayload {
   scope: ProjectScope;
   sessionId: string;
-  patch: Partial<SessionInfo>;
+  patch: Partial<TerminalSessionInfo>;
 }
 
 export interface SessionExitedPayload {
@@ -603,7 +602,7 @@ export interface SessionDestroyedPayload {
 
 export interface SessionListSnapshot {
   scope: ProjectScope;
-  sessions: SessionInfo[];
+  sessions: TerminalSessionInfo[];
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -774,6 +773,7 @@ export interface IrisAgentTurnView {
   user: IrisAgentUserView;
   cards: IrisAgentCardView[];
   canFork: boolean;
+  canForkFromInput?: boolean;
 }
 
 export interface IrisAgentSessionInfo {
@@ -899,7 +899,7 @@ export interface IrisAgentSessionDestroyedPayload {
 export interface ProjectOpenResult {
   scope: ProjectScope;
   scan: IrisScanResult;
-  sessions: SessionInfo[];
+  sessions: TerminalSessionInfo[];
   /** Configuration captured inside the same serialized project-open transaction. */
   projectSettings: ProjectSettingsSnapshot;
 }

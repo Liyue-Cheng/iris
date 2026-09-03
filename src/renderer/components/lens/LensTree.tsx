@@ -29,10 +29,6 @@ import {
 import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DocContextMenu } from '@renderer/components/doc/DocContextMenu';
 import {
-  aggregateDocState,
-  selectedSessionIdForAnchor,
-  sessionAnchorKey,
-  useSessions,
   workspaceAnchorKey,
 } from '@renderer/stores/session-store';
 import type { DocType, IrisDoc, IrisWorkspace } from '@shared/types';
@@ -40,7 +36,8 @@ import { cn } from '@renderer/lib/utils';
 import { docDisplayTitle, isActiveIssue } from '@renderer/lib/doc-utils';
 import { useLensPrefs, type LensSort } from '@renderer/stores/lens-prefs';
 import { useSettings } from '@renderer/stores/settings-store';
-import { closeSession, openWorkspaceSession } from '@renderer/lib/session-actions';
+import { openWorkspaceSession } from '@renderer/lib/session-actions';
+import { closeProjectedSession } from '@renderer/lib/session-projection-actions';
 import { isActiveReportStatus } from '@shared/document-status';
 import { StatusBadge } from '@renderer/components/ui/status-badge';
 import { SessionDot } from '@renderer/components/ui/session-dot';
@@ -60,6 +57,12 @@ import {
 import { setDocDragData } from '@renderer/lib/doc-drag';
 import { projectStore, useProject } from '@renderer/stores/project-store';
 import { compareDisplayText } from '@renderer/lib/locale';
+import { sessionViewStore, useSelectedSessionView } from '@renderer/stores/session-view-store';
+import {
+  aggregateProjectionState,
+  sessionProjectionAnchorKey,
+  useSessionProjections,
+} from '@renderer/lib/session-projection';
 
 const TYPE_ORDER: DocType[] = ['status', 'issue', 'report', 'misc'];
 
@@ -76,8 +79,8 @@ const TYPE_META: Record<DocType, { label: string; icon: typeof Gauge }> = {
  * ○ exited only / blank when the doc has no sessions.
  */
 function StatusDot({ docPath }: { docPath: string }): JSX.Element {
-  const { sessions } = useSessions();
-  return <SessionDot state={aggregateDocState(sessions, docPath)} />;
+  const projections = useSessionProjections();
+  return <SessionDot state={aggregateProjectionState(projections, docPath)} />;
 }
 
 /** Order docs inside a type section per the left-pane sort preference. */
@@ -145,7 +148,7 @@ function TypeSection({
   const { t } = useTranslation();
   const [open, setOpen] = useState(true);
   const { sort, filter } = useLensPrefs();
-  const { sessions } = useSessions();
+  const projections = useSessionProjections();
   const { label, icon: Icon } = TYPE_META[type];
 
   // Lens filters: issues show active ones plus any inactive issue that still
@@ -157,7 +160,8 @@ function TypeSection({
     type === 'issue' && !archived
       ? docs.filter(
           (doc) =>
-            isActiveIssue(doc) || sessions.some((session) => session.docPath === doc.path),
+            isActiveIssue(doc) ||
+            projections.some((session) => session.anchor.kind === 'document' && session.anchor.path === doc.path),
         )
       : type === 'report' && !archived
         ? docs.filter((d) => isActiveReportStatus(d.status))
@@ -282,11 +286,13 @@ function NewWorkspaceSessionButton({
  */
 function WorkspaceSessionList({ workspacePath }: { workspacePath: string }): JSX.Element | null {
   const { t } = useTranslation();
-  const { sessions } = useSessions();
-  const { view } = useProject();
+  const projections = useSessionProjections();
+  const { view, scope } = useProject();
   const hubKey = workspaceAnchorKey(workspacePath);
-  const hubSessions = sessions.filter((s) => sessionAnchorKey(s) === hubKey);
+  const selectedItemId = useSelectedSessionView(scope, hubKey);
+  const hubSessions = projections.filter((s) => sessionProjectionAnchorKey(s.anchor) === hubKey);
   if (hubSessions.length === 0) return null;
+  const effectiveSelectedKey = selectedItemId ?? hubSessions.at(-1)?.key ?? null;
   const isThisHubView =
     workspacePath === ROOT_WS_PATH
       ? view.kind === 'root'
@@ -295,33 +301,33 @@ function WorkspaceSessionList({ workspacePath }: { workspacePath: string }): JSX
   return (
     <div>
       {hubSessions.map((s) => {
-        const active = isThisHubView && selectedSessionIdForAnchor(hubKey) === s.id;
-        const label = s.terminalTitle ?? s.displayName;
+        const active = isThisHubView && effectiveSelectedKey === s.key;
         return (
-          <ContextMenu key={s.id}>
+          <ContextMenu key={s.key}>
             <ContextMenuTrigger asChild>
               <button
                 type="button"
-                onClick={() => void projectStore.activateSession(s.id)}
+                onClick={() => {
+                  if (scope) sessionViewStore.select(scope, hubKey, s.key);
+                  if (s.kind === 'terminal') void projectStore.activateSession(s.id);
+                  else if (workspacePath === ROOT_WS_PATH) void projectStore.selectRoot();
+                  else void projectStore.selectWorkspace(workspacePath);
+                }}
                 className={cn(
                   'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm leading-tight',
                   active ? 'bg-accent text-accent-foreground' : 'hover:bg-muted',
                 )}
-                title={label}
+                title={s.title}
               >
-                <SessionDot state={s.state} />
-                <span className="truncate">{label}</span>
-                {s.state === 'exited' && (
-                  <span className="ml-auto shrink-0 text-[11px] text-muted-foreground/60">
-                    exit {s.exitCode}
-                  </span>
-                )}
+                <SessionDot state={s.indicator} />
+                <span className="truncate">{s.title}</span>
+                {s.kind === 'iris-agent' && <span className="ml-auto shrink-0 text-[11px] text-muted-foreground/60">Agent</span>}
               </button>
             </ContextMenuTrigger>
             <ContextMenuContent>
               <ContextMenuItem
                 className="text-destructive focus:text-destructive"
-                onClick={() => void closeSession(s.id)}
+                onClick={() => void closeProjectedSession(s)}
               >
                 {t('layout.closeSession')}
               </ContextMenuItem>
@@ -358,8 +364,8 @@ function WorkspaceSection({
 }): JSX.Element {
   const { t } = useTranslation();
   const [sectionsOpen, setSectionsOpen] = useState(true);
-  const { view } = useProject();
-  const { sessions } = useSessions();
+  const { view, scope } = useProject();
+  const projections = useSessionProjections();
   const archived = ws.archived || parentArchived;
   const isRoot = depth === 0;
   const workspacePath = isRoot ? ROOT_WS_PATH : ws.path;
@@ -369,13 +375,10 @@ function WorkspaceSection({
     ? view.kind === 'root'
     : view.kind === 'workspace' && view.path === ws.path;
   const hubKey = workspaceAnchorKey(workspacePath);
-  const hubSessionStaged =
-    isThisHubView &&
-    sessions.some(
-      (session) =>
-        sessionAnchorKey(session) === hubKey &&
-        session.id === selectedSessionIdForAnchor(hubKey),
-    );
+  const selectedItemId = useSelectedSessionView(scope, hubKey);
+  const hubSessions = projections.filter((session) => sessionProjectionAnchorKey(session.anchor) === hubKey);
+  const effectiveSelectedKey = selectedItemId ?? hubSessions.at(-1)?.key ?? null;
+  const hubSessionStaged = isThisHubView && hubSessions.some((session) => session.key === effectiveSelectedKey);
   const headerSelected = isThisHubView && !hubSessionStaged;
 
   return (

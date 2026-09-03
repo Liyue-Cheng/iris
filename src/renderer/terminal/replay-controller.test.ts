@@ -50,6 +50,7 @@ function fixture(requestReplay: () => Promise<SessionReplaySnapshot>) {
     requestReplay,
     sendInput: vi.fn(async () => undefined),
     resize: vi.fn(async () => undefined),
+    dispose: vi.fn(),
     readDocument: vi.fn(async () => ({
       path: 'x',
       raw: '',

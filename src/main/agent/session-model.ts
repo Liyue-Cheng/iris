@@ -429,6 +429,7 @@ function projectTurn(
     },
     cards,
     canFork: turn.state === 'fulfilled' && isAgentSessionQuiescent(session),
+    canForkFromInput: true,
   };
 }
 
