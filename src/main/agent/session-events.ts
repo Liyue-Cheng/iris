@@ -209,6 +209,11 @@ function assertAggregateReferences(session: AgentSessionAggregate): void {
   assertUnique(session.toolOperations.map((operation) => operation.id), 'tool operation ID');
   assertUnique(session.transcript.map((frame) => frame.id), 'Provider frame ID');
   assertUnique(session.effects.map((effect) => effect.id), 'Effect ID');
+  if (session.effectiveTraceLength !== undefined &&
+    (!Number.isSafeInteger(session.effectiveTraceLength) || session.effectiveTraceLength < 0 ||
+      session.effectiveTraceLength > session.turns.length)) {
+    throw new Error('Iris Agent effective Trace prefix is out of bounds.');
+  }
   const highestOrdinal = Math.max(0, ...session.timeline.map((activity) => activity.ordinal));
   if (session.nextOrdinal !== highestOrdinal + 1) {
     throw new Error('Iris Agent nextOrdinal must follow the canonical Timeline.');
