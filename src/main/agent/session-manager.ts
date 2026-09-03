@@ -287,6 +287,9 @@ export class IrisAgentSessionManager extends EventEmitter {
     const turnId = randomUUID();
     const intentId = randomUUID();
     const now = Date.now();
+    const effectivePrefixBefore = session.effectiveTraceLength === 0 && session.turns.length > 0 && session.undoReceipts.length === 0
+      ? session.turns.length
+      : Math.min(session.effectiveTraceLength ?? session.turns.length, session.turns.length);
     for (const intent of session.intents ?? []) {
       if (intent.state !== 'superseded') {
         intent.state = 'superseded';
@@ -347,7 +350,7 @@ export class IrisAgentSessionManager extends EventEmitter {
         content: prepared.prompt,
         createdAt: now,
       });
-      session.effectiveTraceLength = session.turns.length;
+      session.effectiveTraceLength = effectivePrefixBefore + 1;
       session.requestFacts.push(prepared.facts);
       session.state = 'running';
       running = await store.commit(session);
