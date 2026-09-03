@@ -30,17 +30,31 @@ export interface AgentSessionAggregate {
   stopRequestedTurnId?: string;
   terminalSupervisionAlert?: { terminalId: string; evidence: string; createdAt: number };
   turns: AgentTurn[];
+  /** First-class user intents. Legacy sessions may omit this field on disk. */
+  intents?: AgentIntent[];
   providerCalls: AgentProviderCall[];
   providerAttempts: AgentProviderAttempt[];
   timeline: AgentTimelineActivity[];
   toolOperations: AgentToolOperation[];
   transcript: AgentProviderFrame[];
+  /** Number of turn facts visible to Context. The trace itself remains append-only. */
+  effectiveTraceLength?: number;
   effects: AgentEffect[];
   requestFacts: AgentRequestFacts[];
   undoReceipts: AgentUndoReceipt[];
   createdAt: number;
   updatedAt: number;
   selfHostingEligible: false;
+}
+
+export interface AgentIntent {
+  id: string;
+  userActivityId: string;
+  turnIds: string[];
+  state: 'running' | 'paused' | 'superseded';
+  pauseReason?: IrisAgentPauseReason;
+  createdAt: number;
+  closedAt?: number;
 }
 
 export interface AgentToolOperation {
@@ -67,6 +81,14 @@ export interface AgentRequestFacts {
     anchor: string;
   };
   anchor: IrisAgentAnchor;
+  /** Method layers are symbolic references; only the material anchor is snapshotted. */
+  layerRefs?: {
+    agent: 'current';
+    software: 'current';
+    project: 'current';
+  };
+  anchorSnapshot?: string;
+  anchorDiff?: string;
   promptChars: number;
   redacted: true;
 }
@@ -75,6 +97,7 @@ export interface AgentTurn {
   id: string;
   userActivityId: string;
   state: 'running' | 'pausing' | 'paused' | 'fulfilled' | 'abandoned' | 'removed';
+  intentId?: string;
   pauseReason?: IrisAgentPauseReason;
   error?: string;
   assembledInputAvailable: boolean;
@@ -237,11 +260,13 @@ export function createEmptyAgentSession(input: {
     nextOrdinal: 1,
     currentTurnId: null,
     turns: [],
+    intents: [],
     providerCalls: [],
     providerAttempts: [],
     timeline: [],
     toolOperations: [],
     transcript: [],
+    effectiveTraceLength: 0,
     effects: [],
     requestFacts: [],
     undoReceipts: [],
@@ -273,8 +298,10 @@ export function projectAgentSession(
   projectGeneration: number,
 ): IrisAgentSessionInfo {
   const activeTurn = currentAgentTurn(session);
+  const effectiveIds = new Set(session.turns.slice(0, effectiveTurnCount(session)).map((turn) => turn.id));
   const visibleTurns = session.turns.filter(
-    (turn): turn is AgentTurn & { state: Exclude<AgentTurn['state'], 'removed'> } => turn.state !== 'removed',
+    (turn): turn is AgentTurn & { state: Exclude<AgentTurn['state'], 'removed'> } =>
+      turn.state !== 'removed' && effectiveIds.has(turn.id),
   );
   const canUndoLatestTurn = !isAgentSessionBusy(session) && visibleTurns.length > 0;
   return {
@@ -335,6 +362,13 @@ export function projectAgentSession(
     canUndoLatestTurn,
     selfHostingEligible: false,
   };
+}
+
+function effectiveTurnCount(session: AgentSessionAggregate): number {
+  if (session.effectiveTraceLength === 0 && session.turns.length > 0 && session.undoReceipts.length === 0) {
+    return session.turns.length;
+  }
+  return Math.max(0, Math.min(session.effectiveTraceLength ?? session.turns.length, session.turns.length));
 }
 
 function terminalArtifactRef(

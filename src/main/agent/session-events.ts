@@ -10,11 +10,13 @@ import type {
   AgentToolOperation,
   AgentTurn,
   AgentUndoReceipt,
+  AgentIntent,
 } from './session-model';
 import { cloneAgentSession } from './session-model';
 
 export type AgentEntityCollection =
   | 'turns'
+  | 'intents'
   | 'providerCalls'
   | 'providerAttempts'
   | 'timeline'
@@ -26,6 +28,7 @@ export type AgentEntityCollection =
 
 export type AgentSessionEntity =
   | AgentTurn
+  | AgentIntent
   | AgentProviderCall
   | AgentProviderAttempt
   | AgentTimelineActivity
@@ -49,6 +52,7 @@ export interface AgentDomainTransaction {
 
 const COLLECTIONS: AgentEntityCollection[] = [
   'turns',
+  'intents',
   'providerCalls',
   'providerAttempts',
   'timeline',
@@ -121,6 +125,7 @@ export function applyAgentDomainTransaction(
       for (const key of event.removedKeys) delete (session as unknown as Record<string, unknown>)[key];
       continue;
     }
+    if (event.collection === 'intents' && !session.intents) session.intents = [];
     const target = entities(session, event.collection);
     const index = target.findIndex((entity) => entityId(event.collection, entity) === (
       event.type === 'entity.removed' ? event.entityId : entityId(event.collection, event.entity)
@@ -178,6 +183,7 @@ function assertAgentSessionTransition(
   assertStableEntities(previous.timeline, next.timeline, 'Timeline Activity');
   assertStableOrder(previous.timeline, next.timeline, 'Timeline Activity');
   assertMonotonicStates(previous.turns, next.turns, turnTransitions, 'Turn');
+  assertMonotonicStates(previous.intents ?? [], next.intents ?? [], intentTransitions, 'Intent');
   assertMonotonicStates(previous.providerCalls, next.providerCalls, providerTransitions, 'Provider Call');
   assertMonotonicStates(previous.providerAttempts, next.providerAttempts, providerTransitions, 'Provider Attempt');
   assertMonotonicStates(previous.toolOperations, next.toolOperations, operationTransitions, 'Tool operation');
@@ -195,6 +201,9 @@ function assertAggregateReferences(session: AgentSessionAggregate): void {
   const attempts = new Map(session.providerAttempts.map((attempt) => [attempt.id, attempt]));
   const activities = new Map(session.timeline.map((activity) => [activity.id, activity]));
   assertUnique(session.turns.map((turn) => turn.id), 'Turn ID');
+  const intents = session.intents ?? [];
+  const intentIds = new Set(intents.map((intent) => intent.id));
+  assertUnique(intents.map((intent) => intent.id), 'Intent ID');
   assertUnique(session.providerCalls.map((call) => call.id), 'Provider Call ID');
   assertUnique(session.providerAttempts.map((attempt) => attempt.id), 'Provider Attempt ID');
   assertUnique(session.toolOperations.map((operation) => operation.id), 'tool operation ID');
@@ -208,6 +217,15 @@ function assertAggregateReferences(session: AgentSessionAggregate): void {
   for (const turn of session.turns) {
     const user = activities.get(turn.userActivityId);
     if (user?.kind !== 'user' || user.turnId !== turn.id) throw new Error('Turn user Activity is invalid.');
+    if (turn.intentId && !intentIds.has(turn.intentId)) throw new Error('Turn Intent reference is invalid.');
+  }
+  for (const intent of intents) {
+    const user = activities.get(intent.userActivityId);
+    if (user?.kind !== 'user') throw new Error('Intent user Activity is invalid.');
+    for (const turnId of intent.turnIds) {
+      const turn = turns.get(turnId);
+      if (!turn || (turn.intentId && turn.intentId !== intent.id)) throw new Error('Intent Turn correlation is invalid.');
+    }
   }
   for (const activity of session.timeline) {
     if (!turns.has(activity.turnId)) throw new Error('Timeline Activity Turn is missing.');
@@ -335,6 +353,11 @@ const turnTransitions = {
   abandoned: ['removed'],
   removed: [],
 } as const;
+const intentTransitions = {
+  running: ['paused', 'superseded'],
+  paused: ['running', 'superseded'],
+  superseded: [],
+} as const;
 const providerTransitions = {
   running: ['completed', 'failed', 'aborted'],
   completed: [], failed: [], aborted: [],
@@ -356,7 +379,7 @@ function isTool(activity: AgentTimelineActivity): activity is Extract<AgentTimel
 }
 
 function entities(session: AgentSessionAggregate, collection: AgentEntityCollection): AgentSessionEntity[] {
-  return session[collection] as AgentSessionEntity[];
+  return (collection === 'intents' ? (session.intents ?? []) : session[collection]) as AgentSessionEntity[];
 }
 
 function entityId(collection: AgentEntityCollection, entity: AgentSessionEntity): string {

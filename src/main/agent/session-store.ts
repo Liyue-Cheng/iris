@@ -22,6 +22,7 @@ import {
   renderProviderContextIndex,
   sanitizeProviderContextCall,
 } from './context-artifact';
+import { buildAgentContextFromSession } from './trace-context';
 
 export const IRIS_AGENT_SESSION_STORE_VERSION = 2 as const;
 const STORE_MANIFEST_VERSION = 1 as const;
@@ -314,23 +315,7 @@ export class IrisAgentSessionStore {
   history(sessionId: string): AgentHistorySnapshot {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error('[IrisAgentSessionStore] unknown session ' + sessionId);
-    const includedTurns = new Set(
-      session.turns.filter((turn) => turn.state !== 'removed').map((turn) => turn.id),
-    );
-    return {
-      revision: session.revision,
-      anchor: { ...session.anchor },
-      messages: session.transcript
-        .filter((frame) => includedTurns.has(frame.turnId))
-        .map((frame) => ({
-          id: frame.id,
-          turnId: frame.turnId,
-          role: frame.role,
-          content: frame.content,
-          createdAt: frame.createdAt,
-          ...(frame.providerMessage ? { providerMessage: structuredClone(frame.providerMessage) } : {}),
-        })),
-    };
+    return buildAgentContextFromSession(session);
   }
 
   async flush(): Promise<void> {}

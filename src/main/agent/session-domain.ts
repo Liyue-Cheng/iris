@@ -53,11 +53,48 @@ export function undoLatestIrisAgentTurn(
   assertUndoableLatestIrisAgentTurn(source);
   if (source.undoReceipts.some((receipt) => receipt.commandId === commandId)) return source;
   const session = cloneAgentSession(source);
-  const turn = [...session.turns].reverse().find((candidate) => candidate.state !== 'removed')!;
+  const visibleCount = session.effectiveTraceLength === 0 && session.turns.length > 0 && session.undoReceipts.length === 0
+    ? session.turns.length
+    : Math.min(session.effectiveTraceLength ?? session.turns.length, session.turns.length);
+  const turn = [...session.turns.slice(0, visibleCount)].reverse().find((candidate) => candidate.state !== 'removed')!;
   turn.state = 'removed';
   turn.closedAt ??= now;
   session.currentTurnId = null;
   session.state = 'idle';
+  session.effectiveTraceLength = session.turns.findIndex((candidate) => candidate.id === turn.id);
+  const intent = session.intents?.find((candidate) => candidate.id === turn.intentId);
+  if (intent) intent.state = 'superseded';
+  session.undoReceipts.push({
+    commandId,
+    removedTurnId: turn.id,
+    removedAt: now,
+    externalEffectsRetained: true,
+  });
+  return session;
+}
+
+/**
+ * Rewind the cognitive trace by moving its effective prefix. Entries remain
+ * append-only for audit/recovery, while Context no longer sees the suffix.
+ */
+export function truncateIntentChain(
+  source: AgentSessionAggregate,
+  commandId: string = randomUUID(),
+  now = Date.now(),
+): AgentSessionAggregate {
+  assertUndoableLatestIrisAgentTurn(source);
+  if (source.undoReceipts.some((receipt) => receipt.commandId === commandId)) return source;
+  const session = cloneAgentSession(source);
+  const count = session.effectiveTraceLength === 0 && session.turns.length > 0 && session.undoReceipts.length === 0
+    ? session.turns.length
+    : Math.min(session.effectiveTraceLength ?? session.turns.length, session.turns.length);
+  const turn = [...session.turns.slice(0, count)].reverse().find((candidate) => candidate.state !== 'removed');
+  if (!turn) throw new Error('There is no Iris Agent turn to truncate.');
+  session.effectiveTraceLength = session.turns.findIndex((candidate) => candidate.id === turn.id);
+  session.currentTurnId = null;
+  session.state = 'idle';
+  const intent = session.intents?.find((candidate) => candidate.id === turn.intentId);
+  if (intent) intent.state = 'superseded';
   session.undoReceipts.push({
     commandId,
     removedTurnId: turn.id,
@@ -94,6 +131,11 @@ export function completeActiveAgentTurn(
   completeStreamingReplies(session, turn.id, 'completed', 'committed', now);
   session.state = 'idle';
   session.currentTurnId = null;
+  const intent = session.intents?.find((candidate) => candidate.id === turn.intentId);
+  if (intent) {
+    delete intent.pauseReason;
+    delete intent.closedAt;
+  }
   delete session.stopRequestedTurnId;
   return session;
 }
@@ -164,6 +206,11 @@ export function pauseActiveAgentTurn(
   }
   appendInterruptedToolResults(session, turn.id, message, now);
   session.state = 'paused';
+  const intent = session.intents?.find((candidate) => candidate.id === turn.intentId);
+  if (intent) {
+    intent.state = 'paused';
+    intent.pauseReason = reason;
+  }
   session.currentTurnId = turn.id;
   delete session.stopRequestedTurnId;
   return session;
@@ -195,6 +242,11 @@ export function resumePausedAgentTurn(source: AgentSessionAggregate): AgentSessi
   delete turn.pauseReason;
   delete turn.error;
   session.state = 'running';
+  const intent = session.intents?.find((candidate) => candidate.id === turn.intentId);
+  if (intent) {
+    intent.state = 'running';
+    delete intent.pauseReason;
+  }
   return session;
 }
 
@@ -207,6 +259,11 @@ export function abandonOpenAgentTurn(
   if (turn && turn.state !== 'fulfilled' && turn.state !== 'abandoned' && turn.state !== 'removed') {
     turn.state = 'abandoned';
     turn.closedAt = now;
+    const intent = session.intents?.find((candidate) => candidate.id === turn.intentId);
+    if (intent) {
+      intent.state = 'superseded';
+      intent.closedAt = now;
+    }
   }
   session.currentTurnId = null;
   session.state = 'idle';

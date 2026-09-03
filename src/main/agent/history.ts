@@ -8,4 +8,5 @@ export {
   preparePausedAgentTurnForResume,
   resumePausedAgentTurn,
   undoLatestIrisAgentTurn,
+  truncateIntentChain,
 } from './session-domain';

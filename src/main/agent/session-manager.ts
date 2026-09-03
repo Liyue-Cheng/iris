@@ -20,6 +20,7 @@ import {
   preparePausedAgentTurnForResume,
   resumePausedAgentTurn,
   undoLatestIrisAgentTurn,
+  truncateIntentChain,
 } from './session-domain';
 import { IrisAgentToolHost, type IrisAgentToolHostResult } from './tool-host';
 import {
@@ -60,6 +61,7 @@ import type {
   AgentSessionAggregate,
   AgentToolActivity,
 } from './session-model';
+import { diffAnchorText } from './trace-context';
 import {
   cloneAgentSession,
   createEmptyAgentSession,
@@ -283,12 +285,28 @@ export class IrisAgentSessionManager extends EventEmitter {
       session = abandonOpenAgentTurn(await this.requireSession(scope, sessionId));
     }
     const turnId = randomUUID();
+    const intentId = randomUUID();
     const now = Date.now();
+    for (const intent of session.intents ?? []) {
+      if (intent.state !== 'superseded') {
+        intent.state = 'superseded';
+        intent.closedAt = now;
+      }
+    }
+    const userActivityId = randomUUID();
     session.turns.push({
       id: turnId,
-      userActivityId: randomUUID(),
+      userActivityId,
+      intentId,
       state: 'running',
       assembledInputAvailable: false,
+      createdAt: now,
+    });
+    (session.intents ??= []).push({
+      id: intentId,
+      userActivityId,
+      turnIds: [turnId],
+      state: 'running',
       createdAt: now,
     });
     const turn = session.turns[session.turns.length - 1]!;
@@ -329,6 +347,7 @@ export class IrisAgentSessionManager extends EventEmitter {
         content: prepared.prompt,
         createdAt: now,
       });
+      session.effectiveTraceLength = session.turns.length;
       session.requestFacts.push(prepared.facts);
       session.state = 'running';
       running = await store.commit(session);
@@ -453,7 +472,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       assertUndoableLatestIrisAgentTurn(session);
       await this.shutdownHost(sessionId);
       const latest = await this.requireSession(scope, sessionId);
-      const saved = await store.commit(undoLatestIrisAgentTurn(
+      const saved = await store.commit(truncateIntentChain(
         latest,
         precondition.commandId ?? randomUUID(),
       ));
@@ -465,7 +484,11 @@ export class IrisAgentSessionManager extends EventEmitter {
   async getTurnArtifactPath(scope: ProjectScope, sessionId: string, turnId: string): Promise<string> {
     const store = await this.ensureStore(scope.root);
     const session = await this.requireSession(scope, sessionId);
-    const turn = session.turns.find((candidate) => candidate.id === turnId && candidate.state !== 'removed');
+    const effectiveCount = session.effectiveTraceLength === 0 && session.turns.length > 0 && session.undoReceipts.length === 0
+      ? session.turns.length
+      : Math.min(session.effectiveTraceLength ?? session.turns.length, session.turns.length);
+    const turn = session.turns.find((candidate, index) =>
+      candidate.id === turnId && index < effectiveCount && candidate.state !== 'removed');
     if (!turn) throw new Error('The Iris Agent turn was not found.');
     const hasProviderContext = session.providerCalls.some((call) => call.turnId === turnId);
     if (hasProviderContext) {
@@ -650,6 +673,12 @@ export class IrisAgentSessionManager extends EventEmitter {
         promptFingerprint: assembled.fingerprint,
         layerFingerprints: assembled.layerFingerprints,
         anchor: { ...session.anchor },
+        layerRefs: { agent: 'current', software: 'current', project: 'current' },
+        anchorSnapshot: anchorText.text,
+        anchorDiff: diffAnchorText(
+          [...session.requestFacts].reverse().find((fact) => fact.anchor.path === session.anchor.path)?.anchorSnapshot,
+          anchorText.text,
+        ),
         promptChars: prompt.length,
         redacted: true,
       },
@@ -1613,11 +1642,15 @@ export function createIrisAgentBranch(
     ...turn,
     assembledInputAvailable: false,
   }));
+  branch.intents = structuredClone((source.intents ?? []).filter((intent) =>
+    intent.turnIds.some((turnId) => branch.turns.some((turn) => turn.id === turnId)),
+  ));
   const turnIds = new Set(branch.turns.map((turn) => turn.id));
   branch.providerCalls = structuredClone(source.providerCalls.filter((call) => turnIds.has(call.turnId)));
   branch.providerAttempts = structuredClone(source.providerAttempts.filter((attempt) => turnIds.has(attempt.turnId)));
   branch.timeline = structuredClone(source.timeline.filter((activity) => turnIds.has(activity.turnId)));
   branch.transcript = structuredClone(source.transcript.filter((frame) => turnIds.has(frame.turnId)));
+  branch.effectiveTraceLength = branch.turns.length;
   branch.nextOrdinal = Math.max(0, ...branch.timeline.map((activity) => activity.ordinal)) + 1;
   return branch;
 }
