@@ -15,10 +15,10 @@ function agent(state: IrisAgentSessionInfo['state'], path = '.iris/issue/task.md
     createdAt: 1,
     updatedAt: 1,
     revision: 1,
-    currentTurnId: null,
-    turns: [],
+    currentIntentId: null,
+    intents: [],
     terminals: [],
-    canUndoLatestTurn: false,
+    canRewindLatestIntent: false,
     selfHostingEligible: false,
   };
 }

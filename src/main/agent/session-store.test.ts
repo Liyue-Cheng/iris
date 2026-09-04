@@ -1,4 +1,5 @@
 import { access, appendFile, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createTempDataDir, removeTempDataDir } from '../persistence';
@@ -8,8 +9,15 @@ import {
   agentSessionStorePath,
   agentV2Root,
   agentV3Root,
+  migrateLegacyAgentSession,
   resetLegacyIrisAgentData,
 } from './session-store';
+import { truncateIntentChain } from './session-domain';
+
+const injection = {
+  methods: { agent: 'current' as const, software: 'current' as const, project: 'current' as const },
+  anchor: { path: '.iris', baselineText: '', baselineSha256: '', capturedAt: 1 },
+};
 
 function aggregate(projectRoot: string) {
   return createEmptyAgentSession({
@@ -18,24 +26,53 @@ function aggregate(projectRoot: string) {
     model: { provider: 'openai', modelId: 'gpt-test' },
     projectRoot,
     displayName: 'Iris Agent',
+    injection,
     now: 1,
   });
 }
 
-describe('IrisAgentSessionStore v2', () => {
-  it('removes legacy Agent roots once and preserves provider profiles', async () => {
-    const userData = await createTempDataDir('iris-agent-v2-reset-');
+function addExecution(session: ReturnType<typeof aggregate>, state: 'running' | 'completed' = 'completed') {
+  session.activeIntentIds = ['intent-1'];
+  session.currentIntentId = state === 'running' ? 'intent-1' : null;
+  session.state = state === 'running' ? 'running' : 'idle';
+  session.intents.push({
+    id: 'intent-1', content: 'write it', turnIds: ['turn-1'],
+    state: state === 'running' ? 'running' : 'completed',
+    assembledInputAvailable: true, createdAt: 2,
+    ...(state === 'completed' ? { closedAt: 4 } : {}),
+  });
+  session.turns.push({
+    id: 'turn-1', intentId: 'intent-1', invokeId: 'invoke-1',
+    state: state === 'running' ? 'running' : 'settled',
+    assistant: { content: '', toolCalls: [{ id: 'tool-1', tool: 'write', input: {} }], createdAt: 2 },
+    toolResults: state === 'completed'
+      ? [{ toolCallId: 'tool-1', tool: 'write', content: 'ok', isError: false, createdAt: 3 }]
+      : [],
+    createdAt: 2,
+    ...(state === 'completed' ? { settledAt: 4 } : {}),
+  });
+  session.invokes.push({
+    id: 'invoke-1', intentId: 'intent-1', turnId: 'turn-1', index: 1,
+    state, attemptIds: ['attempt-1'], createdAt: 2,
+    ...(state === 'completed' ? { completedAt: 4 } : {}),
+  });
+  session.invokeAttempts.push({
+    id: 'attempt-1', invokeId: 'invoke-1', intentId: 'intent-1', turnId: 'turn-1',
+    index: 1, state, createdAt: 2,
+    ...(state === 'completed' ? { completedAt: 4 } : {}),
+  });
+}
+
+describe('IrisAgentSessionStore', () => {
+  it('removes pre-journal Agent roots once and preserves provider profiles', async () => {
+    const userData = await createTempDataDir('iris-agent-reset-');
     try {
       await mkdir(join(userData, 'iris-agent-sessions'), { recursive: true });
       await mkdir(join(userData, 'iris-agent-output'), { recursive: true });
       await mkdir(agentV2Root(userData), { recursive: true });
       await writeFile(join(userData, 'iris-agent-sessions', 'old.json'), '{}');
-      await writeFile(join(userData, 'iris-agent-output', 'old.log'), 'old');
-      await writeFile(join(agentV2Root(userData), 'old.json'), '{}');
       await writeFile(join(userData, 'iris-agent-provider-profiles.json'), '{"profiles":[]}');
-
       await resetLegacyIrisAgentData(userData);
-
       await expect(access(join(userData, 'iris-agent-sessions'))).rejects.toMatchObject({ code: 'ENOENT' });
       await expect(access(join(userData, 'iris-agent-output'))).rejects.toMatchObject({ code: 'ENOENT' });
       await expect(access(agentV2Root(userData))).rejects.toMatchObject({ code: 'ENOENT' });
@@ -46,300 +83,276 @@ describe('IrisAgentSessionStore v2', () => {
     }
   });
 
-  it('commits a durable snapshot and hash-chained journal before restart recovery', async () => {
-    const userData = await createTempDataDir('iris-agent-v2-store-');
-    const projectRoot = join(userData, 'project');
-    try {
-      const store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
-      const first = await store.commit(aggregate(projectRoot));
-      first.displayName = 'Changed';
-      const second = await store.commit(first);
-      expect(second.revision).toBe(2);
-
-      const indexPath = agentSessionStorePath(userData, projectRoot);
-      const index = JSON.parse(await readFile(indexPath, 'utf8')) as { sessionIds: string[] };
-      expect(index.sessionIds).toEqual(['session-1']);
-      const sessionsDir = join(dirname(indexPath), 'sessions');
-      const [sessionDir] = await readdir(sessionsDir);
-      const journalRecords = (await readFile(join(sessionsDir, sessionDir!, 'journal.ndjson'), 'utf8'))
-        .trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
-      expect(journalRecords[1]).not.toHaveProperty('session');
-      expect(journalRecords[1]).toHaveProperty('transaction.events');
-      await rm(join(sessionsDir, sessionDir!, 'snapshot.json'));
-      const reloaded = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
-      expect(reloaded.get('session-1')).toMatchObject({ displayName: 'Changed', revision: 2 });
-    } finally {
-      await removeTempDataDir(userData);
-    }
-  });
-
-  it('ignores only a half-written journal tail and rejects a complete corrupted record', async () => {
-    const userData = await createTempDataDir('iris-agent-v2-journal-');
+  it('replays a hash-chained journal and ignores only a partial tail', async () => {
+    const userData = await createTempDataDir('iris-agent-journal-');
     const projectRoot = join(userData, 'project');
     try {
       let store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
-      await store.commit(aggregate(projectRoot));
+      const first = await store.commit(aggregate(projectRoot));
+      first.displayName = 'Changed';
+      await store.commit(first);
       const sessionsDir = join(dirname(agentSessionStorePath(userData, projectRoot)), 'sessions');
       const [sessionDir] = await readdir(sessionsDir);
       const journal = join(sessionsDir, sessionDir!, 'journal.ndjson');
+      await rm(join(sessionsDir, sessionDir!, 'snapshot.json'));
       await appendFile(journal, '{"partial":');
       store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
-      expect(store.get('session-1')?.revision).toBe(1);
+      expect(store.get('session-1')).toMatchObject({ displayName: 'Changed', revision: 2 });
       await appendFile(journal, 'false}\n');
-      await expect(IrisAgentSessionStore.load({ userDataPath: userData, projectRoot })).rejects.toThrow(
-        /invalid record|malformed record/,
-      );
+      await expect(IrisAgentSessionStore.load({ userDataPath: userData, projectRoot }))
+        .rejects.toThrow(/invalid record|malformed record/);
     } finally {
       await removeTempDataDir(userData);
     }
   });
 
-  it('recovers an interrupted Turn as paused without inventing a Reply', async () => {
-    const userData = await createTempDataDir('iris-agent-v2-recover-');
+  it('recovers an interrupted execution as a paused Intent and settled Turn', async () => {
+    const userData = await createTempDataDir('iris-agent-recover-');
     const projectRoot = join(userData, 'project');
     try {
       let store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
       const session = aggregate(projectRoot);
-      session.state = 'running';
-      session.currentTurnId = 'turn-1';
-      session.turns.push({
-        id: 'turn-1', userActivityId: 'user-1', state: 'running',
-        assembledInputAvailable: true, createdAt: 2,
-      });
-      session.providerCalls.push({
-        id: 'call-1', turnId: 'turn-1', index: 1, state: 'running',
-        attemptIds: [], createdAt: 2,
-      });
-      session.timeline.push(
-        {
-          kind: 'user', id: 'user-1', ordinal: 1, turnId: 'turn-1', content: 'hello',
-          assembledInputArtifactId: 'input-1', createdAt: 2,
-        },
-        {
-          kind: 'tool', id: 'tool-terminal', ordinal: 2, turnId: 'turn-1',
-          providerCallId: 'call-1', toolCallId: 'tool-terminal', tool: 'terminal',
-          intent: 'operation', state: 'running', inputSummary: 'long command',
-          operation: 'exec', command: 'long command', cwd: '.',
-          terminalId: 'terminal-running',
-          terminalArtifactRef: 'terminal/terminal-running.log',
-          terminalState: 'running', terminalStartedAt: 3,
-          terminalRevealedAt: 4, effectIds: ['terminal--operation-terminal'], createdAt: 3,
-        },
-      );
-      session.toolOperations.push({
-        id: 'operation-terminal', toolActivityId: 'tool-terminal', turnId: 'turn-1',
-        input: {
-          tool: 'terminal', operation: 'exec', command: 'long command',
-          intent: 'operation', cwd: '.',
-        },
-        state: 'running', createdAt: 3,
-      });
-      session.effects.push({
-        id: 'terminal--operation-terminal', turnId: 'turn-1',
-        toolActivityId: 'tool-terminal', kind: 'terminal-output',
-        artifactRef: 'terminal/terminal-running.log', createdAt: 3,
-      });
-      session.terminalSupervisionAlert = {
-        terminalId: 'terminal-running', evidence: 'pending decision', createdAt: 4,
-      };
-      session.nextOrdinal = 3;
+      addExecution(session, 'running');
       await store.commit(session);
       store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
       const recovered = store.get('session-1')!;
       expect(recovered.state).toBe('paused');
-      expect(recovered.turns[0]).toMatchObject({ state: 'paused', pauseReason: 'restart' });
-      expect(recovered.timeline[1]).toMatchObject({
-        state: 'canceled',
-        terminalState: 'exited',
-        terminalOutcome: 'canceled',
-        terminalArtifactRef: 'terminal/terminal-running.log',
+      expect(recovered.intents[0]).toMatchObject({
+        state: 'paused', pauseReason: 'restart', pauseMessage: expect.stringContaining('restarted'),
       });
-      expect(recovered.toolOperations[0]).toMatchObject({
-        state: 'failed', error: 'Iris restarted before the tool operation settled.',
-      });
-      expect(recovered.terminalSupervisionAlert).toBeUndefined();
-      expect(recovered.effects).toContainEqual(expect.objectContaining({
-        kind: 'terminal-output', artifactRef: 'terminal/terminal-running.log',
-      }));
+      expect(recovered.turns[0]).toMatchObject({ state: 'settled' });
+      expect(recovered.invokes[0]).toMatchObject({ state: 'failed' });
+      expect(recovered.invokeAttempts[0]).toMatchObject({ state: 'failed' });
     } finally {
       await removeTempDataDir(userData);
     }
   });
 
-  it('loads legacy terminal facts without parsing or rewriting resultSummary', async () => {
-    const userData = await createTempDataDir('iris-agent-v2-terminal-normalize-');
+  it('builds Worker history from Intent and provider-neutral Turn facts', async () => {
+    const userData = await createTempDataDir('iris-agent-history-');
+    const projectRoot = join(userData, 'project');
+    try {
+      const store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
+      const session = aggregate(projectRoot);
+      addExecution(session);
+      session.turns[0]!.assistant = { content: 'committed answer', toolCalls: [], createdAt: 3 };
+      session.turns[0]!.toolResults = [];
+      await store.commit(session);
+      expect(store.history('session-1').messages.map((message) => message.content))
+        .toEqual(['write it', 'committed answer']);
+    } finally {
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('moves legacy Turn artifact directories to Intent ownership on load', async () => {
+    const userData = await createTempDataDir('iris-agent-artifact-migration-');
     const projectRoot = join(userData, 'project');
     try {
       let store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
       const session = aggregate(projectRoot);
-      session.state = 'idle';
-      session.turns.push({
-        id: 'turn-1', userActivityId: 'user-1', state: 'fulfilled',
-        assembledInputAvailable: true, createdAt: 1, closedAt: 4,
-      });
-      session.providerCalls.push({
-        id: 'call-1', turnId: 'turn-1', index: 1, state: 'completed',
-        attemptIds: [], createdAt: 1, completedAt: 4,
-      });
-      session.timeline.push({
-        kind: 'user', id: 'user-1', ordinal: 1, turnId: 'turn-1', content: 'run',
-        assembledInputArtifactId: 'input-1', createdAt: 1,
-      }, {
-        kind: 'tool', id: 'tool-1', ordinal: 2, turnId: 'turn-1',
-        providerCallId: 'call-1', toolCallId: 'tool-1', tool: 'terminal',
-        intent: 'operation', state: 'completed', inputSummary: 'old command',
-        operation: 'exec', command: 'old command', cwd: '.',
-        resultSummary: 'PowerShell: exit 0, 10 bytes', terminalId: 'terminal-old',
-        effectIds: ['terminal--operation-1'], createdAt: 2, completedAt: 3,
-      });
-      session.effects.push({
-        id: 'terminal--operation-1', turnId: 'turn-1', toolActivityId: 'tool-1',
-        kind: 'terminal-output', artifactRef: 'terminal/terminal-old.log', createdAt: 3,
-      });
-      session.nextOrdinal = 3;
+      addExecution(session);
       await store.commit(session);
+      const sessionsDir = join(dirname(agentSessionStorePath(userData, projectRoot)), 'sessions');
+      const [sessionDir] = await readdir(sessionsDir);
+      const artifactKey = digest('intent-1').slice(0, 32);
+      const legacyDir = join(sessionsDir, sessionDir!, 'artifacts', 'turns', artifactKey);
+      await mkdir(legacyDir, { recursive: true });
+      await writeFile(join(legacyDir, 'assembled-input.txt'), 'legacy prompt');
 
       store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
-      const terminal = store.get('session-1')!.timeline[1];
-      expect(terminal).not.toHaveProperty('terminalArtifactRef');
-      expect(terminal).not.toHaveProperty('terminalState');
-      expect(terminal).not.toHaveProperty('terminalOutcome');
-      expect(terminal).toMatchObject({ resultSummary: 'PowerShell: exit 0, 10 bytes' });
+
+      expect(await readFile(store.promptSnapshotPath('session-1', 'intent-1'), 'utf8'))
+        .toBe('legacy prompt');
+      await expect(access(legacyDir)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await removeTempDataDir(userData);
     }
   });
 
-  it('builds Worker history only from committed Transcript frames', async () => {
-    const userData = await createTempDataDir('iris-agent-v2-history-');
-    const projectRoot = join(userData, 'project');
-    try {
-      const store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
-      const session = aggregate(projectRoot);
-      session.turns.push({
-        id: 'turn-1', userActivityId: 'user-1', state: 'fulfilled',
-        assembledInputAvailable: true, createdAt: 1, closedAt: 2,
-      });
-      session.providerCalls.push({
-        id: 'call-1', turnId: 'turn-1', index: 1, state: 'completed',
-        attemptIds: ['attempt-0'], createdAt: 1, completedAt: 2,
-      });
-      session.providerAttempts.push({
-        id: 'attempt-0', providerCallId: 'call-1', turnId: 'turn-1', index: 1,
-        state: 'failed', createdAt: 1, completedAt: 2,
-      });
-      session.transcript.push({
-        id: 'provider-1', turnId: 'turn-1', providerCallId: 'call-1',
-        role: 'assistant', content: 'committed answer', createdAt: 2,
-      });
-      session.timeline.push({
-        kind: 'user', id: 'user-1', ordinal: 1, turnId: 'turn-1', content: 'hello',
-        assembledInputArtifactId: 'input-1', createdAt: 1,
-      }, {
-        kind: 'reply', id: 'excluded', ordinal: 2, turnId: 'turn-1',
-        providerCallId: 'call-1', providerAttemptId: 'attempt-0', providerMessageId: 'failed-1',
-        state: 'failed', contextDisposition: 'excluded', content: 'failed draft', createdAt: 1,
-      });
-      session.nextOrdinal = 3;
-      await store.commit(session);
-      expect(store.history('session-1').messages.map((message) => message.content)).toEqual(['committed answer']);
-    } finally {
-      await removeTempDataDir(userData);
-    }
-  });
-
-  it('rejects mutation of a terminal Reply at the Store boundary', async () => {
-    const userData = await createTempDataDir('iris-agent-v2-terminal-');
-    const projectRoot = join(userData, 'project');
-    try {
-      const store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
-      const session = aggregate(projectRoot);
-      session.turns.push({
-        id: 'turn-1', userActivityId: 'user-1', state: 'fulfilled',
-        assembledInputAvailable: true, createdAt: 1, closedAt: 2,
-      });
-      session.providerCalls.push({
-        id: 'call-1', turnId: 'turn-1', index: 1, state: 'completed',
-        attemptIds: ['attempt-1'], createdAt: 1, completedAt: 2,
-      });
-      session.providerAttempts.push({
-        id: 'attempt-1', providerCallId: 'call-1', turnId: 'turn-1', index: 1,
-        state: 'completed', createdAt: 1, completedAt: 2,
-      });
-      session.timeline.push({
-        kind: 'user', id: 'user-1', ordinal: 1, turnId: 'turn-1', content: 'hello',
-        assembledInputArtifactId: 'input-1', createdAt: 1,
-      }, {
-        kind: 'reply', id: 'reply-1', ordinal: 2, turnId: 'turn-1',
-        providerCallId: 'call-1', providerAttemptId: 'attempt-1', providerMessageId: 'message-1',
-        state: 'completed', contextDisposition: 'committed', content: 'final', createdAt: 1, completedAt: 2,
-      });
-      session.nextOrdinal = 3;
-      const saved = await store.commit(session);
-      (saved.timeline[1] as { content: string }).content = 'rewritten';
-      await expect(store.commit(saved)).rejects.toThrow(/immutable/);
-    } finally {
-      await removeTempDataDir(userData);
-    }
-  });
-
-  it('recovers a file Effect when the process stopped after the write but before ledger settlement', async () => {
-    const userData = await createTempDataDir('iris-agent-v2-effect-recovery-');
+  it('restores file effects with compare-and-swap validation', async () => {
+    const userData = await createTempDataDir('iris-agent-rewind-');
     const projectRoot = join(userData, 'project');
     const target = join(projectRoot, 'value.txt');
     try {
       await mkdir(projectRoot, { recursive: true });
-      let store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
-      const session = aggregate(projectRoot);
-      session.state = 'waiting-tool';
-      session.currentTurnId = 'turn-1';
-      session.turns.push({
-        id: 'turn-1', userActivityId: 'user-1', state: 'running',
-        assembledInputAvailable: true, createdAt: 1,
-      });
-      session.providerCalls.push({
-        id: 'call-1', turnId: 'turn-1', index: 1, state: 'running',
-        attemptIds: ['attempt-1'], createdAt: 1,
-      });
-      session.providerAttempts.push({
-        id: 'attempt-1', providerCallId: 'call-1', turnId: 'turn-1', index: 1,
-        state: 'running', createdAt: 1,
-      });
-      session.timeline.push(
-        {
-          kind: 'user', id: 'user-1', ordinal: 1, turnId: 'turn-1', content: 'write',
-          assembledInputArtifactId: 'input-1', createdAt: 1,
-        },
-        {
-          kind: 'tool', id: 'tool-1', ordinal: 2, turnId: 'turn-1',
-          providerCallId: 'call-1', toolCallId: 'tool-1',
-          tool: 'write', state: 'running', inputSummary: 'write value.txt', operation: 'writeFile',
-          effectIds: [], createdAt: 2,
-        },
-      );
-      session.toolOperations.push({
-        id: 'operation-1', toolActivityId: 'tool-1', turnId: 'turn-1',
-        input: { tool: 'write', operation: 'writeFile', absolutePath: target, content: 'after' },
-        state: 'running', createdAt: 2,
-      });
-      session.nextOrdinal = 3;
-      await store.commit(session);
-      const sessionsDir = join(dirname(agentSessionStorePath(userData, projectRoot)), 'sessions');
-      const [sessionDir] = await readdir(sessionsDir);
-      const artifactDir = join(sessionsDir, sessionDir!, 'artifacts', 'effects');
-      await mkdir(artifactDir, { recursive: true });
-      await writeFile(join(artifactDir, 'file--operation-1.json'), JSON.stringify({
-        path: 'value.txt', operation: 'write', beforeSha256: null,
-        afterSha256: 'f39592393ef0859cb196a52693d2cea00fb2df784b3c04ae54aa7cadb8e562f8',
-      }));
       await writeFile(target, 'after');
-
-      store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
-      expect(store.get('session-1')?.effects).toContainEqual(expect.objectContaining({
-        id: 'file--operation-1', kind: 'file-write', path: 'value.txt',
+      const store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
+      const session = aggregate(projectRoot);
+      addExecution(session);
+      session.timeline.push({
+        kind: 'tool', id: 'tool-1', ordinal: 1, intentId: 'intent-1', turnId: 'turn-1',
+        invokeId: 'invoke-1', toolCallId: 'tool-1', tool: 'write', state: 'completed',
+        inputSummary: 'write value.txt', operation: 'writeFile', path: 'value.txt',
+        resultSummary: 'updated', effectIds: ['file--operation-1'], createdAt: 2, completedAt: 3,
+      });
+      session.nextOrdinal = 2;
+      session.effects.push({
+        id: 'file--operation-1', intentId: 'intent-1', turnId: 'turn-1',
+        toolActivityId: 'tool-1', kind: 'file-write', path: 'value.txt', operation: 'write',
+        beforeSha256: digest('before'), afterSha256: digest('after'),
+        artifactRef: 'effects/file--operation-1.json', createdAt: 3,
+      });
+      await mkdir(join(store.artifactRoot('session-1'), 'effects'), { recursive: true });
+      await writeFile(join(store.artifactRoot('session-1'), 'effects', 'file--operation-1.json'), JSON.stringify({
+        path: 'value.txt', operation: 'write', beforeContent: 'before', afterContent: 'after',
+        beforeSha256: digest('before'), afterSha256: digest('after'),
       }));
+      await store.commit(session);
+
+      const restored = await store.rewindIntentEffects('session-1', 'intent-1');
+      expect(restored).toEqual({
+        revertedEffectIds: ['file--operation-1'], retainedEffectIds: [],
+      });
+      const rewound = truncateIntentChain(store.get('session-1')!, 'rewind-1', 5);
+      Object.assign(rewound.rewindReceipts.at(-1)!, restored);
+      const saved = await store.commit(rewound);
+      expect(saved.activeIntentIds).toEqual([]);
+      expect(saved.intents[0]?.state).toBe('superseded');
+      expect(saved.rewindReceipts[0]).toMatchObject(restored);
+      expect(await readFile(target, 'utf8')).toBe('before');
+    } finally {
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('rejects rewind when a file changed after the Intent wrote it', async () => {
+    const userData = await createTempDataDir('iris-agent-rewind-conflict-');
+    const projectRoot = join(userData, 'project');
+    const target = join(projectRoot, 'value.txt');
+    try {
+      await mkdir(projectRoot, { recursive: true });
+      await writeFile(target, 'user change');
+      const store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
+      const session = aggregate(projectRoot);
+      addExecution(session);
+      session.timeline.push({
+        kind: 'tool', id: 'tool-1', ordinal: 1, intentId: 'intent-1', turnId: 'turn-1',
+        invokeId: 'invoke-1', toolCallId: 'tool-1', tool: 'write', state: 'completed',
+        inputSummary: 'write value.txt', operation: 'writeFile', effectIds: ['file--operation-1'],
+        createdAt: 2, completedAt: 3,
+      });
+      session.nextOrdinal = 2;
+      session.effects.push({
+        id: 'file--operation-1', intentId: 'intent-1', turnId: 'turn-1',
+        toolActivityId: 'tool-1', kind: 'file-write', path: 'value.txt', operation: 'write',
+        beforeSha256: digest('before'), afterSha256: digest('after'),
+        artifactRef: 'effects/file--operation-1.json', createdAt: 3,
+      });
+      await mkdir(join(store.artifactRoot('session-1'), 'effects'), { recursive: true });
+      await writeFile(join(store.artifactRoot('session-1'), 'effects', 'file--operation-1.json'), JSON.stringify({
+        path: 'value.txt', beforeContent: 'before', afterContent: 'after',
+        beforeSha256: digest('before'), afterSha256: digest('after'),
+      }));
+      await store.commit(session);
+      await expect(store.rewindIntentEffects('session-1', 'intent-1'))
+        .rejects.toThrow('file changed after this Intent wrote it');
+      expect(await readFile(target, 'utf8')).toBe('user change');
+    } finally {
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('migrates legacy tombstones and transcript at the load boundary only', () => {
+    const migrated = migrateLegacyAgentSession({
+      id: 'legacy', kind: 'iris-agent', anchor: { kind: 'workspace', path: '.iris' },
+      model: { provider: 'openai', modelId: 'test' }, projectRoot: 'E:/project',
+      displayName: 'Legacy', state: 'idle', revision: 4, workerEpoch: 1, nextOrdinal: 7,
+      currentTurnId: null, createdAt: 1, updatedAt: 4, selfHostingEligible: false,
+      turns: [
+        { id: 'A', userActivityId: 'uA', state: 'fulfilled', assembledInputAvailable: true, createdAt: 1 },
+        { id: 'B', userActivityId: 'uB', state: 'fulfilled', assembledInputAvailable: true, createdAt: 2 },
+        { id: 'C', userActivityId: 'uC', state: 'fulfilled', assembledInputAvailable: true, createdAt: 3 },
+      ],
+      intents: [], effectiveTraceLength: 2,
+      providerCalls: [{ id: 'call-C', turnId: 'C', index: 1, state: 'completed', attemptIds: [], createdAt: 3 }],
+      providerAttempts: [],
+      timeline: [
+        { id: 'uA', ordinal: 1, turnId: 'A', kind: 'user', content: 'A', assembledInputArtifactId: 'A', createdAt: 1 },
+        { id: 'uB', ordinal: 2, turnId: 'B', kind: 'user', content: 'B', assembledInputArtifactId: 'B', createdAt: 2 },
+        { id: 'uC', ordinal: 3, turnId: 'C', kind: 'user', content: 'C', assembledInputArtifactId: 'C', createdAt: 3 },
+      ],
+      toolOperations: [], effects: [], requestFacts: [],
+      transcript: [{
+        id: 'provider-C', turnId: 'C', role: 'assistant', providerCallId: 'call-C',
+        content: 'answer C', providerMessage: { role: 'assistant', content: [{ type: 'text', text: 'answer C' }] },
+        createdAt: 4,
+      }],
+      undoReceipts: [{ commandId: 'rewind-B', removedTurnId: 'B', removedAt: 3, externalEffectsRetained: true }],
+    });
+    expect(migrated.activeIntentIds).toEqual(['A', 'C']);
+    expect(migrated.intents.find((intent) => intent.id === 'B')?.state).toBe('superseded');
+    expect(migrated.turns[0]?.assistant?.content).toBe('answer C');
+    expect(migrated).not.toHaveProperty('transcript');
+    expect(migrated).not.toHaveProperty('effectiveTraceLength');
+    expect(migrated).not.toHaveProperty('providerAttempts');
+  });
+
+  it('routes every v2 journal record through the isolated migration boundary', async () => {
+    const userData = await createTempDataDir('iris-agent-v2-migration-');
+    const projectRoot = join(userData, 'project');
+    try {
+      await resetLegacyIrisAgentData(userData);
+      const sessionDir = join(
+        dirname(agentSessionStorePath(userData, projectRoot)),
+        'sessions',
+        digest('legacy-session').slice(0, 32),
+      );
+      await mkdir(sessionDir, { recursive: true });
+      const legacy = {
+        id: 'legacy-session', kind: 'iris-agent', anchor: { kind: 'workspace', path: '.iris' },
+        model: { provider: 'openai', modelId: 'test' }, projectRoot,
+        displayName: 'Before scalar update', state: 'idle', revision: 1, workerEpoch: 0,
+        nextOrdinal: 2, currentTurnId: null, createdAt: 1, updatedAt: 1, selfHostingEligible: false,
+        turns: [{
+          id: 'A', userActivityId: 'uA', state: 'fulfilled',
+          assembledInputAvailable: true, createdAt: 1,
+        }],
+        intents: [], providerCalls: [], providerAttempts: [],
+        timeline: [{
+          id: 'uA', ordinal: 1, turnId: 'A', kind: 'user', content: 'A',
+          assembledInputArtifactId: 'A', createdAt: 1,
+        }],
+        toolOperations: [], transcript: [], effects: [], requestFacts: [], undoReceipts: [],
+        effectiveTraceLength: 1,
+      };
+      const firstInput = {
+        version: 2, revision: 1, previousHash: '', committedAt: 1,
+        transaction: { events: [{ type: 'session.created', session: legacy }] },
+      };
+      const first = { ...firstInput, journalHash: digest(JSON.stringify(firstInput)) };
+      const secondInput = {
+        version: 2, revision: 2, previousHash: first.journalHash, committedAt: 2,
+        transaction: {
+          events: [{
+            type: 'session.updated',
+            patch: { revision: 2, displayName: 'After scalar update', updatedAt: 2 },
+            removedKeys: [],
+          }],
+        },
+      };
+      const second = { ...secondInput, journalHash: digest(JSON.stringify(secondInput)) };
+      await writeFile(
+        join(sessionDir, 'journal.ndjson'),
+        JSON.stringify(first) + '\n' + JSON.stringify(second) + '\n',
+      );
+
+      const store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
+      const migrated = store.get('legacy-session')!;
+      expect(migrated).toMatchObject({
+        revision: 2, displayName: 'After scalar update', activeIntentIds: ['A'],
+      });
+      expect(migrated).not.toHaveProperty('transcript');
+      const snapshot = JSON.parse(await readFile(join(sessionDir, 'snapshot.json'), 'utf8')) as {
+        version: number;
+      };
+      expect(snapshot.version).toBe(3);
     } finally {
       await removeTempDataDir(userData);
     }
   });
 });
+
+function digest(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}

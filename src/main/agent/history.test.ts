@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  completeActiveAgentTurn,
-  pauseActiveAgentTurn,
-  resumePausedAgentTurn,
-  undoLatestIrisAgentTurn,
+  completeActiveAgentIntent,
+  pauseActiveAgentIntent,
+  resumePausedAgentIntent,
+  truncateIntentChain,
 } from './session-domain';
 import { createEmptyAgentSession, projectAgentSession } from './session-model';
+import { createIrisAgentBranch, createIrisAgentInputBranch } from './session-manager';
 
 function runningSession() {
   const session = createEmptyAgentSession({
@@ -14,86 +15,110 @@ function runningSession() {
     model: { provider: 'openai', modelId: 'gpt-test' },
     projectRoot: 'E:/project',
     displayName: 'Iris Agent',
+    injection: {
+      methods: { agent: 'current', software: 'current', project: 'current' },
+      anchor: { path: '.iris', baselineText: '', baselineSha256: '', capturedAt: 1 },
+    },
     now: 1,
   });
   session.state = 'running';
-  session.currentTurnId = 'turn-1';
-  session.turns.push({
-    id: 'turn-1', userActivityId: 'user-1', state: 'running',
+  session.currentIntentId = 'intent-1';
+  session.activeIntentIds = ['intent-1'];
+  session.intents.push({
+    id: 'intent-1', content: 'do it', turnIds: ['turn-1'], state: 'running',
     assembledInputAvailable: true, createdAt: 1,
   });
-  session.timeline.push(
-    {
-      kind: 'user', id: 'user-1', ordinal: 1, turnId: 'turn-1', content: 'do it',
-      assembledInputArtifactId: 'input-1', createdAt: 1,
-    },
-    {
-      kind: 'reply', id: 'reply-a', ordinal: 2, turnId: 'turn-1',
-      providerCallId: 'call-1', providerAttemptId: 'attempt-1', providerMessageId: 'message-1',
-      state: 'streaming', contextDisposition: 'pending', content: 'partial A', createdAt: 2,
-    },
-  );
-  session.nextOrdinal = 3;
+  session.turns.push({
+    id: 'turn-1', intentId: 'intent-1', invokeId: 'invoke-1', state: 'running',
+    assistant: null, toolResults: [], createdAt: 1,
+  });
+  session.invokes.push({
+    id: 'invoke-1', intentId: 'intent-1', turnId: 'turn-1', index: 1,
+    state: 'running', attemptIds: ['attempt-1'], createdAt: 1,
+  });
+  session.invokeAttempts.push({
+    id: 'attempt-1', invokeId: 'invoke-1', intentId: 'intent-1', turnId: 'turn-1',
+    index: 1, state: 'running', createdAt: 1,
+  });
+  session.timeline.push({
+    kind: 'reply', id: 'reply-a', ordinal: 1, intentId: 'intent-1', turnId: 'turn-1',
+    invokeId: 'invoke-1', invokeAttemptId: 'attempt-1', providerMessageId: 'message-1',
+    state: 'streaming', contextDisposition: 'pending', content: 'partial A', createdAt: 2,
+  });
+  session.nextOrdinal = 2;
   return session;
 }
 
-describe('Iris Agent Turn domain', () => {
-  it('pauses the Turn without deleting the partial Reply', () => {
-    const paused = pauseActiveAgentTurn(
-      runningSession(),
-      { sessionId: 'session-1', turnId: 'turn-1' },
-      'user',
-      'Paused by user.',
-      3,
+describe('Iris Agent Intent domain', () => {
+  it('pauses an Intent while retaining its partial Reply as excluded evidence', () => {
+    const paused = pauseActiveAgentIntent(
+      runningSession(), { sessionId: 'session-1', intentId: 'intent-1' },
+      'user', 'Paused by user.', 3,
     );
-    expect(paused.turns[0]).toMatchObject({ state: 'paused', pauseReason: 'user' });
-    expect(paused.timeline[1]).toMatchObject({
+    expect(paused.intents[0]).toMatchObject({ state: 'paused', pauseReason: 'user' });
+    expect(paused.timeline[0]).toMatchObject({
       id: 'reply-a', state: 'stopped', content: 'partial A', contextDisposition: 'excluded',
     });
     expect(projectAgentSession(paused, 1).pause?.reason).toBe('user');
   });
 
-  it('resumes the same Turn and preserves Reply A before Reply B', () => {
-    const paused = pauseActiveAgentTurn(
-      runningSession(),
-      { sessionId: 'session-1', turnId: 'turn-1' },
-      'user',
-      'Paused by user.',
-      3,
-    );
-    const resumed = resumePausedAgentTurn(paused);
-    resumed.timeline.push({
-      kind: 'reply', id: 'reply-b', ordinal: 3, turnId: 'turn-1',
-      providerCallId: 'call-2', providerAttemptId: 'attempt-2', providerMessageId: 'message-2',
-      state: 'streaming', contextDisposition: 'pending', content: 'answer B', createdAt: 5,
+  it('resumes and completes the same Intent across multiple execution Turns', () => {
+    const resumed = resumePausedAgentIntent(pauseActiveAgentIntent(
+      runningSession(), { sessionId: 'session-1', intentId: 'intent-1' },
+      'user', 'Paused by user.', 3,
+    ));
+    resumed.intents[0]!.turnIds.push('turn-2');
+    resumed.turns.push({
+      id: 'turn-2', intentId: 'intent-1', invokeId: 'invoke-2', state: 'running',
+      assistant: { content: 'answer B', toolCalls: [], createdAt: 5 }, toolResults: [], createdAt: 5,
     });
-    const completed = completeActiveAgentTurn(
-      resumed,
-      { sessionId: 'session-1', turnId: 'turn-1' },
-      6,
+    resumed.invokes.push({
+      id: 'invoke-2', intentId: 'intent-1', turnId: 'turn-2', index: 2,
+      state: 'completed', attemptIds: [], createdAt: 5, completedAt: 5,
+    });
+    const completed = completeActiveAgentIntent(
+      resumed, { sessionId: 'session-1', intentId: 'intent-1' }, 6,
     );
-    expect(completed.turns[0]?.state).toBe('fulfilled');
-    expect(completed.timeline.map((activity) => activity.id)).toEqual(['user-1', 'reply-a', 'reply-b']);
-    expect(completed.timeline[2]).toMatchObject({ state: 'completed', contextDisposition: 'committed' });
-    expect(projectAgentSession(completed, 1).turns[0]?.cards.map((card) => card.id)).toEqual([
-      'reply-a', 'reply-b',
-    ]);
+    expect(completed.intents[0]?.state).toBe('completed');
+    expect(completed.intents[0]?.turnIds).toEqual(['turn-1', 'turn-2']);
+    expect(projectAgentSession(completed, 1).intents[0]?.state).toBe('completed');
   });
 
-  it('undoes conversation state while retaining the effect ledger', () => {
-    const completed = completeActiveAgentTurn(
-      runningSession(),
-      { sessionId: 'session-1', turnId: 'turn-1' },
-      3,
+  it('rewinds by superseding the latest Intent without deleting its facts', () => {
+    const completed = completeActiveAgentIntent(
+      runningSession(), { sessionId: 'session-1', intentId: 'intent-1' }, 3,
     );
-    completed.effects.push({
-      id: 'effect-1', kind: 'file-write', turnId: 'turn-1',
-      toolActivityId: 'tool-1', path: 'src/a.ts', operation: 'edit', beforeSha256: 'a',
-      afterSha256: 'b', artifactRef: 'effects/effect-1.json', createdAt: 2,
-    });
-    const undone = undoLatestIrisAgentTurn(completed, 'command-1', 4);
-    expect(undone.turns[0]?.state).toBe('removed');
-    expect(undone.effects).toHaveLength(1);
-    expect(projectAgentSession(undone, 1).turns).toEqual([]);
+    const rewound = truncateIntentChain(completed, 'command-1', 4);
+    expect(rewound.intents[0]?.state).toBe('superseded');
+    expect(rewound.turns).toHaveLength(1);
+    expect(rewound.activeIntentIds).toEqual([]);
+    expect(projectAgentSession(rewound, 1).intents).toEqual([]);
+  });
+
+  it('branches with a closed reference graph and resets only the selected input execution', () => {
+    const source = runningSession();
+    source.turns[0]!.assistant = { content: 'done', toolCalls: [], createdAt: 3 };
+    source.invokes[0]!.state = 'completed';
+    source.invokes[0]!.completedAt = 3;
+    source.invokeAttempts[0]!.state = 'completed';
+    source.invokeAttempts[0]!.completedAt = 3;
+    const completed = completeActiveAgentIntent(
+      source, { sessionId: 'session-1', intentId: 'intent-1' }, 3,
+    );
+
+    const branch = createIrisAgentBranch(completed, 'intent-1', 'branch', 'Branch', 4);
+    expect(branch.activeIntentIds).toEqual(['intent-1']);
+    expect(branch.turns).toHaveLength(1);
+    expect(branch.invokes[0]).toMatchObject({ turnId: branch.turns[0]?.id });
+    expect(branch.invokeAttempts[0]).toMatchObject({ turnId: branch.turns[0]?.id });
+
+    const inputBranch = createIrisAgentInputBranch(
+      completed, 'intent-1', 'input-branch', 'Input Branch', 4,
+    );
+    expect(inputBranch.activeIntentIds).toEqual(['intent-1']);
+    expect(inputBranch.currentIntentId).toBe('intent-1');
+    expect(inputBranch.intents[0]).toMatchObject({ state: 'paused', turnIds: [] });
+    expect(inputBranch.turns).toEqual([]);
+    expect(inputBranch.invokes).toEqual([]);
   });
 });

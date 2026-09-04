@@ -215,7 +215,7 @@ describe('AgentWorkerHost', () => {
 
     const posted = host.post({
       type: 'run',
-      correlation: { sessionId: 'session-1', workerEpoch: 1, turnId: 'turn-1' },
+      correlation: { sessionId: 'session-1', workerEpoch: 1, intentId: 'turn-1' },
       prompt: 'first prompt',
     });
     await vi.waitFor(() => expect(worker.messages).toHaveLength(1));
@@ -250,7 +250,7 @@ describe('AgentWorkerHost', () => {
 
     const posted = host.post({
       type: 'run',
-      correlation: { sessionId: 'session-1', workerEpoch: 1, turnId: 'turn-1' },
+      correlation: { sessionId: 'session-1', workerEpoch: 1, intentId: 'turn-1' },
       prompt: 'must not run',
     });
     const rejected = expect(posted).rejects.toThrow(/cancelled|changed/);
@@ -469,7 +469,7 @@ describe('Iris Agent Worker provider attempts', () => {
     const firstCorrelation = {
       sessionId: 'session-1',
       workerEpoch: 1,
-      turnId: 'turn-1',
+      intentId: 'turn-1',
     };
     port.emit('message', {
       version: IRIS_AGENT_PROTOCOL_VERSION,
@@ -487,7 +487,7 @@ describe('Iris Agent Worker provider attempts', () => {
         event.type === 'provider-attempt' && event.phase === 'started',
     );
     expect(attemptStarts.map((event) => event.index)).toEqual([1, 2]);
-    expect(new Set(attemptStarts.map((event) => event.correlation.providerCallId)).size).toBe(1);
+    expect(new Set(attemptStarts.map((event) => event.correlation.invokeId)).size).toBe(1);
     expect(new Set(attemptStarts.map((event) => event.correlation.attemptId)).size).toBe(2);
     expect(firstEvents).toContainEqual(expect.objectContaining({ type: 'state', state: 'retry-wait' }));
     expect(firstEvents).toContainEqual(expect.objectContaining({
@@ -513,7 +513,7 @@ describe('Iris Agent Worker provider attempts', () => {
     const secondCorrelation = {
       sessionId: 'session-1',
       workerEpoch: 1,
-      turnId: 'turn-2',
+      intentId: 'turn-2',
     };
     port.emit('message', {
       version: IRIS_AGENT_PROTOCOL_VERSION,
@@ -539,7 +539,7 @@ describe('Iris Agent Worker provider attempts', () => {
     const thirdCorrelation = {
       sessionId: 'session-1',
       workerEpoch: 1,
-      turnId: 'turn-3',
+      intentId: 'turn-3',
     };
     port.emit('message', {
       version: IRIS_AGENT_PROTOCOL_VERSION,
@@ -580,7 +580,7 @@ describe('Iris Agent Worker provider attempts', () => {
     const fourthCorrelation = {
       sessionId: 'session-1',
       workerEpoch: 1,
-      turnId: 'turn-4',
+      intentId: 'turn-4',
     };
     port.emit('message', {
       version: IRIS_AGENT_PROTOCOL_VERSION,
@@ -602,12 +602,12 @@ describe('Iris Agent Worker provider attempts', () => {
     );
     expect(toolResults).toHaveLength(2);
     expect(new Set(toolResults.map((event) => event.correlation.providerMessageId)).size).toBe(2);
-    expect(toolResults.every((event) => event.correlation.providerCallId === undefined)).toBe(true);
+    expect(toolResults.every((event) => event.correlation.invokeId === undefined)).toBe(true);
     const fourthStarts = fourthEvents.filter(
       (event): event is Extract<AgentWorkerEvent, { type: 'provider-attempt' }> =>
         event.type === 'provider-attempt' && event.phase === 'started',
     );
-    expect(new Set(fourthStarts.map((event) => event.correlation.providerCallId)).size).toBe(2);
+    expect(new Set(fourthStarts.map((event) => event.correlation.invokeId)).size).toBe(2);
   });
 });
 

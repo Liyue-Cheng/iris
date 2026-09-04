@@ -138,48 +138,24 @@ describe('Iris Pi adapter', () => {
       revision: 9,
       anchor: { kind: 'workspace', path: '.iris' },
       messages: [
-        { id: 'u1', turnId: 'turn-1', role: 'user', content: 'novel', createdAt: 1 },
+        { id: 'u1', intentId: 'turn-1', role: 'user', content: 'novel', createdAt: 1 },
         {
           id: 'a1',
-          turnId: 'turn-1',
+          intentId: 'turn-1',
           role: 'assistant',
           content: 'partial chapter',
           createdAt: 2,
-          providerMessage: {
-            role: 'assistant',
-            content: [
-              { type: 'text', text: 'partial chapter' },
-              { type: 'toolCall', id: 'call-1', name: 'read', arguments: { path: 'chapter.md' } },
-            ],
-            api: 'openai-responses',
-            provider: 'openai',
-            model: 'gpt-test',
-            usage: {
-              input: 1,
-              output: 1,
-              cacheRead: 0,
-              cacheWrite: 0,
-              totalTokens: 2,
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-            },
-            stopReason: 'toolUse',
-            timestamp: 2,
-          },
+          toolCalls: [{ id: 'call-1', tool: 'read', input: { path: 'chapter.md' } }],
         },
         {
           id: 't1',
-          turnId: 'turn-1',
+          intentId: 'turn-1',
           role: 'tool',
           content: 'tool output',
           createdAt: 3,
-          providerMessage: {
-            role: 'toolResult',
-            toolCallId: 'call-1',
-            toolName: 'read',
-            content: [{ type: 'text', text: 'tool output' }],
-            isError: false,
-            timestamp: 3,
-          },
+          toolCallId: 'call-1',
+          tool: 'read',
+          isError: false,
         },
       ],
     });
@@ -353,26 +329,13 @@ describe('Iris Pi adapter', () => {
       revision: 2,
       anchor: { kind: 'workspace', path: '.iris' },
       messages: [
-        { id: 'u1', turnId: 'turn-1', role: 'user', content: 'write a novel', createdAt: 1 },
+        { id: 'u1', intentId: 'turn-1', role: 'user', content: 'write a novel', createdAt: 1 },
         {
           id: 'a1',
-          turnId: 'turn-1',
+          intentId: 'turn-1',
           role: 'assistant',
           content: 'partial chapter',
           createdAt: 2,
-          providerMessage: {
-            role: 'assistant',
-            content: [
-              { type: 'thinking', thinking: 'unfinished reasoning' },
-              { type: 'text', text: 'partial chapter' },
-            ],
-            api: 'openai-completions',
-            provider: 'deepseek',
-            model: 'deepseek-v4-pro',
-            usage: zeroUsage(),
-            stopReason: 'aborted',
-            timestamp: 2,
-          },
         },
       ],
     });
@@ -428,8 +391,8 @@ describe('Iris Pi adapter', () => {
       revision: 1,
       anchor: { kind: 'workspace', path: '.iris' },
       messages: [
-        { id: 'u1', turnId: 'turn-1', role: 'user', content: 'question', createdAt: 1 },
-        { id: 'a1', turnId: 'turn-1', role: 'assistant', content: 'legacy answer', createdAt: 2 },
+        { id: 'u1', intentId: 'turn-1', role: 'user', content: 'question', createdAt: 1 },
+        { id: 'a1', intentId: 'turn-1', role: 'assistant', content: 'legacy answer', createdAt: 2 },
       ],
     });
 

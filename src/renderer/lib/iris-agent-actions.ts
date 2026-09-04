@@ -35,14 +35,14 @@ function commandPrecondition(sessionId: string): { commandId: string; expectedRe
   return { commandId: crypto.randomUUID(), expectedRevision: session.revision };
 }
 
-function turnPrecondition(sessionId: string): {
+function intentPrecondition(sessionId: string): {
   commandId: string;
   expectedRevision: number;
-  expectedTurnId: string;
+  expectedIntentId: string;
 } {
   const session = irisAgentStore.get().sessions.find((candidate) => candidate.id === sessionId);
-  if (!session?.currentTurnId) throw new Error('The Iris Agent Turn is no longer available.');
-  return { ...commandPrecondition(sessionId), expectedTurnId: session.currentTurnId };
+  if (!session?.currentIntentId) throw new Error('The Iris Agent Intent is no longer available.');
+  return { ...commandPrecondition(sessionId), expectedIntentId: session.currentIntentId };
 }
 
 export async function openIrisAgent(anchor: IrisAgentAnchor): Promise<IrisAgentSessionInfo | null> {
@@ -109,13 +109,13 @@ export async function stopIrisAgent(sessionId: string): Promise<void> {
     },
     async () => {
       const scope = scopeOrThrow();
-      const precondition = turnPrecondition(sessionId);
+      const precondition = intentPrecondition(sessionId);
       const session = await window.api.invoke<
         {
           sessionId: string;
           commandId: string;
           expectedRevision: number;
-          expectedTurnId: string;
+          expectedIntentId: string;
           expectedScope: ProjectScope;
         },
         IrisAgentSessionInfo
@@ -151,9 +151,9 @@ export async function resumeIrisAgent(sessionId: string): Promise<void> {
 
 export async function rewindIrisAgent(sessionId: string): Promise<void> {
   const confirmed = await confirmDialog({
-    title: '撤销 Iris Agent 上一轮？',
-    message: '只撤销最后一轮对话。已发生的文件改动、终端命令和外部副作用不会回滚。',
-    confirmText: '撤销上一轮',
+    title: '回退 Iris Agent 上一项意图？',
+    message: '将移除最后一项意图并回滚仍可安全还原的文件改动；终端命令和外部副作用会保留。',
+    confirmText: '回退意图',
     tone: 'destructive',
   });
   if (!confirmed) return;
@@ -181,7 +181,7 @@ export async function rewindIrisAgent(sessionId: string): Promise<void> {
 
 export async function branchIrisAgent(
   sessionId: string,
-  throughTurnId: string,
+  throughIntentId: string,
   fromInput = false,
 ): Promise<IrisAgentSessionInfo | null> {
   const outcome = await attemptAction(async () => {
@@ -190,7 +190,7 @@ export async function branchIrisAgent(
     const session = await window.api.invoke<
       {
         sessionId: string;
-        throughTurnId: string;
+        throughIntentId: string;
         commandId: string;
         expectedRevision: number;
         expectedScope: ProjectScope;
@@ -198,7 +198,7 @@ export async function branchIrisAgent(
       IrisAgentSessionInfo
     >(fromInput ? CHANNELS.IRIS_AGENT_BRANCH_INPUT : CHANNELS.IRIS_AGENT_BRANCH, projectScoped(scope, {
       sessionId,
-      throughTurnId,
+      throughIntentId,
       ...precondition,
     }));
     irisAgentStore.handleChanged(session);
@@ -208,7 +208,7 @@ export async function branchIrisAgent(
   if (outcome.status === 'ok') return outcome.value;
   if (outcome.status === 'failed') {
     notify({
-      dedupeKey: `iris-agent:branch:${fromInput ? 'input' : 'reply'}:${sessionId}:${throughTurnId}`,
+      dedupeKey: `iris-agent:branch:${fromInput ? 'input' : 'reply'}:${sessionId}:${throughIntentId}`,
       title: 'Iris Agent 分支失败',
       message: outcome.error.message,
       domain: outcome.error.domain,
@@ -259,20 +259,20 @@ export async function listIrisAgentModels(forceRefresh = false): Promise<IrisAge
   );
 }
 
-export async function openIrisAgentContext(sessionId: string, turnId: string): Promise<void> {
+export async function openIrisAgentContext(sessionId: string, intentId: string): Promise<void> {
   await runUserAction(
     {
       title: '上下文 artifact 打开失败',
-      dedupeKey: `iris-agent:context:${sessionId}:${turnId}`,
+      dedupeKey: `iris-agent:context:${sessionId}:${intentId}`,
     },
     async () => {
       const scope = scopeOrThrow();
       await window.api.invoke<
-        { sessionId: string; turnId: string; expectedScope: ProjectScope },
+        { sessionId: string; intentId: string; expectedScope: ProjectScope },
         void
       >(
         CHANNELS.IRIS_AGENT_OPEN_CONTEXT,
-        projectScoped(scope, { sessionId, turnId }),
+        projectScoped(scope, { sessionId, intentId }),
       );
     },
   );

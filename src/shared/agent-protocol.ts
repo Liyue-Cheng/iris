@@ -4,7 +4,7 @@ import type {
   IrisAgentProviderContextCall,
 } from './types';
 
-export const IRIS_AGENT_PROTOCOL_VERSION = 12 as const;
+export const IRIS_AGENT_PROTOCOL_VERSION = 13 as const;
 
 export type AgentToolName = 'read' | 'edit' | 'write' | 'terminal';
 export type AgentTerminalIntent = 'information' | 'operation';
@@ -12,8 +12,9 @@ export type AgentTerminalIntent = 'information' | 'operation';
 export interface AgentCorrelation {
   sessionId: string;
   workerEpoch?: number;
+  intentId?: string;
   turnId?: string;
-  providerCallId?: string;
+  invokeId?: string;
   attemptId?: string;
   providerMessageId?: string;
   toolCallId?: string;
@@ -53,11 +54,15 @@ export interface AgentHistorySnapshot {
   anchor: IrisAgentAnchor;
   messages: Array<{
     id: string;
-    turnId: string;
+    intentId: string;
+    turnId?: string;
     role: 'user' | 'assistant' | 'tool';
     content: string;
     createdAt: number;
-    providerMessage?: Record<string, unknown>;
+    toolCalls?: Array<{ id: string; tool: AgentToolName; input: unknown }>;
+    toolCallId?: string;
+    tool?: AgentToolName;
+    isError?: boolean;
   }>;
 }
 
@@ -132,7 +137,7 @@ export type AgentWorkerRequest = AgentProtocolEnvelope &
   (
     | { type: 'initialize'; history: AgentHistorySnapshot; runtime: AgentWorkerInitRuntime }
     | { type: 'run'; prompt: string }
-    | { type: 'resume'; providerCallOffset: number }
+    | { type: 'resume'; invokeOffset: number }
     | { type: 'supervise-terminal'; supervisionId: string; input: AgentTerminalSupervisionInput }
     | { type: 'abort'; reason: 'user' | 'project-switch' | 'app-quit' }
     | { type: 'tool-result'; ok: true; result: AgentToolOperationResult }
@@ -193,8 +198,8 @@ export function isAgentWorkerRequest(value: unknown): value is AgentWorkerReques
     case 'run':
       return typeof value.prompt === 'string';
     case 'resume':
-      return typeof value.providerCallOffset === 'number' &&
-        Number.isSafeInteger(value.providerCallOffset) && value.providerCallOffset >= 0;
+      return typeof value.invokeOffset === 'number' &&
+        Number.isSafeInteger(value.invokeOffset) && value.invokeOffset >= 0;
     case 'supervise-terminal':
       return typeof value.supervisionId === 'string' && isTerminalSupervisionInput(value.input);
     case 'abort':
@@ -230,7 +235,7 @@ function isCorrelation(value: unknown): value is AgentCorrelation {
   ) {
     return false;
   }
-  return ['turnId', 'providerCallId', 'attemptId', 'providerMessageId', 'toolCallId', 'operationId', 'terminalId'].every(
+  return ['intentId', 'turnId', 'invokeId', 'attemptId', 'providerMessageId', 'toolCallId', 'operationId', 'terminalId'].every(
     (key) => value[key] === undefined || typeof value[key] === 'string',
   );
 }
@@ -246,21 +251,34 @@ function isHistorySnapshot(value: unknown): value is AgentHistorySnapshot {
   }
   if (!isAnchor(value.anchor)) return false;
   if (!Array.isArray(value.messages)) return false;
-  return value.messages.every(
-    (message) =>
-      isRecord(message) &&
-      typeof message.id === 'string' &&
-      typeof message.turnId === 'string' &&
-      (message.role === 'user' || message.role === 'assistant' || message.role === 'tool') &&
-      typeof message.content === 'string' &&
-      typeof message.createdAt === 'number' &&
-      (message.providerMessage === undefined || isRecord(message.providerMessage)),
-  );
+  return value.messages.every((message) => {
+    if (!isRecord(message) || typeof message.id !== 'string' ||
+      typeof message.intentId !== 'string' ||
+      (message.turnId !== undefined && typeof message.turnId !== 'string') ||
+      (message.role !== 'user' && message.role !== 'assistant' && message.role !== 'tool') ||
+      typeof message.content !== 'string' || typeof message.createdAt !== 'number') return false;
+    if (message.role === 'assistant') {
+      return message.toolCalls === undefined || (
+        Array.isArray(message.toolCalls) && message.toolCalls.every((call) =>
+          isRecord(call) && typeof call.id === 'string' && isToolName(call.tool) && 'input' in call)
+      );
+    }
+    if (message.role === 'tool') {
+      return typeof message.turnId === 'string' && typeof message.toolCallId === 'string' &&
+        isToolName(message.tool) &&
+        (message.isError === undefined || typeof message.isError === 'boolean');
+    }
+    return true;
+  });
 }
 
 function isAnchor(value: unknown): value is IrisAgentAnchor {
   if (!isRecord(value) || typeof value.path !== 'string') return false;
   return value.kind === 'document' || value.kind === 'workspace';
+}
+
+function isToolName(value: unknown): value is AgentToolName {
+  return value === 'read' || value === 'edit' || value === 'write' || value === 'terminal';
 }
 
 function isInitRuntime(value: unknown): value is AgentWorkerInitRuntime {

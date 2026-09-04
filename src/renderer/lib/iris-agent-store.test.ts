@@ -37,15 +37,15 @@ function session(id: string, path: string): IrisAgentSessionInfo {
     createdAt: id === 'a' ? 1 : 2,
     updatedAt: id === 'a' ? 1 : 2,
     revision: id === 'a' ? 1 : 2,
-    currentTurnId: null,
-    turns: [],
+    currentIntentId: null,
+    intents: [],
     terminals: [],
-    canUndoLatestTurn: false,
+    canRewindLatestIntent: false,
     selfHostingEligible: false,
   };
 }
 
-describe('irisAgentStore v2 projection', () => {
+describe('irisAgentStore Intent projection', () => {
   beforeEach(() => {
     projectScopeState.set(scope);
     irisAgentStore.reset([], scope);
@@ -72,9 +72,9 @@ describe('irisAgentStore v2 projection', () => {
 
   it('renders the main-projected card order and stable identities without merging raw events', () => {
     const projected = session('a', '.iris/issue/a.md');
-    projected.turns = [{
-      id: 'turn-1',
-      state: 'fulfilled',
+    projected.intents = [{
+      id: 'intent-1',
+      state: 'completed',
       user: {
         id: 'user-1', content: 'inspect', createdAt: 1,
         contextAvailable: true, contextTitle: 'Open provider context (1 calls)',
@@ -95,7 +95,7 @@ describe('irisAgentStore v2 projection', () => {
       ],
       canFork: true,
     }];
-    projected.canUndoLatestTurn = true;
+    projected.canRewindLatestIntent = true;
     const html = renderToStaticMarkup(createElement(IrisAgentView, { session: projected }));
     expect(html.indexOf('src/a.ts')).toBeLessThan(html.indexOf('partial A'));
     expect(html.indexOf('partial A')).toBeLessThan(html.indexOf('answer B'));
@@ -105,7 +105,7 @@ describe('irisAgentStore v2 projection', () => {
   it('shows exactly one Continue control from the session pause projection', () => {
     const paused = session('a', '.iris/issue/a.md');
     paused.state = 'paused';
-    paused.currentTurnId = 'turn-1';
+    paused.currentIntentId = 'intent-1';
     paused.pause = { reason: 'provider', message: 'rate limited' };
     const html = renderToStaticMarkup(createElement(IrisAgentView, { session: paused }));
     expect((html.match(/继续/gu) ?? [])).toHaveLength(1);
@@ -115,9 +115,9 @@ describe('irisAgentStore v2 projection', () => {
   it('applies contiguous card patches by ID and rejects a revision gap', () => {
     const initial = session('a', '.iris/issue/a.md');
     initial.revision = 1;
-    initial.turns = [{
-      id: 'turn-1',
-      state: 'active',
+    initial.intents = [{
+      id: 'intent-1',
+      state: 'running',
       user: { id: 'user-1', content: 'inspect', createdAt: 1, contextAvailable: true },
       cards: [{
         kind: 'agent-reply', id: 'reply-1', state: 'running', content: 'A', excludedFromContext: false,
@@ -125,17 +125,17 @@ describe('irisAgentStore v2 projection', () => {
       canFork: false,
     }];
     irisAgentStore.handleChanged(initial);
-    const { revision: _revision, turns: _turns, ...header } = initial;
+    const { revision: _revision, intents: _intents, ...header } = initial;
     expect(irisAgentStore.handleProjectionUpdate({
       kind: 'patch',
       sessionId: initial.id,
       baseRevision: 1,
       revision: 2,
       session: { ...header, state: 'running', updatedAt: 2 },
-      turns: [{
+      intents: [{
         operation: 'upsert',
         index: 0,
-        turn: { id: 'turn-1', state: 'active', user: initial.turns[0]!.user, canFork: false },
+        intent: { id: 'intent-1', state: 'running', user: initial.intents[0]!.user, canFork: false },
         cards: [{
           operation: 'upsert',
           index: 0,
@@ -145,7 +145,7 @@ describe('irisAgentStore v2 projection', () => {
         }],
       }],
     })).toBe('applied');
-    expect(irisAgentStore.get().sessions[0]?.turns[0]?.cards[0]).toMatchObject({ content: 'AB' });
+    expect(irisAgentStore.get().sessions[0]?.intents[0]?.cards[0]).toMatchObject({ content: 'AB' });
 
     expect(irisAgentStore.handleProjectionUpdate({
       kind: 'patch',
@@ -153,7 +153,7 @@ describe('irisAgentStore v2 projection', () => {
       baseRevision: 3,
       revision: 4,
       session: header,
-      turns: [],
+      intents: [],
     })).toBe('gap');
     expect(irisAgentStore.get().sessions[0]?.revision).toBe(2);
   });

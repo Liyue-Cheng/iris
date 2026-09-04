@@ -1,17 +1,41 @@
 import { spawn } from 'node:child_process';
-import { access } from 'node:fs/promises';
+import { access, readFile, readdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 
 const require = createRequire(import.meta.url);
 const electronPath = require('electron');
 const workerPath = resolve('out/main/agent-worker.js');
-const protocolVersion = 12;
+const protocolSource = await readFile(resolve('src/shared/agent-protocol.ts'), 'utf8');
+const protocolVersionMatch = protocolSource.match(/IRIS_AGENT_PROTOCOL_VERSION\s*=\s*(\d+)/);
+if (!protocolVersionMatch) {
+  throw new Error('Could not read the Iris Agent protocol version from source.');
+}
+const protocolVersion = Number(protocolVersionMatch[1]);
 const model = { provider: 'openai', modelId: 'gpt-5.2' };
 const commandShell = process.platform === 'win32'
   ? { kind: 'powershell', executable: 'powershell.exe', displayName: 'Windows PowerShell' }
   : { kind: 'posix', executable: process.env.SHELL || '/bin/bash', displayName: process.env.SHELL || '/bin/bash' };
 await access(workerPath);
+const artifactSources = [await readFile(workerPath, 'utf8')];
+const chunksPath = resolve('out/main/chunks');
+for (const entry of await readdir(chunksPath, { withFileTypes: true })) {
+  if (entry.isFile() && entry.name.endsWith('.js')) {
+    artifactSources.push(await readFile(resolve(chunksPath, entry.name), 'utf8'));
+  }
+}
+const artifactProtocolMatch = artifactSources
+  .map((source) => source.match(/IRIS_AGENT_PROTOCOL_VERSION\s*=\s*(\d+)/))
+  .find(Boolean);
+if (!artifactProtocolMatch) {
+  throw new Error('Could not read the Iris Agent protocol version from the compiled artifact.');
+}
+const artifactProtocolVersion = Number(artifactProtocolMatch[1]);
+if (artifactProtocolVersion !== protocolVersion) {
+  throw new Error(
+    `Iris Agent Worker artifact is stale: source protocol v${protocolVersion}, artifact protocol v${artifactProtocolVersion}.`,
+  );
+}
 
 const history = {
   revision: 7,

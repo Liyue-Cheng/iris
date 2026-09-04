@@ -54,9 +54,9 @@ let runtime:
     }
   | null = null;
 let currentCorrelation: AgentCorrelation = { sessionId: 'unknown' };
-let providerCallIndex = 0;
+let providerRequestIndex = 0;
 let providerFailure: string | null = null;
-let currentProviderCallId: string | null = null;
+let currentInvokeId: string | null = null;
 let currentAttemptId: string | null = null;
 let currentAttemptIndex = 0;
 let currentProviderMessageId: string | null = null;
@@ -146,9 +146,9 @@ async function handleMessage(message: unknown): Promise<void> {
   if (message.type === 'run') {
     if (!runtime) throw new Error('Iris Agent Worker has not been initialized');
     currentCorrelation = message.correlation;
-    providerCallIndex = 0;
+    providerRequestIndex = 0;
     providerFailure = null;
-    currentProviderCallId = null;
+    currentInvokeId = null;
     currentAttemptId = null;
     currentAttemptIndex = 0;
     currentProviderMessageId = null;
@@ -166,8 +166,8 @@ async function handleMessage(message: unknown): Promise<void> {
   if (message.type === 'resume') {
     if (!runtime) throw new Error('Iris Agent Worker has not been initialized');
     currentCorrelation = message.correlation;
-    providerCallIndex = Math.max(providerCallIndex, message.providerCallOffset);
-    currentProviderCallId = null;
+    providerRequestIndex = Math.max(providerRequestIndex, message.invokeOffset);
+    currentInvokeId = null;
     currentAttemptId = null;
     currentAttemptIndex = 0;
     currentProviderMessageId = null;
@@ -246,10 +246,10 @@ async function initialize(message: Extract<AgentWorkerRequest, { type: 'initiali
     operations,
     history: message.history,
     onProviderPayload: async (payload, model) => {
-      if (!currentCorrelation.turnId) return;
+      if (!currentCorrelation.intentId) return;
       await providerEventChain;
-      if (!currentProviderCallId) {
-        currentProviderCallId = randomUUID();
+      if (!currentInvokeId) {
+        currentInvokeId = randomUUID();
         currentAttemptIndex = 0;
       }
       currentAttemptId = randomUUID();
@@ -269,7 +269,7 @@ async function initialize(message: Extract<AgentWorkerRequest, { type: 'initiali
         type: 'provider-context',
         correlation: correlationWithAttempt(),
         call: {
-          index: ++providerCallIndex,
+          index: ++providerRequestIndex,
           capturedAt: Date.now(),
           provider: model.provider,
           model: model.id,
@@ -506,7 +506,7 @@ async function handleProviderEvent(event: unknown): Promise<void> {
     if (assistantStopReason(projected.event) === 'error') {
       const failure = assistantError(projected.event);
       terminalProviderFailure = failure;
-      if (currentAttemptId && currentProviderCallId) {
+      if (currentAttemptId && currentInvokeId) {
         await postDurable({
           type: 'provider-attempt',
           correlation: correlationWithAttempt(),
@@ -529,7 +529,7 @@ async function handleProviderEvent(event: unknown): Promise<void> {
           message: safeMessage,
         });
       }
-      if (currentAttemptId && currentProviderCallId) {
+      if (currentAttemptId && currentInvokeId) {
         await postDurable({
           type: 'provider-attempt',
           correlation: correlationWithAttempt(),
@@ -547,7 +547,7 @@ async function handleProviderEvent(event: unknown): Promise<void> {
         type: 'provider-message', correlation: correlationForProviderMessage(projected.event), message,
       });
     }
-    if (currentAttemptId && currentProviderCallId) {
+    if (currentAttemptId && currentInvokeId) {
       await postDurable({
         type: 'provider-attempt',
         correlation: correlationWithAttempt(),
@@ -556,7 +556,7 @@ async function handleProviderEvent(event: unknown): Promise<void> {
       });
     }
     terminalProviderFailure = null;
-    currentProviderCallId = null;
+    currentInvokeId = null;
     currentAttemptId = null;
     currentAttemptIndex = 0;
     currentProviderMessageId = null;
@@ -624,7 +624,7 @@ function jsonSafeEvent(event: unknown): unknown {
 function correlationWithAttempt(): AgentCorrelation {
   return {
     ...currentCorrelation,
-    ...(currentProviderCallId ? { providerCallId: currentProviderCallId } : {}),
+    ...(currentInvokeId ? { invokeId: currentInvokeId } : {}),
     ...(currentAttemptId ? { attemptId: currentAttemptId } : {}),
   };
 }
@@ -645,7 +645,7 @@ function correlationForProviderMessage(event: unknown): AgentCorrelation {
 }
 
 async function failCurrentProviderAttempt(error: string): Promise<void> {
-  if (!currentAttemptId || !currentProviderCallId) return;
+  if (!currentAttemptId || !currentInvokeId) return;
   await postDurable({
     type: 'provider-attempt',
     correlation: correlationWithAttempt(),
@@ -658,7 +658,7 @@ async function failCurrentProviderAttempt(error: string): Promise<void> {
 }
 
 function abortCurrentProviderAttempt(): void {
-  if (!currentAttemptId || !currentProviderCallId) return;
+  if (!currentAttemptId || !currentInvokeId) return;
   post({
     type: 'provider-attempt',
     correlation: correlationWithAttempt(),

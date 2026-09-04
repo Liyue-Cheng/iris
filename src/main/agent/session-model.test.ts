@@ -2,13 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { createEmptyAgentSession, projectAgentSession, type AgentToolActivity } from './session-model';
 import { assertIrisAgentCloseAllowed, assertIrisAgentExpectedRevision } from './session-domain';
 
+const injection = {
+  methods: { agent: 'current' as const, software: 'current' as const, project: 'current' as const },
+  anchor: { path: '.iris', baselineText: '', baselineSha256: '', capturedAt: 1 },
+};
+
 function terminalActivity(overrides: Partial<AgentToolActivity>): AgentToolActivity {
   return {
     kind: 'tool',
     id: 'tool-terminal',
     ordinal: 1,
-    turnId: 'turn-1',
-    providerCallId: 'provider-1',
+    intentId: 'turn-1',
+    turnId: 'execution-turn-1',
+    invokeId: 'provider-1',
     toolCallId: 'tool-terminal',
     tool: 'terminal',
     intent: 'operation',
@@ -31,6 +37,7 @@ describe('Iris Agent terminal projection', () => {
       model: { provider: 'openai', modelId: 'gpt-test' },
       projectRoot: process.cwd(),
       displayName: 'Iris Agent',
+      injection,
       now: 1,
     });
     session.state = 'running';
@@ -47,6 +54,7 @@ describe('Iris Agent terminal projection', () => {
       model: { provider: 'openai', modelId: 'gpt-test' },
       projectRoot: process.cwd(),
       displayName: 'Iris Agent',
+      injection,
       now: 1,
     });
     session.timeline.push(terminalActivity({
@@ -76,6 +84,7 @@ describe('Iris Agent terminal projection', () => {
       model: { provider: 'openai', modelId: 'gpt-test' },
       projectRoot: process.cwd(),
       displayName: 'Iris Agent',
+      injection,
       now: 1,
     });
     session.timeline.push(terminalActivity({
@@ -104,6 +113,7 @@ describe('Iris Agent terminal projection', () => {
       model: { provider: 'openai', modelId: 'gpt-test' },
       projectRoot: process.cwd(),
       displayName: 'Iris Agent',
+      injection,
       now: 1,
     });
     session.timeline.push(terminalActivity({
@@ -114,7 +124,8 @@ describe('Iris Agent terminal projection', () => {
     }));
     session.effects.push({
       id: 'terminal--legacy',
-      turnId: 'turn-1',
+      intentId: 'turn-1',
+      turnId: 'execution-turn-1',
       toolActivityId: 'tool-terminal',
       kind: 'terminal-output',
       artifactRef: 'terminal/terminal-legacy.log',

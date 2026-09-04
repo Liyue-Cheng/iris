@@ -824,13 +824,19 @@ export function normalizeIrisInterruptedAssistantMessage(
 function toPiHistoryMessage(
   item: AgentHistorySnapshot['messages'][number],
 ): Parameters<PiSessionManager['appendMessage']>[0] {
-  if (isPiMessage(item.providerMessage)) {
-    return item.providerMessage as unknown as Parameters<PiSessionManager['appendMessage']>[0];
-  }
   if (item.role === 'assistant') {
+    const content = [
+      ...(item.content ? [{ type: 'text' as const, text: item.content }] : []),
+      ...(item.toolCalls ?? []).map((call) => ({
+        type: 'toolCall' as const,
+        id: call.id,
+        name: call.tool,
+        arguments: call.input,
+      })),
+    ];
     return {
       role: 'assistant',
-      content: item.content ? [{ type: 'text', text: item.content }] : [],
+      content,
       api: 'openai-responses',
       provider: 'iris-history',
       model: 'unknown',
@@ -842,13 +848,23 @@ function toPiHistoryMessage(
         totalTokens: 0,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
       },
-      stopReason: 'aborted',
+      stopReason: item.toolCalls?.length ? 'toolUse' : 'stop',
       timestamp: item.createdAt,
-    };
+    } as Parameters<PiSessionManager['appendMessage']>[0];
+  }
+  if (item.role === 'tool' && item.toolCallId && item.tool) {
+    return {
+      role: 'toolResult',
+      toolCallId: item.toolCallId,
+      toolName: item.tool,
+      content: [{ type: 'text', text: item.content }],
+      isError: item.isError ?? false,
+      timestamp: item.createdAt,
+    } as Parameters<PiSessionManager['appendMessage']>[0];
   }
   return {
     role: 'user',
-    content: item.role === 'tool' ? `[Historical tool result]\n${item.content}` : item.content,
+    content: item.content,
     timestamp: item.createdAt,
   };
 }

@@ -7,8 +7,8 @@ import type {
   IrisAgentRuntimeState,
   IrisAgentSessionProjectionUpdate,
   IrisAgentSessionInfo,
-  IrisAgentTurnPatch,
-  IrisAgentTurnView,
+  IrisAgentIntentPatch,
+  IrisAgentIntentView,
 } from '@shared/types';
 import { isDeepStrictEqual } from 'node:util';
 import type { AgentToolOperationInput, AgentToolOperationResult } from '@shared/agent-protocol';
@@ -19,29 +19,27 @@ export interface AgentSessionAggregate {
   anchor: IrisAgentAnchor;
   model: IrisAgentModelRef | null;
   parentSessionId?: string;
-  forkedFromTurnId?: string;
+  forkedFromIntentId?: string;
   projectRoot: string;
   displayName: string;
   state: IrisAgentRuntimeState;
   revision: number;
   workerEpoch: number;
   nextOrdinal: number;
-  currentTurnId: string | null;
-  stopRequestedTurnId?: string;
+  currentIntentId: string | null;
+  stopRequestedIntentId?: string;
   terminalSupervisionAlert?: { terminalId: string; evidence: string; createdAt: number };
+  activeIntentIds: string[];
+  intents: AgentIntent[];
   turns: AgentTurn[];
-  /** First-class user intents. Legacy sessions may omit this field on disk. */
-  intents?: AgentIntent[];
-  providerCalls: AgentProviderCall[];
-  providerAttempts: AgentProviderAttempt[];
+  invokes: AgentInvoke[];
+  invokeAttempts: AgentInvokeAttempt[];
   timeline: AgentTimelineActivity[];
   toolOperations: AgentToolOperation[];
-  transcript: AgentProviderFrame[];
-  /** Number of turn facts visible to Context. The trace itself remains append-only. */
-  effectiveTraceLength?: number;
   effects: AgentEffect[];
   requestFacts: AgentRequestFacts[];
-  undoReceipts: AgentUndoReceipt[];
+  rewindReceipts: AgentRewindReceipt[];
+  injection: AgentInjection;
   createdAt: number;
   updatedAt: number;
   selfHostingEligible: false;
@@ -49,17 +47,51 @@ export interface AgentSessionAggregate {
 
 export interface AgentIntent {
   id: string;
-  userActivityId: string;
+  content: string;
   turnIds: string[];
-  state: 'running' | 'paused' | 'superseded';
+  state: 'running' | 'paused' | 'completed' | 'superseded';
   pauseReason?: IrisAgentPauseReason;
+  pauseMessage?: string;
+  assembledInputAvailable: boolean;
   createdAt: number;
   closedAt?: number;
+}
+
+export interface AgentTurn {
+  id: string;
+  intentId: string;
+  invokeId: string;
+  state: 'running' | 'settled';
+  assistant: {
+    content: string;
+    toolCalls: Array<{ id: string; tool: AgentToolActivity['tool']; input: unknown }>;
+    createdAt: number;
+  } | null;
+  toolResults: Array<{
+    toolCallId: string;
+    tool: AgentToolActivity['tool'];
+    content: string;
+    isError: boolean;
+    createdAt: number;
+  }>;
+  createdAt: number;
+  settledAt?: number;
+}
+
+export interface AgentInjection {
+  methods: { agent: 'current'; software: 'current'; project: 'current' };
+  anchor: {
+    path: string;
+    baselineText: string;
+    baselineSha256: string;
+    capturedAt: number;
+  };
 }
 
 export interface AgentToolOperation {
   id: string;
   toolActivityId: string;
+  intentId: string;
   turnId: string;
   input: AgentToolOperationInput;
   state: 'running' | 'completed' | 'failed';
@@ -71,7 +103,7 @@ export interface AgentToolOperation {
 
 export interface AgentRequestFacts {
   id: string;
-  turnId: string;
+  intentId: string;
   createdAt: number;
   promptFingerprint: string;
   layerFingerprints: {
@@ -81,32 +113,14 @@ export interface AgentRequestFacts {
     anchor: string;
   };
   anchor: IrisAgentAnchor;
-  /** Method layers are symbolic references; only the material anchor is snapshotted. */
-  layerRefs?: {
-    agent: 'current';
-    software: 'current';
-    project: 'current';
-  };
-  anchorSnapshot?: string;
-  anchorDiff?: string;
+  anchorPatch: Array<{ start: number; deleteCount: number; lines: string[] }>;
   promptChars: number;
   redacted: true;
 }
 
-export interface AgentTurn {
+export interface AgentInvoke {
   id: string;
-  userActivityId: string;
-  state: 'running' | 'pausing' | 'paused' | 'fulfilled' | 'abandoned' | 'removed';
-  intentId?: string;
-  pauseReason?: IrisAgentPauseReason;
-  error?: string;
-  assembledInputAvailable: boolean;
-  createdAt: number;
-  closedAt?: number;
-}
-
-export interface AgentProviderCall {
-  id: string;
+  intentId: string;
   turnId: string;
   index: number;
   state: 'running' | 'completed' | 'failed' | 'aborted';
@@ -116,9 +130,10 @@ export interface AgentProviderCall {
   error?: string;
 }
 
-export interface AgentProviderAttempt {
+export interface AgentInvokeAttempt {
   id: string;
-  providerCallId: string;
+  invokeId: string;
+  intentId: string;
   turnId: string;
   index: number;
   state: 'running' | 'completed' | 'failed' | 'aborted';
@@ -130,20 +145,15 @@ export interface AgentProviderAttempt {
 interface AgentActivityBase {
   id: string;
   ordinal: number;
-  turnId: string;
+  intentId: string;
   createdAt: number;
-}
-
-export interface AgentUserActivity extends AgentActivityBase {
-  kind: 'user';
-  content: string;
-  assembledInputArtifactId: string;
 }
 
 export interface AgentReplyActivity extends AgentActivityBase {
   kind: 'reply';
-  providerCallId: string;
-  providerAttemptId: string;
+  turnId: string;
+  invokeId: string;
+  invokeAttemptId: string;
   providerMessageId: string;
   state: 'streaming' | 'completed' | 'stopped' | 'failed';
   contextDisposition: 'pending' | 'committed' | 'excluded';
@@ -154,7 +164,8 @@ export interface AgentReplyActivity extends AgentActivityBase {
 
 export interface AgentToolActivity extends AgentActivityBase {
   kind: 'tool';
-  providerCallId: string;
+  turnId: string;
+  invokeId: string;
   toolCallId: string;
   tool: 'read' | 'edit' | 'write' | 'terminal';
   intent?: 'information' | 'operation';
@@ -183,25 +194,13 @@ export interface AgentToolActivity extends AgentActivityBase {
   completedAt?: number;
 }
 
-export type AgentTimelineActivity = AgentUserActivity | AgentReplyActivity | AgentToolActivity;
-
-interface AgentProviderFrameBase {
-  id: string;
-  turnId: string;
-  content: string;
-  providerMessage?: Record<string, unknown>;
-  createdAt: number;
-}
-
-export type AgentProviderFrame =
-  | (AgentProviderFrameBase & { role: 'user' })
-  | (AgentProviderFrameBase & { role: 'assistant'; providerCallId: string })
-  | (AgentProviderFrameBase & { role: 'tool'; toolCallId: string });
+export type AgentTimelineActivity = AgentReplyActivity | AgentToolActivity;
 
 export type AgentEffect = AgentFileEffect | AgentDirectoryEffect | AgentTerminalEffect;
 
 export interface AgentFileEffect {
   id: string;
+  intentId: string;
   turnId: string;
   toolActivityId: string;
   kind: 'file-write';
@@ -215,6 +214,7 @@ export interface AgentFileEffect {
 
 export interface AgentDirectoryEffect {
   id: string;
+  intentId: string;
   turnId: string;
   toolActivityId: string;
   kind: 'directory-create';
@@ -225,6 +225,7 @@ export interface AgentDirectoryEffect {
 
 export interface AgentTerminalEffect {
   id: string;
+  intentId: string;
   turnId: string;
   toolActivityId: string;
   kind: 'terminal-output';
@@ -232,11 +233,12 @@ export interface AgentTerminalEffect {
   createdAt: number;
 }
 
-export interface AgentUndoReceipt {
+export interface AgentRewindReceipt {
   commandId: string;
-  removedTurnId: string;
-  removedAt: number;
-  externalEffectsRetained: true;
+  truncatedIntentId: string;
+  revertedEffectIds: string[];
+  retainedEffectIds: string[];
+  createdAt: number;
 }
 
 export function createEmptyAgentSession(input: {
@@ -245,6 +247,7 @@ export function createEmptyAgentSession(input: {
   model: IrisAgentModelRef | null;
   projectRoot: string;
   displayName: string;
+  injection: AgentInjection;
   now: number;
 }): AgentSessionAggregate {
   return {
@@ -258,18 +261,18 @@ export function createEmptyAgentSession(input: {
     revision: 0,
     workerEpoch: 0,
     nextOrdinal: 1,
-    currentTurnId: null,
-    turns: [],
+    currentIntentId: null,
+    activeIntentIds: [],
     intents: [],
-    providerCalls: [],
-    providerAttempts: [],
+    turns: [],
+    invokes: [],
+    invokeAttempts: [],
     timeline: [],
     toolOperations: [],
-    transcript: [],
-    effectiveTraceLength: 0,
     effects: [],
     requestFacts: [],
-    undoReceipts: [],
+    rewindReceipts: [],
+    injection: structuredClone(input.injection),
     createdAt: input.now,
     updatedAt: input.now,
     selfHostingEligible: false,
@@ -280,8 +283,8 @@ export function cloneAgentSession(session: AgentSessionAggregate): AgentSessionA
   return structuredClone(session);
 }
 
-export function currentAgentTurn(session: AgentSessionAggregate): AgentTurn | undefined {
-  return session.turns.find((turn) => turn.id === session.currentTurnId);
+export function currentAgentIntent(session: AgentSessionAggregate): AgentIntent | undefined {
+  return session.intents.find((intent) => intent.id === session.currentIntentId);
 }
 
 export function isAgentSessionBusy(session: AgentSessionAggregate): boolean {
@@ -297,20 +300,20 @@ export function projectAgentSession(
   session: AgentSessionAggregate,
   projectGeneration: number,
 ): IrisAgentSessionInfo {
-  const activeTurn = currentAgentTurn(session);
-  const effectiveIds = new Set(session.turns.slice(0, effectiveTurnCount(session)).map((turn) => turn.id));
-  const visibleTurns = session.turns.filter(
-    (turn): turn is AgentTurn & { state: Exclude<AgentTurn['state'], 'removed'> } =>
-      turn.state !== 'removed' && effectiveIds.has(turn.id),
-  );
-  const canUndoLatestTurn = !isAgentSessionBusy(session) && visibleTurns.length > 0;
+  const activeIntent = currentAgentIntent(session);
+  const intentsById = new Map(session.intents.map((intent) => [intent.id, intent]));
+  const visibleIntents = session.activeIntentIds.flatMap((id) => {
+    const intent = intentsById.get(id);
+    return intent ? [intent] : [];
+  });
+  const canRewindLatestIntent = !isAgentSessionBusy(session) && visibleIntents.length > 0;
   return {
     id: session.id,
     kind: 'iris-agent',
     anchor: { ...session.anchor },
     model: session.model ? { ...session.model } : null,
     ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
-    ...(session.forkedFromTurnId ? { forkedFromTurnId: session.forkedFromTurnId } : {}),
+    ...(session.forkedFromIntentId ? { forkedFromIntentId: session.forkedFromIntentId } : {}),
     projectRoot: session.projectRoot,
     projectGeneration,
     displayName: session.displayName,
@@ -318,19 +321,19 @@ export function projectAgentSession(
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     revision: session.revision,
-    currentTurnId: session.currentTurnId,
-    ...(activeTurn?.state === 'paused'
+    currentIntentId: session.currentIntentId,
+    ...(activeIntent?.state === 'paused'
       ? {
           pause: {
-            reason: activeTurn.pauseReason ?? 'runtime',
-            message: activeTurn.error ?? 'Agent turn paused.',
+            reason: activeIntent.pauseReason ?? 'runtime',
+            message: activeIntent.pauseMessage ?? 'Agent intent paused.',
           },
         }
       : {}),
     ...(session.terminalSupervisionAlert
       ? { supervisionAlert: { ...session.terminalSupervisionAlert } }
       : {}),
-    turns: visibleTurns.map((turn) => projectTurn(session, turn)),
+    intents: visibleIntents.map((intent) => projectIntent(session, intent)),
     terminals: session.timeline.flatMap((activity) => {
       if (
         activity.kind !== 'tool' || activity.tool !== 'terminal' ||
@@ -359,16 +362,9 @@ export function projectAgentSession(
         userInput: activity.terminalUserInput ?? false,
       }];
     }),
-    canUndoLatestTurn,
+    canRewindLatestIntent,
     selfHostingEligible: false,
   };
-}
-
-function effectiveTurnCount(session: AgentSessionAggregate): number {
-  if (session.effectiveTraceLength === 0 && session.turns.length > 0 && session.undoReceipts.length === 0) {
-    return session.turns.length;
-  }
-  return Math.max(0, Math.min(session.effectiveTraceLength ?? session.turns.length, session.turns.length));
 }
 
 function terminalArtifactRef(
@@ -387,31 +383,31 @@ export function diffAgentSessionProjection(
   if (!previous || previous.id !== next.id || previous.revision + 1 !== next.revision) {
     return { kind: 'snapshot', session: structuredClone(next) };
   }
-  const turns: IrisAgentTurnPatch[] = [];
-  const nextTurnIds = new Set(next.turns.map((turn) => turn.id));
-  for (const turn of previous.turns) {
-    if (!nextTurnIds.has(turn.id)) turns.push({ operation: 'remove', turnId: turn.id });
+  const intents: IrisAgentIntentPatch[] = [];
+  const nextIntentIds = new Set(next.intents.map((intent) => intent.id));
+  for (const intent of previous.intents) {
+    if (!nextIntentIds.has(intent.id)) intents.push({ operation: 'remove', intentId: intent.id });
   }
-  const previousTurns = new Map(previous.turns.map((turn) => [turn.id, turn]));
-  for (let index = 0; index < next.turns.length; index += 1) {
-    const turn = next.turns[index]!;
-    const before = previousTurns.get(turn.id);
-    const cardPatches = [] as Extract<IrisAgentTurnPatch, { operation: 'upsert' }>['cards'];
-    const nextCardIds = new Set(turn.cards.map((card) => card.id));
+  const previousIntents = new Map(previous.intents.map((intent) => [intent.id, intent]));
+  for (let index = 0; index < next.intents.length; index += 1) {
+    const intent = next.intents[index]!;
+    const before = previousIntents.get(intent.id);
+    const cardPatches = [] as Extract<IrisAgentIntentPatch, { operation: 'upsert' }>['cards'];
+    const nextCardIds = new Set(intent.cards.map((card) => card.id));
     for (const card of before?.cards ?? []) {
       if (!nextCardIds.has(card.id)) cardPatches.push({ operation: 'remove', cardId: card.id });
     }
     const previousCards = new Map((before?.cards ?? []).map((card) => [card.id, card]));
-    for (let cardIndex = 0; cardIndex < turn.cards.length; cardIndex += 1) {
-      const card = turn.cards[cardIndex]!;
+    for (let cardIndex = 0; cardIndex < intent.cards.length; cardIndex += 1) {
+      const card = intent.cards[cardIndex]!;
       if (!isDeepStrictEqual(previousCards.get(card.id), card) || before?.cards[cardIndex]?.id !== card.id) {
         cardPatches.push({ operation: 'upsert', index: cardIndex, card: structuredClone(card) });
       }
     }
-    const header = turnHeader(turn);
-    if (!before || !isDeepStrictEqual(turnHeader(before), header) || cardPatches.length > 0 ||
-      previous.turns[index]?.id !== turn.id) {
-      turns.push({ operation: 'upsert', index, turn: header, cards: cardPatches });
+    const header = intentHeader(intent);
+    if (!before || !isDeepStrictEqual(intentHeader(before), header) || cardPatches.length > 0 ||
+      previous.intents[index]?.id !== intent.id) {
+      intents.push({ operation: 'upsert', index, intent: header, cards: cardPatches });
     }
   }
   return {
@@ -420,49 +416,43 @@ export function diffAgentSessionProjection(
     baseRevision: previous.revision,
     revision: next.revision,
     session: sessionHeader(next),
-    turns,
+    intents,
   };
 }
 
-function sessionHeader(session: IrisAgentSessionInfo): Omit<IrisAgentSessionInfo, 'revision' | 'turns'> {
-  const { revision: _revision, turns: _turns, ...header } = session;
+function sessionHeader(session: IrisAgentSessionInfo): Omit<IrisAgentSessionInfo, 'revision' | 'intents'> {
+  const { revision: _revision, intents: _intents, ...header } = session;
   return structuredClone(header);
 }
 
-function turnHeader(turn: IrisAgentTurnView): Omit<IrisAgentTurnView, 'cards'> {
-  const { cards: _cards, ...header } = turn;
+function intentHeader(intent: IrisAgentIntentView): Omit<IrisAgentIntentView, 'cards'> {
+  const { cards: _cards, ...header } = intent;
   return structuredClone(header);
 }
 
-function projectTurn(
+function projectIntent(
   session: AgentSessionAggregate,
-  turn: AgentTurn & { state: Exclude<AgentTurn['state'], 'removed'> },
+  intent: AgentIntent,
 ) {
-  const user = session.timeline.find(
-    (activity): activity is AgentUserActivity => activity.id === turn.userActivityId && activity.kind === 'user',
-  );
-  if (!user) throw new Error('Agent turn references a missing user activity.');
   const activities = session.timeline.filter(
-    (activity) => activity.turnId === turn.id && activity.kind !== 'user',
+    (activity) => activity.intentId === intent.id,
   );
   const cards = projectCards(activities);
-  const providerCallCount = session.providerCalls.filter((call) => call.turnId === turn.id).length;
+  const invokeCount = session.invokes.filter((invoke) => invoke.intentId === intent.id).length;
   return {
-    id: turn.id,
-    state: turn.state === 'fulfilled' || turn.state === 'abandoned'
-      ? turn.state
-      : 'active' as const,
+    id: intent.id,
+    state: intent.state,
     user: {
-      id: user.id,
-      content: user.content,
-      createdAt: user.createdAt,
-      contextAvailable: turn.assembledInputAvailable || providerCallCount > 0,
-      contextTitle: providerCallCount > 0
-        ? `Open provider context (${providerCallCount} calls)`
+      id: `user:${intent.id}`,
+      content: intent.content,
+      createdAt: intent.createdAt,
+      contextAvailable: intent.assembledInputAvailable || invokeCount > 0,
+      contextTitle: invokeCount > 0
+        ? `Open provider context (${invokeCount} calls)`
         : 'Open assembled input',
     },
     cards,
-    canFork: turn.state === 'fulfilled' && isAgentSessionQuiescent(session),
+    canFork: intent.state === 'completed' && isAgentSessionQuiescent(session),
     canForkFromInput: true,
   };
 }

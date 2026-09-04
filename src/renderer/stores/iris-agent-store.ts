@@ -61,33 +61,33 @@ export const irisAgentStore = {
     const next: IrisAgentSessionInfo = {
       ...structuredClone(update.session),
       revision: update.revision,
-      turns: structuredClone(existing.turns),
+      intents: structuredClone(existing.intents),
     };
-    for (const turnPatch of update.turns) {
-      if (turnPatch.operation === 'remove') {
-        next.turns = next.turns.filter((turn) => turn.id !== turnPatch.turnId);
+    for (const intentPatch of update.intents) {
+      if (intentPatch.operation === 'remove') {
+        next.intents = next.intents.filter((intent) => intent.id !== intentPatch.intentId);
         continue;
       }
-      const previousTurn = next.turns.find((turn) => turn.id === turnPatch.turn.id);
-      const turn = {
-        ...structuredClone(turnPatch.turn),
-        cards: structuredClone(previousTurn?.cards ?? []),
+      const previousIntent = next.intents.find((intent) => intent.id === intentPatch.intent.id);
+      const intent = {
+        ...structuredClone(intentPatch.intent),
+        cards: structuredClone(previousIntent?.cards ?? []),
       };
-      for (const cardPatch of turnPatch.cards) {
+      for (const cardPatch of intentPatch.cards) {
         if (cardPatch.operation === 'remove') {
-          turn.cards = turn.cards.filter((card) => card.id !== cardPatch.cardId);
+          intent.cards = intent.cards.filter((card) => card.id !== cardPatch.cardId);
           continue;
         }
-        turn.cards = upsertAt(
-          turn.cards.filter((card) => card.id !== cardPatch.card.id),
+        intent.cards = upsertAt(
+          intent.cards.filter((card) => card.id !== cardPatch.card.id),
           cardPatch.index,
           structuredClone(cardPatch.card),
         );
       }
-      next.turns = upsertAt(
-        next.turns.filter((candidate) => candidate.id !== turn.id),
-        turnPatch.index,
-        turn,
+      next.intents = upsertAt(
+        next.intents.filter((candidate) => candidate.id !== intent.id),
+        intentPatch.index,
+        intent,
       );
     }
     this.handleChanged(next);

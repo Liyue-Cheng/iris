@@ -74,6 +74,7 @@ describe('Iris Agent Worker protocol', () => {
       anchor: { kind: 'workspace' as const, path: '.iris' },
       messages: [{
         id: 'message-1',
+        intentId: 'intent-1',
         turnId: 'turn-1',
         role: 'user' as const,
         content: 'one',

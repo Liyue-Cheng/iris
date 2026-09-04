@@ -12,7 +12,8 @@ const commandShell = {
 
 const correlation = {
   sessionId: 'agent-1',
-  turnId: 'turn-1',
+  intentId: 'turn-1',
+  turnId: 'execution-turn-1',
   toolCallId: 'tool-1',
   operationId: 'operation-1',
 };
@@ -46,7 +47,7 @@ describe('IrisAgentToolHost', () => {
       expect(write.update.diff).toContain('-before');
       expect(write.update.diff).toContain('+after');
       expect(write.effects[0]).toMatchObject({
-        kind: 'file-write', turnId: 'turn-1', artifactRef: expect.stringMatching(/^effects\//u),
+        kind: 'file-write', intentId: 'turn-1', artifactRef: expect.stringMatching(/^effects\//u),
       });
       const effect = write.effects[0]!;
       expect(effect.kind).toBe('file-write');

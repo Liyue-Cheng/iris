@@ -1,9 +1,8 @@
-import { randomUUID } from 'node:crypto';
 import type { AgentCorrelation } from '@shared/agent-protocol';
-import type { IrisAgentPauseReason } from '@shared/types';
-import type { AgentSessionAggregate, AgentToolActivity } from './session-model';
-import { cloneAgentSession, currentAgentTurn, isAgentSessionQuiescent } from './session-model';
 import { AppError } from '@shared/app-error';
+import type { IrisAgentPauseReason } from '@shared/types';
+import type { AgentSessionAggregate } from './session-model';
+import { cloneAgentSession, currentAgentIntent, isAgentSessionQuiescent } from './session-model';
 
 export function assertIrisAgentExpectedRevision(
   session: AgentSessionAggregate,
@@ -20,12 +19,9 @@ export function assertIrisAgentExpectedRevision(
 }
 
 export function assertQuiescentIrisAgentSession(session: AgentSessionAggregate): void {
-  if (!isAgentSessionQuiescent(session)) {
-    throw new Error('Iris Agent session is still running.');
-  }
+  if (!isAgentSessionQuiescent(session)) throw new Error('Iris Agent session is still running.');
 }
 
-/** Main-process close gate: renderer confirmation is only an intent signal. */
 export function assertIrisAgentCloseAllowed(
   session: AgentSessionAggregate,
   confirmBusy = false,
@@ -39,248 +35,168 @@ export function assertIrisAgentCloseAllowed(
   );
 }
 
-export function assertUndoableLatestIrisAgentTurn(session: AgentSessionAggregate): void {
-  const latest = [...session.turns].reverse().find((turn) => turn.state !== 'removed');
-  if (!latest) throw new Error('There is no Iris Agent turn to undo.');
-  if (!isAgentSessionQuiescent(session)) throw new Error('Iris Agent session is still running.');
+export function assertRewindableAgentIntent(session: AgentSessionAggregate): void {
+  if (session.activeIntentIds.length === 0) throw new Error('There is no Iris Agent intent to rewind.');
+  assertQuiescentIrisAgentSession(session);
 }
 
-export function undoLatestIrisAgentTurn(
-  source: AgentSessionAggregate,
-  commandId: string = randomUUID(),
-  now = Date.now(),
-): AgentSessionAggregate {
-  assertUndoableLatestIrisAgentTurn(source);
-  if (source.undoReceipts.some((receipt) => receipt.commandId === commandId)) return source;
-  const session = cloneAgentSession(source);
-  const visibleCount = session.effectiveTraceLength === 0 && session.turns.length > 0 && session.undoReceipts.length === 0
-    ? session.turns.length
-    : Math.min(session.effectiveTraceLength ?? session.turns.length, session.turns.length);
-  const turn = [...session.turns.slice(0, visibleCount)].reverse().find((candidate) => candidate.state !== 'removed')!;
-  turn.state = 'removed';
-  turn.closedAt ??= now;
-  session.currentTurnId = null;
-  session.state = 'idle';
-  session.effectiveTraceLength = session.turns.findIndex((candidate) => candidate.id === turn.id);
-  const intent = session.intents?.find((candidate) => candidate.id === turn.intentId);
-  if (intent) intent.state = 'superseded';
-  session.undoReceipts.push({
-    commandId,
-    removedTurnId: turn.id,
-    removedAt: now,
-    externalEffectsRetained: true,
-  });
-  return session;
-}
-
-/**
- * Rewind the cognitive trace by moving its effective prefix. Entries remain
- * append-only for audit/recovery, while Context no longer sees the suffix.
- */
 export function truncateIntentChain(
   source: AgentSessionAggregate,
-  commandId: string = randomUUID(),
+  commandId: string,
   now = Date.now(),
 ): AgentSessionAggregate {
-  assertUndoableLatestIrisAgentTurn(source);
-  if (source.undoReceipts.some((receipt) => receipt.commandId === commandId)) return source;
+  assertRewindableAgentIntent(source);
+  if (source.rewindReceipts.some((receipt) => receipt.commandId === commandId)) return source;
   const session = cloneAgentSession(source);
-  const count = session.effectiveTraceLength === 0 && session.turns.length > 0 && session.undoReceipts.length === 0
-    ? session.turns.length
-    : Math.min(session.effectiveTraceLength ?? session.turns.length, session.turns.length);
-  const turn = [...session.turns.slice(0, count)].reverse().find((candidate) => candidate.state !== 'removed');
-  if (!turn) throw new Error('There is no Iris Agent turn to truncate.');
-  session.effectiveTraceLength = session.turns.findIndex((candidate) => candidate.id === turn.id);
-  session.currentTurnId = null;
+  const intentId = session.activeIntentIds.pop()!;
+  const intent = session.intents.find((candidate) => candidate.id === intentId);
+  if (!intent) throw new Error('The active Iris Agent intent path is corrupt.');
+  intent.state = 'superseded';
+  intent.closedAt = now;
+  delete intent.pauseReason;
+  delete intent.pauseMessage;
+  session.currentIntentId = null;
   session.state = 'idle';
-  const intent = session.intents?.find((candidate) => candidate.id === turn.intentId);
-  if (intent) intent.state = 'superseded';
-  session.undoReceipts.push({
+  session.rewindReceipts.push({
     commandId,
-    removedTurnId: turn.id,
-    removedAt: now,
-    externalEffectsRetained: true,
+    truncatedIntentId: intentId,
+    revertedEffectIds: [],
+    retainedEffectIds: [],
+    createdAt: now,
   });
   return session;
 }
 
-export function matchesActiveAgentTurn(
+export function matchesActiveAgentIntent(
   session: AgentSessionAggregate,
   correlation: AgentCorrelation,
 ): boolean {
   if (correlation.sessionId !== session.id) return false;
   if (correlation.workerEpoch !== undefined && correlation.workerEpoch !== session.workerEpoch) return false;
-  if (!session.currentTurnId) return false;
-  if (correlation.turnId !== undefined && correlation.turnId !== session.currentTurnId) return false;
-  const turn = currentAgentTurn(session);
-  return turn?.state === 'running' || turn?.state === 'pausing';
+  if (!session.currentIntentId) return false;
+  if (correlation.intentId !== undefined && correlation.intentId !== session.currentIntentId) return false;
+  const intent = currentAgentIntent(session);
+  return intent?.state === 'running';
 }
 
-export function completeActiveAgentTurn(
+export function completeActiveAgentIntent(
   source: AgentSessionAggregate,
   correlation: AgentCorrelation,
   now = Date.now(),
 ): AgentSessionAggregate {
-  if (!matchesActiveAgentTurn(source, correlation)) return source;
+  if (!matchesActiveAgentIntent(source, correlation)) return source;
   const session = cloneAgentSession(source);
-  const turn = currentAgentTurn(session)!;
-  turn.state = 'fulfilled';
-  turn.closedAt = now;
-  delete turn.pauseReason;
-  delete turn.error;
-  completeStreamingReplies(session, turn.id, 'completed', 'committed', now);
+  const intent = currentAgentIntent(session)!;
+  intent.state = 'completed';
+  intent.closedAt = now;
+  delete intent.pauseReason;
+  delete intent.pauseMessage;
+  settleStreamingReplies(session, intent.id, 'completed', 'committed', now);
+  settleLastTurn(session, intent.id, now);
+  settleCommittedFinalInvoke(session, intent.id, now);
   session.state = 'idle';
-  session.currentTurnId = null;
-  const intent = session.intents?.find((candidate) => candidate.id === turn.intentId);
-  if (intent) {
-    delete intent.pauseReason;
-    delete intent.closedAt;
-  }
-  delete session.stopRequestedTurnId;
+  session.currentIntentId = null;
+  delete session.stopRequestedIntentId;
   return session;
 }
 
-export function pauseActiveAgentTurn(
+export function pauseActiveAgentIntent(
   source: AgentSessionAggregate,
   correlation: AgentCorrelation,
   reason: IrisAgentPauseReason,
   message: string,
   now = Date.now(),
 ): AgentSessionAggregate {
-  if (!matchesActiveAgentTurn(source, correlation)) return source;
-  const completed = completeCommittedAssistantTurn(source, now);
-  if (completed !== source) return completed;
+  if (!matchesActiveAgentIntent(source, correlation)) return source;
+  if (hasCommittedFinalReply(source, source.currentIntentId!)) {
+    return completeActiveAgentIntent(source, correlation, now);
+  }
   const session = cloneAgentSession(source);
-  const turn = currentAgentTurn(session)!;
-  const stopped = reason === 'user';
-  turn.state = 'paused';
-  turn.pauseReason = reason;
-  turn.error = message;
-  completeStreamingReplies(session, turn.id, stopped ? 'stopped' : 'failed', 'excluded', now, message);
+  const intent = currentAgentIntent(session)!;
+  intent.state = 'paused';
+  intent.pauseReason = reason;
+  intent.pauseMessage = message;
+  settleStreamingReplies(
+    session,
+    intent.id,
+    reason === 'user' ? 'stopped' : 'failed',
+    'excluded',
+    now,
+    message,
+  );
   for (const activity of session.timeline) {
-    if (activity.kind === 'tool' && activity.turnId === turn.id && activity.state === 'running') {
+    if (activity.kind === 'tool' && activity.intentId === intent.id && activity.state === 'running') {
       activity.state = 'canceled';
       activity.completedAt = now;
-      if (!session.transcript.some(
-        (frame) => frame.role === 'tool' && frame.toolCallId === activity.toolCallId,
-      )) {
-        session.transcript.push({
-          id: `interrupted-tool-result:${turn.id}:${activity.toolCallId}`,
-          turnId: turn.id,
-          role: 'tool',
-          toolCallId: activity.toolCallId,
-          content: message,
-          providerMessage: {
-            role: 'toolResult',
-            toolCallId: activity.toolCallId,
-            toolName: activity.tool,
-            content: [{ type: 'text', text: message }],
-            isError: true,
-            timestamp: now,
-          },
-          createdAt: now,
-        });
-      }
     }
   }
   for (const operation of session.toolOperations) {
-    if (operation.turnId === turn.id && operation.state === 'running') {
+    if (operation.intentId === intent.id && operation.state === 'running') {
       operation.state = 'failed';
       operation.error = message;
       operation.completedAt = now;
     }
   }
-  for (const call of session.providerCalls) {
-    if (call.turnId === turn.id && call.state === 'running') {
-      call.state = stopped ? 'aborted' : 'failed';
-      call.completedAt = now;
-      call.error = message;
+  for (const invoke of session.invokes) {
+    if (invoke.intentId === intent.id && invoke.state === 'running') {
+      invoke.state = reason === 'user' ? 'aborted' : 'failed';
+      invoke.completedAt = now;
+      invoke.error = message;
     }
   }
-  for (const attempt of session.providerAttempts) {
-    if (attempt.turnId === turn.id && attempt.state === 'running') {
-      attempt.state = stopped ? 'aborted' : 'failed';
+  for (const attempt of session.invokeAttempts) {
+    if (attempt.intentId === intent.id && attempt.state === 'running') {
+      attempt.state = reason === 'user' ? 'aborted' : 'failed';
       attempt.completedAt = now;
       attempt.error = message;
     }
   }
-  appendInterruptedToolResults(session, turn.id, message, now);
+  settleLastTurn(session, intent.id, now);
   session.state = 'paused';
-  const intent = session.intents?.find((candidate) => candidate.id === turn.intentId);
-  if (intent) {
-    intent.state = 'paused';
-    intent.pauseReason = reason;
-  }
-  session.currentTurnId = turn.id;
-  delete session.stopRequestedTurnId;
+  delete session.stopRequestedIntentId;
   return session;
 }
 
-export function preparePausedAgentTurnForResume(
-  source: AgentSessionAggregate,
-  now = Date.now(),
-): AgentSessionAggregate {
-  const turn = currentAgentTurn(source);
-  if (!turn || turn.state !== 'paused') return source;
-  const completed = completeCommittedAssistantTurn(source, now);
-  if (completed !== source) return completed;
+export function resumePausedAgentIntent(source: AgentSessionAggregate): AgentSessionAggregate {
   const session = cloneAgentSession(source);
-  const changed = appendInterruptedToolResults(
-    session,
-    turn.id,
-    turn.error ?? 'The Agent stopped before the tool result was committed.',
-    now,
-  );
-  return changed ? session : source;
-}
-
-export function resumePausedAgentTurn(source: AgentSessionAggregate): AgentSessionAggregate {
-  const session = cloneAgentSession(source);
-  const turn = currentAgentTurn(session);
-  if (!turn || turn.state !== 'paused') throw new Error('Only the latest paused Iris Agent turn can continue.');
-  turn.state = 'running';
-  delete turn.pauseReason;
-  delete turn.error;
+  const intent = currentAgentIntent(session);
+  if (!intent || intent.state !== 'paused') {
+    throw new Error('Only the latest paused Iris Agent intent can continue.');
+  }
+  intent.state = 'running';
+  delete intent.pauseReason;
+  delete intent.pauseMessage;
   session.state = 'running';
-  const intent = session.intents?.find((candidate) => candidate.id === turn.intentId);
-  if (intent) {
-    intent.state = 'running';
-    delete intent.pauseReason;
-  }
   return session;
 }
 
-export function abandonOpenAgentTurn(
+export function supersedeOpenAgentIntent(
   source: AgentSessionAggregate,
   now = Date.now(),
 ): AgentSessionAggregate {
   const session = cloneAgentSession(source);
-  const turn = session.turns.find((candidate) => candidate.id === session.currentTurnId);
-  if (turn && turn.state !== 'fulfilled' && turn.state !== 'abandoned' && turn.state !== 'removed') {
-    turn.state = 'abandoned';
-    turn.closedAt = now;
-    const intent = session.intents?.find((candidate) => candidate.id === turn.intentId);
-    if (intent) {
-      intent.state = 'superseded';
-      intent.closedAt = now;
-    }
+  const intent = currentAgentIntent(session);
+  if (intent && intent.state !== 'completed' && intent.state !== 'superseded') {
+    intent.state = 'superseded';
+    intent.closedAt = now;
+    session.activeIntentIds = session.activeIntentIds.filter((id) => id !== intent.id);
   }
-  session.currentTurnId = null;
+  session.currentIntentId = null;
   session.state = 'idle';
-  delete session.stopRequestedTurnId;
+  delete session.stopRequestedIntentId;
   return session;
 }
 
-function completeStreamingReplies(
+function settleStreamingReplies(
   session: AgentSessionAggregate,
-  turnId: string,
+  intentId: string,
   state: 'completed' | 'stopped' | 'failed',
   disposition: 'committed' | 'excluded',
   now: number,
   error?: string,
 ): void {
   for (const activity of session.timeline) {
-    if (activity.kind !== 'reply' || activity.turnId !== turnId || activity.state !== 'streaming') continue;
+    if (activity.kind !== 'reply' || activity.intentId !== intentId || activity.state !== 'streaming') continue;
     activity.state = state;
     activity.contextDisposition = disposition;
     activity.completedAt = now;
@@ -288,128 +204,37 @@ function completeStreamingReplies(
   }
 }
 
-function completeCommittedAssistantTurn(
-  source: AgentSessionAggregate,
-  now: number,
-): AgentSessionAggregate {
-  const turn = currentAgentTurn(source);
-  if (!turn) return source;
-  const frame = [...source.transcript].reverse().find((candidate) => candidate.turnId === turn.id);
-  if (!frame || frame.role !== 'assistant' || !isSuccessfulFinalAssistant(frame.providerMessage)) return source;
-  const session = cloneAgentSession(source);
-  const targetTurn = currentAgentTurn(session)!;
-  targetTurn.state = 'fulfilled';
-  targetTurn.closedAt = now;
-  delete targetTurn.pauseReason;
-  delete targetTurn.error;
-  completeStreamingReplies(session, targetTurn.id, 'completed', 'committed', now);
-  const call = session.providerCalls.find((candidate) => candidate.id === frame.providerCallId);
-  if (call?.state === 'running') {
-    call.state = 'completed';
-    call.completedAt = now;
-    delete call.error;
+function settleLastTurn(session: AgentSessionAggregate, intentId: string, now: number): void {
+  const turn = [...session.turns].reverse().find((candidate) => candidate.intentId === intentId);
+  if (turn?.state === 'running') {
+    turn.state = 'settled';
+    turn.settledAt = now;
   }
-  for (const attempt of session.providerAttempts) {
-    if (attempt.providerCallId === frame.providerCallId && attempt.state === 'running') {
+}
+
+function settleCommittedFinalInvoke(
+  session: AgentSessionAggregate,
+  intentId: string,
+  now: number,
+): void {
+  const turn = [...session.turns].reverse().find((candidate) => candidate.intentId === intentId);
+  if (!turn?.assistant || turn.assistant.toolCalls.length > 0) return;
+  const invoke = session.invokes.find((candidate) => candidate.id === turn.invokeId);
+  if (invoke?.state === 'running') {
+    invoke.state = 'completed';
+    invoke.completedAt = now;
+    delete invoke.error;
+  }
+  for (const attempt of session.invokeAttempts) {
+    if (attempt.invokeId === invoke?.id && attempt.state === 'running') {
       attempt.state = 'completed';
       attempt.completedAt = now;
       delete attempt.error;
     }
   }
-  session.state = 'idle';
-  session.currentTurnId = null;
-  delete session.stopRequestedTurnId;
-  return session;
 }
 
-function appendInterruptedToolResults(
-  session: AgentSessionAggregate,
-  turnId: string,
-  message: string,
-  now: number,
-): boolean {
-  const turnFrames = session.transcript.filter((frame) => frame.turnId === turnId);
-  let assistantIndex = -1;
-  for (let index = turnFrames.length - 1; index >= 0; index -= 1) {
-    if (turnFrames[index]?.role === 'assistant') {
-      assistantIndex = index;
-      break;
-    }
-  }
-  if (assistantIndex < 0) return false;
-  const assistant = turnFrames[assistantIndex]!;
-  if (assistant.role !== 'assistant' || !Array.isArray(assistant.providerMessage?.content)) return false;
-  const settledToolCallIds = new Set(
-    turnFrames.slice(assistantIndex + 1).flatMap((frame) => frame.role === 'tool' ? [frame.toolCallId] : []),
-  );
-  let changed = false;
-  for (const block of assistant.providerMessage.content) {
-    if (!isRecord(block) || block.type !== 'toolCall' || typeof block.id !== 'string' ||
-      !isAgentToolName(block.name) || settledToolCallIds.has(block.id)) continue;
-    let activity = session.timeline.find(
-      (candidate): candidate is AgentToolActivity => candidate.kind === 'tool' && candidate.toolCallId === block.id,
-    );
-    if (!activity) {
-      activity = {
-        kind: 'tool',
-        id: block.id,
-        ordinal: session.nextOrdinal++,
-        turnId,
-        providerCallId: assistant.providerCallId,
-        toolCallId: block.id,
-        tool: block.name,
-        state: 'canceled',
-        inputSummary: 'Interrupted before execution.',
-        effectIds: [],
-        createdAt: now,
-        completedAt: now,
-      };
-      session.timeline.push(activity);
-      changed = true;
-    } else if (activity.state === 'running') {
-      activity.state = 'canceled';
-      activity.completedAt = now;
-      changed = true;
-    }
-    const resultMessage = activity.state === 'completed'
-      ? 'The tool completed, but its result was not committed before the Agent stopped. Re-check current state.'
-      : activity.state === 'failed'
-        ? activity.error ?? message
-        : message;
-    session.transcript.push({
-      id: `interrupted-tool-result:${turnId}:${block.id}`,
-      turnId,
-      role: 'tool',
-      toolCallId: block.id,
-      content: resultMessage,
-      providerMessage: {
-        role: 'toolResult',
-        toolCallId: block.id,
-        toolName: block.name,
-        content: [{ type: 'text', text: resultMessage }],
-        isError: true,
-        timestamp: now,
-      },
-      createdAt: now,
-    });
-    settledToolCallIds.add(block.id);
-    changed = true;
-  }
-  return changed;
-}
-
-function isSuccessfulFinalAssistant(message: Record<string, unknown> | undefined): boolean {
-  if (!message || !Array.isArray(message.content)) return false;
-  if (message.stopReason === 'error' || message.stopReason === 'aborted' || message.stopReason === 'toolUse') {
-    return false;
-  }
-  return !message.content.some((block) => isRecord(block) && block.type === 'toolCall');
-}
-
-function isAgentToolName(value: unknown): value is AgentToolActivity['tool'] {
-  return value === 'read' || value === 'edit' || value === 'write' || value === 'terminal';
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
+function hasCommittedFinalReply(session: AgentSessionAggregate, intentId: string): boolean {
+  const turn = [...session.turns].reverse().find((candidate) => candidate.intentId === intentId);
+  return !!turn?.assistant && turn.assistant.toolCalls.length === 0;
 }

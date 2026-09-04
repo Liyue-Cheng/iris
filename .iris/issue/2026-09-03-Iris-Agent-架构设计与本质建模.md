@@ -1,6 +1,6 @@
 ---
 title: Iris Agent 架构设计与本质建模
-status: Done
+status: In Review
 ---
 ## 背景
 
@@ -206,11 +206,11 @@ Trace 由两部分构成：
 
 ## 待办
 
-* [ ] 是否将本条设计的立场，落实为 Trace / Context 两套明确分离的领域结构（trace 不变、context = f(trace)）。
+* [x] 是否将本条设计的立场，落实为 Trace / Context 两套明确分离的领域结构（trace 不变、context = f(trace)）。
 
-* [ ] 是否将撤销从「标死实体」演进为「截断 trace 有效前缀 + 可逆副作用同步重建」。
+* [x] 是否将撤销从「标死实体」演进为「截断 trace 有效前缀 + 可逆副作用同步重建」。
 
-* [ ] 是否引入第一公民的 intent 实体，使 intent 只表达「进行 / 暂停 / 被覆盖」，不再有失败态。
+* [x] 是否引入第一公民的 intent 实体，使 intent 只表达「进行 / 暂停 / 被覆盖」，不再有失败态。
 
 <br />
 
@@ -1473,3 +1473,49 @@ Progress），还是先就这两个决策点定了再说？
 * 领域事件、聚合引用校验、分支复制和 artifact 访问均已覆盖 intent/有效前缀字段；新增 `trace-context.test.ts` 覆盖纯 Context、截断 rewind 与 anchor diff。
 
 验证：`npm run typecheck -- --pretty false` 通过；agent 相关 31 项测试通过。全量单 worker 测试 81 个文件中 80 个通过、462 项通过；唯一失败为既有 `session-viewport` 测试环境未提供 `window.removeEventListener`，与本次改动无关。未运行 build/dist 或开发服务器。
+
+## 纠偏重构（2026-09-04）
+
+上一轮实现只是把新类型旁挂在旧模型上，并没有完成替换。本轮以删除双轨结构为完成标准：
+
+* [x] `AgentIntent` 成为用户意图及暂停/覆盖生命周期的唯一权威，旧 Intent 语义从 `AgentTurn` 删除。
+
+* [x] `AgentTurn` 表达一次 invoke + tool calls 的循环，不包含失败、暂停或墓碑状态。
+
+* [x] Trace 成为直接持久化的 turn 级领域事实；provider runtime frame 与 Trace 隔离，Context 仅由 Trace 纯函数生成。
+
+* [x] Rewind 使用显式 active intent path，支持 rewind 后追加新分支，并在 CAS 校验后恢复可逆文件 effect。
+
+* [x] 方法层只保留当前引用；anchor 使用基准快照和结构化 diff 构造注入，不再把完整组合 prompt 写入 Trace。
+
+* [x] 删除 `removed` / `abandoned`、墓碑 undo、`turn-input:`、`interrupted-tool-result:` 等旧兼容路径及无生产用途的双轨字段。
+
+* [ ] 覆盖暂停继续、工具循环、rewind 后继续、输入分支、文件回滚、重启恢复和旧数据单点迁移，并通过类型检查与全量单 worker 测试。
+
+## 纠偏重构实现结果（2026-09-04）
+
+本轮已完成替换式迁移，不再由新旧两套结构共同承载运行时语义：
+
+* 聚合以 `currentIntentId`、`activeIntentIds`、`intents`、execution-level `turns`、`invokes`、`invokeAttempts`、`timeline`、`toolOperations`、`effects`、`requestFacts`、`rewindReceipts` 和 `injection` 为唯一事实源。Intent 生命周期为 `running` / `paused` / `completed` / `superseded`；Turn 只有 `running` / `settled`。
+
+* provider-frame `transcript`、`effectiveTraceLength`、墓碑 undo、`undoReceipts`、`providerAttempts`、旧用户级 `AgentTurn`、`AgentUserActivity` 以及持久化合成帧已从 v3 运行时和领域事件删除。v3 集合只追加，不再声明不可达的 `entity.removed` 事件。
+
+* Trace 直接由 active Intent path 与持久化 Turn 事实构成；Context 是纯投影。Pi provider message 只在 adapter 边界重建，缺失的中断 tool result 也只在 Context 投影时合成，不写回 Trace。
+
+* rewind 会在项目边界、符号链接、artifact hash 和当前内容 CAS 校验后，按反序恢复文件 effect；新建文件精确删除，空目录尽力移除，终端 effect 保留。rewind 后显式 active path 支持从 `[A, B]` 继续为 `[A, C]`。
+
+* renderer DTO、增量 projection、IPC precondition、分支参数和 artifact ownership 已全部迁移为 Intent 命名，不再把 Intent 投影成 `IrisAgentTurnView` 或 `fulfilled` / `abandoned`。旧 `artifacts/turns` 目录只在加载边界被一次性迁移到 `artifacts/intents`。
+
+* session journal 升级到 v3，worker protocol 升级到 v13。旧字段只允许出现在 `session-store.ts` 的隔离 v2 输入迁移器中；迁移完成后写出的 aggregate、snapshot、journal、provider-context bundle 均为新结构。
+
+验证结果：
+
+* `npm run typecheck -- --pretty false` 通过。
+
+* Agent、协议和 renderer projection 专项测试 15 个文件、92 项全部通过。
+
+* 全量单 fork 测试执行完成：82 个文件中 81 个通过，470 项中 469 项通过。唯一失败仍是既有 `src/renderer/lib/session-viewport.test.ts` 的 window mock 缺少 `removeEventListener`；该文件未被本次重构修改，因此上方最后一项暂不勾选。
+
+* worker 自检脚本已改为从源码读取协议版本，并能立即报告当前编译产物陈旧：source v13、artifact v12。遵循项目约束，未运行 build/dist，因此没有刷新 `out/`。
+
+* 未运行开发服务器或截图。

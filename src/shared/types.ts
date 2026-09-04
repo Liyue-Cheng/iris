@@ -767,9 +767,9 @@ export type IrisAgentCardView =
       excludedFromContext: boolean;
     };
 
-export interface IrisAgentTurnView {
+export interface IrisAgentIntentView {
   id: string;
-  state: 'active' | 'fulfilled' | 'abandoned';
+  state: 'running' | 'paused' | 'completed' | 'superseded';
   user: IrisAgentUserView;
   cards: IrisAgentCardView[];
   canFork: boolean;
@@ -784,7 +784,7 @@ export interface IrisAgentSessionInfo {
   model: IrisAgentModelRef | null;
   /** Lineage is informational; the parent Session remains fully independent. */
   parentSessionId?: string;
-  forkedFromTurnId?: string;
+  forkedFromIntentId?: string;
   projectRoot: string;
   projectGeneration: number;
   displayName: string;
@@ -793,7 +793,7 @@ export interface IrisAgentSessionInfo {
   updatedAt: number;
   /** Strictly monotonic canonical state revision. */
   revision: number;
-  currentTurnId: string | null;
+  currentIntentId: string | null;
   pause?: {
     reason: IrisAgentPauseReason;
     message: string;
@@ -803,9 +803,9 @@ export interface IrisAgentSessionInfo {
     evidence: string;
     createdAt: number;
   };
-  turns: IrisAgentTurnView[];
+  intents: IrisAgentIntentView[];
   terminals: IrisAgentTerminalView[];
-  canUndoLatestTurn: boolean;
+  canRewindLatestIntent: boolean;
   selfHostingEligible: false;
 }
 
@@ -827,10 +827,10 @@ export interface IrisAgentProviderContextCall {
 }
 
 export interface IrisAgentProviderContextBundle {
-  schemaVersion: 2;
+  schemaVersion: 3;
   kind: 'provider-context-bundle';
   sessionId: string;
-  turnId: string;
+  intentId: string;
   createdAt: number;
   assembledInput: { available: boolean };
   contextStage: 'provider-payload';
@@ -858,19 +858,19 @@ export interface IrisAgentListSnapshot {
   sessions: IrisAgentSessionInfo[];
 }
 
-export type IrisAgentSessionHeaderView = Omit<IrisAgentSessionInfo, 'revision' | 'turns'>;
-export type IrisAgentTurnHeaderView = Omit<IrisAgentTurnView, 'cards'>;
+export type IrisAgentSessionHeaderView = Omit<IrisAgentSessionInfo, 'revision' | 'intents'>;
+export type IrisAgentIntentHeaderView = Omit<IrisAgentIntentView, 'cards'>;
 
 export type IrisAgentCardPatch =
   | { operation: 'upsert'; index: number; card: IrisAgentCardView }
   | { operation: 'remove'; cardId: string };
 
-export type IrisAgentTurnPatch =
-  | { operation: 'remove'; turnId: string }
+export type IrisAgentIntentPatch =
+  | { operation: 'remove'; intentId: string }
   | {
       operation: 'upsert';
       index: number;
-      turn: IrisAgentTurnHeaderView;
+      intent: IrisAgentIntentHeaderView;
       cards: IrisAgentCardPatch[];
     };
 
@@ -882,7 +882,7 @@ export type IrisAgentSessionProjectionUpdate =
       baseRevision: number;
       revision: number;
       session: IrisAgentSessionHeaderView;
-      turns: IrisAgentTurnPatch[];
+      intents: IrisAgentIntentPatch[];
     };
 
 export interface IrisAgentSessionChangedPayload {

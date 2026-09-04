@@ -1018,7 +1018,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
         sessionId: string;
         commandId?: string;
         expectedRevision?: number;
-        expectedTurnId?: string;
+        expectedIntentId?: string;
       } & ProjectScopedPayload,
     ): Promise<IrisAgentSessionInfo> => {
       const ctx = requireContext(event);
@@ -1028,7 +1028,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
         ...(payload.expectedRevision === undefined
           ? {}
           : { expectedRevision: payload.expectedRevision }),
-        ...(payload.expectedTurnId === undefined ? {} : { expectedTurnId: payload.expectedTurnId }),
+        ...(payload.expectedIntentId === undefined ? {} : { expectedIntentId: payload.expectedIntentId }),
       });
     },
   );
@@ -1073,14 +1073,14 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       event,
       payload: {
         sessionId: string;
-        throughTurnId: string;
+        throughIntentId: string;
         commandId?: string;
         expectedRevision?: number;
       } & ProjectScopedPayload,
     ): Promise<IrisAgentSessionInfo> => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_BRANCH);
-      return ctx.agentSessionManager.branch(scope, payload.sessionId, payload.throughTurnId, {
+      return ctx.agentSessionManager.branch(scope, payload.sessionId, payload.throughIntentId, {
         ...(payload.commandId ? { commandId: payload.commandId } : {}),
         ...(payload.expectedRevision === undefined
           ? {}
@@ -1095,14 +1095,14 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       event,
       payload: {
         sessionId: string;
-        throughTurnId: string;
+        throughIntentId: string;
         commandId?: string;
         expectedRevision?: number;
       } & ProjectScopedPayload,
     ): Promise<IrisAgentSessionInfo> => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_BRANCH_INPUT);
-      return ctx.agentSessionManager.branchFromInput(scope, payload.sessionId, payload.throughTurnId, {
+      return ctx.agentSessionManager.branchFromInput(scope, payload.sessionId, payload.throughIntentId, {
         ...(payload.commandId ? { commandId: payload.commandId } : {}),
         ...(payload.expectedRevision === undefined
           ? {}
@@ -1234,14 +1234,14 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     CHANNELS.IRIS_AGENT_OPEN_CONTEXT,
     async (
       event,
-      payload: { sessionId: string; turnId: string } & ProjectScopedPayload,
+      payload: { sessionId: string; intentId: string } & ProjectScopedPayload,
     ): Promise<void> => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_OPEN_CONTEXT);
-      const target = await ctx.agentSessionManager.getTurnArtifactPath(
+      const target = await ctx.agentSessionManager.getIntentArtifactPath(
         scope,
         payload.sessionId,
-        payload.turnId,
+        payload.intentId,
       );
       const error = await shell.openPath(target);
       if (error) throw new Error(`[${CHANNELS.IRIS_AGENT_OPEN_CONTEXT}] ${error}`);

@@ -161,7 +161,7 @@ export function IrisAgentView({
     }
     // A fresh session may carry a remembered model whose provider is currently
     // unavailable. Fall back only before the session has any conversation history.
-    if (session.model && session.turns.length > 0) return;
+    if (session.model && session.intents.length > 0) return;
     const first = models[0];
     if (modelsLoading || !first) return;
     const key = modelValue(first.provider, first.modelId);
@@ -174,9 +174,9 @@ export function IrisAgentView({
       autoSelectingModel.current = null;
       setModelError(error instanceof Error ? error.message : String(error));
     });
-  }, [models, modelsLoading, selectedModelAvailable, session.id, session.model, session.turns.length]);
-  const openContext = (turnId: string): void => {
-    openIrisAgentContext(session.id, turnId).catch(() => undefined);
+  }, [models, modelsLoading, selectedModelAvailable, session.id, session.model, session.intents.length]);
+  const openContext = (intentId: string): void => {
+    openIrisAgentContext(session.id, intentId).catch(() => undefined);
   };
 
   const submitDraft = (): void => {
@@ -296,14 +296,14 @@ export function IrisAgentView({
             </option>
           ))}
         </select>
-        {!running && session.canUndoLatestTurn && (
+        {!running && session.canRewindLatestIntent && (
           <Button
             variant="ghost"
             size="icon"
             className="h-7 w-7 shrink-0"
             onClick={() => void rewindIrisAgent(session.id)}
-            title="只撤销最后一轮对话，工作区保持不变"
-            aria-label="撤销上一轮"
+            title="回退最后一项意图及可安全还原的文件改动"
+            aria-label="回退上一项意图"
           >
             <Undo2 className="!size-3.5" />
           </Button>
@@ -427,27 +427,27 @@ export function IrisAgentView({
         style={{ overflowAnchor: 'none' }}
       >
         <div ref={messagesContentRef} className="min-h-full">
-          {session.turns.length === 0 ? (
+          {session.intents.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
               <Bot className="h-9 w-9 text-muted-foreground/40" />
               <p>已固定当前 anchor。发送消息前会重新读取最新内容。</p>
             </div>
           ) : (
             <div className="space-y-4">
-              {session.turns.map((turn) => {
+              {session.intents.map((intent) => {
                 return (
-                  <div key={turn.id} className="space-y-2">
+                  <div key={intent.id} className="space-y-2">
                   <UserMessage
-                    message={turn.user}
-                    onOpenPrompt={turn.user.contextAvailable ? () => openContext(turn.id) : undefined}
-                    artifactTitle={turn.user.contextTitle}
-                    {...(turn.canForkFromInput ? { onFork: () => {
-                      branchIrisAgent(session.id, turn.id, true).then((forked) => {
+                    message={intent.user}
+                    onOpenPrompt={intent.user.contextAvailable ? () => openContext(intent.id) : undefined}
+                    artifactTitle={intent.user.contextTitle}
+                    {...(intent.canForkFromInput ? { onFork: () => {
+                      branchIrisAgent(session.id, intent.id, true).then((forked) => {
                         if (forked) onForked?.(forked);
                       }).catch(() => undefined);
                     } } : {})}
                   />
-                  {groupAgentCards(turn.cards).map((group) => group.kind === 'file-group' ? (
+                  {groupAgentCards(intent.cards).map((group) => group.kind === 'file-group' ? (
                     <FileChangeGroupCard key={group.cards[0]!.id} cards={group.cards} />
                   ) : (
                     <AgentActivityCard
@@ -455,8 +455,8 @@ export function IrisAgentView({
                       card={group.card}
                       canRetry={false}
                       onRetry={() => undefined}
-                      {...(group.card.kind === 'agent-reply' && turn.canFork ? { onFork: () => {
-                        branchIrisAgent(session.id, turn.id).then((forked) => {
+                      {...(group.card.kind === 'agent-reply' && intent.canFork ? { onFork: () => {
+                        branchIrisAgent(session.id, intent.id).then((forked) => {
                           if (forked) onForked?.(forked);
                         }).catch(() => undefined);
                       } } : {})}
@@ -993,7 +993,7 @@ function AgentReplyCard({
   onRetry: () => void;
   onFork?: () => void;
 }): JSX.Element {
-  const placeholder = card.state === 'stopped' ? '本轮已暂停。' : '正在回复…';
+  const placeholder = card.state === 'stopped' ? '本项意图已暂停。' : '正在回复…';
   return (
     <CardFrame
       cardType="message"

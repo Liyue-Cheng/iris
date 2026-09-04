@@ -1,12 +1,11 @@
 export {
   assertIrisAgentExpectedRevision,
   assertQuiescentIrisAgentSession,
-  assertUndoableLatestIrisAgentTurn,
-  completeActiveAgentTurn,
-  matchesActiveAgentTurn,
-  pauseActiveAgentTurn,
-  preparePausedAgentTurnForResume,
-  resumePausedAgentTurn,
-  undoLatestIrisAgentTurn,
+  assertRewindableAgentIntent,
+  completeActiveAgentIntent,
+  matchesActiveAgentIntent,
+  pauseActiveAgentIntent,
+  resumePausedAgentIntent,
   truncateIntentChain,
+  supersedeOpenAgentIntent,
 } from './session-domain';

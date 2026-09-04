@@ -157,7 +157,7 @@ function providerCorrelation(
 ) {
   return {
     ...request.correlation,
-    providerCallId: `call-${suffix}`,
+    invokeId: `call-${suffix}`,
     attemptId: `attempt-${suffix}`,
     providerMessageId: `message-${suffix}`,
   };
@@ -208,7 +208,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       await vi.waitFor(async () => {
         const projected = (await manager.list(scope)).sessions[0]!;
         expect(projected.state).toBe('starting');
-        expect(projected.turns[0]?.user.content).toBe('visible immediately');
+        expect(projected.intents[0]?.user.content).toBe('visible immediately');
         expect(worker.messages.some((message) => message.type === 'initialize')).toBe(true);
       });
       expect(settled).toBe(false);
@@ -246,7 +246,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       const run = worker.last('run');
       emitReply(worker, run, 'a', 'partial A');
       await vi.waitFor(async () => {
-        expect((await manager.list(scope)).sessions[0]?.turns[0]?.cards[0]).toMatchObject({
+        expect((await manager.list(scope)).sessions[0]?.intents[0]?.cards[0]).toMatchObject({
           id: 'reply:message-a', content: 'partial A', state: 'running',
         });
       });
@@ -264,11 +264,11 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       expect(resumedWorker.last('initialize').history.messages).toEqual([
         expect.objectContaining({
           role: 'user',
-          content: expect.stringContaining('<user-request>\ndo work\n</user-request>'),
+          content: 'do work',
         }),
       ]);
       const resume = resumedWorker.last('resume');
-      expect(resume.correlation.turnId).toBe(run.correlation.turnId);
+      expect(resume.correlation.intentId).toBe(run.correlation.intentId);
       emitReply(resumedWorker, resume, 'b', 'answer B');
       const correlation = providerCorrelation(resume, 'b');
       resumedWorker.emitMessage({
@@ -296,7 +296,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         correlation: resume.correlation,
       });
       await vi.waitFor(async () => {
-        const cards = (await manager.list(scope)).sessions[0]?.turns[0]?.cards;
+        const cards = (await manager.list(scope)).sessions[0]?.intents[0]?.cards;
         expect(cards?.map((card) => [card.id, card.state])).toEqual([
           ['reply:message-a', 'stopped'],
           ['reply:message-b', 'completed'],
@@ -332,7 +332,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       await vi.waitFor(async () => {
         const projected = (await manager.list(scope)).sessions[0]!;
         expect(projected.pause).toEqual({ reason: 'provider', message: 'rate limited' });
-        expect(projected.turns[0]?.cards).toEqual([]);
+        expect(projected.intents[0]?.cards).toEqual([]);
       });
     } finally {
       await manager.shutdown();
@@ -353,21 +353,21 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
       await manager.send(scope, created.id, 'race');
       const run = worker.last('run');
-      const turnId = run.correlation.turnId;
-      expect(turnId).toBeDefined();
-      if (!turnId) throw new Error('Run request is missing turnId');
+      const intentId = run.correlation.intentId;
+      expect(intentId).toBeDefined();
+      if (!intentId) throw new Error('Run request is missing intentId');
       emitReply(worker, run, 'race', 'kept before stop');
 
       await manager.stop(scope, created.id, {
         expectedRevision: created.revision,
-        expectedTurnId: turnId,
+        expectedIntentId: intentId,
       });
       expect(worker.terminate).toHaveBeenCalledOnce();
 
       await vi.waitFor(async () => {
         const projected = (await manager.list(scope)).sessions[0]!;
         expect(projected.pause?.reason).toBe('user');
-        expect(projected.turns[0]?.cards).toEqual([
+        expect(projected.intents[0]?.cards).toEqual([
           expect.objectContaining({
             id: 'reply:message-race',
             content: 'kept before stop',
@@ -439,7 +439,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       await stopping;
       expect(worker.terminate).toHaveBeenCalledOnce();
       await vi.waitFor(async () => {
-        expect((await manager.list(scope)).sessions[0]?.turns[0]?.cards[0]?.state).toBe('stopped');
+        expect((await manager.list(scope)).sessions[0]?.intents[0]?.cards[0]?.state).toBe('stopped');
       });
 
       const paused = (await manager.list(scope)).sessions[0]!;
@@ -447,18 +447,19 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       const resumedWorker = workers[1]!;
       expect(resumedWorker.last('initialize').history.messages.at(-1)).toMatchObject({
         role: 'tool',
-        providerMessage: {
-          role: 'toolResult', toolCallId: 'tool-1', isError: true,
-        },
+        toolCallId: 'tool-1',
+        tool: 'read',
+        isError: true,
       });
-      expect(resumedWorker.last('resume').correlation.turnId).toBe(run.correlation.turnId);
+      expect(resumedWorker.last('resume').correlation.intentId).toBe(run.correlation.intentId);
 
       settleTool({
         result: { kind: 'file', contentBase64: '' },
         update: { state: 'completed', completedAt: Date.now(), resultSummary: '0 bytes', path: 'README.md' },
         effects: [{
           id: 'late-effect',
-          turnId: run.correlation.turnId!,
+          intentId: run.correlation.intentId!,
+          turnId: 'turn:call-tool',
           toolActivityId: 'tool-1',
           kind: 'terminal-output',
           artifactRef: 'effects/late-effect.json',
@@ -466,7 +467,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         }],
       });
       await vi.waitFor(async () => {
-        const card = (await manager.list(scope)).sessions[0]?.turns[0]?.cards[0];
+        const card = (await manager.list(scope)).sessions[0]?.intents[0]?.cards[0];
         expect(card).toMatchObject({ state: 'stopped' });
         expect(card?.kind === 'local-retrieval' ? card.items[0]?.detail : undefined).toBeUndefined();
       });
@@ -483,7 +484,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
     }
   });
 
-  it('commits ProviderCall -> ToolCall -> ToolResult before continuing to the final ProviderCall', async () => {
+  it('commits Invoke -> ToolCall -> ToolResult before continuing to the final Invoke', async () => {
     const userData = await createTempDataDir('iris-agent-manager-tool-chain-');
     const scope: ProjectScope = { root: userData, generation: 1 };
     const worker = new FakeWorker();
@@ -563,7 +564,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       })));
       const second = {
         ...run.correlation,
-        providerCallId: 'call-final',
+        invokeId: 'call-final',
         attemptId: 'attempt-final',
         providerMessageId: 'message-final',
       };
@@ -589,18 +590,23 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       await vi.waitFor(async () => {
         const projected = (await manager.list(scope)).sessions[0]!;
         expect(projected.state).toBe('idle');
-        expect(projected.turns[0]?.state).toBe('fulfilled');
+        expect(projected.intents[0]?.state).toBe('completed');
       });
       const persisted = (await IrisAgentSessionStore.load({
         userDataPath: userData,
         projectRoot: scope.root,
       })).get(created.id)!;
-      expect(persisted.providerCalls.map((call) => call.id)).toEqual(['call-tool-parent', 'call-final']);
-      expect(persisted.transcript.map((frame) => frame.role)).toEqual(['user', 'assistant', 'tool', 'assistant']);
-      expect(persisted.transcript[1]).toMatchObject({ providerCallId: 'call-tool-parent' });
-      expect(persisted.transcript[2]).toMatchObject({ toolCallId: 'tool-1' });
+      expect(persisted.invokes.map((call) => call.id)).toEqual(['call-tool-parent', 'call-final']);
+      expect(persisted.turns).toHaveLength(2);
+      expect(persisted.turns[0]?.assistant?.toolCalls).toEqual([
+        expect.objectContaining({ id: 'tool-1', tool: 'read' }),
+      ]);
+      expect(persisted.turns[0]?.toolResults).toEqual([
+        expect.objectContaining({ toolCallId: 'tool-1', isError: false }),
+      ]);
+      expect(persisted.turns[1]?.assistant?.content).toBe('Done.');
       expect(persisted.timeline.find((activity) => activity.kind === 'tool')).toMatchObject({
-        providerCallId: 'call-tool-parent', toolCallId: 'tool-1', state: 'completed',
+        invokeId: 'call-tool-parent', toolCallId: 'tool-1', state: 'completed',
       });
     } finally {
       await manager.shutdown();
@@ -626,7 +632,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         rejectNextCommit = false;
         throw new Error('simulated durable commit failure');
       }
-      if (source.turns.some((turn) => turn.state === 'paused')) {
+      if (source.intents.some((turn) => turn.state === 'paused')) {
         expect(worker.terminate).toHaveBeenCalledOnce();
       }
       return originalCommit.call(this, source);
@@ -701,8 +707,8 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         const projected = (await manager.list(scope)).sessions[0]!;
         expect(projected.state).toBe('idle');
         expect(projected.pause).toBeUndefined();
-        expect(projected.turns[0]).toMatchObject({ state: 'fulfilled' });
-        expect(projected.turns[0]?.cards[0]).toMatchObject({
+        expect(projected.intents[0]).toMatchObject({ state: 'completed' });
+        expect(projected.intents[0]?.cards[0]).toMatchObject({
           content: 'Committed answer.', state: 'completed',
         });
       });
@@ -711,8 +717,8 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         userDataPath: userData,
         projectRoot: scope.root,
       })).get(created.id)!;
-      expect(persisted.providerCalls[0]).toMatchObject({ state: 'completed' });
-      expect(persisted.providerAttempts[0]).toMatchObject({ state: 'completed' });
+      expect(persisted.invokes[0]).toMatchObject({ state: 'completed' });
+      expect(persisted.invokeAttempts[0]).toMatchObject({ state: 'completed' });
     } finally {
       await manager.shutdown();
       await removeTempDataDir(userData);
@@ -772,16 +778,16 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       expect(resumedWorker.last('initialize').history.messages.slice(-2)).toMatchObject([
         {
           role: 'assistant',
-          providerMessage: { stopReason: 'toolUse' },
+          toolCalls: [expect.objectContaining({ id: 'tool-before-request', tool: 'read' })],
         },
         {
           role: 'tool',
-          providerMessage: {
-            role: 'toolResult', toolCallId: 'tool-before-request', isError: true,
-          },
+          toolCallId: 'tool-before-request',
+          tool: 'read',
+          isError: true,
         },
       ]);
-      expect(resumedWorker.last('resume').correlation.turnId).toBe(run.correlation.turnId);
+      expect(resumedWorker.last('resume').correlation.intentId).toBe(run.correlation.intentId);
     } finally {
       await manager.shutdown();
       await removeTempDataDir(userData);
@@ -828,7 +834,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         type: 'state', correlation: run.correlation, state: 'interrupted',
       });
       await vi.waitFor(async () => {
-        expect((await firstManager.list(scope)).sessions[0]?.turns[0]?.cards[0]).toMatchObject({
+        expect((await firstManager.list(scope)).sessions[0]?.intents[0]?.cards[0]).toMatchObject({
           content: 'visible partial', state: 'stopped', excludedFromContext: true,
         });
       });
@@ -842,7 +848,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       const restored = (await secondManager.list(scope)).sessions[0]!;
       await secondManager.retry(scope, restored.id, { expectedRevision: restored.revision });
       expect(secondWorker.last('initialize').history.messages.filter((message) => message.role === 'user')).toEqual([
-        expect.objectContaining({ content: expect.stringContaining('<user-request>\npause\n</user-request>') }),
+        expect.objectContaining({ content: 'pause' }),
       ]);
       expect(secondWorker.last('initialize').history.messages.some(
         (message) => message.role === 'assistant' && message.content.includes('visible partial'),
@@ -850,6 +856,54 @@ describe('IrisAgentSessionManager v2 timeline', () => {
     } finally {
       await firstManager.shutdown();
       await secondManager?.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('starts an input branch without replacing its Intent identity', async () => {
+    const userData = await createTempDataDir('iris-agent-manager-input-branch-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const workers: FakeWorker[] = [];
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => {
+        const worker = new FakeWorker();
+        workers.push(worker);
+        return worker;
+      },
+      modelCatalogLoader: async () => catalog,
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({
+        scope,
+        anchor: { kind: 'workspace', path: '.iris' },
+      });
+      await manager.send(scope, created.id, 'branch input');
+      const sourceRun = workers[0]!.last('run');
+      const intentId = sourceRun.correlation.intentId!;
+      await manager.stop(scope, created.id);
+      const source = (await manager.list(scope)).sessions.find((session) => session.id === created.id)!;
+      const branch = await manager.branchFromInput(scope, created.id, intentId, {
+        expectedRevision: source.revision,
+      });
+
+      await manager.retry(scope, branch.id, { expectedRevision: branch.revision });
+      const branchWorker = workers[1]!;
+      expect(branchWorker.last('initialize').history.messages).toEqual([]);
+      expect(branchWorker.last('run').correlation.intentId).toBe(intentId);
+      const runningBranch = (await manager.list(scope)).sessions.find((session) => session.id === branch.id)!;
+      expect(runningBranch).toMatchObject({ state: 'running', currentIntentId: intentId });
+      expect(runningBranch.intents).toHaveLength(1);
+      await manager.stop(scope, branch.id);
+      const persisted = (await IrisAgentSessionStore.load({
+        userDataPath: userData,
+        projectRoot: scope.root,
+      })).get(branch.id)!;
+      expect(persisted.intents).toHaveLength(1);
+      expect(persisted.intents[0]).toMatchObject({ id: intentId, state: 'paused' });
+      expect(persisted.activeIntentIds).toEqual([intentId]);
+    } finally {
+      await manager.shutdown();
       await removeTempDataDir(userData);
     }
   });
@@ -983,9 +1037,8 @@ describe('IrisAgentSessionManager v2 timeline', () => {
           userDataPath: userData,
           projectRoot: scope.root,
         })).get(created.id)!;
-        expect(persistedWhileWaiting.transcript.map((frame) => frame.role)).toEqual([
-          'user', 'assistant',
-        ]);
+        expect(persistedWhileWaiting.turns[0]?.assistant?.toolCalls).toHaveLength(1);
+        expect(persistedWhileWaiting.turns[0]?.toolResults).toEqual([]);
 
         await manager.continueTerminalSupervision(scope, created.id, running.id);
         expect((await manager.list(scope)).sessions[0]?.supervisionAlert).toBeUndefined();

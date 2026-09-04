@@ -55,7 +55,7 @@ export class IrisAgentToolHost {
 
   async execute(
     input: AgentToolOperationInput,
-    correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'turnId' | 'toolCallId' | 'operationId'>>,
+    correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>>,
   ): Promise<IrisAgentToolHostResult> {
     const started = Date.now();
     try {
@@ -99,7 +99,7 @@ export class IrisAgentToolHost {
 
   private async executeUnchecked(
     input: AgentToolOperationInput,
-    correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'turnId' | 'toolCallId' | 'operationId'>>,
+    correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>>,
     started: number,
   ): Promise<{
     result: AgentToolOperationResult;
@@ -142,6 +142,7 @@ export class IrisAgentToolHost {
       await fs.mkdir(target, { recursive: true });
       const effects = existed ? [] : [{
         id: effectId,
+        intentId: correlation.intentId,
         turnId: correlation.turnId,
         toolActivityId: correlation.toolCallId,
         kind: 'directory-create',
@@ -204,6 +205,7 @@ export class IrisAgentToolHost {
       },
       effects: [{
         id: effectId,
+        intentId: correlation.intentId,
         turnId: correlation.turnId,
         toolActivityId: correlation.toolCallId,
         kind: 'file-write',
@@ -219,7 +221,7 @@ export class IrisAgentToolHost {
 
   private async executeTerminal(
     input: Extract<AgentToolOperationInput, { tool: 'terminal' }>,
-    correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'turnId' | 'toolCallId' | 'operationId'>>,
+    correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>>,
     started: number,
   ): Promise<{
     result: AgentToolOperationResult;
@@ -283,6 +285,7 @@ export class IrisAgentToolHost {
       },
       effects: [{
         id: `terminal--${correlation.operationId}`,
+        intentId: correlation.intentId,
         turnId: correlation.turnId,
         toolActivityId: correlation.toolCallId,
         kind: 'terminal-output',
