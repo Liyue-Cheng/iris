@@ -5,11 +5,14 @@ import {
   agentHistoryDigest,
   isAgentWorkerRequest,
   type AgentCorrelation,
+  type AgentHistorySnapshot,
   type AgentToolOperationInput,
   type AgentToolOperationResult,
   type AgentTerminalSupervisionInput,
   type AgentTerminalSupervisionResult,
   type AgentWorkerEvent,
+  type AgentWorkerExecutionRuntime,
+  type AgentWorkerInitRuntime,
   type AgentWorkerRequest,
 } from '@shared/agent-protocol';
 import {
@@ -53,6 +56,7 @@ let runtime:
       agentDir: string;
     }
   | null = null;
+let workerRuntime: AgentWorkerInitRuntime | null = null;
 let currentCorrelation: AgentCorrelation = { sessionId: 'unknown' };
 let providerRequestIndex = 0;
 let providerFailure: string | null = null;
@@ -144,8 +148,8 @@ async function handleMessage(message: unknown): Promise<void> {
     return;
   }
   if (message.type === 'run') {
-    if (!runtime) throw new Error('Iris Agent Worker has not been initialized');
     currentCorrelation = message.correlation;
+    await prepareExecution(message.history, message.runtime);
     providerRequestIndex = 0;
     providerFailure = null;
     currentInvokeId = null;
@@ -155,17 +159,21 @@ async function handleMessage(message: unknown): Promise<void> {
     userAbortRequested = false;
     providerEventChain = Promise.resolve();
     flushAssistantDelta();
-    await runExecution(message.correlation, async () => {
-      await runtime!.session.prompt(message.prompt, {
-        expandPromptTemplates: false,
-        source: 'interactive',
+    try {
+      await runExecution(message.correlation, async () => {
+        await runtime!.session.prompt(message.prompt, {
+          expandPromptTemplates: false,
+          source: 'interactive',
+        });
       });
-    });
+    } finally {
+      await disposeRuntime();
+    }
     return;
   }
   if (message.type === 'resume') {
-    if (!runtime) throw new Error('Iris Agent Worker has not been initialized');
     currentCorrelation = message.correlation;
+    await prepareExecution(message.history, message.runtime);
     providerRequestIndex = Math.max(providerRequestIndex, message.invokeOffset);
     currentInvokeId = null;
     currentAttemptId = null;
@@ -174,8 +182,14 @@ async function handleMessage(message: unknown): Promise<void> {
     userAbortRequested = false;
     providerEventChain = Promise.resolve();
     flushAssistantDelta();
-    removeTrailingUncommittedAssistant(runtime.session.agent.state.messages);
-    await runExecution(message.correlation, () => runtime!.session.agent.continue());
+    const executionRuntime = runtime;
+    if (!executionRuntime) throw new Error('Iris Agent execution runtime was not created.');
+    removeTrailingUncommittedAssistant(executionRuntime.session.agent.state.messages);
+    try {
+      await runExecution(message.correlation, () => executionRuntime.session.agent.continue());
+    } finally {
+      await disposeRuntime();
+    }
   }
 }
 
@@ -227,9 +241,34 @@ async function runExecution(
 async function initialize(message: Extract<AgentWorkerRequest, { type: 'initialize' }>): Promise<void> {
   await disposeRuntime();
   post({ type: 'state', correlation: message.correlation, state: 'starting' });
+  workerRuntime = message.runtime;
+  post({
+    type: 'ready',
+    correlation: message.correlation,
+    runtime: {
+      protocolVersion: IRIS_AGENT_PROTOCOL_VERSION,
+      piVersion: IRIS_PI_VERSION,
+      nodeVersion: process.versions.node,
+      workerEpoch: message.correlation.workerEpoch ?? 0,
+      historyRevision: message.history.revision,
+      historyMessageCount: message.history.messages.length,
+      historyDigest: agentHistoryDigest(message.history),
+      commandShell: message.runtime.commandShell,
+    },
+  });
+  post({ type: 'state', correlation: message.correlation, state: 'ready' });
+}
+
+async function prepareExecution(
+  history: AgentHistorySnapshot,
+  execution: AgentWorkerExecutionRuntime,
+): Promise<void> {
+  if (!workerRuntime) throw new Error('Iris Agent Worker has not been initialized');
+  const baseRuntime = workerRuntime;
+  await disposeRuntime();
   const operations = createWorkerOperations();
   const providerProfileSecrets = (await loadStoredIrisAgentProviderProfiles(
-    message.runtime.providerProfileRoot,
+    baseRuntime.providerProfileRoot,
   ))
     .map((profile) => profile.apiKey);
   const knownSecrets = collectKnownSecrets([
@@ -237,14 +276,14 @@ async function initialize(message: Extract<AgentWorkerRequest, { type: 'initiali
     providerSecretEnvironment(),
   ]);
   const result = await createIrisPiSession({
-    cwd: message.runtime.cwd,
-    agentDir: message.runtime.agentDir,
-    providerProfileRoot: message.runtime.providerProfileRoot,
-    model: message.runtime.model,
-    commandShell: message.runtime.commandShell,
-    providerProxy: message.runtime.providerProxy,
+    cwd: baseRuntime.cwd,
+    agentDir: baseRuntime.agentDir,
+    providerProfileRoot: baseRuntime.providerProfileRoot,
+    model: execution.model,
+    commandShell: baseRuntime.commandShell,
+    providerProxy: execution.providerProxy,
     operations,
-    history: message.history,
+    history,
     onProviderPayload: async (payload, model) => {
       if (!currentCorrelation.intentId) return;
       await providerEventChain;
@@ -262,7 +301,7 @@ async function initialize(message: Extract<AgentWorkerRequest, { type: 'initiali
         index: currentAttemptIndex,
       });
       const payloadSecrets = collectKnownSecrets([
-        storedPiCredentialSecrets(model.provider, message.runtime.agentDir),
+        storedPiCredentialSecrets(model.provider, baseRuntime.agentDir),
         knownSecrets,
       ]);
       post({
@@ -284,7 +323,7 @@ async function initialize(message: Extract<AgentWorkerRequest, { type: 'initiali
         return;
       }
       const failureSecrets = collectKnownSecrets([
-        storedPiCredentialSecrets(model.provider, message.runtime.agentDir),
+        storedPiCredentialSecrets(model.provider, baseRuntime.agentDir),
         knownSecrets,
       ]);
       const sanitized = sanitizeProviderPayload(failure, failureSecrets);
@@ -300,25 +339,9 @@ async function initialize(message: Extract<AgentWorkerRequest, { type: 'initiali
     disposeProviderTransport: result.disposeProviderTransport,
     modelRuntime: result.modelRuntime,
     model: result.model,
-    cwd: message.runtime.cwd,
-    agentDir: message.runtime.agentDir,
+    cwd: baseRuntime.cwd,
+    agentDir: baseRuntime.agentDir,
   };
-  post({
-    type: 'ready',
-    correlation: message.correlation,
-    runtime: {
-      protocolVersion: IRIS_AGENT_PROTOCOL_VERSION,
-      piVersion: IRIS_PI_VERSION,
-      nodeVersion: process.versions.node,
-      workerEpoch: message.correlation.workerEpoch ?? 0,
-      historyRevision: message.history.revision,
-      historyMessageCount: result.session.state.messages.length,
-      historyDigest: agentHistoryDigest(message.history),
-      model: message.runtime.model,
-      commandShell: message.runtime.commandShell,
-    },
-  });
-  post({ type: 'state', correlation: message.correlation, state: 'ready' });
 }
 
 async function superviseTerminal(

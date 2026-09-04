@@ -1542,3 +1542,52 @@ journal 提交前复制分支实际继承的 immutable artifact；任一复制�
 build、dist、开发服务器或截图。
 
 * [ ] 手工验证 Reply Fork 的继承上下文/终端回放/文件 rewind，以及 Input Fork retry 后重新执行。
+
+## 模型解析边界纠偏（2026-09-04）
+
+模型不是 Intent、Turn、Invoke 或 Worker 的身份，只是 Session 上可随时调整的当前执行偏好。
+同一 Intent 内的不同 Invoke 可以使用不同 Provider/模型：执行暂时不可用时 Intent 进入 paused，
+用户切换 Session 模型后继续同一 Intent，下一次执行使用新选择。暂停是切换屏障；已经发出的
+Provider Attempt 会先中止或结束，不要求运行中的请求原地更换模型。
+
+实现边界：
+
+* `AgentSessionAggregate.model` 是模型选择的唯一权威；不向 Intent、Turn 或 Invoke 增加模型字段。
+* Worker 初始化不再接收或确认模型。每个 `run` / `resume` 命令从最新 Session 解析模型与
+  Provider proxy，作为不持久化的临时执行参数发送给 Worker。
+* Worker 为每次执行建立 Pi runtime；执行结束或暂停后释放它，不跨用户操作保留具有权威含义的
+  模型缓存。Worker 进程本身仍可复用。
+* Provider 自动重试发生在一次执行内部；暂停并切换后，后续执行允许使用另一 Provider/模型。
+* 实际发出请求的 Provider、模型和 API 仍写入 provider-context artifact，作为审计事实，不污染
+  Provider-neutral Trace。
+
+验证项：
+
+* [x] Worker initialize 协议不包含模型，`run` / `resume` 明确携带当前执行配置与最新 Context。
+* [x] 普通 Send 使用命令发生时的最新 Session 模型。
+* [x] Intent 暂停后切换 Provider/模型，Retry 继续同一 Intent 并使用新模型。
+* [x] 连续消息复用 Worker 进程时，每次执行重新解析模型，不沿用上次执行缓存。
+* [x] Intent、Turn、Invoke 持久化结构不出现模型字段，provider-context 保留实际执行身份。
+* [x] 通过类型检查与 Agent/协议专项测试；不运行 build、dist、开发服务器或截图。
+
+### 模型解析边界实现结果
+
+Worker protocol 已升级到 v14。`AgentWorkerInitRuntime` 只包含项目目录、Agent 配置目录、Provider
+profile 根目录和命令 shell；模型与代理移动到不持久化的 `AgentWorkerExecutionRuntime`，由每个
+`run` / `resume` 连同最新 provider-neutral history 一起发送。Worker 每次执行前重建 Pi session，
+执行 settled、paused 或 interrupted 后释放 Pi runtime；Worker 线程可以复用，但不会跨执行保留
+旧模型对象。
+
+Session `setModel` 不再通过销毁 Worker 建立隐式一致性，只更新 `AgentSessionAggregate.model`。
+Send、Input Fork Retry 和已有 Turn 的 Continue 都在命令串行化边界内解析当前 Session 模型及其
+系统代理。因此 Provider 不可用后切换模型并 Retry 时，Intent ID 保持不变，后续 Invoke 使用新选择；
+Intent、Turn、Invoke、Attempt 的持久化 schema 均未增加模型字段。实际 Provider/model/API 继续由
+provider payload 回调写入 provider-context artifact。
+
+验证结果：`npm run typecheck -- --pretty false` 通过；Agent、协议和 renderer projection 专项
+15 个文件、94 项全部通过，新增覆盖空闲 Worker 不因模型切换而销毁、同一 Worker 的跨 Provider
+执行配置，以及 Provider 失败暂停后切换模型继续同一 Intent。全量单 fork Vitest 为 82 个文件中
+81 个通过、472 项中 471 项通过；唯一
+失败仍是未修改的 `session-viewport.test.ts` 缺少 `window.removeEventListener` mock。未运行 build、
+dist、开发服务器或截图。`npm run agent:worker-check` 按预期报告源码 protocol v14、现有编译 artifact
+protocol v13；遵循项目约束未刷新 `out/`。

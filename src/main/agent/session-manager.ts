@@ -35,6 +35,7 @@ import type {
   AgentSessionRuntimeState,
   AgentToolOperationInput,
   AgentWorkerEvent,
+  AgentWorkerExecutionRuntime,
   AgentTerminalSupervisionInput,
   AgentTerminalSupervisionResult,
 } from '@shared/agent-protocol';
@@ -210,10 +211,8 @@ export class IrisAgentSessionManager extends EventEmitter {
       }
       this.options.settingsManager?.update({ experimental: { irisAgentDefaultModel: { ...model } } });
       if (sameModel(session.model, model)) return projectAgentSession(session, scope.generation);
-      await this.shutdownHost(sessionId);
-      const latest = await this.requireSession(scope, sessionId);
-      latest.model = { ...model };
-      const saved = await store.commit(latest);
+      session.model = { ...model };
+      const saved = await store.commit(session);
       this.emitChanged(scope, saved);
       return projectAgentSession(saved, scope.generation);
     });
@@ -328,7 +327,13 @@ export class IrisAgentSessionManager extends EventEmitter {
       running = await store.commit(session);
       this.emitChanged(scope, running);
       const correlation = activeIntentCorrelation(running, host.workerEpoch);
-      await host.post({ type: 'run', correlation, prompt: prepared.prompt });
+      await host.post({
+        type: 'run',
+        correlation,
+        prompt: prepared.prompt,
+        history: store.history(sessionId),
+        runtime: await this.executionRuntimeFor(running),
+      });
       return projectAgentSession(store.get(sessionId) ?? running, scope.generation);
     } catch (error) {
       await this.pauseSessionExecution(sessionId, errorMessage(error), undefined, 'runtime');
@@ -414,6 +419,8 @@ export class IrisAgentSessionManager extends EventEmitter {
             type: 'run',
             correlation: activeIntentCorrelation(latest, host.workerEpoch),
             prompt: prepared.prompt,
+            history: store.history(sessionId),
+            runtime: await this.executionRuntimeFor(latest),
           });
           return projectAgentSession(store.get(sessionId) ?? latest, scope.generation);
         } catch (error) {
@@ -436,6 +443,8 @@ export class IrisAgentSessionManager extends EventEmitter {
           type: 'resume',
           correlation,
           invokeOffset: running.invokes.filter((invoke) => invoke.intentId === intent.id).length,
+          history: store.history(sessionId),
+          runtime: await this.executionRuntimeFor(running),
         });
       } catch (error) {
         await this.pauseSessionExecution(sessionId, errorMessage(error), correlation, 'runtime');
@@ -688,6 +697,18 @@ export class IrisAgentSessionManager extends EventEmitter {
     };
   }
 
+  private async executionRuntimeFor(session: AgentSessionAggregate): Promise<AgentWorkerExecutionRuntime> {
+    if (!session.model) throw new Error('Iris Agent Session has no configured model.');
+    const agentDir = irisPiAgentDir();
+    const providerProfileRoot = this.options.providerProfileRoot ?? this.userDataPath;
+    const providerProxy = this.options.resolveProxy
+      ? parseElectronProxyRules(await this.options.resolveProxy(
+          await resolveIrisModelBaseUrl(agentDir, providerProfileRoot, session.model),
+        ))
+      : { mode: 'direct' as const };
+    return { model: { ...session.model }, providerProxy };
+  }
+
   private async hostFor(
     session: AgentSessionAggregate,
     store: IrisAgentSessionStore,
@@ -695,7 +716,6 @@ export class IrisAgentSessionManager extends EventEmitter {
   ): Promise<AgentWorkerHost> {
     const existing = this.hosts.get(session.id);
     if (existing) return existing;
-    if (!session.model) throw new Error('Iris Agent Session has no configured model.');
     const next = cloneAgentSession(session);
     next.workerEpoch += 1;
     const withEpoch = await store.commit(next);
@@ -704,21 +724,14 @@ export class IrisAgentSessionManager extends EventEmitter {
       loadHistory: async (sessionId) => store.history(sessionId),
       loadRuntime: async (sessionId) => {
         const latest = store.get(sessionId);
-        if (!latest?.model) throw new Error('Iris Agent Session has no configured model.');
+        if (!latest) throw new Error('Iris Agent Session no longer exists.');
         const agentDir = irisPiAgentDir();
         const providerProfileRoot = this.options.providerProfileRoot ?? this.userDataPath;
-        const providerProxy = this.options.resolveProxy
-          ? parseElectronProxyRules(await this.options.resolveProxy(
-              await resolveIrisModelBaseUrl(agentDir, providerProfileRoot, latest.model),
-            ))
-          : { mode: 'direct' as const };
         return {
           cwd: latest.projectRoot,
           agentDir,
           providerProfileRoot,
-          model: { ...latest.model },
           commandShell: { ...this.commandShell },
-          providerProxy,
         };
       },
       workerEpoch: withEpoch.workerEpoch,

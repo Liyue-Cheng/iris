@@ -143,8 +143,6 @@ export class AgentWorkerHost extends EventEmitter {
             event.runtime.historyRevision !== history.revision ||
             event.runtime.historyMessageCount !== history.messages.length ||
             event.runtime.historyDigest !== agentHistoryDigest(history) ||
-            event.runtime.model.provider !== runtime.model.provider ||
-            event.runtime.model.modelId !== runtime.model.modelId ||
             event.runtime.commandShell.kind !== runtime.commandShell.kind ||
             event.runtime.commandShell.executable !== runtime.commandShell.executable
           ) {

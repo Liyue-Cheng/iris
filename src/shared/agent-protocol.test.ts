@@ -20,12 +20,10 @@ describe('Iris Agent Worker protocol', () => {
           cwd: process.cwd(),
           agentDir: process.cwd(),
           providerProfileRoot: process.cwd(),
-          model: { provider: 'openai', modelId: 'gpt-test' },
           commandShell: { kind: 'powershell', executable: 'pwsh.exe', displayName: 'PowerShell 7' },
-          providerProxy: { mode: 'proxy', url: 'socks5://127.0.0.1:1080' },
         },
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       isAgentWorkerRequest({ version: 1, type: 'shutdown', correlation: { sessionId: 'session-1' } }),
     ).toBe(false);
@@ -33,23 +31,29 @@ describe('Iris Agent Worker protocol', () => {
     expect(
       isAgentWorkerRequest({
         version: IRIS_AGENT_PROTOCOL_VERSION,
-        type: 'initialize',
-        correlation: { sessionId: 'session-1' },
+        type: 'run',
+        correlation: { sessionId: 'session-1', intentId: 'intent-1' },
         history: { revision: 1, anchor: { kind: 'workspace', path: '.iris' }, messages: [] },
+        prompt: 'work',
         runtime: {
-          cwd: process.cwd(),
-          agentDir: process.cwd(),
-          providerProfileRoot: process.cwd(),
           model: { provider: 'openai', modelId: 'gpt-test' },
-          commandShell: {
-            kind: 'powershell',
-            executable: 'pwsh.exe',
-            displayName: 'PowerShell 7',
-          },
           providerProxy: { mode: 'proxy', url: 'http://127.0.0.1:7890/' },
         },
       }),
     ).toBe(true);
+    expect(
+      isAgentWorkerRequest({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'run',
+        correlation: { sessionId: 'session-1', intentId: 'intent-1' },
+        history: { revision: 1, anchor: { kind: 'workspace', path: '.iris' }, messages: [] },
+        prompt: 'work',
+        runtime: {
+          model: { provider: 'openai', modelId: 'gpt-test' },
+          providerProxy: { mode: 'proxy', url: 'socks5://127.0.0.1:1080' },
+        },
+      }),
+    ).toBe(false);
     expect(
       isAgentWorkerRequest({
         version: IRIS_AGENT_PROTOCOL_VERSION,

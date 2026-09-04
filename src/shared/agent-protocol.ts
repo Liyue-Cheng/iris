@@ -4,7 +4,7 @@ import type {
   IrisAgentProviderContextCall,
 } from './types';
 
-export const IRIS_AGENT_PROTOCOL_VERSION = 13 as const;
+export const IRIS_AGENT_PROTOCOL_VERSION = 14 as const;
 
 export type AgentToolName = 'read' | 'edit' | 'write' | 'terminal';
 export type AgentTerminalIntent = 'information' | 'operation';
@@ -84,8 +84,11 @@ export interface AgentWorkerInitRuntime {
   cwd: string;
   agentDir: string;
   providerProfileRoot: string;
-  model: IrisAgentModelRef;
   commandShell: AgentCommandShell;
+}
+
+export interface AgentWorkerExecutionRuntime {
+  model: IrisAgentModelRef;
   providerProxy: AgentProviderProxy;
 }
 
@@ -136,8 +139,18 @@ interface AgentProtocolEnvelope {
 export type AgentWorkerRequest = AgentProtocolEnvelope &
   (
     | { type: 'initialize'; history: AgentHistorySnapshot; runtime: AgentWorkerInitRuntime }
-    | { type: 'run'; prompt: string }
-    | { type: 'resume'; invokeOffset: number }
+    | {
+        type: 'run';
+        prompt: string;
+        history: AgentHistorySnapshot;
+        runtime: AgentWorkerExecutionRuntime;
+      }
+    | {
+        type: 'resume';
+        invokeOffset: number;
+        history: AgentHistorySnapshot;
+        runtime: AgentWorkerExecutionRuntime;
+      }
     | { type: 'supervise-terminal'; supervisionId: string; input: AgentTerminalSupervisionInput }
     | { type: 'abort'; reason: 'user' | 'project-switch' | 'app-quit' }
     | { type: 'tool-result'; ok: true; result: AgentToolOperationResult }
@@ -159,7 +172,6 @@ export type AgentWorkerEvent = AgentProtocolEnvelope &
           historyRevision: number;
           historyMessageCount: number;
           historyDigest: string;
-          model: IrisAgentModelRef;
           commandShell: AgentCommandShell;
         };
       }
@@ -196,10 +208,12 @@ export function isAgentWorkerRequest(value: unknown): value is AgentWorkerReques
     case 'initialize':
       return isHistorySnapshot(value.history) && isInitRuntime(value.runtime);
     case 'run':
-      return typeof value.prompt === 'string';
+      return typeof value.prompt === 'string' && isHistorySnapshot(value.history) &&
+        isExecutionRuntime(value.runtime);
     case 'resume':
       return typeof value.invokeOffset === 'number' &&
-        Number.isSafeInteger(value.invokeOffset) && value.invokeOffset >= 0;
+        Number.isSafeInteger(value.invokeOffset) && value.invokeOffset >= 0 &&
+        isHistorySnapshot(value.history) && isExecutionRuntime(value.runtime);
     case 'supervise-terminal':
       return typeof value.supervisionId === 'string' && isTerminalSupervisionInput(value.input);
     case 'abort':
@@ -287,10 +301,14 @@ function isInitRuntime(value: unknown): value is AgentWorkerInitRuntime {
     typeof value.cwd === 'string' &&
     typeof value.agentDir === 'string' &&
     typeof value.providerProfileRoot === 'string' &&
-    isModelRef(value.model) &&
-    isCommandShell(value.commandShell) &&
-    isProviderProxy(value.providerProxy)
+    !Object.hasOwn(value, 'model') &&
+    !Object.hasOwn(value, 'providerProxy') &&
+    isCommandShell(value.commandShell)
   );
+}
+
+function isExecutionRuntime(value: unknown): value is AgentWorkerExecutionRuntime {
+  return isRecord(value) && isModelRef(value.model) && isProviderProxy(value.providerProxy);
 }
 
 function isProviderProxy(value: unknown): value is AgentProviderProxy {

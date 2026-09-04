@@ -12,12 +12,21 @@ const testRuntime = {
   cwd: process.cwd(),
   agentDir: process.cwd(),
   providerProfileRoot: process.cwd(),
-  model: { provider: 'openai', modelId: 'gpt-test' },
   commandShell: {
     kind: 'powershell' as const,
     executable: 'pwsh.exe',
     displayName: 'PowerShell 7',
   },
+};
+
+const testHistory = {
+  revision: 1,
+  anchor: { kind: 'workspace' as const, path: '.iris' },
+  messages: [],
+};
+
+const testExecutionRuntime = {
+  model: { provider: 'openai', modelId: 'gpt-test' },
   providerProxy: { mode: 'direct' as const },
 };
 
@@ -59,7 +68,6 @@ function readyEvent(
       historyRevision,
       historyMessageCount,
       historyDigest: agentHistoryDigest(history),
-      model: testRuntime.model,
       commandShell: testRuntime.commandShell,
       ...runtimeOverride,
     },
@@ -174,7 +182,6 @@ describe('AgentWorkerHost', () => {
   });
 
   it.each([
-    ['model', { model: { provider: 'openai', modelId: 'gpt-other' } }],
     ['command shell', {
       commandShell: {
         kind: 'powershell' as const,
@@ -217,6 +224,8 @@ describe('AgentWorkerHost', () => {
       type: 'run',
       correlation: { sessionId: 'session-1', workerEpoch: 1, intentId: 'turn-1' },
       prompt: 'first prompt',
+      history: testHistory,
+      runtime: testExecutionRuntime,
     });
     await vi.waitFor(() => expect(worker.messages).toHaveLength(1));
     expect(worker.messages[0]).toMatchObject({ type: 'initialize' });
@@ -252,6 +261,8 @@ describe('AgentWorkerHost', () => {
       type: 'run',
       correlation: { sessionId: 'session-1', workerEpoch: 1, intentId: 'turn-1' },
       prompt: 'must not run',
+      history: testHistory,
+      runtime: testExecutionRuntime,
     });
     const rejected = expect(posted).rejects.toThrow(/cancelled|changed/);
     const shutdown = host.shutdown();
@@ -308,6 +319,7 @@ describe('Iris Agent Worker provider attempts', () => {
       };
     } | undefined;
     const pendingToolCallIds: string[] = [];
+    const executionModels: Array<{ provider: string; modelId: string }> = [];
     let runCount = 0;
     let releaseAbortedRun: (() => void) | undefined;
     const providerModel: ProviderModel = {
@@ -407,6 +419,7 @@ describe('Iris Agent Worker provider attempts', () => {
         continue: vi.fn(async () => undefined),
       },
       prompt,
+      dispose: vi.fn(),
       abort: vi.fn(async () => {
         subscribe!({
           type: 'message_end',
@@ -432,6 +445,7 @@ describe('Iris Agent Worker provider attempts', () => {
       IRIS_PI_VERSION: 'test',
       createIrisPiSession: vi.fn(async (options: typeof providerHooks) => {
         providerHooks = options;
+        executionModels.push((options as unknown as { model: { provider: string; modelId: string } }).model);
         return {
           session,
           disposeProviderTransport: async () => undefined,
@@ -476,6 +490,8 @@ describe('Iris Agent Worker provider attempts', () => {
       type: 'run',
       correlation: firstCorrelation,
       prompt: 'first',
+      history: testHistory,
+      runtime: testExecutionRuntime,
     } satisfies AgentWorkerRequest);
     await vi.waitFor(() => expect(workerEvents(port)).toContainEqual(
       expect.objectContaining({ type: 'execution-settled', correlation: firstCorrelation }),
@@ -520,6 +536,11 @@ describe('Iris Agent Worker provider attempts', () => {
       type: 'run',
       correlation: secondCorrelation,
       prompt: 'second',
+      history: testHistory,
+      runtime: {
+        model: { provider: 'anthropic', modelId: 'claude-test' },
+        providerProxy: { mode: 'direct' },
+      },
     } satisfies AgentWorkerRequest);
     await vi.waitFor(() => expect(workerEvents(port)).toContainEqual(expect.objectContaining({
       type: 'execution-paused',
@@ -534,6 +555,10 @@ describe('Iris Agent Worker provider attempts', () => {
       error: 'network timeout',
     }));
     expect(secondEvents.some((event) => event.type === 'execution-settled')).toBe(false);
+    expect(executionModels.slice(0, 2)).toEqual([
+      { provider: 'openai', modelId: 'gpt-test' },
+      { provider: 'anthropic', modelId: 'claude-test' },
+    ]);
 
     port.postMessage.mockClear();
     const thirdCorrelation = {
@@ -546,6 +571,8 @@ describe('Iris Agent Worker provider attempts', () => {
       type: 'run',
       correlation: thirdCorrelation,
       prompt: 'third',
+      history: testHistory,
+      runtime: testExecutionRuntime,
     } satisfies AgentWorkerRequest);
     await vi.waitFor(() => expect(workerEvents(port)).toContainEqual(expect.objectContaining({
       type: 'provider-attempt',
@@ -587,6 +614,8 @@ describe('Iris Agent Worker provider attempts', () => {
       type: 'run',
       correlation: fourthCorrelation,
       prompt: 'two tools',
+      history: testHistory,
+      runtime: testExecutionRuntime,
     } satisfies AgentWorkerRequest);
     await vi.waitFor(() => expect(workerEvents(port)).toContainEqual(
       expect.objectContaining({ type: 'execution-settled', correlation: fourthCorrelation }),

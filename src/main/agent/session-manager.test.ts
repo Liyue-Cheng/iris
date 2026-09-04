@@ -60,7 +60,6 @@ class FakeWorker extends EventEmitter implements AgentWorkerPort {
         historyRevision: message.history.revision,
         historyMessageCount: message.history.messages.length,
         historyDigest: agentHistoryDigest(message.history),
-        model: message.runtime.model,
         commandShell: message.runtime.commandShell,
       },
     });
@@ -335,6 +334,153 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         expect(projected.pause).toEqual({ reason: 'provider', message: 'rate limited' });
         expect(projected.intents[0]?.cards).toEqual([]);
       });
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('continues the same paused Intent with the newly selected Provider model', async () => {
+    const userData = await createTempDataDir('iris-agent-manager-switch-model-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const workers: FakeWorker[] = [];
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => {
+        const worker = new FakeWorker();
+        workers.push(worker);
+        return worker;
+      },
+      modelCatalogLoader: async () => ({
+        models: [
+          ...catalog.models,
+          {
+            provider: 'anthropic', modelId: 'claude-test', name: 'Claude Test',
+            api: 'anthropic-messages', reasoning: false,
+          },
+        ],
+      }),
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
+      await manager.send(scope, created.id, 'recover across providers');
+      const firstWorker = workers[0]!;
+      const firstRun = firstWorker.last('run');
+      expect(firstRun.runtime.model).toEqual({ provider: 'openai', modelId: 'gpt-test' });
+
+      const failed = providerCorrelation(firstRun, 'unavailable');
+      firstWorker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'provider-attempt',
+        correlation: failed,
+        phase: 'started',
+        index: 1,
+      });
+      firstWorker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'provider-attempt',
+        correlation: failed,
+        phase: 'failed',
+        index: 1,
+        error: 'provider unavailable',
+      });
+      firstWorker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'execution-paused',
+        correlation: failed,
+        reason: 'provider-exhausted',
+        message: 'provider unavailable',
+      });
+      await vi.waitFor(async () => {
+        expect((await manager.list(scope)).sessions[0]?.pause?.reason).toBe('provider');
+      });
+
+      const paused = (await manager.list(scope)).sessions[0]!;
+      const switched = await manager.setModel(
+        scope,
+        created.id,
+        { provider: 'anthropic', modelId: 'claude-test' },
+        { expectedRevision: paused.revision },
+      );
+      await manager.retry(scope, created.id, { expectedRevision: switched.revision });
+
+      const resumed = workers[1]!.last('resume');
+      expect(resumed.correlation.intentId).toBe(firstRun.correlation.intentId);
+      expect(resumed.runtime.model).toEqual({ provider: 'anthropic', modelId: 'claude-test' });
+      expect(resumed.history.messages).toContainEqual(expect.objectContaining({
+        role: 'user', content: 'recover across providers',
+      }));
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('reuses an idle Worker while each Send resolves the latest Session model', async () => {
+    const userData = await createTempDataDir('iris-agent-manager-reuse-switch-model-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const workers: FakeWorker[] = [];
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => {
+        const worker = new FakeWorker();
+        workers.push(worker);
+        return worker;
+      },
+      modelCatalogLoader: async () => ({
+        models: [
+          ...catalog.models,
+          {
+            provider: 'anthropic', modelId: 'claude-test', name: 'Claude Test',
+            api: 'anthropic-messages', reasoning: false,
+          },
+        ],
+      }),
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
+      await manager.send(scope, created.id, 'first message');
+      const worker = workers[0]!;
+      const firstRun = worker.last('run');
+      const first = providerCorrelation(firstRun, 'first-model');
+      worker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'provider-attempt', correlation: first, phase: 'started', index: 1,
+      });
+      worker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'provider-message',
+        correlation: first,
+        message: { role: 'assistant', content: [{ type: 'text', text: 'first answer' }], stopReason: 'stop' },
+      });
+      worker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'provider-attempt', correlation: first, phase: 'completed', index: 1,
+      });
+      worker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'execution-settled', correlation: firstRun.correlation,
+      });
+      await vi.waitFor(async () => {
+        expect((await manager.list(scope)).sessions[0]?.state).toBe('idle');
+      });
+
+      const idle = (await manager.list(scope)).sessions[0]!;
+      const switched = await manager.setModel(
+        scope,
+        created.id,
+        { provider: 'anthropic', modelId: 'claude-test' },
+        { expectedRevision: idle.revision },
+      );
+      expect(worker.terminate).not.toHaveBeenCalled();
+
+      await manager.send(scope, created.id, 'second message', { expectedRevision: switched.revision });
+      expect(workers).toHaveLength(1);
+      const secondRun = worker.last('run');
+      expect(secondRun.runtime.model).toEqual({ provider: 'anthropic', modelId: 'claude-test' });
+      expect(secondRun.history.messages.map((message) => message.content)).toEqual([
+        'first message', 'first answer',
+      ]);
     } finally {
       await manager.shutdown();
       await removeTempDataDir(userData);
