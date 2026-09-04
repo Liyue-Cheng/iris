@@ -29,17 +29,9 @@
 
   /* Agent card theme colors */
   --iris-card-files: var(--rp-iris);
-  --iris-card-files-from: #8B5CF6;
-  --iris-card-files-to: #A78BFA;
   --iris-card-operations: var(--rp-pine);
-  --iris-card-operations-from: #10B981;
-  --iris-card-operations-to: #34D399;
   --iris-card-retrievals: var(--rp-foam);
-  --iris-card-retrievals-from: #3B82F6;
-  --iris-card-retrievals-to: #60A5FA;
   --iris-card-message: var(--rp-gold);
-  --iris-card-message-from: #F59E0B;
-  --iris-card-message-to: #FBBF24;
 }
 
 .iris-badge {
@@ -96,16 +88,159 @@ button:focus-visible .iris-status-badge {
   }
 }
 
-@keyframes iris-card-enter {
+@keyframes iris-agent-card-line-travel {
   from {
-    opacity: 0;
-    max-height: 0;
+    transform: translateX(-120%);
   }
 
   to {
-    opacity: 1;
-    max-height: 2000px;
+    transform: translateX(440%);
   }
+}
+
+@keyframes iris-agent-card-icon-breathe {
+  0%,
+  100% {
+    opacity: 0.65;
+    transform: scale(0.96);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes iris-agent-working-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(1px);
+  }
+
+  30% {
+    opacity: 1;
+    transform: translateY(-1px);
+  }
+}
+
+@keyframes iris-agent-terminal-dot-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--iris-agent-card-accent) 35%, transparent);
+  }
+
+  50% {
+    box-shadow: 0 0 0 4px transparent;
+  }
+}
+
+@keyframes iris-agent-avatar-orbit {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@keyframes iris-agent-avatar-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 15%, transparent);
+  }
+
+  50% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 9%, transparent);
+  }
+}
+
+.iris-agent-avatar[data-running='true'] {
+  position: relative;
+  animation: iris-agent-avatar-breathe 1.8s ease-in-out infinite;
+}
+
+.iris-agent-avatar-orbit {
+  position: absolute;
+  inset: -0.1875rem;
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, transparent);
+  border-radius: 0.5rem;
+  animation: iris-agent-avatar-orbit 1.7s linear infinite;
+}
+
+.iris-agent-avatar-orbit > span {
+  position: absolute;
+  top: -0.125rem;
+  left: 50%;
+  width: 0.25rem;
+  height: 0.25rem;
+  border-radius: 9999px;
+  background: var(--primary);
+  transform: translateX(-50%);
+}
+
+.iris-agent-card-icon {
+  display: inline-flex;
+  width: 0.875rem;
+  height: 0.875rem;
+  align-items: center;
+  justify-content: center;
+  color: var(--iris-agent-card-accent);
+}
+
+.iris-agent-card-icon > svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.iris-agent-card-line {
+  position: relative;
+  height: 1px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--iris-agent-card-accent) 28%, var(--border));
+}
+
+.iris-agent-card[data-state='running'] .iris-agent-card-icon {
+  animation: iris-agent-card-icon-breathe 1.8s ease-in-out infinite;
+}
+
+.iris-agent-card[data-state='running'] .iris-agent-card-line::after {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 24%;
+  background: var(--iris-agent-card-accent);
+  content: '';
+  animation: iris-agent-card-line-travel 1.65s ease-in-out infinite;
+}
+
+.iris-agent-working-dots {
+  display: inline-flex;
+  width: 1rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.iris-agent-working-dots-compact {
+  width: 0.75rem;
+}
+
+.iris-agent-working-dots > span {
+  width: 0.1875rem;
+  height: 0.1875rem;
+  border-radius: 9999px;
+  background: var(--iris-agent-card-accent);
+  animation: iris-agent-working-dot 1.05s ease-in-out infinite;
+}
+
+.iris-agent-working-dots > span:nth-child(2) {
+  animation-delay: 120ms;
+}
+
+.iris-agent-working-dots > span:nth-child(3) {
+  animation-delay: 240ms;
+}
+
+.iris-agent-terminal-dot[data-running='true'] {
+  animation: iris-agent-terminal-dot-pulse 1.35s ease-out infinite;
 }
 
 @keyframes iris-pixel-rain {
@@ -772,6 +907,15 @@ button:focus-visible .iris-status-badge {
   }
 
   .iris-agent-card {
+    animation: none !important;
+  }
+
+  .iris-agent-card-icon,
+  .iris-agent-card-line::after,
+  .iris-agent-working-dots > span,
+  .iris-agent-terminal-dot,
+  .iris-agent-avatar,
+  .iris-agent-avatar-orbit {
     animation: none !important;
   }
 

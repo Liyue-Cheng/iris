@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   AlertTriangle,
   Bot,
@@ -16,6 +16,7 @@ import {
   Square,
   SquareTerminal,
   Undo2,
+  UserRound,
   X,
 } from 'lucide-react';
 import '@xterm/xterm/css/xterm.css';
@@ -237,12 +238,25 @@ export function IrisAgentView({
       </Dialog>
 
       <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-card/60 px-3">
-        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+        <span
+          className="iris-agent-avatar flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary"
+          data-running={running || undefined}
+        >
           <Bot className="h-4 w-4" />
+          {running && <span className="iris-agent-avatar-orbit" aria-hidden="true"><span /></span>}
         </span>
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13px] font-semibold">Iris Agent</div>
-          <div className="truncate text-[11px] text-muted-foreground">{statusText}</div>
+          <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+            <span className="truncate">{statusText}</span>
+            {running && (
+              <span className="iris-agent-working-dots iris-agent-working-dots-compact shrink-0" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </span>
+            )}
+          </div>
         </div>
         {modelError && (
           <Button
@@ -786,49 +800,28 @@ function LocalRetrievalCard({
         </Button>
       ) : undefined}
     >
-      <div className="divide-y divide-border/60 bg-[var(--iris-card-retrievals)]/[0.02]">
+      <div>
         {!expanded && card.items.length > 5 && (
-          <div className="border-t border-border/40 bg-muted/10 px-4 py-2 text-center text-[11px] text-muted-foreground">
+          <div className="bg-muted/10 px-4 py-1.5 text-center text-[11px] text-muted-foreground">
             另有 {card.items.length - 5} 项
           </div>
         )}
         {visibleItems.map((item) => (
-          <div key={item.id} className="min-w-0 px-4 py-2.5 text-xs">
-            <div className="flex min-w-0 items-start gap-2.5">
-              {item.kind === 'file'
-                ? <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--iris-card-retrievals)]" />
-                : <SquareTerminal className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--iris-card-retrievals)]" />}
-              <div className="min-w-0 flex-1">
-                <div className="break-all font-mono text-[11px] text-foreground">{item.label}</div>
-                <div className={`mt-1 flex items-center gap-1.5 text-[11px] ${item.state === 'failed' ? 'text-destructive' : 'text-muted-foreground'}`}>
-                  <RetrievalStateIcon state={item.state} />
-                  <span>{retrievalStateLabel(item.state)}</span>
-                </div>
-                {item.state === 'failed' && item.error && (
-                  <details className="mt-1.5 text-[11px] text-destructive">
-                    <summary className="cursor-pointer select-none font-medium">展开失败原因</summary>
-                    <div className="mt-1 whitespace-pre-wrap break-words">{item.error}</div>
-                    {item.errorDetail && (
-                      <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded border border-destructive/20 bg-background p-2 font-mono text-[10px] text-foreground">
-                        {item.errorDetail}
-                      </pre>
-                    )}
-                    {item.terminalId && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="mt-1 h-6 px-1.5 text-[11px]"
-                        onClick={() => onOpenTerminal(item.terminalId!)}
-                      >
-                        <SquareTerminal className="!size-3" />
-                        打开终端
-                      </Button>
-                    )}
-                  </details>
-                )}
-              </div>
-            </div>
+          <div key={item.id} className="flex min-h-7 min-w-0 items-center gap-2.5 px-4 py-1 text-xs">
+            {item.kind === 'file'
+              ? <FileText className="h-3.5 w-3.5 shrink-0 text-[var(--iris-card-retrievals)]" />
+              : <SquareTerminal className="h-3.5 w-3.5 shrink-0 text-[var(--iris-card-retrievals)]" />}
+            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground" title={item.label}>
+              {item.label}
+            </span>
+            <CompactRowStateIcon
+              state={item.state}
+              accent="var(--iris-card-retrievals)"
+              detail={[item.error, item.errorDetail].filter(Boolean).join('\n\n') || undefined}
+              onClick={item.state === 'failed' && item.terminalId
+                ? () => onOpenTerminal(item.terminalId!)
+                : undefined}
+            />
           </div>
         ))}
       </div>
@@ -854,12 +847,12 @@ function FileChangeGroupCard({
       summary={summary}
       state={groupState(cards)}
     >
-      <div className="divide-y divide-border/60 border-t bg-[var(--iris-card-files)]/[0.02]">
+      <div>
         {cards.map((card) => {
           const stats = diffLineStats(card.diff);
           const action = card.action === 'created' ? '创建' : card.action === 'updated' ? '修改' : card.action === 'unchanged' ? '未改变' : '写入失败';
           return (
-            <div key={card.id} className="flex min-h-9 items-center gap-2 px-4 py-2 text-xs">
+            <div key={card.id} className="flex min-h-7 items-center gap-2.5 px-4 py-1 text-xs">
               <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={card.path}>{card.path}</span>
               {(stats.additions || stats.deletions) ? (
@@ -871,7 +864,11 @@ function FileChangeGroupCard({
               ) : (
                 <span className="shrink-0 text-[11px] text-muted-foreground">{action}</span>
               )}
-              {card.error && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label={card.error} />}
+              <CompactRowStateIcon
+                state={card.state}
+                accent="var(--iris-card-files)"
+                detail={card.error}
+              />
             </div>
           );
         })}
@@ -947,12 +944,15 @@ function TerminalOperationCard({
         </Button>
       ) : undefined}
     >
-      <pre
-        className={`${expanded ? 'max-h-none' : 'max-h-40'} overflow-auto border-t bg-[var(--iris-card-operations)]/[0.02] p-4 whitespace-pre-wrap break-words font-mono text-xs leading-5`}
-        aria-label="执行命令"
-      >
-        {card.command}
-      </pre>
+      <div className="flex items-start gap-2.5 px-4 py-3.5">
+        <TerminalStateDot state={card.state} />
+        <pre
+          className={`${expanded ? 'max-h-none' : 'max-h-40'} min-w-0 flex-1 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5`}
+          aria-label="执行命令"
+        >
+          {card.command}
+        </pre>
+      </div>
       {card.error && (
         <details className="border-t border-destructive/30 bg-destructive/5 px-4 py-2.5 text-xs text-destructive">
           <summary className="cursor-pointer select-none font-medium">展开失败原因</summary>
@@ -1021,7 +1021,7 @@ function AgentReplyCard({
         </Button>
       ) : undefined}
     >
-      <div className="markdown-body min-w-0 border-t bg-[var(--iris-card-message)]/[0.02] px-4 py-3 text-[13px] leading-relaxed">
+      <div className="markdown-body min-w-0 px-4 py-3 text-[13px] leading-relaxed">
         {card.content
           ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{card.content}</ReactMarkdown>
           : <span className="text-muted-foreground">{placeholder}</span>}
@@ -1071,54 +1071,33 @@ function CardFrame({
   action?: ReactNode;
   children: ReactNode;
 }): JSX.Element {
-  // 根据状态决定边框和背景样式
-  const getStateStyles = () => {
-    if (state === 'running') {
-      return 'border-2 border-[var(--iris-card-' + cardType + ')] bg-[var(--iris-card-' + cardType + ')]/[0.03]';
-    }
-    if (state === 'completed' || state === 'unchanged') {
-      return 'border-l-[3px] border-l-emerald-500/70 border-t border-r border-b border-border/80 bg-emerald-500/[0.03]';
-    }
-    if (state === 'failed') {
-      return 'border-l-[4px] border-l-destructive border-t border-r border-b border-border/80 bg-destructive/[0.05]';
-    }
-    if (state === 'partial') {
-      return 'border-l-[3px] border-l-amber-500 border-t border-r border-b border-border/80 bg-amber-500/[0.03]';
-    }
-    if (state === 'stopped') {
-      return 'border border-border/60 bg-muted/[0.02]';
-    }
-    return 'border border-border/80';
-  };
-
-  // 顶栏渐变背景
-  const headerGradient = {
-    files: 'linear-gradient(135deg, var(--iris-card-files-from) 0%, var(--iris-card-files-to) 100%)',
-    operations: 'linear-gradient(135deg, var(--iris-card-operations-from) 0%, var(--iris-card-operations-to) 100%)',
-    retrievals: 'linear-gradient(135deg, var(--iris-card-retrievals-from) 0%, var(--iris-card-retrievals-to) 100%)',
-    message: 'linear-gradient(135deg, var(--iris-card-message-from) 0%, var(--iris-card-message-to) 100%)',
-  };
+  const accent = `var(--iris-card-${cardType})`;
 
   return (
-    <section className={`iris-agent-card overflow-hidden rounded-lg ${getStateStyles()} transition-all duration-200 animate-[iris-card-enter_0.25s_ease-out]`} aria-label={title}>
-      <div
-        className="flex min-h-10 items-center gap-2 px-4 py-2"
-        style={{ background: headerGradient[cardType], opacity: 0.85 }}
-      >
-        <span className="shrink-0 text-white/90">{icon}</span>
+    <section
+      className="iris-agent-card overflow-hidden rounded-lg border border-border/80 bg-card/40"
+      data-state={state}
+      style={{ '--iris-agent-card-accent': accent } as CSSProperties}
+      aria-label={title}
+    >
+      <div className="flex min-h-10 items-center gap-2.5 px-4 py-2">
+        <span className="iris-agent-card-icon shrink-0" aria-hidden="true">{icon}</span>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-baseline gap-2">
-            <h3 className="shrink-0 text-[13px] font-semibold text-white">{title}</h3>
+            <h3 className="shrink-0 text-[13px] font-semibold text-foreground">{title}</h3>
             {summary && (
-              <span className="min-w-0 truncate text-[11px] text-white/70" title={summary}>
+              <span className="min-w-0 truncate text-[11px] text-muted-foreground" title={summary}>
                 {summary}
               </span>
             )}
           </div>
         </div>
-        <CardStateIcon state={state} />
         {action}
+        <span className="flex w-5 shrink-0 items-center justify-center">
+          <CardStateIcon state={state} />
+        </span>
       </div>
+      <div className="iris-agent-card-line" aria-hidden="true" />
       {children}
     </section>
   );
@@ -1126,35 +1105,85 @@ function CardFrame({
 
 function CardStateIcon({ state }: { state: IrisAgentCardState }): JSX.Element {
   if (state === 'running') {
-    return <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin text-white/80" aria-label="运行中" />;
+    return (
+      <span className="iris-agent-working-dots" role="img" aria-label="运行中">
+        <span />
+        <span />
+        <span />
+      </span>
+    );
   }
   if (state === 'failed') {
-    return <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-white/90" aria-label="失败" />;
+    return <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="失败" />;
   }
   if (state === 'partial') {
-    return <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-white/90" aria-label="部分失败" />;
+    return <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="部分失败" />;
   }
   if (state === 'stopped') {
-    return <Square className="h-3 w-3 shrink-0 text-white/80" aria-label="已停止" />;
+    return <Square className="h-3 w-3 shrink-0 text-muted-foreground" aria-label="已停止" />;
   }
-  return <Check className="h-3.5 w-3.5 shrink-0 text-white/90" aria-label={state === 'unchanged' ? '无变化' : '完成'} />;
+  return <Check className="h-3.5 w-3.5 shrink-0 text-emerald-500" aria-label={state === 'unchanged' ? '无变化' : '完成'} />;
 }
 
-function RetrievalStateIcon({
+function TerminalStateDot({ state }: { state: IrisAgentCardState }): JSX.Element {
+  const label = cardStateLabel(state);
+  const color = state === 'failed'
+    ? 'bg-destructive'
+    : state === 'partial'
+      ? 'bg-amber-500'
+      : state === 'completed' || state === 'unchanged'
+        ? 'bg-emerald-500'
+        : state === 'running'
+          ? 'bg-[var(--iris-agent-card-accent)]'
+          : 'bg-muted-foreground';
+  return (
+    <span className="mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+      <span
+        className={`iris-agent-terminal-dot h-2 w-2 rounded-full ${color}`}
+        data-running={state === 'running' || undefined}
+        role="img"
+        aria-label={label}
+      />
+    </span>
+  );
+}
+
+function CompactRowStateIcon({
   state,
+  accent,
+  detail,
+  onClick,
 }: {
-  state: 'running' | 'completed' | 'failed' | 'canceled';
+  state: IrisAgentCardState | 'canceled';
+  accent: string;
+  detail?: string | undefined;
+  onClick?: (() => void) | undefined;
 }): JSX.Element {
-  if (state === 'running') return <LoaderCircle className="h-3 w-3 animate-spin" />;
-  if (state === 'failed') return <AlertTriangle className="h-3 w-3" />;
-  if (state === 'canceled') return <Square className="h-2.5 w-2.5" />;
-  return <Check className="h-3 w-3" />;
+  const label = retrievalStateLabel(state);
+  const icon = state === 'running'
+    ? <LoaderCircle className="h-3 w-3 animate-spin" style={{ color: accent }} />
+    : state === 'failed' || state === 'partial'
+      ? <X className={`h-3.5 w-3.5 ${state === 'partial' ? 'text-amber-500' : 'text-destructive'}`} />
+      : state === 'canceled' || state === 'stopped'
+        ? <X className="h-3.5 w-3.5 text-muted-foreground" />
+        : <Check className="h-3.5 w-3.5 text-emerald-500" />;
+  const className = `flex h-5 w-5 shrink-0 items-center justify-center rounded-sm${onClick ? ' hover:bg-muted' : ''}`;
+  if (onClick) {
+    return (
+      <button type="button" className={className} title={detail ?? label} aria-label={`${label}，打开终端`} onClick={onClick}>
+        {icon}
+      </button>
+    );
+  }
+  return <span className={className} title={detail ?? label} role="img" aria-label={label}>{icon}</span>;
 }
 
-function retrievalStateLabel(state: 'running' | 'completed' | 'failed' | 'canceled'): string {
+function retrievalStateLabel(state: IrisAgentCardState | 'canceled'): string {
   if (state === 'running') return '运行中';
   if (state === 'failed') return '失败';
-  if (state === 'canceled') return '已停止';
+  if (state === 'partial') return '部分失败';
+  if (state === 'canceled' || state === 'stopped') return '已停止';
+  if (state === 'unchanged') return '无变化';
   return '成功';
 }
 
@@ -1177,40 +1206,51 @@ function UserMessage({
   onFork?: (() => void) | undefined;
 }): JSX.Element {
   return (
-    <div className="rounded-md bg-muted px-3 py-2 text-sm">
-      <div className="mb-1 flex h-6 items-start justify-between gap-2">
-        <span className="text-[11px] font-medium uppercase text-muted-foreground">You</span>
+    <section
+      className="iris-agent-card overflow-hidden rounded-lg border border-border/80 bg-card/40"
+      style={{ '--iris-agent-card-accent': 'var(--primary)' } as CSSProperties}
+      aria-label="你的指令"
+    >
+      <div className="flex min-h-10 items-center gap-2.5 px-4 py-2">
+        <span className="iris-agent-card-icon shrink-0" aria-hidden="true">
+          <UserRound />
+        </span>
+        <h3 className="min-w-0 flex-1 text-[13px] font-semibold text-foreground">你的指令</h3>
         <div className="flex items-center gap-1">
-        {onFork && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="-mr-1 -mt-1 h-6 w-6 shrink-0 text-muted-foreground"
-            title="从此输入重新开始"
-            aria-label="从此输入重新开始"
-            onClick={onFork}
-          >
-            <GitBranch className="!size-3.5" />
-          </Button>
-        )}
-        {onOpenPrompt && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="-mr-1 -mt-1 h-6 w-6 shrink-0 text-muted-foreground"
-            title={artifactTitle}
-            aria-label={artifactTitle}
-            onClick={onOpenPrompt}
-          >
-            <FileText className="!size-3.5" />
-          </Button>
-        )}
+          {onOpenPrompt && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 shrink-0 text-muted-foreground"
+              title={artifactTitle}
+              aria-label={artifactTitle}
+              onClick={onOpenPrompt}
+            >
+              <FileText className="!size-3.5" />
+            </Button>
+          )}
+          {onFork && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 shrink-0 text-muted-foreground"
+              title="从此输入重新开始"
+              aria-label="从此输入重新开始"
+              onClick={onFork}
+            >
+              <GitBranch className="!size-3.5" />
+            </Button>
+          )}
         </div>
+        <span className="w-5 shrink-0" aria-hidden="true" />
       </div>
-      <div className="whitespace-pre-wrap break-words">{message.content}</div>
-    </div>
+      <div className="iris-agent-card-line" aria-hidden="true" />
+      <div className="whitespace-pre-wrap break-words px-4 py-3 text-sm leading-relaxed">
+        {message.content}
+      </div>
+    </section>
   );
 }
 
