@@ -15,7 +15,11 @@ import { SettingsManager } from '../settings-manager';
 import type { AgentWorkerPort } from './worker-host';
 import type { IrisAgentToolHostResult } from './tool-host';
 import type { AgentCommandPty, AgentCommandPtyOptions, AgentCommandPtyResult } from './command-pty';
-import { IrisAgentSessionManager, parseElectronProxyRules } from './session-manager';
+import {
+  IrisAgentSessionManager,
+  parseElectronProxyRules,
+  type IrisAgentSessionManagerOptions,
+} from './session-manager';
 import { IrisAgentSessionStore } from './session-store';
 
 const catalog: IrisAgentModelCatalog = {
@@ -1367,6 +1371,198 @@ describe('Iris Agent remembered default model', () => {
         anchor: { kind: 'workspace', path: '.iris' },
       });
       expect(created.model).toEqual({ provider: 'openai', modelId: 'gpt-test' });
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+});
+
+describe('IrisAgentSessionManager context compaction', () => {
+  /**
+   * Test messages are short, so the trigger has to sit low enough that two
+   * settled Intents already crowd the window.
+   */
+  const compactionThresholds = { contextWindow: 70, reserveTokens: 50, keepRecentTokens: 20 };
+
+  type SummarizeContext = NonNullable<IrisAgentSessionManagerOptions['summarizeContext']>;
+
+  function summarizer(text: string) {
+    return vi.fn<Parameters<SummarizeContext>, ReturnType<SummarizeContext>>(async () => text);
+  }
+
+  /** Runs one Intent to completion so the Session accumulates settled history. */
+  async function settleIntent(
+    manager: IrisAgentSessionManager,
+    worker: FakeWorker,
+    scope: ProjectScope,
+    sessionId: string,
+    message: string,
+    answer: string,
+  ): Promise<void> {
+    const current = (await manager.list(scope)).sessions.find((session) => session.id === sessionId)!;
+    await manager.send(scope, sessionId, message, { expectedRevision: current.revision });
+    const run = worker.last('run');
+    const correlation = providerCorrelation(run, message);
+    worker.emitMessage({
+      version: IRIS_AGENT_PROTOCOL_VERSION,
+      type: 'provider-attempt', correlation, phase: 'started', index: 1,
+    });
+    worker.emitMessage({
+      version: IRIS_AGENT_PROTOCOL_VERSION,
+      type: 'provider-message',
+      correlation,
+      message: { role: 'assistant', content: [{ type: 'text', text: answer }], stopReason: 'stop' },
+    });
+    worker.emitMessage({
+      version: IRIS_AGENT_PROTOCOL_VERSION,
+      type: 'provider-attempt', correlation, phase: 'completed', index: 1,
+    });
+    worker.emitMessage({
+      version: IRIS_AGENT_PROTOCOL_VERSION,
+      type: 'execution-settled', correlation: run.correlation,
+    });
+    await vi.waitFor(async () => {
+      const settled = (await manager.list(scope)).sessions.find((session) => session.id === sessionId)!;
+      // Surface why a run stalled instead of only reporting the wrong state.
+      expect(settled.pause?.message ?? settled.state).toBe('idle');
+    });
+  }
+
+  it('folds summarized history out of the next request while keeping the recent tail', async () => {
+    const userData = await createTempDataDir('iris-agent-compact-threshold-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const worker = new FakeWorker();
+    const summarize = summarizer('Earlier: implemented the parser.');
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => worker,
+      modelCatalogLoader: async () => catalog,
+      summarizeContext: summarize,
+      compactionThresholds,
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
+      await settleIntent(manager, worker, scope, created.id, 'first message', 'first answer');
+      await settleIntent(manager, worker, scope, created.id, 'second message', 'second answer');
+      await settleIntent(manager, worker, scope, created.id, 'third message', 'third answer');
+
+      expect(summarize).toHaveBeenCalled();
+      // Only settled history is summarized, never the live method layers.
+      const { material } = summarize.mock.calls[0]![0];
+      expect(material).toContain('first message');
+      expect(material).not.toContain('<iris-software>');
+
+      const contents = worker.last('run').history.messages.map((message) => message.content);
+      expect(contents.some((content) => content.includes('Earlier: implemented the parser.'))).toBe(true);
+      expect(contents).not.toContain('first message');
+      // The most recent exchange still reaches the provider verbatim.
+      expect(contents).toContain('second answer');
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('keeps the full Trace on disk after Context folds', async () => {
+    const userData = await createTempDataDir('iris-agent-compact-trace-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const worker = new FakeWorker();
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => worker,
+      modelCatalogLoader: async () => catalog,
+      summarizeContext: async () => 'folded summary',
+      compactionThresholds,
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
+      await settleIntent(manager, worker, scope, created.id, 'first message', 'first answer');
+      await settleIntent(manager, worker, scope, created.id, 'second message', 'second answer');
+      await settleIntent(manager, worker, scope, created.id, 'third message', 'third answer');
+
+      const session = (await manager.list(scope)).sessions.find((candidate) => candidate.id === created.id)!;
+      // Compaction changes what is sent, never what happened.
+      expect(session.intents.map((intent) => intent.user.content)).toEqual([
+        'first message', 'second message', 'third message',
+      ]);
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('sends the request uncompacted when summarizing fails', async () => {
+    const userData = await createTempDataDir('iris-agent-compact-failure-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const worker = new FakeWorker();
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => worker,
+      modelCatalogLoader: async () => catalog,
+      summarizeContext: async () => { throw new Error('provider refused'); },
+      compactionThresholds,
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
+      await settleIntent(manager, worker, scope, created.id, 'first message', 'first answer');
+      await settleIntent(manager, worker, scope, created.id, 'second message', 'second answer');
+      // A failed tidy-up must not block the user's request.
+      await settleIntent(manager, worker, scope, created.id, 'third message', 'third answer');
+
+      const contents = worker.last('run').history.messages.map((message) => message.content);
+      expect(contents).toContain('first message');
+      expect(contents.some((content) => content.includes('<history-summary>'))).toBe(false);
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('rejects a manual compaction when no runtime summarizer is available', async () => {
+    const userData = await createTempDataDir('iris-agent-compact-unavailable-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const worker = new FakeWorker();
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => worker,
+      modelCatalogLoader: async () => catalog,
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
+      await settleIntent(manager, worker, scope, created.id, 'first message', 'first answer');
+      await expect(manager.compact(scope, created.id)).rejects.toThrow(/unavailable/iu);
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('reuses one summary across later requests instead of regenerating it', async () => {
+    const userData = await createTempDataDir('iris-agent-compact-reuse-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const worker = new FakeWorker();
+    const summarize = summarizer('stable summary');
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => worker,
+      modelCatalogLoader: async () => catalog,
+      summarizeContext: summarize,
+      compactionThresholds,
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
+      await settleIntent(manager, worker, scope, created.id, 'first message', 'first answer');
+      await settleIntent(manager, worker, scope, created.id, 'second message', 'second answer');
+      await settleIntent(manager, worker, scope, created.id, 'third message', 'third answer');
+      const afterFirst = summarize.mock.calls.length;
+      expect(afterFirst).toBeGreaterThan(0);
+      await settleIntent(manager, worker, scope, created.id, 'fourth message', 'fourth answer');
+      // The persisted contract is reused; a new summary is only paid for when the
+      // boundary actually advances.
+      expect(summarize.mock.calls.length).toBeLessThanOrEqual(afterFirst + 1);
+      const contents = worker.last('run').history.messages.map((message) => message.content);
+      expect(contents.some((content) => content.includes('stable summary'))).toBe(true);
     } finally {
       await manager.shutdown();
       await removeTempDataDir(userData);

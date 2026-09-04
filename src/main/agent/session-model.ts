@@ -39,6 +39,8 @@ export interface AgentSessionAggregate {
   effects: AgentEffect[];
   requestFacts: AgentRequestFacts[];
   rewindReceipts: AgentRewindReceipt[];
+  compactions: AgentCompaction[];
+  activeCompactionId: string | null;
   injection: AgentInjection;
   createdAt: number;
   updatedAt: number;
@@ -233,6 +235,25 @@ export interface AgentTerminalEffect {
   createdAt: number;
 }
 
+export interface AgentCompaction {
+  id: string;
+  state: 'running' | 'completed' | 'failed' | 'canceled';
+  trigger: 'threshold' | 'overflow' | 'manual';
+  sourceRevision: number;
+  coveredThroughIntentId: string;
+  firstRetainedIntentId: string;
+  summary: string;
+  summarySha256: string;
+  promptVersion: number;
+  model: IrisAgentModelRef;
+  tokensBefore: number;
+  estimatedTokensAfter?: number;
+  measurement: 'reported' | 'estimated';
+  createdAt: number;
+  completedAt?: number;
+  error?: string;
+}
+
 export interface AgentRewindReceipt {
   commandId: string;
   truncatedIntentId: string;
@@ -272,6 +293,8 @@ export function createEmptyAgentSession(input: {
     effects: [],
     requestFacts: [],
     rewindReceipts: [],
+    compactions: [],
+    activeCompactionId: null,
     injection: structuredClone(input.injection),
     createdAt: input.now,
     updatedAt: input.now,
@@ -281,6 +304,16 @@ export function createEmptyAgentSession(input: {
 
 export function cloneAgentSession(session: AgentSessionAggregate): AgentSessionAggregate {
   return structuredClone(session);
+}
+
+/**
+ * v3 aggregates persisted before compaction existed carry no compaction fields.
+ * Loading must supply them before any invariant reads them.
+ */
+export function normalizeAgentSessionAggregate(session: AgentSessionAggregate): AgentSessionAggregate {
+  if (!Array.isArray(session.compactions)) session.compactions = [];
+  if (session.activeCompactionId === undefined) session.activeCompactionId = null;
+  return session;
 }
 
 export function currentAgentIntent(session: AgentSessionAggregate): AgentIntent | undefined {

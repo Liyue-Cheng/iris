@@ -31,6 +31,7 @@ import { ProjectManager } from './project-manager';
 import { GitManager } from './git-manager';
 import { TerminalSessionManager } from './terminal-session-manager';
 import { IrisAgentSessionManager } from './agent/session-manager';
+import { irisPiAgentDir, summarizeIrisAgentHistory } from './agent/pi-adapter';
 import { countBusySessions, type SessionLifecycleParticipant } from './session-lifecycle';
 import { ensureFocusScriptCurrent } from './agent-injection';
 import { registerIpcHandler, registerIpcHandlers, wireBroadcasts } from './ipc';
@@ -138,6 +139,15 @@ function createWindowContext(win: BrowserWindow, initialRoot: string | null): Wi
     providerProfileRoot: appDataDir(),
     settingsManager,
     resolveProxy: (url) => electronSession.defaultSession.resolveProxy(url),
+    summarizeContext: (input) => summarizeIrisAgentHistory({
+      agentDir: irisPiAgentDir(),
+      providerProfileRoot: appDataDir(),
+      model: input.model,
+      instruction: input.instruction,
+      material: input.material,
+      providerProxy: input.providerProxy,
+      signal: input.signal,
+    }),
   });
   const sessionParticipants: readonly SessionLifecycleParticipant[] = [
     {

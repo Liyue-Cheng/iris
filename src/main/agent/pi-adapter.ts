@@ -404,6 +404,51 @@ export async function createIrisPiSession(
   }
 }
 
+/**
+ * Runs a single provider call that summarizes Session history for compaction.
+ *
+ * This is deliberately not an Agent execution: it has no tools, no Pi Session, and
+ * never appends to any conversation history, so it cannot contribute Trace facts.
+ * The caller owns the resulting text and decides whether to persist it.
+ */
+export async function summarizeIrisAgentHistory(options: {
+  agentDir: string;
+  providerProfileRoot: string;
+  model: IrisAgentModelRef;
+  instruction: string;
+  material: string;
+  providerProxy: AgentProviderProxy;
+  signal?: AbortSignal;
+}): Promise<string> {
+  const modelRuntime = await createIrisModelRuntime(options.agentDir, options.providerProfileRoot, {
+    kind: 'selected',
+    model: options.model,
+  });
+  const model = modelRuntime.getModel(options.model.provider, options.model.modelId);
+  if (!model) {
+    throw new Error(
+      `Configured Iris Agent model was not found: ${options.model.provider}/${options.model.modelId}`,
+    );
+  }
+  const transport = createProviderTransport(options.providerProxy);
+  try {
+    const response = await modelRuntime.completeSimple(model, {
+      systemPrompt: options.instruction,
+      tools: [],
+      messages: [{ role: 'user', content: options.material, timestamp: Date.now() }],
+    }, {
+      ...(transport.fetch ? { fetch: transport.fetch } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    return response.content
+      .flatMap((part) => part.type === 'text' ? [part.text] : [])
+      .join('\n')
+      .trim();
+  } finally {
+    await transport.dispose();
+  }
+}
+
 export async function resolveIrisModelBaseUrl(
   agentDir: string,
   profileRoot: string,

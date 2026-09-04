@@ -31,7 +31,11 @@ import type {
   AgentTimelineActivity,
   AgentTurn,
 } from './session-model';
-import { cloneAgentSession, isAgentSessionQuiescent } from './session-model';
+import {
+  cloneAgentSession,
+  isAgentSessionQuiescent,
+  normalizeAgentSessionAggregate,
+} from './session-model';
 import {
   applyAgentDomainTransaction,
   createAgentDomainTransaction,
@@ -537,7 +541,7 @@ export class IrisAgentSessionStore {
           if (!anchor || anchor.journalHash !== snapshot.journalHash) {
             throw new Error('Iris Agent snapshot is not anchored in its journal.');
           }
-          session = cloneAgentSession(snapshot.session);
+          session = normalizeAgentSessionAggregate(cloneAgentSession(snapshot.session));
           replayFrom = snapshot.revision;
         }
         for (const record of records.slice(replayFrom)) {
@@ -1234,6 +1238,8 @@ export function migrateLegacyAgentSession(legacy: Record<string, unknown>): Agen
     effects,
     requestFacts,
     rewindReceipts,
+    compactions: [],
+    activeCompactionId: null,
     injection: {
       methods: { agent: 'current', software: 'current', project: 'current' },
       anchor: {

@@ -61,6 +61,20 @@ import type {
 } from './session-model';
 import { diffAnchorText, renderAnchorMaterial } from './trace-context';
 import {
+  AGENT_COMPACTION_INSTRUCTION,
+  agentCompactionTrigger,
+  completeAgentCompaction,
+  estimateAgentContextTokens,
+  estimateAgentTokens,
+  inheritAgentCompactionInto,
+  openAgentCompaction,
+  planAgentCompaction,
+  realignActiveCompaction,
+  renderAgentCompactionSource,
+  settleAgentCompaction,
+  type AgentCompactionThresholds,
+} from './compaction';
+import {
   cloneAgentSession,
   createEmptyAgentSession,
   currentAgentIntent,
@@ -97,6 +111,21 @@ export interface IrisAgentSessionManagerOptions {
   terminalFactory?: (options: AgentCommandPtyOptions) => AgentCommandPty;
   terminalDisplayThresholdMs?: number;
   supervisionIntervalMs?: number;
+  /**
+   * Produces a Context summary for compaction. Compaction is a provider call that
+   * is deliberately not part of any Intent, so it is injected rather than routed
+   * through the execution Worker; without it compaction stays unavailable instead
+   * of inventing a summary.
+   */
+  summarizeContext?: (input: {
+    sessionId: string;
+    model: IrisAgentModelRef;
+    instruction: string;
+    material: string;
+    providerProxy: AgentProviderProxy;
+    signal: AbortSignal;
+  }) => Promise<string>;
+  compactionThresholds?: AgentCompactionThresholds;
 }
 
 export interface IrisAgentCommandPrecondition {
@@ -139,6 +168,8 @@ export class IrisAgentSessionManager extends EventEmitter {
     reject: (error: Error) => void;
   }>();
   private readonly supervisionLog = new AgentSupervisionLog();
+  /** In-flight summary requests, so Stop and shutdown can cancel them. */
+  private readonly compactionAborts = new Map<string, AbortController>();
   private shuttingDown = false;
 
   constructor(
@@ -290,6 +321,9 @@ export class IrisAgentSessionManager extends EventEmitter {
       await this.shutdownHost(sessionId);
       session = supersedeOpenAgentIntent(await this.requireSession(scope, sessionId));
     }
+    // Compact before the request is assembled, never after a reply has landed:
+    // the user is already waiting here, and the tidy-up is cancellable.
+    session = await this.compactForThreshold(scope, store, session, message);
     const intentId = randomUUID();
     const now = Date.now();
     session.intents.push({
@@ -341,11 +375,132 @@ export class IrisAgentSessionManager extends EventEmitter {
     }
   }
 
+  /** User-initiated tidy-up of a quiescent Session. */
+  async compact(
+    scope: ProjectScope,
+    sessionId: string,
+    precondition: IrisAgentCommandPrecondition = {},
+  ): Promise<IrisAgentSessionInfo> {
+    return this.runSessionCommand(sessionId, async () => {
+      this.currentScope = scope;
+      const store = await this.ensureStore(scope.root);
+      const session = await this.requireSession(scope, sessionId);
+      assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
+      assertQuiescentIrisAgentSession(session);
+      if (!this.options.summarizeContext) {
+        throw new Error('Context compaction is unavailable in this runtime.');
+      }
+      const plan = planAgentCompaction(session, this.options.compactionThresholds);
+      if (!plan) throw new Error('There is not enough settled history to compact yet.');
+      const compacted = await this.runCompaction(scope, store, session, plan, 'manual');
+      return projectAgentSession(compacted, scope.generation);
+    });
+  }
+
+  /**
+   * Compacts ahead of a request whose projected Context would crowd the window.
+   * A failed or unavailable compaction never blocks the request: the send simply
+   * proceeds on the previous projection.
+   */
+  private async compactForThreshold(
+    scope: ProjectScope,
+    store: IrisAgentSessionStore,
+    session: AgentSessionAggregate,
+    pendingMessage: string,
+  ): Promise<AgentSessionAggregate> {
+    if (!this.options.summarizeContext) return session;
+    const projected = estimateAgentContextTokens(store.history(session.id)) +
+      estimateAgentTokens(pendingMessage);
+    if (projected < agentCompactionTrigger(this.options.compactionThresholds)) return session;
+    const plan = planAgentCompaction(session, this.options.compactionThresholds);
+    if (!plan) return session;
+    try {
+      return await this.runCompaction(scope, store, session, plan, 'threshold');
+    } catch {
+      // The prior projection is still valid, so the request continues uncompacted.
+      return (await this.requireSession(scope, session.id));
+    }
+  }
+
+  /**
+   * Commits a running contract, generates the summary, then promotes it in a
+   * second commit. The Trace is never rewritten, so a summary that arrives after
+   * the history moved is discarded rather than applied to the wrong prefix.
+   */
+  private async runCompaction(
+    scope: ProjectScope,
+    store: IrisAgentSessionStore,
+    session: AgentSessionAggregate,
+    plan: ReturnType<typeof planAgentCompaction> & object,
+    trigger: 'threshold' | 'overflow' | 'manual',
+  ): Promise<AgentSessionAggregate> {
+    const summarize = this.options.summarizeContext;
+    if (!summarize) throw new Error('Context compaction is unavailable in this runtime.');
+    if (!session.model) throw new Error('Iris Agent Session has no configured model.');
+    const compactionId = randomUUID();
+    const opened = await store.commit(
+      openAgentCompaction(session, plan, {
+        id: compactionId,
+        trigger,
+        model: session.model,
+        now: Date.now(),
+      }),
+    );
+    this.emitChanged(scope, opened);
+
+    const controller = new AbortController();
+    this.compactionAborts.set(session.id, controller);
+    let summary: string;
+    try {
+      summary = await summarize({
+        sessionId: session.id,
+        model: { ...session.model },
+        instruction: AGENT_COMPACTION_INSTRUCTION,
+        material: renderAgentCompactionSource(opened, plan),
+        providerProxy: (await this.executionRuntimeFor(opened)).providerProxy,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      const settled = await store.commit(settleAgentCompaction(
+        await this.requireSession(scope, session.id),
+        compactionId,
+        controller.signal.aborted ? 'canceled' : 'failed',
+        Date.now(),
+        errorMessage(error),
+      ));
+      this.emitChanged(scope, settled);
+      throw error;
+    } finally {
+      if (this.compactionAborts.get(session.id) === controller) {
+        this.compactionAborts.delete(session.id);
+      }
+    }
+
+    const latest = await this.requireSession(scope, session.id);
+    if (latest.revision !== opened.revision) {
+      const settled = await store.commit(settleAgentCompaction(
+        latest,
+        compactionId,
+        'failed',
+        Date.now(),
+        'The session history changed while the summary was generated.',
+      ));
+      this.emitChanged(scope, settled);
+      throw new Error('The Iris Agent session changed while its context was being compacted.');
+    }
+    const completed = await store.commit(completeAgentCompaction(latest, compactionId, summary, Date.now()));
+    this.emitChanged(scope, completed);
+    return completed;
+  }
+
   async stop(
     scope: ProjectScope,
     sessionId: string,
     precondition: IrisAgentCommandPrecondition = {},
   ): Promise<IrisAgentSessionInfo> {
+    // A summary request holds the command queue while it runs, so it has to be
+    // cancelled before Stop queues behind it.
+    this.compactionAborts.get(sessionId)?.abort();
     return this.runSessionCommand(sessionId, async () => {
       this.currentScope = scope;
       const store = await this.ensureStore(scope.root);
@@ -475,7 +630,8 @@ export class IrisAgentSessionManager extends EventEmitter {
       const restored = await store.rewindIntentEffects(sessionId, intentId);
       const rewound = truncateIntentChain(latest, commandId);
       Object.assign(rewound.rewindReceipts.at(-1)!, restored);
-      const saved = await store.commit(rewound);
+      // Truncating the path may strip the boundary the active summary covers.
+      const saved = await store.commit(realignActiveCompaction(rewound));
       this.emitChanged(scope, saved);
       return projectAgentSession(saved, scope.generation);
     });
@@ -1696,6 +1852,7 @@ function copyBranchFacts(
   );
   branch.effects = structuredClone(source.effects.filter((effect) => intentIds.has(effect.intentId)));
   branch.requestFacts = structuredClone(source.requestFacts.filter((facts) => intentIds.has(facts.intentId)));
+  inheritAgentCompactionInto(source, branch);
 }
 
 export function parseElectronProxyRules(rules: string): AgentProviderProxy {

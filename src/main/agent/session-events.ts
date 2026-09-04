@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type {
+  AgentCompaction,
   AgentEffect,
   AgentIntent,
   AgentInvoke,
@@ -11,7 +12,7 @@ import type {
   AgentToolOperation,
   AgentTurn,
 } from './session-model';
-import { cloneAgentSession } from './session-model';
+import { cloneAgentSession, normalizeAgentSessionAggregate } from './session-model';
 
 export type AgentEntityCollection =
   | 'intents'
@@ -22,7 +23,8 @@ export type AgentEntityCollection =
   | 'toolOperations'
   | 'effects'
   | 'requestFacts'
-  | 'rewindReceipts';
+  | 'rewindReceipts'
+  | 'compactions';
 
 export type AgentSessionEntity =
   | AgentIntent
@@ -33,7 +35,8 @@ export type AgentSessionEntity =
   | AgentToolOperation
   | AgentEffect
   | AgentRequestFacts
-  | AgentRewindReceipt;
+  | AgentRewindReceipt
+  | AgentCompaction;
 
 type AgentSessionScalars = Omit<AgentSessionAggregate, AgentEntityCollection>;
 
@@ -56,6 +59,7 @@ const COLLECTIONS: AgentEntityCollection[] = [
   'effects',
   'requestFacts',
   'rewindReceipts',
+  'compactions',
 ];
 
 export function createAgentDomainTransaction(
@@ -106,7 +110,7 @@ export function applyAgentDomainTransaction(
   for (const event of transaction.events) {
     if (event.type === 'session.created') {
       if (session) throw new Error('Iris Agent journal attempted to create an existing Session.');
-      session = cloneAgentSession(event.session);
+      session = normalizeAgentSessionAggregate(cloneAgentSession(event.session));
       continue;
     }
     if (!session) throw new Error('Iris Agent journal mutated a Session before creation.');
@@ -171,9 +175,11 @@ function assertAgentSessionTransition(
   assertMonotonicStates(previous.toolOperations, next.toolOperations, operationTransitions, 'Tool operation');
   assertMonotonicStates(previous.timeline.filter(isReply), next.timeline.filter(isReply), replyTransitions, 'Reply');
   assertMonotonicStates(previous.timeline.filter(isTool), next.timeline.filter(isTool), toolTransitions, 'Tool Activity');
+  assertMonotonicStates(previous.compactions, next.compactions, compactionTransitions, 'Compaction');
   assertAppendOnly(previous.effects, next.effects, 'Effect Ledger');
   assertAppendOnly(previous.requestFacts, next.requestFacts, 'Request facts');
   assertAppendOnly(previous.rewindReceipts, next.rewindReceipts, 'Rewind receipts');
+  assertAppendOrder(previous.compactions, next.compactions, 'Compaction');
 }
 
 function assertAggregateReferences(session: AgentSessionAggregate): void {
@@ -276,6 +282,18 @@ function assertAggregateReferences(session: AgentSessionAggregate): void {
   for (const receipt of session.rewindReceipts) {
     if (!intents.has(receipt.truncatedIntentId)) throw new Error('Rewind receipt Intent is missing.');
   }
+  for (const compaction of session.compactions) {
+    if (!intents.has(compaction.coveredThroughIntentId)) {
+      throw new Error('Compaction covered-through Intent is missing.');
+    }
+    if (!intents.has(compaction.firstRetainedIntentId)) {
+      throw new Error('Compaction first-retained Intent is missing.');
+    }
+  }
+  if (session.activeCompactionId) {
+    const active = session.compactions.find((compaction) => compaction.id === session.activeCompactionId);
+    if (!active || active.state !== 'completed') throw new Error('Active compaction is invalid.');
+  }
 }
 
 function assertStableEntities(
@@ -344,6 +362,9 @@ const replyTransitions = {
   streaming: ['completed', 'stopped', 'failed'], completed: [], stopped: [], failed: [],
 } as const;
 const toolTransitions = {
+  running: ['completed', 'failed', 'canceled'], completed: [], failed: [], canceled: [],
+} as const;
+const compactionTransitions = {
   running: ['completed', 'failed', 'canceled'], completed: [], failed: [], canceled: [],
 } as const;
 
