@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { access, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -883,11 +884,21 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       const intentId = sourceRun.correlation.intentId!;
       await manager.stop(scope, created.id);
       const source = (await manager.list(scope)).sessions.find((session) => session.id === created.id)!;
+      const artifactStore = await IrisAgentSessionStore.load({
+        userDataPath: userData,
+        projectRoot: scope.root,
+      });
+      expect(await readFile(artifactStore.promptSnapshotPath(source.id, intentId), 'utf8'))
+        .toContain('branch input');
       const branch = await manager.branchFromInput(scope, created.id, intentId, {
         expectedRevision: source.revision,
       });
+      await expect(access(artifactStore.promptSnapshotPath(branch.id, intentId)))
+        .rejects.toMatchObject({ code: 'ENOENT' });
 
       await manager.retry(scope, branch.id, { expectedRevision: branch.revision });
+      expect(await readFile(artifactStore.promptSnapshotPath(branch.id, intentId), 'utf8'))
+        .toContain('branch input');
       const branchWorker = workers[1]!;
       expect(branchWorker.last('initialize').history.messages).toEqual([]);
       expect(branchWorker.last('run').correlation.intentId).toBe(intentId);

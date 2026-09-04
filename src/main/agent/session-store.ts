@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
 import {
+  copyFile,
   lstat,
   mkdir,
   open,
@@ -260,6 +262,37 @@ export class IrisAgentSessionStore {
     }
     if (isNew) await this.writeIndex().catch(() => undefined);
     return cloneAgentSession(session);
+  }
+
+  async commitBranch(
+    sourceSessionId: string,
+    branch: AgentSessionAggregate,
+  ): Promise<AgentSessionAggregate> {
+    const source = this.sessions.get(sourceSessionId);
+    if (!source) throw new Error('[IrisAgentSessionStore] unknown source session ' + sourceSessionId);
+    if (branch.id === source.id || branch.parentSessionId !== source.id) {
+      throw new Error('Iris Agent branch does not identify its source session.');
+    }
+    if (this.sessions.has(branch.id)) {
+      throw new Error('Iris Agent branch session already exists.');
+    }
+    const directory = this.sessionDir(branch.id);
+    const exists = await lstat(directory).then(() => true, (error: unknown) => {
+      if (isMissing(error)) return false;
+      throw error;
+    });
+    if (exists) throw new Error('Iris Agent branch storage already exists.');
+
+    try {
+      await this.copyBranchArtifacts(source, branch);
+      return await this.commit(branch);
+    } catch (error) {
+      if (!this.sessions.has(branch.id)) {
+        assertInside(join(this.projectDir, 'sessions'), directory);
+        await rm(directory, { recursive: true, force: true });
+      }
+      throw error;
+    }
   }
 
   async delete(sessionId: string): Promise<void> {
@@ -563,6 +596,82 @@ export class IrisAgentSessionStore {
 
   private providerContextDir(sessionId: string, intentId: string): string {
     return join(this.intentArtifactDir(sessionId, intentId), 'provider-context');
+  }
+
+  private async copyBranchArtifacts(
+    source: AgentSessionAggregate,
+    branch: AgentSessionAggregate,
+  ): Promise<void> {
+    const sourceIntentIds = new Set(source.intents.map((intent) => intent.id));
+    for (const intent of branch.intents) {
+      if (!sourceIntentIds.has(intent.id)) {
+        throw new Error('Iris Agent branch contains an Intent outside its source session.');
+      }
+      if (!intent.assembledInputAvailable) continue;
+      await assertImmutableArtifactPath(
+        this.artifactRoot(source.id),
+        this.intentArtifactDir(source.id, intent.id),
+      );
+      await copyImmutableArtifactTree(
+        this.intentArtifactDir(source.id, intent.id),
+        this.intentArtifactDir(branch.id, intent.id),
+      );
+      await this.rewriteBranchedProviderContext(source.id, branch, intent.id);
+    }
+
+    const artifactRefs = new Set(branch.effects.map((effect) => effect.artifactRef));
+    for (const activity of branch.timeline) {
+      if (activity.kind === 'tool' && activity.terminalArtifactRef) {
+        artifactRefs.add(activity.terminalArtifactRef);
+      }
+    }
+    const sourceRoot = this.artifactRoot(source.id);
+    const branchRoot = this.artifactRoot(branch.id);
+    const copiedTargets = new Set<string>();
+    for (const artifactRef of artifactRefs) {
+      const sourcePath = resolve(sourceRoot, ...artifactRef.split('/'));
+      const branchPath = resolve(branchRoot, ...artifactRef.split('/'));
+      assertInside(sourceRoot, sourcePath);
+      assertInside(branchRoot, branchPath);
+      if (copiedTargets.has(branchPath)) continue;
+      copiedTargets.add(branchPath);
+      await assertImmutableArtifactPath(sourceRoot, sourcePath);
+      await copyImmutableArtifactFile(sourcePath, branchPath);
+    }
+  }
+
+  private async rewriteBranchedProviderContext(
+    sourceSessionId: string,
+    branch: AgentSessionAggregate,
+    intentId: string,
+  ): Promise<void> {
+    const path = this.providerContextJsonPath(branch.id, intentId);
+    let value: unknown;
+    try {
+      value = JSON.parse(await readFile(path, 'utf8'));
+    } catch (error) {
+      if (isMissing(error)) return;
+      throw error;
+    }
+    const sourceBundle = isProviderContextBundle(value)
+      ? value
+      : migrateLegacyProviderContextBundle(value);
+    if (!sourceBundle || sourceBundle.sessionId !== sourceSessionId || sourceBundle.intentId !== intentId) {
+      throw new Error('Iris Agent branch provider context has invalid ownership.');
+    }
+    const bundle: IrisAgentProviderContextBundle = {
+      ...structuredClone(sourceBundle),
+      schemaVersion: 3,
+      sessionId: branch.id,
+      intentId,
+    };
+    await writeFileAtomic(path, JSON.stringify(bundle, null, 2) + '\n');
+    const calls = await this.loadIndexedInvokes(branch.id, intentId, bundle.calls);
+    const attempts = branch.invokeAttempts.filter((attempt) => attempt.intentId === intentId);
+    await writeFileAtomic(
+      this.providerContextTextPath(branch.id, intentId),
+      renderProviderContextIndex(bundle, calls, attempts),
+    );
   }
 
   private async migrateLegacyIntentArtifactDirectory(sessionId: string, intentId: string): Promise<void> {
@@ -1289,6 +1398,55 @@ function assertExactChild(parent: string, target: string, expectedName: string):
   if (dirname(target) !== parent || basename(target) !== expectedName) {
     throw new Error('Refusing to remove an unexpected Iris Agent legacy path.');
   }
+}
+
+async function copyImmutableArtifactTree(source: string, target: string): Promise<void> {
+  const metadata = await lstat(source);
+  if (metadata.isSymbolicLink()) {
+    throw new Error('Iris Agent cannot branch a symbolic-link artifact.');
+  }
+  if (metadata.isFile()) {
+    await mkdir(dirname(target), { recursive: true });
+    await copyFile(source, target, fsConstants.COPYFILE_EXCL);
+    return;
+  }
+  if (!metadata.isDirectory()) {
+    throw new Error('Iris Agent cannot branch a special-file artifact.');
+  }
+  const targetExists = await lstat(target).then(() => true, (error: unknown) => {
+    if (isMissing(error)) return false;
+    throw error;
+  });
+  if (targetExists) throw new Error('Iris Agent branch artifact target already exists.');
+  await mkdir(target, { recursive: true });
+  for (const entry of await readdir(source)) {
+    await copyImmutableArtifactTree(join(source, entry), join(target, entry));
+  }
+}
+
+async function assertImmutableArtifactPath(root: string, target: string): Promise<void> {
+  assertInside(root, target);
+  const segments = relative(resolve(root), resolve(target)).split(sep);
+  let current = resolve(root);
+  for (const segment of ['', ...segments]) {
+    if (segment) current = join(current, segment);
+    const metadata = await lstat(current);
+    if (metadata.isSymbolicLink()) {
+      throw new Error('Iris Agent cannot branch an artifact through a symbolic link.');
+    }
+    if (current !== resolve(target) && !metadata.isDirectory()) {
+      throw new Error('Iris Agent branch artifact path crosses a non-directory.');
+    }
+  }
+}
+
+async function copyImmutableArtifactFile(source: string, target: string): Promise<void> {
+  const metadata = await lstat(source);
+  if (metadata.isSymbolicLink() || !metadata.isFile()) {
+    throw new Error('Iris Agent branch artifact reference is not a regular file.');
+  }
+  await mkdir(dirname(target), { recursive: true });
+  await copyFile(source, target, fsConstants.COPYFILE_EXCL);
 }
 
 function assertInside(parent: string, target: string): void {

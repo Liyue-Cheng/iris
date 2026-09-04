@@ -238,7 +238,7 @@ export class IrisAgentSessionManager extends EventEmitter {
         `${source.displayName} Branch ${branchNumber}`,
         Date.now(),
       );
-      const saved = await store.commit(branch);
+      const saved = await store.commitBranch(source.id, branch);
       this.emitChanged(scope, saved);
       return projectAgentSession(saved, scope.generation);
     });
@@ -260,7 +260,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       const branch = createIrisAgentInputBranch(
         source, throughIntentId, randomUUID(), `${source.displayName} Branch ${branchNumber}`, Date.now(),
       );
-      const saved = await store.commit(branch);
+      const saved = await store.commitBranch(source.id, branch);
       this.emitChanged(scope, saved);
       return projectAgentSession(saved, scope.generation);
     });
@@ -1671,9 +1671,7 @@ function copyBranchFacts(
   branch: AgentSessionAggregate,
   intentIds: ReadonlySet<string>,
 ): void {
-  branch.intents = structuredClone(source.intents.filter((intent) => intentIds.has(intent.id))).map(
-    (intent) => ({ ...intent, assembledInputAvailable: false }),
-  );
+  branch.intents = structuredClone(source.intents.filter((intent) => intentIds.has(intent.id)));
   branch.turns = structuredClone(source.turns.filter((turn) => intentIds.has(turn.intentId)));
   branch.invokes = structuredClone(source.invokes.filter((invoke) => intentIds.has(invoke.intentId)));
   branch.invokeAttempts = structuredClone(

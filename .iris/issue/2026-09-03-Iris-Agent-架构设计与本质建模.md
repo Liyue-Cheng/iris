@@ -1519,3 +1519,26 @@ Progress），还是先就这两个决策点定了再说？
 * worker 自检脚本已改为从源码读取协议版本，并能立即报告当前编译产物陈旧：source v13、artifact v12。遵循项目约束，未运行 build/dist，因此没有刷新 `out/`。
 
 * 未运行开发服务器或截图。
+
+## Fork artifact 所有权修复（2026-09-04）
+
+Fork 不再只复制 Trace 中的逻辑事实。Store 新增专用 `commitBranch` 边界，在新 Session
+journal 提交前复制分支实际继承的 immutable artifact；任一复制或校验失败时不提交分支，并清理
+尚未提交的新 Session 目录。
+
+* Reply Fork 复制截至目标 completed Intent 的 prompt、provider context、Effect artifact 和独立
+  Terminal artifact。provider-context bundle 统一写为 v3，并把 `sessionId` 改为新分支，历史
+  `intentId` 与 runtime capture identity 保持不变；因此分支内可直接打开继承上下文、回放终端，
+  也可对继承的文件 Effect 执行 CAS rewind。
+* Input Fork 只复制目标 Intent 之前的前缀 artifact。目标 Intent 保持原 ID，但清空 execution Turn、
+  置为 paused 且 `assembledInputAvailable: false`；Continue/Retry 时在分支中重新组装并生成新的
+  prompt artifact，不会误用源 Session 的旧执行产物。
+* artifact 路径必须位于源/目标 Session artifact root 内；递归复制逐级拒绝符号链接和特殊文件，
+  单文件引用只接受 regular file，目标已存在时拒绝覆盖。
+
+验证结果：`npm run typecheck -- --pretty false` 通过；Agent、协议和 renderer projection 专项
+15 个文件、93 项全部通过。全量单 fork Vitest 为 82 个文件中 81 个通过、471 项中 470 项通过；
+唯一失败仍是既有 `session-viewport.test.ts` 的 window mock 缺少 `removeEventListener`。未运行
+build、dist、开发服务器或截图。
+
+* [ ] 手工验证 Reply Fork 的继承上下文/终端回放/文件 rewind，以及 Input Fork retry 后重新执行。

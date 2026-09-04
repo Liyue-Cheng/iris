@@ -13,6 +13,7 @@ import {
   resetLegacyIrisAgentData,
 } from './session-store';
 import { truncateIntentChain } from './session-domain';
+import { createIrisAgentBranch } from './session-manager';
 
 const injection = {
   methods: { agent: 'current' as const, software: 'current' as const, project: 'current' as const },
@@ -210,6 +211,77 @@ describe('IrisAgentSessionStore', () => {
       expect(saved.activeIntentIds).toEqual([]);
       expect(saved.intents[0]?.state).toBe('superseded');
       expect(saved.rewindReceipts[0]).toMatchObject(restored);
+      expect(await readFile(target, 'utf8')).toBe('before');
+    } finally {
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('copies inherited artifacts into a reply branch and rewinds its file effects', async () => {
+    const userData = await createTempDataDir('iris-agent-branch-artifacts-');
+    const projectRoot = join(userData, 'project');
+    const target = join(projectRoot, 'value.txt');
+    try {
+      await mkdir(projectRoot, { recursive: true });
+      await writeFile(target, 'after');
+      const store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
+      const session = aggregate(projectRoot);
+      addExecution(session);
+      session.timeline.push({
+        kind: 'tool', id: 'tool-1', ordinal: 1, intentId: 'intent-1', turnId: 'turn-1',
+        invokeId: 'invoke-1', toolCallId: 'tool-1', tool: 'write', state: 'completed',
+        inputSummary: 'write value.txt', operation: 'writeFile', path: 'value.txt',
+        resultSummary: 'updated', effectIds: ['file--operation-1'], createdAt: 2, completedAt: 3,
+      });
+      session.turns[0]!.assistant!.toolCalls.push({ id: 'terminal-call', tool: 'terminal', input: {} });
+      session.turns[0]!.toolResults.push({
+        toolCallId: 'terminal-call', tool: 'terminal', content: 'ok', isError: false, createdAt: 3,
+      });
+      session.timeline.push({
+        kind: 'tool', id: 'terminal-activity', ordinal: 2, intentId: 'intent-1', turnId: 'turn-1',
+        invokeId: 'invoke-1', toolCallId: 'terminal-call', tool: 'terminal', state: 'completed',
+        inputSummary: 'run test', operation: 'exec', terminalId: 'terminal-1',
+        terminalArtifactRef: 'terminal/terminal-1.log', effectIds: [], createdAt: 2, completedAt: 3,
+      });
+      session.nextOrdinal = 3;
+      session.effects.push({
+        id: 'file--operation-1', intentId: 'intent-1', turnId: 'turn-1',
+        toolActivityId: 'tool-1', kind: 'file-write', path: 'value.txt', operation: 'write',
+        beforeSha256: digest('before'), afterSha256: digest('after'),
+        artifactRef: 'effects/file--operation-1.json', createdAt: 3,
+      });
+      await store.savePromptSnapshot('session-1', 'intent-1', 'assembled prompt');
+      await store.appendProviderContext('session-1', 'intent-1', {
+        index: 1, capturedAt: 3, provider: 'openai', model: 'gpt-test',
+        api: 'openai-responses', payload: { model: 'gpt-test' },
+      });
+      await mkdir(join(store.artifactRoot('session-1'), 'effects'), { recursive: true });
+      await writeFile(join(store.artifactRoot('session-1'), 'effects', 'file--operation-1.json'), JSON.stringify({
+        path: 'value.txt', operation: 'write', beforeContent: 'before', afterContent: 'after',
+        beforeSha256: digest('before'), afterSha256: digest('after'),
+      }));
+      await mkdir(join(store.artifactRoot('session-1'), 'terminal'), { recursive: true });
+      await writeFile(join(store.artifactRoot('session-1'), 'terminal', 'terminal-1.log'), 'terminal output');
+      const savedSource = await store.commit(session);
+      const branch = createIrisAgentBranch(savedSource, 'intent-1', 'session-branch', 'Branch', 5);
+
+      const savedBranch = await store.commitBranch(savedSource.id, branch);
+
+      expect(await readFile(store.promptSnapshotPath(savedBranch.id, 'intent-1'), 'utf8'))
+        .toBe('assembled prompt');
+      const providerContextPath = join(
+        dirname(store.promptSnapshotPath(savedBranch.id, 'intent-1')),
+        'provider-context',
+        'index.json',
+      );
+      expect(JSON.parse(await readFile(providerContextPath, 'utf8'))).toMatchObject({
+        schemaVersion: 3, sessionId: savedBranch.id, intentId: 'intent-1',
+      });
+      expect(await readFile(join(store.artifactRoot(savedBranch.id), 'terminal', 'terminal-1.log'), 'utf8'))
+        .toBe('terminal output');
+      expect(await store.rewindIntentEffects(savedBranch.id, 'intent-1')).toEqual({
+        revertedEffectIds: ['file--operation-1'], retainedEffectIds: [],
+      });
       expect(await readFile(target, 'utf8')).toBe('before');
     } finally {
       await removeTempDataDir(userData);
