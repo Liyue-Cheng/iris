@@ -263,7 +263,7 @@ export function IrisAgentView({
             variant="ghost"
             size="icon"
             className="h-7 w-7 shrink-0"
-            title={models.length > 0 ? '部分供应商模型加载失败，点击查看详情' : '模型加载失败，点击查看详情'}
+            aria-label={models.length > 0 ? '部分供应商模型加载失败，点击查看详情' : '模型加载失败，点击查看详情'}
             onClick={() => setShowErrorDialog(true)}
           >
             <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
@@ -273,7 +273,7 @@ export function IrisAgentView({
           value={selectedModelValue}
           disabled={running || models.length === 0}
           aria-label="Provider and model"
-          title={modelError ?? 'Provider and model'}
+          aria-label={modelError ?? 'Provider and model'}
           className="h-7 w-44 max-w-[42%] min-w-0 shrink rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
           onChange={(event) => {
             const model = models.find(
@@ -310,13 +310,27 @@ export function IrisAgentView({
             </option>
           ))}
         </select>
+        {(() => {
+          const selected = models.find((candidate) => modelValue(candidate.provider, candidate.modelId) === selectedModelValue);
+          const windowTokens = selected?.contextWindowTokens;
+          if (!windowTokens) return null;
+          const compactAt = selected.contextPolicy?.compactTrigger ?? Math.max(1, windowTokens - 16_384);
+          return (
+            <span
+              className="shrink-0 rounded-md border border-border px-1.5 py-1 text-[10px] text-muted-foreground"
+              aria-label={`上下文窗口 ${windowTokens.toLocaleString()} tokens，整理水位 ${compactAt.toLocaleString()} tokens`}
+            >
+              {windowTokens >= 1_000_000 ? '1M' : `${Math.round(windowTokens / 1000)}K`} context
+            </span>
+          );
+        })()}
         {!running && session.canRewindLatestIntent && (
           <Button
             variant="ghost"
             size="icon"
             className="h-7 w-7 shrink-0"
             onClick={() => void rewindIrisAgent(session.id)}
-            title="回退最后一项意图及可安全还原的文件改动"
+            aria-label="回退最后一项意图及可安全还原的文件改动"
             aria-label="回退上一项意图"
           >
             <Undo2 className="!size-3.5" />
@@ -346,7 +360,7 @@ export function IrisAgentView({
                 <span
                   role="button"
                   tabIndex={0}
-                  title="关闭终端工作面"
+                  aria-label="关闭终端工作面"
                   aria-label="关闭终端工作面"
                   className="ml-0.5 rounded p-0.5 hover:bg-muted"
                   onClick={(event) => {
@@ -522,7 +536,7 @@ export function IrisAgentView({
             type="submit"
             size="icon"
             disabled={running ? false : !selectedModelAvailable || draft.trim() === ''}
-            title={running ? '停止' : '发送'}
+            aria-label={running ? '停止' : '发送'}
             aria-label={running ? '停止' : '发送'}
           >
             {running ? <Square className="!size-4" /> : <Send className="!size-4" />}
@@ -783,7 +797,7 @@ function LocalRetrievalCard({
     <CardFrame
       cardType="retrievals"
       icon={<FolderSearch className="h-4 w-4" />}
-      title="信息检索"
+      aria-label="信息检索"
       summary={failed > 0 ? `${summary} · ${failed} 项失败` : summary}
       state={card.state}
       action={card.items.length > 5 ? (
@@ -792,7 +806,7 @@ function LocalRetrievalCard({
           variant="ghost"
           size="icon"
           className="h-6 w-6"
-          title={expanded ? '收起获取记录' : '展开全部获取记录'}
+          aria-label={expanded ? '收起获取记录' : '展开全部获取记录'}
           aria-label={expanded ? '收起获取记录' : '展开全部获取记录'}
           onClick={() => setExpanded((value) => !value)}
         >
@@ -811,7 +825,7 @@ function LocalRetrievalCard({
             {item.kind === 'file'
               ? <FileText className="h-3.5 w-3.5 shrink-0 text-[var(--iris-card-retrievals)]" />
               : <SquareTerminal className="h-3.5 w-3.5 shrink-0 text-[var(--iris-card-retrievals)]" />}
-            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground" title={item.label}>
+            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground" aria-label={item.label}>
               {item.label}
             </span>
             <CompactRowStateIcon
@@ -843,7 +857,7 @@ function FileChangeGroupCard({
     <CardFrame
       cardType="files"
       icon={<FileDiff className="h-4 w-4" />}
-      title="文件变更"
+      aria-label="文件变更"
       summary={summary}
       state={groupState(cards)}
     >
@@ -854,7 +868,7 @@ function FileChangeGroupCard({
           return (
             <div key={card.id} className="flex min-h-7 items-center gap-2.5 px-4 py-1 text-xs">
               <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={card.path}>{card.path}</span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px]" aria-label={card.path}>{card.path}</span>
               {(stats.additions || stats.deletions) ? (
                 <span className="shrink-0 font-mono text-[11px] font-semibold">
                   <span className="text-emerald-600 dark:text-emerald-400">+{stats.additions}</span>
@@ -927,7 +941,7 @@ function TerminalOperationCard({
     <CardFrame
       cardType="operations"
       icon={<SquareTerminal className="h-4 w-4" />}
-      title="执行命令"
+      aria-label="执行命令"
       summary={cardStateLabel(card.state)}
       state={card.state}
       action={multiline ? (
@@ -936,7 +950,7 @@ function TerminalOperationCard({
           variant="ghost"
           size="icon"
           className="h-6 w-6"
-          title={expanded ? '收起命令' : '展开完整命令'}
+          aria-label={expanded ? '收起命令' : '展开完整命令'}
           aria-label={expanded ? '收起命令' : '展开完整命令'}
           onClick={() => setExpanded((value) => !value)}
         >
@@ -998,7 +1012,7 @@ function AgentReplyCard({
     <CardFrame
       cardType="message"
       icon={<BotMessageSquare className="h-4 w-4" />}
-      title="AI 回复"
+      aria-label="AI 回复"
       summary={card.state === 'running'
         ? '正在回复'
         : card.state === 'stopped'
@@ -1013,7 +1027,7 @@ function AgentReplyCard({
           variant="ghost"
           size="icon"
           className="h-6 w-6 text-muted-foreground"
-          title="从此回复创建对话分支"
+          aria-label="从此回复创建对话分支"
           aria-label="从此回复创建对话分支"
           onClick={onFork}
         >
@@ -1086,7 +1100,7 @@ function CardFrame({
           <div className="flex min-w-0 items-baseline gap-2">
             <h3 className="shrink-0 text-[13px] font-semibold text-foreground">{title}</h3>
             {summary && (
-              <span className="min-w-0 truncate text-[11px] text-muted-foreground" title={summary}>
+              <span className="min-w-0 truncate text-[11px] text-muted-foreground" aria-label={summary}>
                 {summary}
               </span>
             )}
@@ -1170,12 +1184,12 @@ function CompactRowStateIcon({
   const className = `flex h-5 w-5 shrink-0 items-center justify-center rounded-sm${onClick ? ' hover:bg-muted' : ''}`;
   if (onClick) {
     return (
-      <button type="button" className={className} title={detail ?? label} aria-label={`${label}，打开终端`} onClick={onClick}>
+      <button type="button" className={className} aria-label={`${label}，打开终端`} onClick={onClick}>
         {icon}
       </button>
     );
   }
-  return <span className={className} title={detail ?? label} role="img" aria-label={label}>{icon}</span>;
+  return <span className={className} role="img" aria-label={label}>{icon}</span>;
 }
 
 function retrievalStateLabel(state: IrisAgentCardState | 'canceled'): string {
@@ -1223,7 +1237,7 @@ function UserMessage({
               variant="ghost"
               size="icon"
               className="h-6 w-6 shrink-0 text-muted-foreground"
-              title={artifactTitle}
+              aria-label={artifactTitle}
               aria-label={artifactTitle}
               onClick={onOpenPrompt}
             >
@@ -1236,7 +1250,7 @@ function UserMessage({
               variant="ghost"
               size="icon"
               className="h-6 w-6 shrink-0 text-muted-foreground"
-              title="从此输入重新开始"
+              aria-label="从此输入重新开始"
               aria-label="从此输入重新开始"
               onClick={onFork}
             >

@@ -29,7 +29,7 @@ export function SessionDot({
       {state && (
         <span
           className={cn('size-2 rounded-full', DOT[state].cls)}
-          title={t(DOT[state].labelKey)}
+          aria-label={t(DOT[state].labelKey)}
         />
       )}
     </span>

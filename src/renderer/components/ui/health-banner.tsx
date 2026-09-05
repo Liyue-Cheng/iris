@@ -24,7 +24,7 @@ export function HealthBanner(): JSX.Element | null {
       <span className="shrink-0 font-medium">
         {translate(HEALTH_LABEL[issue.domain])}
       </span>
-      <span className="min-w-0 flex-1 truncate text-muted-foreground" title={issue.error.message}>
+      <span className="min-w-0 flex-1 truncate text-muted-foreground" aria-label={issue.error.message}>
         {issue.error.message}
       </span>
       {issues.length > 1 && (
@@ -36,7 +36,7 @@ export function HealthBanner(): JSX.Element | null {
           size="icon"
           className="h-7 w-7 shrink-0"
           disabled={issue.state === 'recovering'}
-          title={translate('health.retry')}
+          aria-label={translate('health.retry')}
           onClick={() => void healthStore.retry(issue)}
         >
           <RefreshCw className={issue.state === 'recovering' ? 'animate-spin' : ''} />

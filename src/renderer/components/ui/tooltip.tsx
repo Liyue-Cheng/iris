@@ -27,4 +27,39 @@ const TooltipContent = React.forwardRef<
 ));
 TooltipContent.displayName = TooltipPrimitive.Content.displayName;
 
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider };
+/** Shows tooltip content only when the trigger's text is actually clipped. */
+const OverflowTooltip = ({
+  children,
+  content,
+  side,
+  className,
+}: {
+  children: React.ReactElement;
+  content?: React.ReactNode;
+  side?: React.ComponentPropsWithoutRef<typeof TooltipPrimitive.Content>['side'];
+  className?: string;
+}) => {
+  const ref = React.useRef<HTMLElement>(null);
+  const [overflowing, setOverflowing] = React.useState(false);
+
+  React.useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const measure = () => setOverflowing(element.scrollWidth > element.clientWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [children]);
+
+  const trigger = React.cloneElement(children, { ref } as React.Attributes);
+  if (!overflowing || content == null) return trigger;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+      <TooltipContent side={side} className={className}>{content}</TooltipContent>
+    </Tooltip>
+  );
+};
+
+export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider, OverflowTooltip };

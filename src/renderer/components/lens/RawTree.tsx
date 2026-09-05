@@ -45,7 +45,7 @@ function Node({ node, depth }: { node: RawTreeNode; depth: number }): JSX.Elemen
         isMd ? (selected ? 'bg-accent text-accent-foreground' : 'hover:bg-muted') : 'cursor-default text-muted-foreground/60',
       )}
       style={{ paddingLeft: `${depth * 12 + 8 + 16}px` }}
-      title={node.path}
+      aria-label={node.path}
     >
       {isMd ? (
         <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />

@@ -632,6 +632,15 @@ export interface IrisAgentModelOption extends IrisAgentModelRef {
   name: string;
   api: string;
   reasoning: boolean;
+  contextWindowTokens?: number;
+  maxOutputTokens?: number;
+  contextPolicy?: {
+    reserveOutputTokens: number;
+    keepRecentTokens: number;
+    compactTrigger: number;
+  };
+  source?: 'discovered' | 'manual';
+  enabled?: boolean;
   /** Human-readable provider/profile name, when configured by Iris. */
   providerName?: string;
 }
@@ -659,6 +668,21 @@ export interface IrisAgentProviderCatalog {
   error?: string;
 }
 
+export interface IrisAgentConfiguredModel {
+  modelId: string;
+  displayName: string;
+  api?: 'openai-responses' | 'anthropic-messages';
+  contextWindowTokens: number;
+  maxOutputTokens: number;
+  reserveOutputTokens: number;
+  keepRecentTokens: number;
+  compactTrigger: number;
+  enabled: boolean;
+  source: 'discovered' | 'manual';
+  lastVerifiedAt?: number;
+  verificationError?: string;
+}
+
 export interface IrisAgentProviderTemplate {
   id: string;
   name: string;
@@ -672,6 +696,8 @@ export interface IrisAgentProviderProfileInfo {
   name: string;
   templateId: string;
   baseUrl: string;
+  apiKey: string;
+  models?: IrisAgentConfiguredModel[];
 }
 
 export type IrisAgentPauseReason = 'user' | 'provider' | 'auth' | 'worker' | 'restart' | 'runtime';

@@ -244,7 +244,7 @@ export function WelcomeView(): JSX.Element {
                       <button
                         type="button"
                         disabled={opening || !project.exists}
-                        title={project.path}
+                        aria-label={project.path}
                         onClick={() => void openRecent(project)}
                         className="grid h-8 min-w-0 flex-1 grid-cols-[minmax(0,0.78fr)_minmax(0,1.22fr)] items-center gap-3 rounded-sm px-1.5 pr-9 text-left outline-none transition-colors hover:bg-accent/55 focus-visible:bg-accent/55 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-default disabled:hover:bg-transparent"
                       >

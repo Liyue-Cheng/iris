@@ -54,6 +54,7 @@ import {
   type HookCliInfo,
   type InjectionState,
   type IrisAgentProviderCatalog,
+  type IrisAgentConfiguredModel,
   type ProjectPromptStateUi,
   type ProjectCommandTerminal,
   type ProjectToolbarAction,
@@ -215,7 +216,7 @@ export function SettingsView(): JSX.Element {
           variant="ghost"
           size="icon"
           className="ml-auto"
-          title={t('settings.close')}
+          aria-label={t('settings.close')}
           onClick={closeSettingsView}
         >
           <X />
@@ -438,7 +439,7 @@ function Segmented<T extends string>({
         <button
           key={o.value}
           type="button"
-          title={o.hint}
+          aria-label={o.hint}
           onClick={() => onChange(o.value)}
           className={cn(
             'rounded-md border px-2.5 py-1 text-[12px]',
@@ -833,6 +834,8 @@ function IrisAgentSettingsPanel({
   const [baseUrl, setBaseUrl] = useState('https://api.openai.com/v1');
   const [apiKey, setApiKey] = useState('');
   const [busy, setBusy] = useState(false);
+  const [editingModels, setEditingModels] = useState<Record<string, IrisAgentConfiguredModel[]>>({});
+  const [modelDrafts, setModelDrafts] = useState<Record<string, string>>({});
 
   const refresh = async (): Promise<void> => {
     try {
@@ -913,6 +916,67 @@ function IrisAgentSettingsPanel({
     }
   };
 
+  const saveModels = async (profileId: string): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await window.api.invoke<{ profileId: string; models: IrisAgentConfiguredModel[] }, IrisAgentProviderCatalog>(
+        CHANNELS.IRIS_AGENT_PROVIDER_PROFILE_MODELS,
+        { profileId, models: editingModels[profileId] ?? [] },
+      );
+      setCatalog(next);
+      setError(next.error ?? null);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const discoverModels = async (profileId: string): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await window.api.invoke<{ profileId: string }, IrisAgentProviderCatalog>(
+        CHANNELS.IRIS_AGENT_PROVIDER_PROFILE_DISCOVER,
+        { profileId },
+      );
+      setCatalog(next);
+      setEditingModels((current) => ({
+        ...current,
+        [profileId]: next.profiles.find((item) => item.id === profileId)?.models ?? [],
+      }));
+      setError(next.error ?? null);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addManualModel = (profileId: string): void => {
+    const modelId = (modelDrafts[profileId] ?? '').trim();
+    if (!modelId) return;
+    const profile = profiles.find((item) => item.id === profileId);
+    const models = editingModels[profileId] ?? profile?.models ?? [];
+    if (models.some((model) => model.modelId === modelId)) return;
+    setEditingModels((current) => ({
+      ...current,
+      [profileId]: [...models, {
+        modelId,
+        displayName: modelId,
+        contextWindowTokens: 128_000,
+        maxOutputTokens: 16_384,
+        reserveOutputTokens: 16_384,
+        keepRecentTokens: 20_000,
+        compactTrigger: 112_000,
+        enabled: true,
+        source: 'manual',
+      }],
+    }));
+    setModelDrafts((current) => ({ ...current, [profileId]: '' }));
+  };
+
   return (
     <section>
       <PanelTitle description={t('settings.irisAgentDescription')}>
@@ -976,7 +1040,7 @@ function IrisAgentSettingsPanel({
         <SettingRow label={t('settings.apiKey')} hint={t('settings.apiKeyHint')}>
           <div className="flex min-w-0 gap-2">
             <Input
-              type="password"
+              type="text"
               value={apiKey}
               disabled={busy || !selectedTemplate}
               autoComplete="new-password"
@@ -1019,21 +1083,99 @@ function IrisAgentSettingsPanel({
         ) : profiles.map((profile) => {
           const template = templates.find((candidate) => candidate.id === profile.templateId);
           const resolvedBaseUrl = profile.baseUrl || template?.defaultBaseUrl || '';
+          const models = editingModels[profile.id] ?? profile.models ?? [];
           return (
             <SettingRow
               key={profile.id}
               label={profile.name}
               hint={[template?.name, resolvedBaseUrl].filter(Boolean).join(' · ')}
             >
-              <div className="flex h-8 items-center justify-between gap-2">
-                <span className="text-xs text-muted-foreground">••••••••</span>
+              <div className="flex min-h-8 flex-col items-stretch gap-2">
+                <div className="flex items-center justify-between rounded-md border border-subtle px-3 py-2 text-xs text-muted-foreground">
+                  <span>{template?.name ?? '供应商'} · {resolvedBaseUrl}</span>
+                  <span>凭据已配置</span>
+                </div>
+                <div className="space-y-2 rounded-md border border-subtle p-2">
+                  <div className="flex items-center justify-between text-xs font-medium">
+                    <span>模型目录与上下文预算</span>
+                    <span className="text-[11px] font-normal text-muted-foreground">{models.length} 个模型</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button type="button" variant="outline" disabled={busy} onClick={() => { discoverModels(profile.id).catch(() => undefined); }}><RefreshCw className="!size-4" />从供应商获取模型</Button>
+                    <Input
+                      value={modelDrafts[profile.id] ?? ''}
+                      placeholder="手工添加模型 ID，例如 gpt-4o"
+                      onChange={(event) => setModelDrafts((current) => ({ ...current, [profile.id]: event.target.value }))}
+                      onKeyDown={(event) => { if (event.key === 'Enter') addManualModel(profile.id); }}
+                    />
+                    <Button type="button" variant="outline" disabled={busy} onClick={() => addManualModel(profile.id)}><Plus className="!size-4" />添加模型</Button>
+                  </div>
+                  {models.map((model, index) => (
+                    <div key={`${model.modelId}-${index}`} className="grid grid-cols-[minmax(0,1fr)_7rem_7rem_auto] items-center gap-2">
+                      <div className="min-w-0">
+                        <Input value={model.modelId} readOnly className="font-mono" aria-label="模型 ID" />
+                        <span className="px-1 text-[10px] text-muted-foreground">{model.displayName && model.displayName !== model.modelId ? model.displayName : '模型 ID'}</span>
+                      </div>
+                      <div className="flex gap-1">
+                        <Input
+                          type="number"
+                          min={1}
+                          value={model.contextWindowTokens}
+                          aria-label="上下文窗口 token 数"
+                          title="可手工填写任意上下文窗口 token 数"
+                          onChange={(event) => setEditingModels((current) => ({
+                            ...current,
+                            [profile.id]: models.map((item, itemIndex) => itemIndex === index
+                              ? { ...item, contextWindowTokens: Math.max(1, Number(event.target.value) || 1), compactTrigger: Math.max(1, (Number(event.target.value) || 1) - item.reserveOutputTokens) }
+                              : item),
+                          }))}
+                        />
+                        <select
+                          value=""
+                          aria-label="常用上下文窗口预设"
+                          className="h-9 w-14 rounded-md border border-input bg-background px-1 text-xs"
+                          onChange={(event) => {
+                            const value = Number(event.target.value);
+                            if (!value) return;
+                            setEditingModels((current) => ({
+                              ...current,
+                              [profile.id]: models.map((item, itemIndex) => itemIndex === index
+                                ? { ...item, contextWindowTokens: value, compactTrigger: Math.max(1, value - item.reserveOutputTokens) }
+                                : item),
+                            }));
+                          }}
+                        >
+                          <option value="">预设</option>
+                          {[128000, 256000, 512000, 1000000].map((value) => <option key={value} value={value}>{value === 1000000 ? '1M' : `${value / 1000}K`}</option>)}
+                        </select>
+                      </div>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={model.reserveOutputTokens}
+                        aria-label="输出预留 token，默认 16K"
+                        title="输出预留（16K = 16384 tokens），为模型回答保留的空间"
+                        onChange={(event) => setEditingModels((current) => ({
+                          ...current,
+                          [profile.id]: models.map((item, itemIndex) => itemIndex === index
+                            ? { ...item, reserveOutputTokens: Number(event.target.value), compactTrigger: item.contextWindowTokens - Number(event.target.value) }
+                            : item),
+                        }))}
+                      />
+                      <Button type="button" variant="ghost" size="icon" className="h-8 w-8" aria-label="删除模型" onClick={() => setEditingModels((current) => ({ ...current, [profile.id]: models.filter((_, itemIndex) => itemIndex !== index) }))}><Trash2 className="!size-3.5" /></Button>
+                    </div>
+                  ))}
+                  {models.length === 0 && <span className="text-xs text-muted-foreground">尚未获取模型。点击“从供应商获取模型”，或直接手工添加模型 ID。</span>}
+                  <div className="flex justify-end pt-1">
+                    <Button type="button" size="sm" disabled={busy || models.length === 0} onClick={() => { saveModels(profile.id).catch(() => undefined); }}>保存模型配置</Button>
+                  </div>
+                </div>
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
                   className="h-7 w-7 text-muted-foreground hover:text-destructive"
                   disabled={busy}
-                  title={t('settings.removeProviderProfile')}
                   aria-label={t('settings.removeProviderProfile')}
                   onClick={() => {
                     removeProfile(profile.id, profile.name).catch(() => undefined);
@@ -1182,7 +1324,7 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
                   <div className="flex justify-end gap-0.5">
                     <button
                       type="button"
-                      title={t('settings.moveLauncherUp', { agent: a.label })}
+                      aria-label={t('settings.moveLauncherUp', { agent: a.label })}
                       disabled={index === 0}
                       onClick={() => moveAgent(index, -1)}
                       className="rounded-sm p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground disabled:opacity-20"
@@ -1191,7 +1333,7 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
                     </button>
                     <button
                       type="button"
-                      title={t('settings.moveLauncherDown', { agent: a.label })}
+                      aria-label={t('settings.moveLauncherDown', { agent: a.label })}
                       disabled={index === agents.length - 1}
                       onClick={() => moveAgent(index, 1)}
                       className="rounded-sm p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground disabled:opacity-20"
@@ -1200,7 +1342,7 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
                     </button>
                     <button
                       type="button"
-                      title={t('settings.duplicateLauncher', { agent: a.label })}
+                      aria-label={t('settings.duplicateLauncher', { agent: a.label })}
                       onClick={() => duplicateAgent(a)}
                       className="rounded-sm p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground"
                     >
@@ -1208,7 +1350,7 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
                     </button>
                     <button
                       type="button"
-                      title={agents.length <= 1 ? t('settings.keepAgent') : t('settings.removeAgent', { agent: a.label })}
+                      aria-label={agents.length <= 1 ? t('settings.keepAgent') : t('settings.removeAgent', { agent: a.label })}
                       disabled={agents.length <= 1}
                       onClick={() => writeAgents(agents.filter((x) => x.id !== a.id))}
                       className="rounded-sm p-1 text-muted-foreground/60 hover:bg-muted hover:text-destructive disabled:opacity-30"
@@ -1242,7 +1384,7 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
                 type="button"
                 size="sm"
                 variant="secondary"
-                title={preset.command || t('settings.plainTerminal')}
+                aria-label={preset.command || t('settings.plainTerminal')}
                 onClick={() => addPreset(preset)}
               >
                 <Plus />
@@ -1571,7 +1713,7 @@ function ProjectSettingsPanel({
                   size="icon"
                   className="h-7 w-7"
                   disabled={index === 0}
-                  title={t('projectSettings.moveUp', { description: action.description })}
+                  aria-label={t('projectSettings.moveUp', { description: action.description })}
                   onClick={() => moveAction(index, -1)}
                 >
                   <ChevronUp />
@@ -1581,7 +1723,7 @@ function ProjectSettingsPanel({
                   size="icon"
                   className="h-7 w-7"
                   disabled={index === actions.length - 1}
-                  title={t('projectSettings.moveDown', { description: action.description })}
+                  aria-label={t('projectSettings.moveDown', { description: action.description })}
                   onClick={() => moveAction(index, 1)}
                 >
                   <ChevronDown />
@@ -1590,7 +1732,7 @@ function ProjectSettingsPanel({
                   variant="ghost"
                   size="icon"
                   className="h-7 w-7 text-destructive"
-                  title={t('projectSettings.remove', { description: action.description })}
+                  aria-label={t('projectSettings.remove', { description: action.description })}
                   onClick={() => void writeActions(actions.filter((_, i) => i !== index))}
                 >
                   <Trash2 />
@@ -2021,7 +2163,7 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
                     size="icon"
                     variant="ghost"
                     className="ml-auto h-7 w-7 text-destructive"
-                    title={t('settings.stopSync')}
+                    aria-label={t('settings.stopSync')}
                     disabled={busy || projectDraftDirty}
                     onClick={() => void removeEntry(softwareEntry.path)}
                   >
@@ -2054,7 +2196,7 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
       </SettingGroup>
 
       <PromptViewer
-        title={t('settings.softwareBody')}
+        aria-label={t('settings.softwareBody')}
         body={state?.softwareText ?? null}
       />
     </section>
@@ -2273,7 +2415,7 @@ function AboutPanel(): JSX.Element {
               <div className="flex min-w-0 items-start gap-1">
                 <code
                   className="min-w-0 flex-1 break-all pt-2 text-xs leading-relaxed text-muted-foreground"
-                  title={info.userDataPath}
+                  aria-label={info.userDataPath}
                 >
                   {info.userDataPath}
                 </code>
@@ -2281,7 +2423,7 @@ function AboutPanel(): JSX.Element {
                   variant="ghost"
                   size="icon"
                   className="h-8 w-8 shrink-0"
-                  title={copied === 'data' ? t('settings.aboutCopied') : t('settings.aboutCopyDataDirectory')}
+                  aria-label={copied === 'data' ? t('settings.aboutCopied') : t('settings.aboutCopyDataDirectory')}
                   aria-label={copied === 'data' ? t('settings.aboutCopied') : t('settings.aboutCopyDataDirectory')}
                   onClick={() => void copyText(info.userDataPath, 'data')}
                 >
@@ -2291,7 +2433,7 @@ function AboutPanel(): JSX.Element {
                   variant="ghost"
                   size="icon"
                   className="h-8 w-8 shrink-0"
-                  title={t('settings.aboutOpenDataDirectory')}
+                  aria-label={t('settings.aboutOpenDataDirectory')}
                   aria-label={t('settings.aboutOpenDataDirectory')}
                   onClick={() => void revealUserData()}
                 >

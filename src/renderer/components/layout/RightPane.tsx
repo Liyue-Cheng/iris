@@ -178,7 +178,7 @@ export function RightPane(): JSX.Element {
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
-                      title={t('layout.switchSession')}
+                      aria-label={t('layout.switchSession')}
                       className="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm px-1.5 py-1 text-left text-[13px] hover:bg-muted/60"
                     >
                       {shownItem.kind === 'terminal' ? (
@@ -242,7 +242,7 @@ export function RightPane(): JSX.Element {
                         )}
                         <button
                           type="button"
-                          title={t('layout.closeSession')}
+                          aria-label={t('layout.closeSession')}
                           onClick={(e) => {
                             e.stopPropagation();
                             void closeProjectedSession(item);
@@ -281,7 +281,7 @@ export function RightPane(): JSX.Element {
               variant="ghost"
               size="icon"
               className="h-7 w-7 shrink-0"
-              title={t('layout.newSession')}
+              aria-label={t('layout.newSession')}
               disabled={!projectReady}
             >
               <Plus className="!size-4" />

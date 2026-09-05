@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { copyFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
-import type { IrisAgentProviderProfileInfo, IrisAgentProviderTemplate } from '@shared/types';
+import type { IrisAgentConfiguredModel, IrisAgentProviderProfileInfo, IrisAgentProviderTemplate } from '@shared/types';
 import { writeFileAtomic } from '../atomic-write';
 
 export const IRIS_AGENT_PROVIDER_TEMPLATES: readonly IrisAgentProviderTemplate[] = [
@@ -38,10 +38,11 @@ export const IRIS_AGENT_PROVIDER_TEMPLATES: readonly IrisAgentProviderTemplate[]
 
 export interface StoredIrisAgentProviderProfile extends IrisAgentProviderProfileInfo {
   apiKey: string;
+  models: IrisAgentConfiguredModel[];
 }
 
 interface ProviderProfileFile {
-  version: 1;
+  version: 1 | 2;
   profiles: StoredIrisAgentProviderProfile[];
 }
 
@@ -56,7 +57,10 @@ export async function loadStoredIrisAgentProviderProfiles(
   if (!loaded || loaded.version !== 1 || !Array.isArray(loaded.profiles)) {
     return [];
   }
-  return loaded.profiles.filter(isStoredProfile).map((profile) => ({ ...profile }));
+  return loaded.profiles.filter(isStoredProfile).map((profile) => ({
+    ...profile,
+    models: Array.isArray(profile.models) ? profile.models.map(normalizeConfiguredModel) : [],
+  }));
 }
 
 export async function addIrisAgentProviderProfile(input: {
@@ -96,9 +100,25 @@ export async function addIrisAgentProviderProfile(input: {
     templateId: template.id,
     baseUrl,
     apiKey,
+    models: [],
   };
   await writeProviderProfileFile(providerProfilesPath(root), [...profiles, profile]);
   return profilesForRenderer([...profiles, profile]);
+}
+
+export async function updateIrisAgentProviderModels(
+  profileId: string,
+  models: IrisAgentConfiguredModel[],
+  root: string,
+): Promise<IrisAgentProviderProfileInfo[]> {
+  const profiles = await loadStoredIrisAgentProviderProfiles(root);
+  const profile = profiles.find((candidate) => candidate.id === profileId);
+  if (!profile) throw new Error('Provider profile was not found.');
+  const normalized = models.map((model) => normalizeConfiguredModel(model));
+  await writeProviderProfileFile(providerProfilesPath(root), profiles.map((candidate) =>
+    candidate.id === profileId ? { ...candidate, models: normalized } : candidate));
+  return profilesForRenderer(profiles.map((candidate) =>
+    candidate.id === profileId ? { ...candidate, models: normalized } : candidate));
 }
 
 export async function removeIrisAgentProviderProfile(
@@ -125,16 +145,44 @@ export function runtimeProviderId(profileId: string): string {
 export function profilesForRenderer(
   profiles: readonly StoredIrisAgentProviderProfile[],
 ): IrisAgentProviderProfileInfo[] {
-  return profiles.map(({ apiKey: _apiKey, ...profile }) => ({ ...profile }));
+  return profiles.map((profile) => ({
+    ...profile,
+    apiKey: profile.apiKey,
+    models: profile.models?.map((model) => ({ ...model })) ?? [],
+  }));
+}
+
+function normalizeConfiguredModel(model: IrisAgentConfiguredModel): IrisAgentConfiguredModel {
+  const contextWindowTokens = Math.max(1, Math.floor(model.contextWindowTokens || 128_000));
+  const maxOutputTokens = Math.max(1, Math.min(contextWindowTokens - 1, Math.floor(model.maxOutputTokens || 16_384)));
+  const reserveOutputTokens = Math.max(1, Math.min(contextWindowTokens - 1, Math.floor(model.reserveOutputTokens || 16_384)));
+  const keepRecentTokens = Math.max(1, Math.min(contextWindowTokens - 1, Math.floor(model.keepRecentTokens || 20_000)));
+  return {
+    modelId: model.modelId.trim(),
+    displayName: model.displayName.trim() || model.modelId.trim(),
+    ...(model.api ? { api: model.api } : {}),
+    contextWindowTokens,
+    maxOutputTokens,
+    reserveOutputTokens,
+    keepRecentTokens,
+    compactTrigger: Math.max(1, Math.min(contextWindowTokens - 1, Math.floor(model.compactTrigger || contextWindowTokens - reserveOutputTokens))),
+    enabled: model.enabled !== false,
+    source: model.source === 'manual' ? 'manual' : 'discovered',
+    ...(model.lastVerifiedAt ? { lastVerifiedAt: model.lastVerifiedAt } : {}),
+    ...(model.verificationError ? { verificationError: model.verificationError } : {}),
+  };
 }
 
 export function profileModelsConfig(
   sourceModels: ReturnType<ModelRuntime['getModels']>,
   api: IrisAgentProviderTemplate['api'],
   modelIds: readonly string[],
+  configuredModels: readonly IrisAgentConfiguredModel[] = [],
 ) {
   const sourceById = new Map(sourceModels.map((model) => [model.id, model]));
+  const configuredById = new Map(configuredModels.map((model) => [model.modelId, model]));
   return modelIds.map((id) => {
+    const configured = configuredById.get(id);
     const model = sourceById.get(id);
     if (!model) {
       return {
@@ -144,8 +192,8 @@ export function profileModelsConfig(
         reasoning: false,
         input: ['text'] as ('text' | 'image')[],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 128_000,
-        maxTokens: 16_384,
+        contextWindow: configured?.contextWindowTokens ?? 128_000,
+        maxTokens: configured?.maxOutputTokens ?? 16_384,
       };
     }
     return {
@@ -155,8 +203,8 @@ export function profileModelsConfig(
       reasoning: model.reasoning,
       input: [...model.input],
       cost: model.cost,
-      contextWindow: model.contextWindow,
-      maxTokens: model.maxTokens,
+      contextWindow: configured?.contextWindowTokens ?? model.contextWindow,
+      maxTokens: configured?.maxOutputTokens ?? model.maxTokens,
       ...(model.thinkingLevelMap ? { thinkingLevelMap: model.thinkingLevelMap } : {}),
       ...(model.compat ? { compat: model.compat } : {}),
     };

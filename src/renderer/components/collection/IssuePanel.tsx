@@ -278,7 +278,7 @@ function StatusEditor({ item }: { item: CollectedDoc }): JSX.Element {
         <button
           type="button"
           className="flex w-full min-w-0 max-w-full items-center overflow-hidden"
-          title={item.doc.status ?? t('collection.noStatus')}
+          aria-label={item.doc.status ?? t('collection.noStatus')}
           onClick={(e) => e.stopPropagation()}
         >
           {badge}
@@ -521,7 +521,7 @@ export function IssuePanel({
   const scopeControl = workspacePath ? (
     <button
       type="button"
-      title={t('collection.clearWorkspaceFilter')}
+      aria-label={t('collection.clearWorkspaceFilter')}
       className="min-w-0 max-w-28 truncate rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent"
       onClick={() => void projectStore.openCollection('issue', null)}
     >
@@ -646,7 +646,7 @@ export function IssuePanel({
                         }}
                         draggable
                         onDragStart={(e) => setDocDragData(e.dataTransfer, item.doc.path)}
-                        title={item.doc.path}
+                        aria-label={item.doc.path}
                         style={gridStyle}
                         className={cn(
                           'group relative grid h-9 cursor-pointer select-none border-b border-subtle/60 text-sm hover:bg-muted/50',

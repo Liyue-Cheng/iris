@@ -71,7 +71,7 @@ export function Badge({
           style={{ backgroundColor: colorVar(template.color) }}
         />
       )}
-      <span className="min-w-0 truncate" title={text}>{text}</span>
+      <span className="min-w-0 truncate" aria-label={text}>{text}</span>
       {chevron && <ChevronDown className="h-2.5 w-2.5 shrink-0 opacity-60" />}
     </span>
   );

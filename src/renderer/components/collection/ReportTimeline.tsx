@@ -134,7 +134,7 @@ export function ReportTimeline({
         {workspacePath && (
           <button
             type="button"
-            title={t('collection.clearWorkspaceFilter')}
+            aria-label={t('collection.clearWorkspaceFilter')}
             className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent"
             onClick={() => projectStore.openCollection('report', null)}
           >
@@ -204,7 +204,7 @@ export function ReportTimeline({
                     onClick={() => void projectStore.selectCollectionDoc(item.doc.path)}
                     draggable
                     onDragStart={(e) => setDocDragData(e.dataTransfer, item.doc.path)}
-                    title={item.doc.path}
+                    aria-label={item.doc.path}
                     style={{ gridTemplateColumns: GRID }}
                     className={cn(
                       ROW_BASE,

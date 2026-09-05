@@ -501,7 +501,10 @@ describe('Iris Pi adapter', () => {
 
       expect(firstProjection).toHaveLength(1);
       expect(secondProjection).toHaveLength(2);
-      expect(JSON.stringify(secondProjection)).not.toContain('secret');
+      expect(secondProjection.map((profile) => profile.apiKey)).toEqual([
+        'sk-primary-secret',
+        'sk-backup-secret',
+      ]);
       const stored = await loadStoredIrisAgentProviderProfiles(root);
       expect(stored.map((profile) => profile.apiKey)).toEqual([
         'sk-primary-secret',
@@ -518,8 +521,10 @@ describe('Iris Pi adapter', () => {
         'OpenAI primary',
         'OpenAI backup',
       ]);
-      expect(JSON.stringify(catalog)).not.toContain('sk-primary-secret');
-      expect(JSON.stringify(catalog)).not.toContain('sk-backup-secret');
+      expect(catalog.profiles.map((profile) => profile.apiKey)).toEqual([
+        'sk-primary-secret',
+        'sk-backup-secret',
+      ]);
 
       const modelCatalog = await loadIrisModelCatalog(root, root);
       const profileProviders = new Set(stored.map((profile) => runtimeProviderId(profile.id)));

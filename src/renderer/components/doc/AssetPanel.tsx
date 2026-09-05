@@ -287,7 +287,7 @@ function AssetRow({
         <File className="size-4 shrink-0 text-muted-foreground" />
       )}
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm" title={asset.name}>{asset.name}</div>
+        <div className="truncate text-sm" aria-label={asset.name}>{asset.name}</div>
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
           <span
             className={cn(
@@ -355,8 +355,8 @@ function AssociatedRow({
     <div className="flex min-h-12 items-center gap-3 border-b px-5 py-2 last:border-b-0">
       {entry.kind === 'directory' ? <FolderOpen className="size-4 shrink-0 text-muted-foreground" /> : <File className="size-4 shrink-0 text-muted-foreground" />}
       <div className="min-w-0 flex-1">
-        <div className={cn('truncate text-sm', !entry.exists && 'text-destructive')} title={entry.path}>{entry.name}</div>
-        <div className="truncate text-[11px] text-muted-foreground" title={entry.path}>
+        <div className={cn('truncate text-sm', !entry.exists && 'text-destructive')} aria-label={entry.path}>{entry.name}</div>
+        <div className="truncate text-[11px] text-muted-foreground" aria-label={entry.path}>
           {entry.exists ? t(entry.kind === 'directory' ? 'editor.associatedFolder' : 'editor.associatedFile') : t('editor.associatedMissing')}
           {' · '}{entry.path}
         </div>

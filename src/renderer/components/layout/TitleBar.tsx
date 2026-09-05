@@ -49,7 +49,7 @@ function ProjectCrumb(): JSX.Element | null {
   const { phase, scan } = useProject();
   if (phase !== 'ready' || !scan) return null;
   return (
-    <span className="truncate text-xs text-muted-foreground" title={scan.projectRoot}>
+    <span className="truncate text-xs text-muted-foreground" aria-label={scan.projectRoot}>
       — {scan.projectRoot}
     </span>
   );
@@ -78,7 +78,7 @@ function WindowControls(): JSX.Element {
     <div className="app-region-no-drag ml-1 flex shrink-0 self-start">
       <button
         type="button"
-        title={t('layout.minimize')}
+        aria-label={t('layout.minimize')}
         className={cn(caption, 'hover:bg-muted')}
         onClick={() => void runUserAction(
           { title: t('errors.windowActionFailed'), dedupeKey: 'window:minimize' },
@@ -89,7 +89,7 @@ function WindowControls(): JSX.Element {
       </button>
       <button
         type="button"
-        title={maximized ? t('layout.restore') : t('layout.maximize')}
+        aria-label={maximized ? t('layout.restore') : t('layout.maximize')}
         className={cn(caption, 'hover:bg-muted')}
         onClick={() => void runUserAction(
           { title: t('errors.windowActionFailed'), dedupeKey: 'window:maximize' },
@@ -104,7 +104,7 @@ function WindowControls(): JSX.Element {
       </button>
       <button
         type="button"
-        title={t('layout.closeWindow')}
+        aria-label={t('layout.closeWindow')}
         className={cn(caption, 'hover:bg-[var(--rp-love)] hover:text-[var(--rp-base)]')}
         onClick={() => void runUserAction(
           { title: t('errors.windowActionFailed'), dedupeKey: 'window:close' },

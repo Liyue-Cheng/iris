@@ -156,6 +156,8 @@ export const CHANNELS = {
   IRIS_AGENT_PROVIDER_REMOVE: 'iris-agent:provider-remove',
   IRIS_AGENT_PROVIDER_PROFILE_ADD: 'iris-agent:provider-profile-add',
   IRIS_AGENT_PROVIDER_PROFILE_REMOVE: 'iris-agent:provider-profile-remove',
+  IRIS_AGENT_PROVIDER_PROFILE_MODELS: 'iris-agent:provider-profile-models',
+  IRIS_AGENT_PROVIDER_PROFILE_DISCOVER: 'iris-agent:provider-profile-discover',
   IRIS_AGENT_OPEN_CONTEXT: 'iris-agent:open-context',
   IRIS_AGENT_TERMINAL_REPLAY: 'iris-agent:terminal-replay',
   IRIS_AGENT_TERMINAL_INPUT: 'iris-agent:terminal-input',

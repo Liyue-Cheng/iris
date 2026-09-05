@@ -56,7 +56,7 @@ export function BranchSwitcher({
             onSelect={() => void gitStore.switchBranch(branch.name)}
             className="justify-between gap-4"
           >
-            <span className="min-w-0 truncate" title={branch.name}>
+            <span className="min-w-0 truncate" aria-label={branch.name}>
               {branch.name}
             </span>
             {branch.current && <Check className="size-3.5 shrink-0 text-[var(--rp-foam)]" />}

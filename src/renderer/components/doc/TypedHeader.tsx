@@ -138,7 +138,7 @@ function StatusEditor({
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
-        <button type="button" title={t('editor.status')}>
+        <button type="button" aria-label={t('editor.status')}>
           {badge}
         </button>
       </DropdownMenuTrigger>

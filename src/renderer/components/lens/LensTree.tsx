@@ -119,7 +119,7 @@ function DocRow({ doc, archived }: { doc: IrisDoc; archived: boolean }): JSX.Ele
           selected ? 'bg-accent text-accent-foreground' : 'hover:bg-muted',
           archived && 'opacity-60',
         )}
-        title={doc.path}
+        aria-label={doc.path}
       >
         <StatusDot docPath={doc.path} />
         <span className="truncate">{docDisplayTitle(doc)}</span>
@@ -181,7 +181,7 @@ function TypeSection({
       <div className="flex items-center gap-1 pr-1">
         <button
           type="button"
-          title={open ? t('layout.collapse') : t('layout.expand')}
+          aria-label={open ? t('layout.collapse') : t('layout.expand')}
           onClick={() => setOpen(!open)}
           className="shrink-0 px-1 py-0.5 text-muted-foreground hover:text-foreground"
         >
@@ -195,7 +195,7 @@ function TypeSection({
           type="button"
           data-collection-entry-type={type}
           data-collection-entry-workspace={workspacePath}
-          title={t('layout.openCollection', { type: label })}
+          aria-label={t('layout.openCollection', { type: label })}
           onClick={() =>
             projectStore.openCollection(type, workspacePath === '.iris' ? null : workspacePath)
           }
@@ -208,7 +208,7 @@ function TypeSection({
         {!archived && (
           <button
             type="button"
-            title={t('layout.newDocument', { type: label })}
+            aria-label={t('layout.newDocument', { type: label })}
             onClick={() => openCreateDialog({ workspacePath, type })}
             className="rounded-sm p-0.5 text-muted-foreground/0 hover:bg-muted hover:!text-foreground group-hover/section:text-muted-foreground"
           >
@@ -261,7 +261,7 @@ function NewWorkspaceSessionButton({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          title={t('layout.newSession')}
+          aria-label={t('layout.newSession')}
           className="shrink-0 rounded-sm p-0.5 text-muted-foreground/0 hover:!text-foreground group-hover/hub:text-muted-foreground"
         >
           <Plus className="h-3.5 w-3.5" />
@@ -317,7 +317,7 @@ function WorkspaceSessionList({ workspacePath }: { workspacePath: string }): JSX
                   'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm leading-tight',
                   active ? 'bg-accent text-accent-foreground' : 'hover:bg-muted',
                 )}
-                title={s.title}
+                aria-label={s.title}
               >
                 <SessionDot state={s.indicator} />
                 <span className="truncate">{s.title}</span>
@@ -393,7 +393,7 @@ function WorkspaceSection({
       >
         <button
           type="button"
-          title={sectionsOpen ? t('layout.collapseDocuments') : t('layout.expandDocuments')}
+          aria-label={sectionsOpen ? t('layout.collapseDocuments') : t('layout.expandDocuments')}
           onClick={() => setSectionsOpen(!sectionsOpen)}
           className="shrink-0 px-1 py-1.5 text-muted-foreground hover:text-foreground"
         >
@@ -415,7 +415,7 @@ function WorkspaceSection({
           <>
             <button
               type="button"
-              title={isRoot ? t('layout.rootHubHint') : t('layout.workspaceHubHint')}
+              aria-label={isRoot ? t('layout.rootHubHint') : t('layout.workspaceHubHint')}
               onClick={() => selectHub(workspacePath)}
               className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-[13px] font-semibold"
             >

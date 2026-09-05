@@ -264,7 +264,7 @@ export function LeftPane(): JSX.Element {
                   <DropdownMenuItem
                     key={project.path}
                     disabled={!project.exists}
-                    title={project.path}
+                    aria-label={project.path}
                     className="items-start"
                     onClick={() => void openProject(project.path)}
                   >
@@ -418,7 +418,7 @@ export function LeftPane(): JSX.Element {
           {filter !== '' && (
             <button
               type="button"
-              title={t('common.clear')}
+              aria-label={t('common.clear')}
               onClick={() => lensPrefs.setFilter('')}
               className="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
             >

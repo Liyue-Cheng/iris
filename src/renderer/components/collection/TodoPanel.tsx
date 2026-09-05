@@ -90,7 +90,7 @@ export function TodoPanel({
           {workspacePath && (
             <button
               type="button"
-              title={t('collection.clearWorkspaceFilter')}
+              aria-label={t('collection.clearWorkspaceFilter')}
               className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[11px] font-normal text-muted-foreground hover:bg-accent"
               onClick={() => projectStore.openTodos(null)}
             >
@@ -111,7 +111,7 @@ export function TodoPanel({
               type="button"
               onClick={() => void projectStore.selectDoc(g.docPath)}
               className="flex w-full items-center gap-2 px-4 py-1.5 text-left hover:bg-muted/60"
-              title={g.docPath}
+              aria-label={g.docPath}
             >
               <span className="truncate text-[13px] font-semibold">{g.title}</span>
               <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-[10px] text-muted-foreground">
@@ -137,7 +137,7 @@ export function TodoPanel({
                 >
                   <button
                     type="button"
-                    title={t('collection.checkTodo')}
+                    aria-label={t('collection.checkTodo')}
                     disabled={isPending}
                     onClick={() => void onCheck(item)}
                     className="mt-0.5 shrink-0 text-muted-foreground hover:text-[var(--rp-pine)]"

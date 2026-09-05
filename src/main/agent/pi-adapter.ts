@@ -512,7 +512,9 @@ async function createIrisModelRuntime(
           providerId: runtimeProviderId(profile.id),
           template,
           baseUrl,
-          modelIds: await fetchIrisProviderModelIds(template, baseUrl, profile.apiKey),
+          modelIds: profile.models?.length
+            ? profile.models.filter((model) => model.enabled).map((model) => model.modelId)
+            : await fetchIrisProviderModelIds(template, baseUrl, profile.apiKey),
         };
       } catch (error) {
         profileMode.onError?.(profile.name, error);
@@ -530,6 +532,7 @@ async function createIrisModelRuntime(
           runtime.getModels(discovery.template.sourceProvider),
           discovery.template.api,
           discovery.modelIds,
+          discovery.profile.models,
         ),
       });
     }
@@ -550,6 +553,7 @@ async function createIrisModelRuntime(
         runtime.getModels(template.sourceProvider),
         template.api,
         [profileMode.model.modelId],
+        profile.models,
       ),
     });
   }
@@ -573,10 +577,17 @@ async function fetchIrisProviderModelIds(
     ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
     : { authorization: `Bearer ${apiKey}` };
   let response: Response;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1_000);
   try {
-    response = await fetch(endpoint, { headers });
+    response = await fetch(endpoint, { headers, signal: controller.signal });
   } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`Could not load models for ${template.name}: request timed out after 1 second.`);
+    }
     throw new Error(`Could not load models for ${template.name}: ${renderRawError(error)}`);
+  } finally {
+    clearTimeout(timeout);
   }
   if (!response.ok) {
     throw new Error(`Could not load models for ${template.name}: HTTP ${response.status} ${response.statusText}`);
@@ -610,6 +621,8 @@ function toIrisModelOption(model: {
   name: string;
   api: string;
   reasoning: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
 }, providerName?: string): IrisAgentModelOption {
   return {
     provider: model.provider,
@@ -617,6 +630,8 @@ function toIrisModelOption(model: {
     name: model.name,
     api: model.api,
     reasoning: model.reasoning,
+    ...(model.contextWindow ? { contextWindowTokens: model.contextWindow } : {}),
+    ...(model.maxTokens ? { maxOutputTokens: model.maxTokens } : {}),
     ...(providerName ? { providerName } : {}),
   };
 }

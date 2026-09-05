@@ -170,7 +170,7 @@ export function SourceControlPanel({
               {snapshot.projectRoot !== snapshot.root && snapshot.root && (
                 <div
                   className="truncate border-b border-subtle px-3 py-1.5 text-[11px] text-muted-foreground"
-                  title={snapshot.root}
+                  aria-label={snapshot.root}
                 >
                   {t('git.repositoryScope', { root: snapshot.root })}
                 </div>

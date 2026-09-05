@@ -49,7 +49,7 @@ export function TerminalSearchBar(props: TerminalSearchBarProps): JSX.Element {
           : '-'}
       </span>
       <IconButton
-        title={t('terminal.previous')}
+        aria-label={t('terminal.previous')}
         ariaLabel={t('terminal.previousAria')}
         disabled={disabled}
         onClick={() => props.onSearch('previous')}
@@ -57,7 +57,7 @@ export function TerminalSearchBar(props: TerminalSearchBarProps): JSX.Element {
         <ChevronUp className="size-3.5" />
       </IconButton>
       <IconButton
-        title={t('terminal.next')}
+        aria-label={t('terminal.next')}
         ariaLabel={t('terminal.nextAria')}
         disabled={disabled}
         onClick={() => props.onSearch('next')}
@@ -65,7 +65,7 @@ export function TerminalSearchBar(props: TerminalSearchBarProps): JSX.Element {
         <ChevronDown className="size-3.5" />
       </IconButton>
       <IconButton
-        title={t('terminal.matchCase')}
+        aria-label={t('terminal.matchCase')}
         ariaLabel={t('terminal.matchCase')}
         pressed={props.caseSensitive}
         onClick={() => props.onCaseSensitiveChange(!props.caseSensitive)}
@@ -73,7 +73,7 @@ export function TerminalSearchBar(props: TerminalSearchBarProps): JSX.Element {
         <CaseSensitive className="size-3.5" />
       </IconButton>
       <IconButton
-        title={t('terminal.closeSearch')}
+        aria-label={t('terminal.closeSearch')}
         ariaLabel={t('terminal.closeSearchAria')}
         destructive
         onClick={props.onClose}
@@ -100,7 +100,7 @@ function IconButton(props: {
         props.pressed ? 'bg-accent text-accent-foreground' : ''
       } ${props.destructive ? 'hover:bg-destructive hover:text-destructive-foreground' : ''}`}
       onClick={props.onClick}
-      title={props.title}
+      aria-label={props.title}
       aria-label={props.ariaLabel}
       aria-pressed={props.pressed}
       disabled={props.disabled}

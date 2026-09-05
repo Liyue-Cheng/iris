@@ -151,7 +151,7 @@ export function DeleteDocDialog(): JSX.Element | null {
               variant="secondary"
               className="w-full"
               disabled={busy || assetCount === null}
-              title={tr('project.reanchorHint')}
+              aria-label={tr('project.reanchorHint')}
               onClick={() => void run('reanchor-root')}
             >
               {tr('project.reanchorAndDelete')}

@@ -390,7 +390,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       if (!this.options.summarizeContext) {
         throw new Error('Context compaction is unavailable in this runtime.');
       }
-      const plan = planAgentCompaction(session, this.options.compactionThresholds);
+      const plan = planAgentCompaction(session, this.compactionThresholdsFor(session));
       if (!plan) throw new Error('There is not enough settled history to compact yet.');
       const compacted = await this.runCompaction(scope, store, session, plan, 'manual');
       return projectAgentSession(compacted, scope.generation);
@@ -411,8 +411,9 @@ export class IrisAgentSessionManager extends EventEmitter {
     if (!this.options.summarizeContext) return session;
     const projected = estimateAgentContextTokens(store.history(session.id)) +
       estimateAgentTokens(pendingMessage);
-    if (projected < agentCompactionTrigger(this.options.compactionThresholds)) return session;
-    const plan = planAgentCompaction(session, this.options.compactionThresholds);
+    const thresholds = this.compactionThresholdsFor(session);
+    if (projected < agentCompactionTrigger(thresholds)) return session;
+    const plan = planAgentCompaction(session, thresholds);
     if (!plan) return session;
     try {
       return await this.runCompaction(scope, store, session, plan, 'threshold');
@@ -1638,6 +1639,19 @@ export class IrisAgentSessionManager extends EventEmitter {
 
   private async verifyAnchor(anchor: IrisAgentAnchor): Promise<void> {
     if (anchor.kind === 'document') await this.projectManager.readDoc(anchor.path);
+  }
+
+  private compactionThresholdsFor(session: AgentSessionAggregate): AgentCompactionThresholds {
+    const configured = session.model && this.modelCatalogCache?.models.find((model) =>
+      model.provider === session.model?.provider && model.modelId === session.model?.modelId);
+    if (!configured) return this.options.compactionThresholds ?? {};
+    return {
+      ...(configured.contextWindowTokens ? { contextWindow: configured.contextWindowTokens } : {}),
+      ...(configured.contextPolicy?.reserveOutputTokens || configured.maxOutputTokens
+        ? { reserveTokens: configured.contextPolicy?.reserveOutputTokens ?? configured.maxOutputTokens }
+        : {}),
+      ...(configured.contextPolicy?.keepRecentTokens ? { keepRecentTokens: configured.contextPolicy.keepRecentTokens } : {}),
+    };
   }
 
   private async loadModelCatalog(forceRefresh = false): Promise<IrisAgentModelCatalog> {

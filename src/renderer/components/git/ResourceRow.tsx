@@ -39,7 +39,7 @@ export function ResourceRow({
     <div
       className="group grid h-8 items-center gap-1.5 border-b border-subtle/40 px-3 text-sm hover:bg-muted/50"
       style={{ gridTemplateColumns: '16px 1fr auto' }}
-      title={`${resource.originalPath ? `${resource.originalPath} -> ` : ''}${resource.path} - ${label}`}
+      aria-label={`${resource.originalPath ? `${resource.originalPath} -> ` : ''}${resource.path} - ${label}`}
     >
       <Tooltip>
         <TooltipTrigger asChild>
