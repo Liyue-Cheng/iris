@@ -357,6 +357,44 @@ describe('IrisAgentSessionManager v2 timeline', () => {
     }
   });
 
+  it('keeps a superseded Intent in history when a new input takes over after Stop', async () => {
+    const userData = await createTempDataDir('iris-agent-manager-superseded-history-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const workers: FakeWorker[] = [];
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => {
+        const worker = new FakeWorker();
+        workers.push(worker);
+        return worker;
+      },
+      modelCatalogLoader: async () => catalog,
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({
+        scope,
+        anchor: { kind: 'workspace', path: '.iris' },
+      });
+      await manager.send(scope, created.id, 'first input');
+      const beforeStop = (await manager.list(scope)).sessions[0]!;
+      await manager.stop(scope, created.id, { expectedRevision: beforeStop.revision });
+      const paused = (await manager.list(scope)).sessions[0]!;
+
+      await manager.send(scope, created.id, 'replacement input', { expectedRevision: paused.revision });
+      const current = (await manager.list(scope)).sessions[0]!;
+      expect(current.intents.map((intent) => [intent.user.content, intent.state])).toEqual([
+        ['first input', 'superseded'],
+        ['replacement input', 'running'],
+      ]);
+      expect(current.intents[0]?.canForkFromInput).toBe(false);
+      expect(current.currentIntentId).toBe(current.intents[1]?.id);
+      expect(workers[1]!.last('run').history.messages.map((message) => message.content)).toContain('first input');
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
   it('does not create a fake Reply for a provider failure without visible text', async () => {
     const userData = await createTempDataDir('iris-agent-manager-failure-');
     const scope: ProjectScope = { root: userData, generation: 1 };

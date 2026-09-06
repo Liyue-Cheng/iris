@@ -1591,3 +1591,171 @@ provider payload 回调写入 provider-context artifact。
 失败仍是未修改的 `session-viewport.test.ts` 缺少 `window.removeEventListener` mock。未运行 build、
 dist、开发服务器或截图。`npm run agent:worker-check` 按预期报告源码 protocol v14、现有编译 artifact
 protocol v13；遵循项目约束未刷新 `out/`。
+
+## 语义扩展：四态 Intent 与跨层状态机（2026-09-06）
+
+前文的模型分层已经确定，但“状态”仍容易被自然语言误读。本节补充领域语义：状态是
+实体对执行权、继续资格和历史地位的正式声明，不是 UI 文案，也不是错误字符串的别名。
+
+### Intent 是价值单位
+
+Intent 表达用户的一项目标，拥有用户输入、其执行 Turn 和该目标产生的可读事实。它有
+四个正式状态：
+
+| 状态 | 领域含义 | 执行权与继续资格 | 历史地位 |
+| --- | --- | --- | --- |
+| `running` | 当前目标正在推进 | 拥有执行权 | 当前事实 |
+| `paused` | 推进条件暂时不存在，或用户主动停止 | 暂无运行 Worker，但可 Retry/Continue 原 Intent | 保留，未被否定 |
+| `superseded` | 暂停期间的新输入接管了后续方向 | 永久失去原地执行权；需显式分支才能另行推进 | 正式事实，不能静默删除 |
+| `completed` | 当前目标已经正常收束 | 不再拥有 | 正常完成事实 |
+
+`superseded` 不是“删除”“失败”或“无效”的同义词。它表达的是生命周期归属变化：
+旧 Intent 不再拥有后续执行，但仍然属于 Session 的历史、Trace、UI 和审计。普通 Send
+只能把暂停 Intent 转为 superseded 并创建新的 Intent；只有显式 Rewind/分支操作才改变
+有效上下文前缀。
+
+Intent 的主要转换为：
+
+```text
+running ──暂停/停止──> paused ──Retry──> running
+   │                      │
+   │                      └─新输入接管──> superseded
+   │
+   └─最终回复收束──> completed
+```
+
+`currentIntentId` 是当前执行主导权指针；历史 Intent path 保留 superseded 条目。
+因此“谁能继续执行”和“哪些历史事实存在”是两个不同问题，不能由删除数组元素来同时表达。
+
+### Session runtime 不是 Intent 结果
+
+Session 的 `starting`、`ready`、`running`、`waiting-tool`、`retry-wait`、`stopping`、
+`idle`、`interrupted`、`paused` 描述 Worker/命令运行时阶段。它们可以短暂经过
+`stopping` 或 `interrupted`，最终的业务结论仍由 Intent 四态表达。`idle` 只表示当前没有
+忙碌执行，不表示 Session 没有历史。
+
+### 执行层失败不穿透 Intent
+
+Turn 只有 `running/settled`；Invoke 和 Attempt 可以 `failed/aborted`；Tool Operation
+可以 `failed`；Reply/Tool Activity 也有自己的展示状态。错误归层遵循“本层先消化、无法
+继续才上浮”的递归规则：
+
+* provider/Invoke 的临时错误在 Attempt 内重试；反复失败才向上发出暂停信号，使 Intent 进入 `paused`。
+* Tool Operation 的 `ENOENT`、权限拒绝、参数错误是确定性世界结果，应作为 `tool-result(isError=true)` 返回模型，让模型重试、换路径或结束；它们不能仅凭 `ok:false` 直接令 Worker 执行 Promise reject 并暂停 Intent。
+* 用户 Stop 是控制命令，不是 provider 错误；它关闭运行资源并保留 paused Intent。
+* Worker 崩溃或重启把未收束 Intent 恢复为 paused，同时保留已提交事实和可恢复 Effect。
+
+### Trace、Context 和可见性正交
+
+Trace 是已发生事实，Context 是 Trace 加策略的纯投影。superseded Intent 必须保留在
+Trace 和 Session 展示历史中；它是否进入下一次 provider Context，应由 Context policy
+明确决定，而不是由 `activeIntentIds` 删除隐式决定。显式 Rewind 才能截断有效前缀，
+并按 CAS 规则恢复可逆文件 Effect；终端等不可逆副作用保留审计记录。
+
+### 跨层不变量
+
+* `currentIntentId` 存在时，目标 Intent 必须位于历史 path，且状态为 `running` 或 `paused`。
+* superseded Intent 不得重新获得 current execution，也不得因普通新输入从历史投影中消失。
+* Retry 保留同一 Intent ID；暂停期间新输入必须创建新的 Intent ID。
+* Tool 错误必须能被 provider 作为 `isError` 内容消费；只有 Invoke/Worker 层无法继续时才暂停 Intent。
+* Renderer 只消费投影，不自行解释 provider raw frame；迟到事件由 revision、Worker epoch、Intent/Operation identity 拒绝。
+
+这组语义是对原设计的概念补全，不改变“Session → Intent → Turn → Invoke/ToolCall”的
+分层，也不把实现细节提升为协议。它的作用是规定每个状态和每次跨层转换到底意味着什么，
+从而避免“覆盖=删除”“工具错误=请求暂停”这类语义坍缩。
+
+## 二次校准：superseded 是分支相关状态（2026-09-06）
+
+上节仍把 `superseded` 过度简化成不可逆收束态，没有完整处理 Rewind 与 Fork。更准确的
+模型是：`superseded` 表示“在当前有效路径上，暂停 Intent 被一个明确的后继 Intent
+接管”。它既是第一公民状态，也是一个必须带拓扑语义的关系状态。
+
+### 状态与拓扑不能互相代替
+
+领域中同时存在两类信息：
+
+* Intent lifecycle：`running`、`paused`、`superseded`、`completed`。
+* Intent topology：历史 graph、当前 active path、path head，以及 superseded Intent 与接管后继的关系。
+
+状态回答“这个 Intent 在当前分支中处于什么生命周期”；拓扑回答“当前 Session 采用哪条
+历史路径”。不能用 `superseded` 表示“已离开 active path”，也不能用“从 path 删除”表示
+superseded。一个 completed Intent 被 Rewind 弹出后仍是 completed；它只是已不在当前路径。
+
+### Rewind 的精确语义
+
+Rewind 首先是 active path 的 head 移动，其次才是可逆 Effect 的 CAS 恢复：
+
+1. 从 active path 移除最新 Intent，但不为了表示离开路径而改写该 Intent 的生命周期状态。
+2. 反序恢复该 Intent 可安全恢复的文件/目录 Effect，不可逆 Effect 只记录为 retained。
+3. 如果被移除的 Intent 正是前一个 superseded Intent 的 `supersededBy`，说明“接管”也被撤回；前一个 Intent 应恢复为 `paused`，成为新的 current Intent。
+4. 如果新 head 是 completed，则 Session 回到 idle；如果没有 head，则回到空历史视角。
+
+所以 superseded 在普通前向执行中不能直接 Retry，但在撤回其接管后继时可以
+`superseded -> paused`。这是 Rewind 对历史选择的显式修正，不是普通状态机随意逆转。
+
+### Fork 的精确语义
+
+Fork 创建新的 Session 聚合视角，不修改来源 Session：
+
+* Reply Fork 只接受 completed Intent，继承截至该结果边界的完整事实。
+* Input Fork 表示从历史用户输入重新执行，目标可以是 paused、completed 或 superseded。新分支复制目标之前的前缀，把目标输入物化为该分支的 paused Intent，并清空该目标在来源分支中的 Turn/Invoke/Tool/Effect 执行事实。
+* 从 superseded Intent 做 Input Fork 时，来源仍保持 superseded；新分支因为没有接管后继，所以目标为 paused。这不是同一聚合内的非法回退，而是两个分支各自的有效状态。
+
+Intent ID 必须明确作用域。当前复制式 Session Fork 若复用 Intent ID，则领域身份是
+`(sessionId, intentId)`；若未来要求全局 Intent identity，Input Fork 必须创建新 ID 并记录
+`originIntentId`。不能一边把 Intent ID 当全局身份，一边在不同 Session 中给同一 ID 不同状态。
+
+### 当前实现缺口
+
+当前 `truncateIntentChain` 会把任何被 Rewind 弹出的 Intent 标成 superseded，这混淆了
+生命周期与路径成员关系；它也不会在撤回接管者后恢复前一个 paused Intent。Input Fork
+明确拒绝 superseded，导致被覆盖输入没有合法的分支恢复路径。此外，现有模型没有
+`supersededByIntentId` 或等价的可验证关系，只能依赖数组相邻位置猜测接管者。
+
+因此后续实现应以三项不变量为准：
+
+* superseded 必须有明确且位于同一 active path 后继位置的接管者。
+* Rewind 不改写被弹出 Intent 的原生命周期状态；撤回接管者时恢复前一个 paused Intent。
+* Input Fork 允许 superseded 输入，并在新 Session 中恢复为 paused，而不修改来源 Session。
+
+## 转换规则补充：普通执行、Rewind 与 Fork（2026-09-06）
+
+四态 Intent 的箭头不能脱离路径语义理解。应将转换分成三类：
+
+### 普通前向执行
+
+```text
+running ──Stop/运行条件消失──> paused
+paused  ──Retry/Continue────> running
+paused  ──新输入接管────────> superseded + 新 Intent(running)
+running ──最终回复收束──────> completed
+```
+
+`paused -> superseded` 与新 Intent 的创建必须在同一个领域提交中完成，并且要记录
+superseded 的明确后继（显式 `supersededByIntentId`，或可验证的 active-path 相邻关系）。
+
+### Rewind
+
+Rewind 先移动 active path 的 head，再恢复可逆 Effect：
+
+* 被弹出的 Intent 保持原来的 `completed` 或 `paused` 状态；离开路径不等于 superseded。
+* 如果被弹出的 head 是接管者 B，前一个 `A(superseded)` 执行 `superseded -> paused`，恢复为 current Intent。
+* 没有可恢复前任时，Session 回到前一个 completed head 或 idle；被弹出的 Intent 仍留在历史 graph 和 receipt 中。
+* 多级覆盖按接管关系逐级撤回：撤回 C 只恢复 B，再撤回 B 才恢复 A。
+
+因此 `superseded -> paused` 是 Rewind 撤回接管关系的特殊转换，不是普通执行允许的回退。
+
+### Fork
+
+Fork 创建新 Session，不修改来源 Session：
+
+* Reply Fork 只从 completed Intent 的结果边界分支，继承该边界事实，来源仍为 completed。
+* Input Fork 可以选择 paused、completed 或 superseded 的历史输入；新分支复制目标之前的有效前缀，把目标输入物化为 paused 并清空其旧执行事实。
+* 从 superseded 输入 Fork 时，来源仍为 superseded；因为来源后继不被复制，新分支中的目标恢复为 paused。这是新聚合的状态，不是对来源状态的回退。
+
+### 当前实现需要补齐的规则
+
+现有 `truncateIntentChain` 把被弹出的 Intent 统一改为 superseded，缺少“撤回接管者后
+恢复前任 paused”的转换；现有 Input Fork 拒绝 superseded 目标，也没有显式接管关系。
+后续实现必须满足：Rewind 不制造 superseded；Fork 不修改来源；superseded 只能通过
+明确的 Rewind 恢复或在新 Session 的 Input Fork 中重新物化为 paused。

@@ -322,7 +322,7 @@ export class IrisAgentSessionManager extends EventEmitter {
     if (isAgentSessionBusy(session)) throw new Error('Iris Agent session is already running.');
     if (session.state === 'paused') {
       await this.shutdownHost(sessionId);
-      session = supersedeOpenAgentIntent(await this.requireSession(scope, sessionId));
+      session = await this.requireSession(scope, sessionId);
     }
     // Assemble once for the complete budget preflight. The final prompt is
     // assembled again after compaction so its request facts match the send.
@@ -330,6 +330,9 @@ export class IrisAgentSessionManager extends EventEmitter {
     session = await this.compactForThreshold(
       scope, store, session, effectiveMessage, budgetPrompt.prompt,
     );
+    if (session.state === 'paused') {
+      session = supersedeOpenAgentIntent(session);
+    }
     const intentId = randomUUID();
     const now = Date.now();
     session.intents.push({

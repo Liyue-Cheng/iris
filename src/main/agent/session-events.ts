@@ -212,7 +212,10 @@ function assertAggregateReferences(session: AgentSessionAggregate): void {
   }
   for (const id of session.activeIntentIds) {
     const intent = intents.get(id);
-    if (!intent || intent.state === 'superseded') throw new Error('Active Intent path is invalid.');
+    // A superseded Intent remains on the historical path. It no longer owns
+    // execution (currentIntentId does), but removing it here would make a
+    // normal follow-up input erase the prior conversation from projections.
+    if (!intent) throw new Error('Active Intent path is invalid.');
   }
   if (session.currentIntentId) {
     const current = intents.get(session.currentIntentId);

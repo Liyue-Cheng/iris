@@ -179,7 +179,6 @@ export function supersedeOpenAgentIntent(
   if (intent && intent.state !== 'completed' && intent.state !== 'superseded') {
     intent.state = 'superseded';
     intent.closedAt = now;
-    session.activeIntentIds = session.activeIntentIds.filter((id) => id !== intent.id);
   }
   session.currentIntentId = null;
   session.state = 'idle';

@@ -29,6 +29,8 @@ export interface AgentSessionAggregate {
   currentIntentId: string | null;
   stopRequestedIntentId?: string;
   terminalSupervisionAlert?: { terminalId: string; evidence: string; createdAt: number };
+  /** Historical Intent path used by Trace/Context; superseded entries remain
+   * here as facts even though currentIntentId owns execution. */
   activeIntentIds: string[];
   intents: AgentIntent[];
   turns: AgentTurn[];
@@ -494,7 +496,8 @@ function projectIntent(
     },
     cards,
     canFork: intent.state === 'completed' && isAgentSessionQuiescent(session),
-    canForkFromInput: true,
+    canForkFromInput: (intent.state === 'paused' || intent.state === 'completed' ||
+      intent.state === 'superseded'),
   };
 }
 

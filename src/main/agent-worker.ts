@@ -281,7 +281,25 @@ async function prepareExecution(
     providerProxy: execution.providerProxy,
     executeToolCall: async (toolCall) => {
       const input = providerToolCallInput(toolCall.name, toolCall.arguments, baseRuntime.cwd);
-      const result = await requestTool(input);
+      let result: AgentToolOperationResult;
+      try {
+        result = await requestTool(input);
+      } catch (error) {
+        // A deterministic ToolCall failure is part of the provider conversation.
+        // Returning it as an error result lets the model recover or choose a
+        // different action; only provider/invoke failures pause the Intent.
+        return {
+          role: 'toolResult' as const,
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          content: [{
+            type: 'text' as const,
+            text: error instanceof Error ? error.message : String(error),
+          }],
+          isError: true,
+          timestamp: Date.now(),
+        };
+      }
       const text = result.kind === 'file'
         ? Buffer.from(result.contentBase64, 'base64').toString('utf8')
         : result.kind === 'terminal'
