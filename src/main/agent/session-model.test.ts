@@ -23,7 +23,7 @@ function terminalActivity(overrides: Partial<AgentToolActivity>): AgentToolActiv
     operation: 'exec',
     command: 'terminal command',
     cwd: '.',
-    effectIds: [],
+
     createdAt: 1,
     ...overrides,
   };
@@ -60,7 +60,7 @@ describe('Iris Agent terminal projection', () => {
     session.timeline.push(terminalActivity({
       state: 'failed',
       terminalId: 'terminal-short',
-      terminalArtifactRef: 'terminal/terminal-short.log',
+
       terminalState: 'exited',
       terminalOutcome: 'command-failed',
       terminalStartedAt: 2,
@@ -90,7 +90,7 @@ describe('Iris Agent terminal projection', () => {
     session.timeline.push(terminalActivity({
       state: 'canceled',
       terminalId: 'terminal-canceled',
-      terminalArtifactRef: 'terminal/terminal-canceled.log',
+
       terminalState: 'running',
       terminalStartedAt: 2,
       terminalRevealedAt: 3,
@@ -106,7 +106,7 @@ describe('Iris Agent terminal projection', () => {
     })]);
   });
 
-  it('derives legacy terminal replay availability without inventing an outcome', () => {
+  it('projects a settled terminal without requiring a persisted output artifact', () => {
     const session = createEmptyAgentSession({
       id: 'session-legacy',
       anchor: { kind: 'workspace', path: '.iris' },
@@ -122,16 +122,6 @@ describe('Iris Agent terminal projection', () => {
       resultSummary: 'PowerShell: exit 0, 10 bytes',
       completedAt: 3,
     }));
-    session.effects.push({
-      id: 'terminal--legacy',
-      intentId: 'turn-1',
-      turnId: 'execution-turn-1',
-      toolActivityId: 'tool-terminal',
-      kind: 'terminal-output',
-      artifactRef: 'terminal/terminal-legacy.log',
-      createdAt: 3,
-    });
-
     expect(projectAgentSession(session, 1).terminals).toEqual([expect.objectContaining({
       id: 'terminal-legacy',
       revealed: false,

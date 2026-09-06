@@ -1759,3 +1759,48 @@ Fork 创建新 Session，不修改来源 Session：
 恢复前任 paused”的转换；现有 Input Fork 拒绝 superseded 目标，也没有显式接管关系。
 后续实现必须满足：Rewind 不制造 superseded；Fork 不修改来源；superseded 只能通过
 明确的 Rewind 恢复或在新 Session 的 Input Fork 中重新物化为 paused。
+
+## 方案收敛：人工操作面直接作用于 Trace（2026-09-06）
+
+前文关于 Effect Ledger、CAS 恢复、Rewind receipt 和独立路径选择层的内容属于曾经讨论过的
+扩展方向，不作为当前最小实现方案。当前模型收敛为：Trace 负责 Agent 流程面，Fork/Rewind
+负责人工操作面。
+
+### Trace 的职责
+
+Trace 只记录 Agent 已经发生的流程事实：Intent、Turn、assistant 回复、ToolCall 及其结果。
+Trace 不记录 Fork/Rewind 命令，不需要理解人工操作的名称或审计语义。Trace 可以被人工操作
+截断或复制，但这些操作本身不成为 Trace 事实。
+
+### Rewind
+
+Rewind 直接截断当前 Trace 的尾部，使当前 Session 回到选定的历史前缀。它不额外维护路径
+选择对象，不记录审计 receipt，也不修改或恢复外部副作用。被截断的尾部不再属于当前 Session
+的 Trace；这表示认知流程回退，不表示文件、终端或其他现实世界状态已经回退。
+
+如果截断后前一个 Intent 是暂停中的可继续节点，它重新成为当前 Intent，并保持/恢复为
+`paused`；`superseded` 不能作为“被 Rewind 移除”的替代状态。
+
+### Fork
+
+Fork 从某个 Trace 前缀创建新的 Session/Trace。来源 Session、来源 Trace 和来源 Intent 状态
+保持不变。Input Fork 只是把选定输入在新 Trace 中重新物化为可继续的 `paused` Intent；Reply
+Fork 则从已完成结果边界复制前缀。Fork 不写入来源 Trace，也不需要在 Trace 中保存 fork 事件。
+
+### 当前阶段明确不做
+
+* 不建立独立 Effect Ledger。
+* 不记录 Fork/Rewind 审计事件或 receipt。
+* 不实现文件、目录、终端等外部副作用的回滚。
+* 不把“认知流程已截断”描述成“现实世界已撤销”。
+
+因此当前最小闭环是：
+
+```text
+Trace（Agent 流程面）
+  ├─ 普通执行：追加流程事实
+  ├─ Rewind：截断尾部
+  └─ Fork：复制前缀到新 Session
+
+人工操作面不进入 Trace；Trace 也不需要知道人工操作存在。
+```

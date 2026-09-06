@@ -1,7 +1,5 @@
 import { EventEmitter } from 'node:events';
 import { createHash, randomUUID } from 'node:crypto';
-import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
 import type { ProjectManager } from '../project-manager';
 import type { SettingsManager } from '../settings-manager';
 import { assembleAgentPrompt } from './prompt';
@@ -27,7 +25,6 @@ import {
   type AgentCommandPtyEvent,
   type AgentCommandPtyOptions,
 } from './command-pty';
-import { TerminalMirror } from '../terminal/terminal-mirror';
 import { AgentSupervisionLog } from './supervision';
 import type {
   AgentProviderProxy,
@@ -622,10 +619,15 @@ export class IrisAgentSessionManager extends EventEmitter {
       this.emitChanged(scope, running);
       const correlation = activeIntentCorrelation(running, host.workerEpoch);
       try {
+        const heldInvoke = running.invokes
+          .filter((invoke) => invoke.intentId === intent.id && invoke.state === 'holding')
+          .at(-1);
         await host.post({
           type: 'resume',
           correlation,
           invokeOffset: running.invokes.filter((invoke) => invoke.intentId === intent.id).length,
+          ...(heldInvoke ? { invokeId: heldInvoke.id } : {}),
+          ...(heldInvoke ? { attemptOffset: heldInvoke.attemptIds.length } : {}),
           history: store.history(sessionId),
           runtime: await this.executionRuntimeFor(running),
         });
@@ -647,18 +649,11 @@ export class IrisAgentSessionManager extends EventEmitter {
       const store = await this.ensureStore(scope.root);
       const session = await this.requireSession(scope, sessionId);
       assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
-      const commandId = precondition.commandId ?? randomUUID();
-      if (session.rewindReceipts.some((receipt) => receipt.commandId === commandId)) {
-        return projectAgentSession(session, scope.generation);
-      }
       assertRewindableAgentIntent(session);
       await this.shutdownHost(sessionId);
       const latest = await this.requireSession(scope, sessionId);
-      const intentId = latest.activeIntentIds.at(-1)!;
-      const restored = await store.rewindIntentEffects(sessionId, intentId);
-      const rewound = truncateIntentChain(latest, commandId);
-      Object.assign(rewound.rewindReceipts.at(-1)!, restored);
-      // Truncating the path may strip the boundary the active summary covers.
+      const rewound = truncateIntentChain(latest);
+      // Truncating the Trace path may strip the boundary the active summary covers.
       const saved = await store.commit(realignActiveCompaction(rewound));
       this.emitChanged(scope, saved);
       return projectAgentSession(saved, scope.generation);
@@ -689,23 +684,13 @@ export class IrisAgentSessionManager extends EventEmitter {
   ): Promise<IrisAgentTerminalReplay> {
     const session = await this.requireSession(scope, sessionId);
     const activity = terminalActivity(session, terminalId);
-    const artifactRef = activity ? terminalArtifactRef(session, activity) : undefined;
-    if (!activity || !artifactRef) throw new Error('Iris Agent terminal was not found.');
+    if (!activity) throw new Error('Iris Agent terminal was not found.');
     const live = this.terminals.get(terminalId);
     if (live?.sessionId === sessionId) {
       live.terminal.resize(cols, rows);
       return live.terminal.replay();
     }
-    const store = await this.ensureStore(scope.root);
-    const bytes = await fs.readFile(join(store.artifactRoot(sessionId), ...artifactRef.split('/')));
-    const mirror = new TerminalMirror(cols, rows, 5000);
-    try {
-      mirror.write(bytes.toString('utf8'));
-      await mirror.fence(250, () => undefined);
-      return { data: Buffer.from(mirror.serialize(5000), 'utf8').toString('base64'), cursor: bytes.length };
-    } finally {
-      mirror.dispose();
-    }
+    throw new Error('Iris Agent terminal output is no longer persisted after the terminal exits.');
   }
 
   async writeTerminal(
@@ -1182,7 +1167,6 @@ export class IrisAgentSessionManager extends EventEmitter {
               terminalSuccessExitCodes: event.input.successExitCodes ?? [0],
             }
           : {}),
-        effectIds: [],
         createdAt: Date.now(),
       };
       current.timeline.push(activity);
@@ -1209,7 +1193,6 @@ export class IrisAgentSessionManager extends EventEmitter {
       ? this.options.toolExecutor(event.input, operationCorrelation)
       : new IrisAgentToolHost({
           projectRoot: scope.root,
-          artifactRoot: store.artifactRoot(session.id),
           commandShell: this.commandShell,
           displayThresholdMs: this.options.terminalDisplayThresholdMs ?? 3_000,
           ...(this.options.terminalFactory
@@ -1290,11 +1273,7 @@ export class IrisAgentSessionManager extends EventEmitter {
           target.terminalOutputPreview = executed.update.terminalOutputPreview;
         }
       }
-      const lateEffects = executed.effects.filter(
-        (effect) => !latest.effects.some((candidate) => candidate.id === effect.id),
-      );
-      if (lateEffects.length === 0 && !lateTerminalResult) return;
-      latest.effects.push(...lateEffects);
+      if (!lateTerminalResult) return;
       await this.commitAndEmit(scope, store, latest);
       return;
     }
@@ -1313,11 +1292,6 @@ export class IrisAgentSessionManager extends EventEmitter {
         target.completedAt = executed.update.completedAt;
       }
     }
-    const newEffects = executed.effects.filter(
-      (effect) => !latest.effects.some((candidate) => candidate.id === effect.id),
-    );
-    if (target.state === 'running') target.effectIds.push(...newEffects.map((effect) => effect.id));
-    latest.effects.push(...newEffects);
     if (terminalResult && latest.terminalSupervisionAlert?.terminalId === target.terminalId) {
       delete latest.terminalSupervisionAlert;
     }
@@ -1352,7 +1326,6 @@ export class IrisAgentSessionManager extends EventEmitter {
     );
     if (!activity || activity.terminalId) return;
     activity.terminalId = terminalId;
-    activity.terminalArtifactRef = `terminal/${terminalId}.log`;
     activity.terminalState = 'running';
     activity.terminalStartedAt = Date.now();
     await this.commitAndEmit(scope, store, session);
@@ -1393,7 +1366,6 @@ export class IrisAgentSessionManager extends EventEmitter {
       );
       if (!activity || activity.terminalRevealedAt) return;
       activity.terminalId = event.terminalId;
-      activity.terminalArtifactRef ??= `terminal/${event.terminalId}.log`;
       activity.terminalState = 'running';
       activity.terminalStartedAt ??= Date.now();
       activity.terminalRevealedAt = Date.now();
@@ -1587,6 +1559,11 @@ export class IrisAgentSessionManager extends EventEmitter {
       };
       latest.invokeAttempts.push(attempt);
       call.attemptIds.push(attemptId);
+      if (call.state === 'holding') {
+        call.state = 'running';
+        delete call.completedAt;
+        delete call.error;
+      }
     }
     if (!attempt) return;
     if (event.phase !== 'started') {
@@ -1866,7 +1843,7 @@ export function createIrisAgentInputBranch(
   const index = source.activeIntentIds.indexOf(throughIntentId);
   if (index < 0) throw new Error('The Iris Agent branch point was not found.');
   const sourceIntent = source.intents.find((intent) => intent.id === throughIntentId)!;
-  if (sourceIntent.state === 'running' || sourceIntent.state === 'superseded') {
+  if (sourceIntent.state === 'running') {
     throw new Error('Cannot branch from an active Iris Agent intent.');
   }
   const branch = createEmptyAgentSession({
@@ -1946,7 +1923,6 @@ function copyBranchFacts(
   branch.toolOperations = structuredClone(
     source.toolOperations.filter((operation) => intentIds.has(operation.intentId)),
   );
-  branch.effects = structuredClone(source.effects.filter((effect) => intentIds.has(effect.intentId)));
   branch.requestFacts = structuredClone(source.requestFacts.filter((facts) => intentIds.has(facts.intentId)));
   inheritAgentCompactionInto(source, branch);
 }
@@ -2159,15 +2135,6 @@ function terminalActivity(
     (activity): activity is AgentToolActivity =>
       activity.kind === 'tool' && activity.tool === 'terminal' && activity.terminalId === terminalId,
   );
-}
-
-function terminalArtifactRef(
-  session: AgentSessionAggregate,
-  activity: AgentToolActivity,
-): string | undefined {
-  return activity.terminalArtifactRef ?? session.effects.find(
-    (effect) => effect.kind === 'terminal-output' && effect.toolActivityId === activity.id,
-  )?.artifactRef;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

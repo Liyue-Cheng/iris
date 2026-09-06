@@ -21,7 +21,6 @@ import {
   type IrisAgentSessionManagerOptions,
 } from './session-manager';
 import { IrisAgentSessionStore } from './session-store';
-
 const catalog: IrisAgentModelCatalog = {
   models: [{
     provider: 'openai', modelId: 'gpt-test', name: 'GPT Test',
@@ -386,7 +385,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         ['first input', 'superseded'],
         ['replacement input', 'running'],
       ]);
-      expect(current.intents[0]?.canForkFromInput).toBe(false);
+      expect(current.intents[0]?.canForkFromInput).toBe(true);
       expect(current.currentIntentId).toBe(current.intents[1]?.id);
       expect(workers[1]!.last('run').history.messages.map((message) => message.content)).toContain('first input');
     } finally {
@@ -481,6 +480,13 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         expect((await manager.list(scope)).sessions[0]?.pause?.reason).toBe('provider');
       });
 
+      const held = (await IrisAgentSessionStore.load({
+        userDataPath: userData,
+        projectRoot: scope.root,
+      })).get(created.id)!;
+      expect(held.invokes[0]).toMatchObject({ state: 'holding' });
+      expect(held.invokeAttempts[0]).toMatchObject({ state: 'failed' });
+
       const paused = (await manager.list(scope)).sessions[0]!;
       const switched = await manager.setModel(
         scope,
@@ -492,6 +498,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
 
       const resumed = workers[1]!.last('resume');
       expect(resumed.correlation.intentId).toBe(firstRun.correlation.intentId);
+      expect(resumed.invokeId).toBe(held.invokes[0]?.id);
       expect(resumed.runtime.model).toEqual({ provider: 'anthropic', modelId: 'claude-test' });
       expect(resumed.history.messages).toContainEqual(expect.objectContaining({
         role: 'user', content: 'recover across providers',
@@ -689,15 +696,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       settleTool({
         result: { kind: 'file', contentBase64: '' },
         update: { state: 'completed', completedAt: Date.now(), resultSummary: '0 bytes', path: 'README.md' },
-        effects: [{
-          id: 'late-effect',
-          intentId: run.correlation.intentId!,
-          turnId: 'turn:call-tool',
-          toolActivityId: 'tool-1',
-          kind: 'terminal-output',
-          artifactRef: 'effects/late-effect.json',
-          createdAt: Date.now(),
-        }],
+
       });
       await vi.waitFor(async () => {
         const card = (await manager.list(scope)).sessions[0]?.intents[0]?.cards[0];
@@ -710,7 +709,6 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         projectRoot: scope.root,
       })).get(created.id)!;
       expect(persisted.toolOperations[0]).toMatchObject({ state: 'failed', error: 'Paused by user.' });
-      expect(persisted.effects).toContainEqual(expect.objectContaining({ id: 'late-effect' }));
     } finally {
       await manager.shutdown();
       await removeTempDataDir(userData);
@@ -729,7 +727,6 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         update: {
           state: 'completed', completedAt: Date.now(), resultSummary: '8 bytes', path: 'README.md',
         },
-        effects: [],
       }),
     });
     try {
@@ -1309,7 +1306,6 @@ describe('IrisAgentSessionManager v2 timeline', () => {
     15_000,
   );
 });
-
 describe('Iris Agent model catalog startup', () => {
   it('creates a session without starting model discovery', async () => {
     const userData = await createTempDataDir('iris-agent-manager-open-fast-');

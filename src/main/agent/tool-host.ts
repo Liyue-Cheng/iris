@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import { promises as fs } from 'node:fs';
 import { join, normalize, relative, resolve } from 'node:path';
 import {
@@ -13,29 +14,21 @@ import type {
   AgentToolOperationInput,
   AgentToolOperationResult,
 } from '@shared/agent-protocol';
-import type {
-  AgentEffect,
-  AgentDirectoryEffect,
-  AgentFileEffect,
-  AgentToolActivity,
-  AgentTerminalEffect,
-} from './session-model';
+import type { AgentToolActivity } from './session-model';
 
 export interface IrisAgentToolHostResult {
   result: AgentToolOperationResult;
   update: { state: AgentToolActivity['state']; completedAt: number } & Partial<Pick<
     AgentToolActivity,
     'resultSummary' | 'diff' | 'path' | 'terminalId' | 'error' |
-    'terminalArtifactRef' | 'terminalState' | 'terminalOutcome' | 'terminalStartedAt' |
+    'terminalState' | 'terminalOutcome' | 'terminalStartedAt' |
     'terminalCompletedAt' | 'terminalExitCode' | 'terminalSuccessExitCodes' |
     'terminalOutputBytes' | 'terminalOutputPreview'
   >>;
-  effects: AgentEffect[];
 }
 
 export interface IrisAgentToolHostOptions {
   projectRoot: string;
-  artifactRoot: string;
   commandShell: AgentCommandShell;
   displayThresholdMs?: number;
   terminalFactory?: (options: AgentCommandPtyOptions) => AgentCommandPty;
@@ -63,7 +56,6 @@ export class IrisAgentToolHost {
       const terminalFailed = executed.result.kind === 'terminal' && !executed.result.success;
       return {
         result: executed.result,
-        effects: executed.effects,
         update: {
           ...executed.update,
           state: terminalFailed ? 'failed' : 'completed',
@@ -78,7 +70,6 @@ export class IrisAgentToolHost {
       const completedAt = Date.now();
       return {
         result: { kind: 'void' },
-        effects: [],
         update: {
           state: 'failed',
           completedAt,
@@ -103,7 +94,6 @@ export class IrisAgentToolHost {
   ): Promise<{
     result: AgentToolOperationResult;
     update: Partial<Pick<AgentToolActivity, 'resultSummary' | 'diff' | 'path' | 'terminalId'>>;
-    effects: AgentEffect[];
   }> {
     if (input.tool === 'terminal') return this.executeTerminal(input, correlation, started);
 
@@ -114,7 +104,6 @@ export class IrisAgentToolHost {
       return {
         result: { kind: 'void' },
         update: { path: relPath, resultSummary: 'access ok' },
-        effects: [],
       };
     }
     if (input.operation === 'readFile') {
@@ -125,34 +114,13 @@ export class IrisAgentToolHost {
           path: relPath,
           resultSummary: String(bytes.byteLength) + ' bytes',
         },
-        effects: [],
       };
     }
     if (input.operation === 'mkdir') {
-      const existed = await fs.access(target).then(() => true, () => false);
-      const effectId = `directory--${correlation.operationId}`;
-      const artifactRef = `effects/${effectId}.json`;
-      if (!existed) {
-        await writeFileAtomic(join(this.options.artifactRoot, ...artifactRef.split('/')), JSON.stringify({
-          path: relPath,
-          operation: 'mkdir',
-        }, null, 2) + '\n');
-      }
       await fs.mkdir(target, { recursive: true });
-      const effects = existed ? [] : [{
-        id: effectId,
-        intentId: correlation.intentId,
-        turnId: correlation.turnId,
-        toolActivityId: correlation.toolCallId,
-        kind: 'directory-create',
-        path: relPath,
-        artifactRef,
-        createdAt: started,
-      } satisfies AgentDirectoryEffect];
       return {
         result: { kind: 'void' },
         update: { path: relPath, resultSummary: 'directory ready' },
-        effects,
       };
     }
 
@@ -173,23 +141,9 @@ export class IrisAgentToolHost {
       return {
         result: { kind: 'void' },
         update: { path: relPath, resultSummary: 'unchanged' },
-        effects: [],
       };
     }
-    const beforeSha = before === null ? null : sha256(before);
-    const afterSha = sha256(content);
-    const kind = input.tool === 'edit' ? 'edit' : 'write';
     const diff = generateUnifiedPatch(relPath, before ?? '', content);
-    const effectId = `file--${correlation.operationId}`;
-    const artifactRef = `effects/${effectId}.json`;
-    await writeFileAtomic(join(this.options.artifactRoot, ...artifactRef.split('/')), JSON.stringify({
-      path: relPath,
-      operation: kind,
-      beforeContent: before,
-      afterContent: content,
-      beforeSha256: beforeSha,
-      afterSha256: afterSha,
-    }, null, 2) + '\n');
     await writeFileAtomic(target, content);
     return {
       result: { kind: 'void' },
@@ -198,19 +152,6 @@ export class IrisAgentToolHost {
         resultSummary: before === null ? 'created' : 'updated',
         diff,
       },
-      effects: [{
-        id: effectId,
-        intentId: correlation.intentId,
-        turnId: correlation.turnId,
-        toolActivityId: correlation.toolCallId,
-        kind: 'file-write',
-        path: relPath,
-        operation: kind,
-        beforeSha256: beforeSha,
-        afterSha256: afterSha,
-        artifactRef,
-        createdAt: started,
-      } satisfies AgentFileEffect],
     };
   }
 
@@ -222,20 +163,14 @@ export class IrisAgentToolHost {
     result: AgentToolOperationResult;
     update: Pick<
       AgentToolActivity,
-      'path' | 'terminalId' | 'terminalArtifactRef' | 'terminalState' |
+      'path' | 'terminalId' | 'terminalState' |
       'terminalOutcome' | 'terminalStartedAt' | 'terminalCompletedAt' | 'terminalExitCode' |
       'terminalSuccessExitCodes' | 'terminalOutputBytes' | 'terminalOutputPreview'
     >;
-    effects: AgentEffect[];
   }> {
     const cwd = this.resolveUnrestrictedPath(input.cwd);
     const terminalId = randomUUID();
-    const outputPath = join(
-      this.options.artifactRoot,
-      'terminal',
-      terminalId + '.log',
-    );
-    const artifactRef = `terminal/${terminalId}.log`;
+    const outputPath = join(tmpdir(), 'iris-agent-terminals', terminalId + '.log');
     const terminalOptions: AgentCommandPtyOptions = {
       terminalId,
       command: input.command,
@@ -268,7 +203,6 @@ export class IrisAgentToolHost {
       update: {
         terminalId,
         path: relCwd || '.',
-        terminalArtifactRef: artifactRef,
         terminalState: 'exited',
         terminalOutcome: success ? 'success' : 'command-failed',
         terminalStartedAt: started,
@@ -278,15 +212,6 @@ export class IrisAgentToolHost {
         terminalOutputBytes: result.outputBytes,
         terminalOutputPreview: tailText(result.plainText, 8 * 1024).text,
       },
-      effects: [{
-        id: `terminal--${correlation.operationId}`,
-        intentId: correlation.intentId,
-        turnId: correlation.turnId,
-        toolActivityId: correlation.toolCallId,
-        kind: 'terminal-output',
-        artifactRef,
-        createdAt: Date.now(),
-      } satisfies AgentTerminalEffect],
     };
   }
 
@@ -335,8 +260,4 @@ function normalizeSuccessExitCodes(value: number[] | undefined): number[] {
 
 function toProjectPath(path: string): string {
   return path.replaceAll('\\', '/');
-}
-
-function sha256(text: string): string {
-  return createHash('sha256').update(text).digest('hex');
 }

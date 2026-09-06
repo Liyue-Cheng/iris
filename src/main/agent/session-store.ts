@@ -7,12 +7,10 @@ import {
   open,
   readFile,
   readdir,
-  realpath,
   rename,
   rm,
   rmdir,
   truncate,
-  unlink,
 } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { writeFileAtomic } from '../atomic-write';
@@ -23,7 +21,6 @@ import type {
   ProjectScope,
 } from '@shared/types';
 import type {
-  AgentFileEffect,
   AgentIntent,
   AgentInvoke,
   AgentInvokeAttempt,
@@ -52,7 +49,10 @@ import { buildAgentContextFromSession } from './trace-context';
 
 export const IRIS_AGENT_SESSION_STORE_VERSION = 3 as const;
 const LEGACY_AGENT_SESSION_STORE_VERSION = 2 as const;
-const STORE_MANIFEST_VERSION = 1 as const;
+// Bump this when the persisted session model changes incompatibly. The
+// upgrade boundary intentionally discards disposable Agent working memory;
+// provider profiles live outside this root and are preserved.
+const STORE_MANIFEST_VERSION = 2 as const;
 const resetPromises = new Map<string, Promise<void>>();
 
 interface ProjectIndex {
@@ -113,13 +113,21 @@ export async function resetLegacyIrisAgentData(userDataPath: string): Promise<vo
     const manifest = join(v3Root, 'manifest.json');
     try {
       const parsed: unknown = JSON.parse(await readFile(manifest, 'utf8'));
+      if (isRecord(parsed) && typeof parsed.version === 'number' && parsed.version > STORE_MANIFEST_VERSION) {
+        throw new Error(`Iris Agent session store version ${String(parsed.version)} is newer than this application.`);
+      }
       if (isRecord(parsed) && parsed.version === STORE_MANIFEST_VERSION && parsed.legacyResetCompleted === true) {
         return;
       }
     } catch (error) {
       if (!isMissing(error)) throw error;
     }
-    const legacyTargets = ['iris-agent-sessions', 'iris-agent-output', 'iris-agent-v2'].map((name) => {
+    const legacyTargets = [
+      'iris-agent-sessions',
+      'iris-agent-output',
+      'iris-agent-v2',
+      'iris-agent-v3',
+    ].map((name) => {
       const target = resolve(resolvedUserData, name);
       assertExactChild(resolvedUserData, target, name);
       return target;
@@ -195,7 +203,7 @@ export class IrisAgentSessionStore {
     await store.writeIndex();
     for (const session of [...store.sessions.values()]) {
       if (isInterrupted(session)) {
-        await store.commit(await recoverInterrupted(session, store.sessionDir(session.id), options.projectRoot));
+        await store.commit(await recoverInterrupted(session));
       }
     }
     return store;
@@ -310,87 +318,6 @@ export class IrisAgentSessionStore {
       sessionIds: this.index.sessionIds.filter((candidate) => candidate !== sessionId),
     };
     await this.writeIndex();
-  }
-
-  async rewindIntentEffects(
-    sessionId: string,
-    intentId: string,
-  ): Promise<{ revertedEffectIds: string[]; retainedEffectIds: string[] }> {
-    const session = this.sessions.get(sessionId);
-    if (!session) throw new Error('[IrisAgentSessionStore] unknown session ' + sessionId);
-    const effects = session.effects.filter((effect) => effect.intentId === intentId).reverse();
-    const virtualContents = new Map<string, string | null>();
-    const files: Array<{ effect: AgentFileEffect; target: string; beforeContent: string | null }> = [];
-    const directories: Array<{ id: string; target: string }> = [];
-    const retainedEffectIds: string[] = [];
-
-    for (const effect of effects) {
-      if (effect.kind === 'terminal-output') {
-        retainedEffectIds.push(effect.id);
-        continue;
-      }
-      const target = resolve(this.projectRoot, effect.path);
-      assertProjectTarget(this.projectRoot, target);
-      const parent = await realpath(dirname(target));
-      assertProjectLocation(this.projectRoot, parent);
-      const metadata = await lstat(target).catch((error: unknown) => {
-        if (isMissing(error)) return null;
-        throw error;
-      });
-      if (metadata?.isSymbolicLink()) {
-        throw new Error(`Cannot rewind ${effect.path}: the target is now a symbolic link.`);
-      }
-      if (effect.kind === 'directory-create') {
-        if (!metadata?.isDirectory()) {
-          throw new Error(`Cannot rewind ${effect.path}: the created directory no longer exists.`);
-        }
-        directories.push({ id: effect.id, target });
-        continue;
-      }
-
-      const artifactPath = resolve(this.artifactRoot(sessionId), ...effect.artifactRef.split('/'));
-      assertProjectTarget(this.artifactRoot(sessionId), artifactPath);
-      const artifact: unknown = JSON.parse(await readFile(artifactPath, 'utf8'));
-      if (!isFileEffectArtifact(artifact) || artifact.path !== effect.path ||
-        artifact.afterSha256 !== effect.afterSha256 || artifact.beforeSha256 !== effect.beforeSha256 ||
-        sha256(artifact.afterContent) !== effect.afterSha256 ||
-        (artifact.beforeContent !== null && sha256(artifact.beforeContent) !== effect.beforeSha256)) {
-        throw new Error(`Cannot rewind ${effect.path}: its effect artifact is invalid.`);
-      }
-      const current = virtualContents.has(target)
-        ? virtualContents.get(target)!
-        : await readFile(target, 'utf8').catch((error: unknown) => {
-            if (isMissing(error)) return null;
-            throw error;
-          });
-      if (current === null || sha256(current) !== effect.afterSha256) {
-        throw new Error(`Cannot rewind ${effect.path}: the file changed after this Intent wrote it.`);
-      }
-      virtualContents.set(target, artifact.beforeContent);
-      files.push({ effect, target, beforeContent: artifact.beforeContent });
-    }
-
-    const revertedEffectIds: string[] = [];
-    for (const file of files) {
-      if (file.beforeContent === null) await unlink(file.target);
-      else await writeFileAtomic(file.target, file.beforeContent);
-      revertedEffectIds.push(file.effect.id);
-    }
-    for (const directory of directories) {
-      try {
-        await rmdir(directory.target);
-        revertedEffectIds.push(directory.id);
-      } catch (error) {
-        if (isMissing(error)) {
-          revertedEffectIds.push(directory.id);
-        } else if (isRecord(error) && (error.code === 'ENOTEMPTY' || error.code === 'EEXIST')) {
-          retainedEffectIds.push(directory.id);
-        } else {
-          throw error;
-        }
-      }
-    }
-    return { revertedEffectIds, retainedEffectIds };
   }
 
   async savePromptSnapshot(sessionId: string, intentId: string, prompt: string): Promise<void> {
@@ -623,25 +550,6 @@ export class IrisAgentSessionStore {
       await this.rewriteBranchedProviderContext(source.id, branch, intent.id);
     }
 
-    const artifactRefs = new Set(branch.effects.map((effect) => effect.artifactRef));
-    for (const activity of branch.timeline) {
-      if (activity.kind === 'tool' && activity.terminalArtifactRef) {
-        artifactRefs.add(activity.terminalArtifactRef);
-      }
-    }
-    const sourceRoot = this.artifactRoot(source.id);
-    const branchRoot = this.artifactRoot(branch.id);
-    const copiedTargets = new Set<string>();
-    for (const artifactRef of artifactRefs) {
-      const sourcePath = resolve(sourceRoot, ...artifactRef.split('/'));
-      const branchPath = resolve(branchRoot, ...artifactRef.split('/'));
-      assertInside(sourceRoot, sourcePath);
-      assertInside(branchRoot, branchPath);
-      if (copiedTargets.has(branchPath)) continue;
-      copiedTargets.add(branchPath);
-      await assertImmutableArtifactPath(sourceRoot, sourcePath);
-      await copyImmutableArtifactFile(sourcePath, branchPath);
-    }
   }
 
   private async rewriteBranchedProviderContext(
@@ -743,8 +651,6 @@ export class IrisAgentSessionStore {
 
 async function recoverInterrupted(
   source: AgentSessionAggregate,
-  sessionDir: string,
-  projectRoot: string,
 ): Promise<AgentSessionAggregate> {
   const session = cloneAgentSession(source);
   const intent = session.intents.find((candidate) => candidate.id === session.currentIntentId);
@@ -772,16 +678,6 @@ async function recoverInterrupted(
     }
     for (const operation of session.toolOperations) {
       if (operation.intentId === intent.id && operation.state === 'running') {
-        const recovered = await recoverOperationEffect(operation, sessionDir, projectRoot);
-        if (recovered && !session.effects.some((effect) => effect.id === recovered.id)) {
-          session.effects.push(recovered);
-          const activity = session.timeline.find(
-            (candidate) => candidate.kind === 'tool' && candidate.id === operation.toolActivityId,
-          );
-          if (activity?.kind === 'tool' && !activity.effectIds.includes(recovered.id)) {
-            activity.effectIds.push(recovered.id);
-          }
-        }
         operation.state = 'failed';
         operation.error = 'Iris restarted before the tool operation settled.';
         operation.completedAt = now;
@@ -789,14 +685,14 @@ async function recoverInterrupted(
     }
     for (const call of session.invokes) {
       if (call.intentId === intent.id && call.state === 'running') {
-        call.state = 'failed';
+        call.state = 'holding';
         call.error = message;
-        call.completedAt = now;
+        delete call.completedAt;
       }
     }
     for (const attempt of session.invokeAttempts) {
       if (attempt.intentId === intent.id && attempt.state === 'running') {
-        attempt.state = 'failed';
+        attempt.state = 'aborted';
         attempt.error = message;
         attempt.completedAt = now;
       }
@@ -812,56 +708,6 @@ async function recoverInterrupted(
   delete session.stopRequestedIntentId;
   delete session.terminalSupervisionAlert;
   return session;
-}
-
-async function recoverOperationEffect(
-  operation: AgentSessionAggregate['toolOperations'][number],
-  sessionDir: string,
-  projectRoot: string,
-): Promise<AgentSessionAggregate['effects'][number] | null> {
-  const input = operation.input;
-  if (input.tool !== 'edit' && input.tool !== 'write') return null;
-  if (input.operation !== 'writeFile' && input.operation !== 'mkdir') return null;
-  const effectId = `${input.operation === 'mkdir' ? 'directory' : 'file'}--${operation.id}`;
-  const artifactRef = `effects/${effectId}.json`;
-  let artifact: unknown;
-  try {
-    artifact = JSON.parse(await readFile(join(sessionDir, 'artifacts', ...artifactRef.split('/')), 'utf8'));
-  } catch {
-    return null;
-  }
-  if (!isRecord(artifact) || typeof artifact.path !== 'string') return null;
-  const target = resolve(projectRoot, input.absolutePath);
-  assertInside(projectRoot, target);
-  if (input.operation === 'mkdir') {
-    const exists = await readdir(target).then(() => true, () => false);
-    return exists ? {
-      id: effectId,
-      intentId: operation.intentId,
-      turnId: operation.turnId,
-      toolActivityId: operation.toolActivityId,
-      kind: 'directory-create',
-      path: artifact.path,
-      artifactRef,
-      createdAt: operation.createdAt,
-    } : null;
-  }
-  if (typeof artifact.afterSha256 !== 'string' || typeof artifact.operation !== 'string') return null;
-  const content = await readFile(target, 'utf8').catch(() => null);
-  if (content === null || sha256(content) !== artifact.afterSha256) return null;
-  return {
-    id: effectId,
-    intentId: operation.intentId,
-    turnId: operation.turnId,
-    toolActivityId: operation.toolActivityId,
-    kind: 'file-write',
-    path: artifact.path,
-    operation: artifact.operation === 'edit' ? 'edit' : 'write',
-    beforeSha256: typeof artifact.beforeSha256 === 'string' ? artifact.beforeSha256 : null,
-    afterSha256: artifact.afterSha256,
-    artifactRef,
-    createdAt: operation.createdAt,
-  };
 }
 
 function isInterrupted(session: AgentSessionAggregate): boolean {
@@ -1001,7 +847,6 @@ export function migrateLegacyAgentSession(legacy: Record<string, unknown>): Agen
   const oldAttempts = records(legacy.providerAttempts);
   const oldTimeline = records(legacy.timeline);
   const oldTranscript = records(legacy.transcript);
-  const oldEffects = records(legacy.effects);
   const oldOperations = records(legacy.toolOperations);
   const oldRequestFacts = records(legacy.requestFacts);
   const oldReceipts = records(legacy.undoReceipts);
@@ -1072,7 +917,7 @@ export function migrateLegacyAgentSession(legacy: Record<string, unknown>): Agen
       intentId: invoke.intentId,
       turnId: invoke.turnId,
       index: numberValue(attempt.index, 1),
-      state: legacyInvokeState(attempt.state),
+      state: legacyAttemptState(attempt.state),
       createdAt: numberValue(attempt.createdAt),
       ...(typeof attempt.completedAt === 'number' ? { completedAt: attempt.completedAt } : {}),
       ...(typeof attempt.error === 'string' ? { error: attempt.error } : {}),
@@ -1158,17 +1003,6 @@ export function migrateLegacyAgentSession(legacy: Record<string, unknown>): Agen
     };
     return [migrated as AgentSessionAggregate['toolOperations'][number]];
   });
-  const effects = oldEffects.flatMap((effect) => {
-    if (typeof effect.id !== 'string' || typeof effect.toolActivityId !== 'string') return [];
-    const activity = activityById.get(effect.toolActivityId);
-    if (activity?.kind !== 'tool') return [];
-    const migrated = {
-      ...structuredClone(effect),
-      intentId: activity.intentId,
-      turnId: activity.turnId,
-    };
-    return [migrated as AgentSessionAggregate['effects'][number]];
-  });
   const requestFacts = oldRequestFacts.flatMap((facts) => {
     if (typeof facts.id !== 'string' || typeof facts.turnId !== 'string' || !intentById.has(facts.turnId)) return [];
     return [{
@@ -1185,18 +1019,6 @@ export function migrateLegacyAgentSession(legacy: Record<string, unknown>): Agen
       anchorPatch: [],
       promptChars: numberValue(facts.promptChars),
       redacted: true as const,
-    }];
-  });
-  const rewindReceipts = oldReceipts.flatMap((receipt) => {
-    if (typeof receipt.commandId !== 'string' || typeof receipt.removedTurnId !== 'string' ||
-      !intentById.has(receipt.removedTurnId)) return [];
-    return [{
-      commandId: receipt.commandId,
-      truncatedIntentId: receipt.removedTurnId,
-      revertedEffectIds: [],
-      retainedEffectIds: effects.filter((effect) => effect.intentId === receipt.removedTurnId)
-        .map((effect) => effect.id),
-      createdAt: numberValue(receipt.removedAt),
     }];
   });
   const activeIntentIds = intents.filter((intent) => intent.state !== 'superseded').map((intent) => intent.id);
@@ -1235,9 +1057,7 @@ export function migrateLegacyAgentSession(legacy: Record<string, unknown>): Agen
     invokeAttempts,
     timeline,
     toolOperations,
-    effects,
     requestFacts,
-    rewindReceipts,
     compactions: [],
     activeCompactionId: null,
     injection: {
@@ -1268,6 +1088,12 @@ function stringValue(value: unknown): string {
 }
 
 function legacyInvokeState(value: unknown): AgentInvoke['state'] {
+  if (value === 'completed' || value === 'aborted' || value === 'holding') return value;
+  if (value === 'failed') return 'holding';
+  return 'running';
+}
+
+function legacyAttemptState(value: unknown): AgentInvokeAttempt['state'] {
   return value === 'completed' || value === 'failed' || value === 'aborted' ? value : 'running';
 }
 
@@ -1316,8 +1142,8 @@ function isAgentSession(value: unknown): value is AgentSessionAggregate {
     typeof value.projectRoot === 'string' && typeof value.revision === 'number' &&
     Array.isArray(value.activeIntentIds) && Array.isArray(value.intents) && Array.isArray(value.turns) &&
     Array.isArray(value.invokes) && Array.isArray(value.invokeAttempts) && Array.isArray(value.timeline) &&
-    Array.isArray(value.toolOperations) && Array.isArray(value.effects) &&
-    Array.isArray(value.requestFacts) && Array.isArray(value.rewindReceipts) && isRecord(value.injection);
+    Array.isArray(value.toolOperations) &&
+    Array.isArray(value.requestFacts) && isRecord(value.injection);
 }
 
 function isProviderContextBundle(value: unknown): value is IrisAgentProviderContextBundle {
@@ -1446,48 +1272,11 @@ async function assertImmutableArtifactPath(root: string, target: string): Promis
   }
 }
 
-async function copyImmutableArtifactFile(source: string, target: string): Promise<void> {
-  const metadata = await lstat(source);
-  if (metadata.isSymbolicLink() || !metadata.isFile()) {
-    throw new Error('Iris Agent branch artifact reference is not a regular file.');
-  }
-  await mkdir(dirname(target), { recursive: true });
-  await copyFile(source, target, fsConstants.COPYFILE_EXCL);
-}
-
 function assertInside(parent: string, target: string): void {
   const rel = relative(resolve(parent), resolve(target));
   if (rel === '' || rel === '..' || rel.startsWith('..' + sep)) {
     throw new Error('Iris Agent storage path escaped its project store.');
   }
-}
-
-function assertProjectTarget(parent: string, target: string): void {
-  const rel = relative(resolve(parent), resolve(target));
-  if (rel === '' || rel === '..' || rel.startsWith('..' + sep)) {
-    throw new Error('Iris Agent effect path escaped its project.');
-  }
-}
-
-function assertProjectLocation(parent: string, target: string): void {
-  const rel = relative(resolve(parent), resolve(target));
-  if (rel === '..' || rel.startsWith('..' + sep)) {
-    throw new Error('Iris Agent effect parent escaped its project.');
-  }
-}
-
-function isFileEffectArtifact(value: unknown): value is {
-  path: string;
-  beforeContent: string | null;
-  afterContent: string;
-  beforeSha256: string | null;
-  afterSha256: string;
-} {
-  return isRecord(value) && typeof value.path === 'string' &&
-    (value.beforeContent === null || typeof value.beforeContent === 'string') &&
-    typeof value.afterContent === 'string' &&
-    (value.beforeSha256 === null || typeof value.beforeSha256 === 'string') &&
-    typeof value.afterSha256 === 'string';
 }
 
 function sha256(value: string): string {

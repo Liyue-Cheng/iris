@@ -68,7 +68,7 @@ describe('Agent Trace and Context', () => {
   });
 
   it('rewinds the explicit path and permits a new sibling Intent', () => {
-    const rewound = truncateIntentChain(sessionWithIntents(), 'rewind-1', 4);
+    const rewound = truncateIntentChain(sessionWithIntents());
     rewound.intents.push({
       id: 'intent-3', content: 'request 3', turnIds: [], state: 'running',
       assembledInputAvailable: false, createdAt: 5,
@@ -78,7 +78,7 @@ describe('Agent Trace and Context', () => {
     rewound.state = 'running';
 
     expect(rewound.activeIntentIds).toEqual(['intent-1', 'intent-3']);
-    expect(rewound.intents.find((intent) => intent.id === 'intent-2')?.state).toBe('superseded');
+    expect(rewound.intents.find((intent) => intent.id === 'intent-2')?.state).toBe('completed');
     expect(buildAgentContext(buildAgentTrace(rewound)).messages.map((message) => message.content))
       .toEqual(['request 1', 'answer 1']);
   });

@@ -3,6 +3,7 @@ import {
   completeActiveAgentIntent,
   pauseActiveAgentIntent,
   resumePausedAgentIntent,
+  supersedeOpenAgentIntent,
   truncateIntentChain,
 } from './session-domain';
 import { createEmptyAgentSession, projectAgentSession } from './session-model';
@@ -84,15 +85,50 @@ describe('Iris Agent Intent domain', () => {
     expect(projectAgentSession(completed, 1).intents[0]?.state).toBe('completed');
   });
 
-  it('rewinds by superseding the latest Intent without deleting its facts', () => {
+  it('rewinds by truncating the Trace without changing the removed Intent state', () => {
     const completed = completeActiveAgentIntent(
       runningSession(), { sessionId: 'session-1', intentId: 'intent-1' }, 3,
     );
-    const rewound = truncateIntentChain(completed, 'command-1', 4);
-    expect(rewound.intents[0]?.state).toBe('superseded');
+    const rewound = truncateIntentChain(completed);
+    expect(rewound.intents[0]?.state).toBe('completed');
     expect(rewound.turns).toHaveLength(1);
     expect(rewound.activeIntentIds).toEqual([]);
     expect(projectAgentSession(rewound, 1).intents).toEqual([]);
+  });
+
+  it('restores a superseded predecessor as paused when its successor is rewound', () => {
+    const source = runningSession();
+    const paused = pauseActiveAgentIntent(
+      source, { sessionId: 'session-1', intentId: 'intent-1' }, 'user', 'Paused.', 3,
+    );
+    paused.intents.push({
+      id: 'intent-2', content: 'new direction', turnIds: [], state: 'running',
+      assembledInputAvailable: false, createdAt: 4,
+    });
+    paused.activeIntentIds.push('intent-2');
+    paused.intents[0]!.state = 'superseded';
+    paused.currentIntentId = 'intent-2';
+    paused.state = 'idle';
+    const rewound = truncateIntentChain(paused);
+    expect(rewound.activeIntentIds).toEqual(['intent-1']);
+    expect(rewound.currentIntentId).toBe('intent-1');
+    expect(rewound.state).toBe('paused');
+    expect(rewound.intents[0]).toMatchObject({ state: 'paused', pauseReason: 'user' });
+  });
+
+  it('keeps a held Invoke open on pause and aborts it only when a new input takes over', () => {
+    const source = runningSession();
+    source.invokeAttempts[0]!.state = 'failed';
+    source.invokeAttempts[0]!.completedAt = 2;
+    const paused = pauseActiveAgentIntent(
+      source, { sessionId: 'session-1', intentId: 'intent-1' }, 'provider', 'Provider unavailable.', 3,
+    );
+    expect(paused.invokes[0]).toMatchObject({ state: 'holding' });
+    expect(paused.invokeAttempts[0]).toMatchObject({ state: 'failed' });
+
+    const superseded = supersedeOpenAgentIntent(paused, 4);
+    expect(superseded.intents[0]?.state).toBe('superseded');
+    expect(superseded.invokes[0]).toMatchObject({ state: 'aborted', completedAt: 4 });
   });
 
   it('branches with a closed reference graph and resets only the selected input execution', () => {
@@ -120,5 +156,16 @@ describe('Iris Agent Intent domain', () => {
     expect(inputBranch.intents[0]).toMatchObject({ state: 'paused', turnIds: [] });
     expect(inputBranch.turns).toEqual([]);
     expect(inputBranch.invokes).toEqual([]);
+  });
+
+  it('allows an Input Fork from a superseded Intent without changing the source', () => {
+    const source = runningSession();
+    source.state = 'idle';
+    source.currentIntentId = null;
+    source.intents[0]!.state = 'superseded';
+    const branch = createIrisAgentInputBranch(source, 'intent-1', 'input-branch', 'Input Branch', 4);
+    expect(source.intents[0]?.state).toBe('superseded');
+    expect(branch.intents[0]).toMatchObject({ state: 'paused', turnIds: [] });
+    expect(branch.currentIntentId).toBe('intent-1');
   });
 });

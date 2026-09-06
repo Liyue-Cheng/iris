@@ -179,7 +179,7 @@ export const AGENT_COMPACTION_INSTRUCTION = [
   '- The user goals and the acceptance criteria they stated.',
   '- Decisions and constraints that were confirmed, and approaches that were rejected.',
   '- Current implementation state: which files, symbols, and behaviors changed.',
-  '- Operations already performed and any side effects that still exist.',
+  '- Tool calls and results already present in the Agent Trace.',
   '- Test results, failure evidence, and problems that remain open.',
   '- Exact names, values, paths, and error strings needed to continue.',
   '',

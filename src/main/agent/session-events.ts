@@ -1,12 +1,10 @@
 import { isDeepStrictEqual } from 'node:util';
 import type {
   AgentCompaction,
-  AgentEffect,
   AgentIntent,
   AgentInvoke,
   AgentInvokeAttempt,
   AgentRequestFacts,
-  AgentRewindReceipt,
   AgentSessionAggregate,
   AgentTimelineActivity,
   AgentToolOperation,
@@ -21,9 +19,7 @@ export type AgentEntityCollection =
   | 'invokeAttempts'
   | 'timeline'
   | 'toolOperations'
-  | 'effects'
   | 'requestFacts'
-  | 'rewindReceipts'
   | 'compactions';
 
 export type AgentSessionEntity =
@@ -33,9 +29,7 @@ export type AgentSessionEntity =
   | AgentInvokeAttempt
   | AgentTimelineActivity
   | AgentToolOperation
-  | AgentEffect
   | AgentRequestFacts
-  | AgentRewindReceipt
   | AgentCompaction;
 
 type AgentSessionScalars = Omit<AgentSessionAggregate, AgentEntityCollection>;
@@ -56,9 +50,7 @@ const COLLECTIONS: AgentEntityCollection[] = [
   'invokeAttempts',
   'timeline',
   'toolOperations',
-  'effects',
   'requestFacts',
-  'rewindReceipts',
   'compactions',
 ];
 
@@ -119,6 +111,9 @@ export function applyAgentDomainTransaction(
       for (const key of event.removedKeys) delete (session as unknown as Record<string, unknown>)[key];
       continue;
     }
+    // Effect/rewind entities from pre-removal journals are intentionally
+    // ignored during replay. They are not part of the current aggregate.
+    if ((event.collection as string) === 'effects' || (event.collection as string) === 'rewindReceipts') continue;
     const target = entities(session, event.collection);
     const eventId = entityId(event.collection, event.entity);
     const index = target.findIndex((entity) => entityId(event.collection, entity) === eventId);
@@ -145,7 +140,9 @@ export function isAgentDomainTransaction(value: unknown): value is AgentDomainTr
           (key) => typeof key === 'string' && !isCollection(key),
         );
     }
-    return event.type === 'entity.upserted' && isCollection(event.collection) && isRecord(event.entity);
+    return event.type === 'entity.upserted' &&
+      (isCollection(event.collection) || event.collection === 'effects' || event.collection === 'rewindReceipts') &&
+      isRecord(event.entity);
   });
 }
 
@@ -171,14 +168,12 @@ function assertAgentSessionTransition(
   assertMonotonicStates(previous.intents, next.intents, intentTransitions, 'Intent');
   assertMonotonicStates(previous.turns, next.turns, turnTransitions, 'Turn');
   assertMonotonicStates(previous.invokes, next.invokes, invokeTransitions, 'Invoke');
-  assertMonotonicStates(previous.invokeAttempts, next.invokeAttempts, invokeTransitions, 'Invoke Attempt');
+  assertMonotonicStates(previous.invokeAttempts, next.invokeAttempts, attemptTransitions, 'Invoke Attempt');
   assertMonotonicStates(previous.toolOperations, next.toolOperations, operationTransitions, 'Tool operation');
   assertMonotonicStates(previous.timeline.filter(isReply), next.timeline.filter(isReply), replyTransitions, 'Reply');
   assertMonotonicStates(previous.timeline.filter(isTool), next.timeline.filter(isTool), toolTransitions, 'Tool Activity');
   assertMonotonicStates(previous.compactions, next.compactions, compactionTransitions, 'Compaction');
-  assertAppendOnly(previous.effects, next.effects, 'Effect Ledger');
   assertAppendOnly(previous.requestFacts, next.requestFacts, 'Request facts');
-  assertAppendOnly(previous.rewindReceipts, next.rewindReceipts, 'Rewind receipts');
   assertAppendOrder(previous.compactions, next.compactions, 'Compaction');
 }
 
@@ -196,9 +191,7 @@ function assertAggregateReferences(session: AgentSessionAggregate): void {
   assertUnique(session.timeline.map((activity) => activity.id), 'Timeline Activity ID');
   assertUnique(session.timeline.map((activity) => String(activity.ordinal)), 'Timeline ordinal');
   assertUnique(session.toolOperations.map((operation) => operation.id), 'tool operation ID');
-  assertUnique(session.effects.map((effect) => effect.id), 'Effect ID');
   assertUnique(session.requestFacts.map((facts) => facts.id), 'Request facts ID');
-  assertUnique(session.rewindReceipts.map((receipt) => receipt.commandId), 'Rewind command ID');
   assertUnique(session.activeIntentIds, 'active Intent path entry');
 
   for (let index = 0; index < session.timeline.length; index += 1) {
@@ -273,17 +266,8 @@ function assertAggregateReferences(session: AgentSessionAggregate): void {
       throw new Error('Tool operation Activity correlation is invalid.');
     }
   }
-  for (const effect of session.effects) {
-    const activity = activities.get(effect.toolActivityId);
-    if (activity?.kind !== 'tool' || activity.intentId !== effect.intentId || activity.turnId !== effect.turnId) {
-      throw new Error('Effect Tool Activity correlation is invalid.');
-    }
-  }
   for (const facts of session.requestFacts) {
     if (!intents.has(facts.intentId)) throw new Error('Request facts Intent is missing.');
-  }
-  for (const receipt of session.rewindReceipts) {
-    if (!intents.has(receipt.truncatedIntentId)) throw new Error('Rewind receipt Intent is missing.');
   }
   for (const compaction of session.compactions) {
     if (!intents.has(compaction.coveredThroughIntentId)) {
@@ -353,10 +337,15 @@ const intentTransitions = {
   running: ['paused', 'completed', 'superseded'],
   paused: ['running', 'completed', 'superseded'],
   completed: ['superseded'],
-  superseded: [],
+  superseded: ['paused'],
 } as const;
 const turnTransitions = { running: ['settled'], settled: [] } as const;
 const invokeTransitions = {
+  running: ['holding', 'completed', 'aborted'],
+  holding: ['running', 'completed', 'aborted'],
+  completed: [], aborted: [],
+} as const;
+const attemptTransitions = {
   running: ['completed', 'failed', 'aborted'],
   completed: [], failed: [], aborted: [],
 } as const;
@@ -383,9 +372,8 @@ function entities(session: AgentSessionAggregate, collection: AgentEntityCollect
   return session[collection] as AgentSessionEntity[];
 }
 
-function entityId(collection: AgentEntityCollection, entity: AgentSessionEntity): string {
-  if (collection === 'rewindReceipts') return (entity as AgentRewindReceipt).commandId;
-  return (entity as Exclude<AgentSessionEntity, AgentRewindReceipt>).id;
+function entityId(_collection: AgentEntityCollection, entity: AgentSessionEntity): string {
+  return (entity as AgentSessionEntity).id;
 }
 
 function assertUnique(values: string[], label: string): void {

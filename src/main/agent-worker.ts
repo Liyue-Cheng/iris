@@ -172,9 +172,9 @@ async function handleMessage(message: unknown): Promise<void> {
     currentCorrelation = message.correlation;
     await prepareExecution(message.history, message.runtime);
     providerRequestIndex = Math.max(providerRequestIndex, message.invokeOffset);
-    currentInvokeId = null;
+    currentInvokeId = message.invokeId ?? null;
     currentAttemptId = null;
-    currentAttemptIndex = 0;
+    currentAttemptIndex = message.attemptOffset ?? 0;
     currentProviderMessageId = null;
     userAbortRequested = false;
     providerEventChain = Promise.resolve();

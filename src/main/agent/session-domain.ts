@@ -42,28 +42,21 @@ export function assertRewindableAgentIntent(session: AgentSessionAggregate): voi
 
 export function truncateIntentChain(
   source: AgentSessionAggregate,
-  commandId: string,
-  now = Date.now(),
 ): AgentSessionAggregate {
   assertRewindableAgentIntent(source);
-  if (source.rewindReceipts.some((receipt) => receipt.commandId === commandId)) return source;
   const session = cloneAgentSession(source);
-  const intentId = session.activeIntentIds.pop()!;
-  const intent = session.intents.find((candidate) => candidate.id === intentId);
-  if (!intent) throw new Error('The active Iris Agent intent path is corrupt.');
-  intent.state = 'superseded';
-  intent.closedAt = now;
-  delete intent.pauseReason;
-  delete intent.pauseMessage;
-  session.currentIntentId = null;
-  session.state = 'idle';
-  session.rewindReceipts.push({
-    commandId,
-    truncatedIntentId: intentId,
-    revertedEffectIds: [],
-    retainedEffectIds: [],
-    createdAt: now,
-  });
+  session.activeIntentIds.pop();
+  const headId = session.activeIntentIds.at(-1);
+  const head = headId ? session.intents.find((candidate) => candidate.id === headId) : undefined;
+  if (head?.state === 'superseded') {
+    head.state = 'paused';
+    delete head.closedAt;
+    session.currentIntentId = head.id;
+    session.state = 'paused';
+  } else {
+    session.currentIntentId = null;
+    session.state = 'idle';
+  }
   return session;
 }
 
@@ -139,14 +132,20 @@ export function pauseActiveAgentIntent(
   }
   for (const invoke of session.invokes) {
     if (invoke.intentId === intent.id && invoke.state === 'running') {
-      invoke.state = reason === 'user' ? 'aborted' : 'failed';
-      invoke.completedAt = now;
+      // A pause suspends the logical Invoke; only superseding the Intent
+      // abandons it. The concrete Attempt may still be aborted by Stop.
+      invoke.state = 'holding';
+      delete invoke.completedAt;
       invoke.error = message;
     }
   }
   for (const attempt of session.invokeAttempts) {
     if (attempt.intentId === intent.id && attempt.state === 'running') {
-      attempt.state = reason === 'user' ? 'aborted' : 'failed';
+      // A paused execution ends the concrete transport attempt without
+      // turning the logical Invoke into a failure. Provider errors are marked
+      // `failed` by the worker before the pause signal arrives; a still-running
+      // attempt is therefore an interruption and becomes `aborted`.
+      attempt.state = 'aborted';
       attempt.completedAt = now;
       attempt.error = message;
     }
@@ -179,6 +178,18 @@ export function supersedeOpenAgentIntent(
   if (intent && intent.state !== 'completed' && intent.state !== 'superseded') {
     intent.state = 'superseded';
     intent.closedAt = now;
+    for (const invoke of session.invokes) {
+      if (invoke.intentId === intent.id && (invoke.state === 'running' || invoke.state === 'holding')) {
+        invoke.state = 'aborted';
+        invoke.completedAt = now;
+      }
+    }
+    for (const attempt of session.invokeAttempts) {
+      if (attempt.intentId === intent.id && attempt.state === 'running') {
+        attempt.state = 'aborted';
+        attempt.completedAt = now;
+      }
+    }
   }
   session.currentIntentId = null;
   session.state = 'idle';

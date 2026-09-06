@@ -38,9 +38,7 @@ export interface AgentSessionAggregate {
   invokeAttempts: AgentInvokeAttempt[];
   timeline: AgentTimelineActivity[];
   toolOperations: AgentToolOperation[];
-  effects: AgentEffect[];
   requestFacts: AgentRequestFacts[];
-  rewindReceipts: AgentRewindReceipt[];
   compactions: AgentCompaction[];
   activeCompactionId: string | null;
   injection: AgentInjection;
@@ -129,7 +127,9 @@ export interface AgentInvoke {
   intentId: string;
   turnId: string;
   index: number;
-  state: 'running' | 'completed' | 'failed' | 'aborted';
+  /** Logical provider-neutral call. It never fails ontologically: when no
+   * attempt can currently produce a result it remains open in `holding`. */
+  state: 'running' | 'holding' | 'completed' | 'aborted';
   attemptIds: string[];
   createdAt: number;
   completedAt?: number;
@@ -185,7 +185,6 @@ export interface AgentToolActivity extends AgentActivityBase {
   diff?: string;
   path?: string;
   terminalId?: string;
-  terminalArtifactRef?: string;
   terminalState?: 'running' | 'exited';
   terminalOutcome?: 'success' | 'command-failed' | 'launch-failed' | 'canceled';
   terminalRevealedAt?: number;
@@ -196,48 +195,10 @@ export interface AgentToolActivity extends AgentActivityBase {
   terminalOutputBytes?: number;
   terminalOutputPreview?: string;
   terminalUserInput?: boolean;
-  effectIds: string[];
   completedAt?: number;
 }
 
 export type AgentTimelineActivity = AgentReplyActivity | AgentToolActivity;
-
-export type AgentEffect = AgentFileEffect | AgentDirectoryEffect | AgentTerminalEffect;
-
-export interface AgentFileEffect {
-  id: string;
-  intentId: string;
-  turnId: string;
-  toolActivityId: string;
-  kind: 'file-write';
-  path: string;
-  operation: 'edit' | 'write';
-  beforeSha256: string | null;
-  afterSha256: string;
-  artifactRef: string;
-  createdAt: number;
-}
-
-export interface AgentDirectoryEffect {
-  id: string;
-  intentId: string;
-  turnId: string;
-  toolActivityId: string;
-  kind: 'directory-create';
-  path: string;
-  artifactRef: string;
-  createdAt: number;
-}
-
-export interface AgentTerminalEffect {
-  id: string;
-  intentId: string;
-  turnId: string;
-  toolActivityId: string;
-  kind: 'terminal-output';
-  artifactRef: string;
-  createdAt: number;
-}
 
 export interface AgentCompaction {
   id: string;
@@ -256,14 +217,6 @@ export interface AgentCompaction {
   createdAt: number;
   completedAt?: number;
   error?: string;
-}
-
-export interface AgentRewindReceipt {
-  commandId: string;
-  truncatedIntentId: string;
-  revertedEffectIds: string[];
-  retainedEffectIds: string[];
-  createdAt: number;
 }
 
 export function createEmptyAgentSession(input: {
@@ -294,9 +247,7 @@ export function createEmptyAgentSession(input: {
     invokeAttempts: [],
     timeline: [],
     toolOperations: [],
-    effects: [],
     requestFacts: [],
-    rewindReceipts: [],
     compactions: [],
     activeCompactionId: null,
     injection: structuredClone(input.injection),
@@ -315,12 +266,30 @@ export function cloneAgentSession(session: AgentSessionAggregate): AgentSessionA
  * Loading must supply them before any invariant reads them.
  */
 export function normalizeAgentSessionAggregate(session: AgentSessionAggregate): AgentSessionAggregate {
+  // Effect ledgers belonged to an earlier model. They are deliberately
+  // discarded at the loading boundary and never re-enter the aggregate.
+  delete (session as unknown as Record<string, unknown>).effects;
+  delete (session as unknown as Record<string, unknown>).rewindReceipts;
+  for (const activity of session.timeline) {
+    if (activity.kind !== 'tool') continue;
+    delete (activity as unknown as Record<string, unknown>).effectIds;
+    delete (activity as unknown as Record<string, unknown>).terminalArtifactRef;
+  }
   if (!Array.isArray(session.compactions)) session.compactions = [];
   if (session.activeCompactionId === undefined) session.activeCompactionId = null;
   for (const intent of session.intents) {
     if (intent.contextOverflowRetries !== undefined &&
       (!Number.isSafeInteger(intent.contextOverflowRetries) || intent.contextOverflowRetries < 0)) {
       intent.contextOverflowRetries = 0;
+    }
+  }
+  // `failed` was the pre-holding name for an Invoke that had exhausted its
+  // concrete Attempts. Normalize old snapshots at the loading boundary so the
+  // current runtime never treats provider failure as an Invoke terminal state.
+  for (const invoke of session.invokes) {
+    if ((invoke.state as string) === 'failed') {
+      invoke.state = 'holding';
+      delete invoke.completedAt;
     }
   }
   return session;
@@ -380,7 +349,7 @@ export function projectAgentSession(
     terminals: session.timeline.flatMap((activity) => {
       if (
         activity.kind !== 'tool' || activity.tool !== 'terminal' ||
-        !activity.terminalId || !terminalArtifactRef(session, activity) ||
+        !activity.terminalId ||
         (!activity.terminalRevealedAt && activity.state === 'running' &&
           activity.terminalState !== 'exited')
       ) return [];
@@ -408,15 +377,6 @@ export function projectAgentSession(
     canRewindLatestIntent,
     selfHostingEligible: false,
   };
-}
-
-function terminalArtifactRef(
-  session: AgentSessionAggregate,
-  activity: AgentToolActivity,
-): string | undefined {
-  return activity.terminalArtifactRef ?? session.effects.find(
-    (effect) => effect.kind === 'terminal-output' && effect.toolActivityId === activity.id,
-  )?.artifactRef;
 }
 
 export function diffAgentSessionProjection(

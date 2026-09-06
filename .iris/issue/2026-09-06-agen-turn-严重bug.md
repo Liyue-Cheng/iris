@@ -177,3 +177,45 @@ running ──成功收束──> completed
 - [ ] 修正 Input Fork：允许 superseded 目标，在新 Session 中恢复目标输入为 paused，来源 Session 保持 superseded。
 - [ ] 恢复 superseded Input Fork 的 UI 能力，并以领域投影决定可用性。
 - [ ] 增加 `A paused -> B -> rewind B -> A paused -> retry`、completed rewind、superseded input fork 和来源分支不变测试。
+
+## 方案收敛：Trace 与人工操作面（2026-09-06）
+
+经过重新讨论，Fork/Rewind 采用最小领域模型，不再引入额外的路径审计层或副作用回滚层。
+
+### 当前共识
+
+* Trace 只描述 Agent 流程面：用户输入、Intent、Turn、assistant 回复和 tool result 等已经发生的流程事实。
+* Fork 与 Rewind 属于人工操作面，不是 Trace 中的流程实体；Trace 不需要知道“发生过 Fork”或“发生过 Rewind”。
+* Rewind 的结果就是直接截断当前 Trace 的尾部，使当前会话回到指定的历史前缀。
+* Fork 的结果就是从某个 Trace 前缀创建一个新的 Session/Trace 视角；来源 Session 和来源 Trace 不被修改。
+* 暂不记录 Rewind/Fork 审计信息，不记录独立 Effect Ledger，也暂不实现文件、目录或终端副作用回滚。
+* 因此当前 Rewind 只是 Agent 认知流程的回退，不代表现实世界已经恢复；后续 Agent 需要重新检查外部状态。
+
+### 简化后的边界
+
+```text
+Trace（Agent 流程面）
+  ├─ Intent
+  └─ Turn / Reply / Tool result
+
+人工操作面
+  ├─ Rewind：截断 Trace 尾部
+  └─ Fork：复制 Trace 前缀到新 Session
+```
+
+`superseded` 仍然只用于表达“新输入接管了暂停中的旧 Intent”。它不是 Rewind 的删除标记，
+也不是 Effect 或审计状态。Rewind 截断后，被移除的尾部不再属于当前 Trace；如果前一个 Intent
+因此重新成为当前可继续节点，则按当前 Intent 状态规则恢复为 `paused`。
+
+## 最小方案实现结果（2026-09-06）
+
+已按上述收敛方案完成实现：
+
+* Rewind 只截断当前 `activeIntentIds` 尾部，即直接缩短当前 Trace；不再把被截断 Intent 改成 `superseded`。
+* Rewind 不创建或追加 `rewindReceipts`，不调用文件/目录/终端副作用恢复逻辑。
+* 当截断后新的 Trace head 是 `superseded` Intent 时，将其恢复为 `paused` 并重新成为当前 Intent；否则会话回到 idle。
+* Input Fork 可从 `paused`、`completed`、`superseded` 输入创建新 Session，来源 Session 不变。
+* 旧 Session 中的 effect 字段仅为兼容读取保留；新执行不再向 Session 追加 effect ledger，人工 Fork/Rewind 也不读取、不恢复这些数据。
+
+验证：`npm run typecheck -- --pretty false` 通过；`npx vitest run src/main/agent --pool=forks --poolOptions.forks.singleFork=true` 通过，
+12 个文件、118 项测试全部通过。

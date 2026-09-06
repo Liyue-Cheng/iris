@@ -234,7 +234,7 @@ describe('Agent compaction', () => {
     // Rewinding past the boundary leaves the summary covering unreachable Intents.
     let rewound = compacted;
     for (let index = 0; index < 2; index += 1) {
-      rewound = truncateIntentChain(rewound, `rewind-${index}`, 300 + index);
+      rewound = truncateIntentChain(rewound);
       rewound.state = 'idle';
     }
     expect(rewound.activeIntentIds).toEqual(['intent-1', 'intent-2']);
@@ -248,7 +248,7 @@ describe('Agent compaction', () => {
   it('keeps an active summary when the rewind stays inside the retained tail', () => {
     const compacted = compactThrough(sessionWithCompletedIntents(5), 'summary text', 30);
     const covered = activeCompaction(compacted)!.coveredThroughIntentId;
-    const rewound = truncateIntentChain(compacted, 'rewind-1', 300);
+    const rewound = truncateIntentChain(compacted);
     expect(rewound.activeIntentIds).toContain(covered);
     expect(realignActiveCompaction(rewound).activeCompactionId).toBe(compacted.activeCompactionId);
   });
@@ -264,7 +264,7 @@ describe('Agent compaction', () => {
     let rewound = second;
     // Rewind until the newer boundary leaves the active path.
     while (rewound.activeIntentIds.includes(laterBoundary)) {
-      rewound = truncateIntentChain(rewound, `rewind-${rewound.rewindReceipts.length}`, 400);
+      rewound = truncateIntentChain(rewound);
       rewound.state = 'idle';
     }
     const realigned = realignActiveCompaction(rewound);

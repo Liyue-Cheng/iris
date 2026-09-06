@@ -19,14 +19,13 @@ const correlation = {
 };
 
 describe('IrisAgentToolHost', () => {
-  it('reads and records write effects inside the active project', async () => {
+  it('writes files without creating a separate effect ledger', async () => {
     const projectRoot = await createTempDataDir('iris-agent-tool-project-');
-    const artifactRoot = await createTempDataDir('iris-agent-tool-output-');
-    try {
+        try {
       const target = join(projectRoot, 'src', 'value.txt');
       await fs.mkdir(join(projectRoot, 'src'), { recursive: true });
       await fs.writeFile(target, 'before', 'utf8');
-      const host = new IrisAgentToolHost({ projectRoot, artifactRoot, commandShell });
+      const host = new IrisAgentToolHost({ projectRoot, commandShell });
 
       const read = await host.execute(
         { tool: 'read', operation: 'readFile', absolutePath: target },
@@ -46,26 +45,16 @@ describe('IrisAgentToolHost', () => {
       expect(write.update.diff).toContain('@@');
       expect(write.update.diff).toContain('-before');
       expect(write.update.diff).toContain('+after');
-      expect(write.effects[0]).toMatchObject({
-        kind: 'file-write', intentId: 'turn-1', artifactRef: expect.stringMatching(/^effects\//u),
-      });
-      const effect = write.effects[0]!;
-      expect(effect.kind).toBe('file-write');
-      if (effect.kind === 'file-write') {
-        const payload = JSON.parse(await fs.readFile(join(artifactRoot, ...effect.artifactRef.split('/')), 'utf8'));
-        expect(payload).toMatchObject({ beforeContent: 'before', afterContent: 'after' });
-      }
+
     } finally {
       await removeTempDataDir(projectRoot);
-      await removeTempDataDir(artifactRoot);
     }
   });
 
   it('allows write tools to create managed documents in the first version', async () => {
     const projectRoot = await createTempDataDir('iris-agent-tool-project-');
-    const artifactRoot = await createTempDataDir('iris-agent-tool-output-');
-    try {
-      const host = new IrisAgentToolHost({ projectRoot, artifactRoot, commandShell });
+        try {
+      const host = new IrisAgentToolHost({ projectRoot, commandShell });
       const write = await host.execute(
         {
           tool: 'write',
@@ -95,21 +84,18 @@ describe('IrisAgentToolHost', () => {
       }
     } finally {
       await removeTempDataDir(projectRoot);
-      await removeTempDataDir(artifactRoot);
     }
   });
 
   it('allows every tool to follow arbitrary junction paths in the first version', async () => {
     const projectRoot = await createTempDataDir('iris-agent-tool-link-project-');
-    const artifactRoot = await createTempDataDir('iris-agent-tool-link-output-');
-    const outsideRoot = await createTempDataDir('iris-agent-tool-link-outside-');
+        const outsideRoot = await createTempDataDir('iris-agent-tool-link-outside-');
     try {
       const linkedDirectory = join(projectRoot, 'linked');
       await fs.writeFile(join(outsideRoot, 'secret.txt'), 'outside', 'utf8');
       await fs.symlink(outsideRoot, linkedDirectory, 'junction');
       const host = new IrisAgentToolHost({
         projectRoot,
-        artifactRoot,
         commandShell,
       });
 
@@ -175,16 +161,14 @@ describe('IrisAgentToolHost', () => {
       if (terminal.result.kind === 'terminal') expect(terminal.result.outputText).toContain(linkedDirectory);
     } finally {
       await removeTempDataDir(projectRoot);
-      await removeTempDataDir(artifactRoot);
       await removeTempDataDir(outsideRoot);
     }
   });
 
   it('returns cleaned output for a nonzero exit while recording command failure', async () => {
     const projectRoot = await createTempDataDir('iris-agent-tool-failure-project-');
-    const artifactRoot = await createTempDataDir('iris-agent-tool-failure-output-');
-    try {
-      const host = new IrisAgentToolHost({ projectRoot, artifactRoot, commandShell });
+        try {
+      const host = new IrisAgentToolHost({ projectRoot, commandShell });
       const terminal = await host.execute(
         {
           tool: 'terminal',
@@ -213,15 +197,13 @@ describe('IrisAgentToolHost', () => {
       }
     } finally {
       await removeTempDataDir(projectRoot);
-      await removeTempDataDir(artifactRoot);
     }
   });
 
   it('uses explicitly allowed nonzero exit codes consistently', async () => {
     const projectRoot = await createTempDataDir('iris-agent-tool-allowed-exit-project-');
-    const artifactRoot = await createTempDataDir('iris-agent-tool-allowed-exit-output-');
-    try {
-      const host = new IrisAgentToolHost({ projectRoot, artifactRoot, commandShell });
+        try {
+      const host = new IrisAgentToolHost({ projectRoot, commandShell });
       const terminal = await host.execute(
         {
           tool: 'terminal',
@@ -242,17 +224,14 @@ describe('IrisAgentToolHost', () => {
       expect(terminal.result).toMatchObject({ kind: 'terminal', exitCode: 1, success: true });
     } finally {
       await removeTempDataDir(projectRoot);
-      await removeTempDataDir(artifactRoot);
     }
   });
 
   it('records terminal launch failure separately from command failure', async () => {
     const projectRoot = await createTempDataDir('iris-agent-tool-launch-project-');
-    const artifactRoot = await createTempDataDir('iris-agent-tool-launch-output-');
-    try {
+        try {
       const host = new IrisAgentToolHost({
         projectRoot,
-        artifactRoot,
         commandShell,
         terminalFactory: () => { throw new Error('simulated spawn failure'); },
       });
@@ -275,7 +254,6 @@ describe('IrisAgentToolHost', () => {
       expect(terminal.result).toEqual({ kind: 'void' });
     } finally {
       await removeTempDataDir(projectRoot);
-      await removeTempDataDir(artifactRoot);
     }
   });
 });

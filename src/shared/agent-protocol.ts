@@ -148,6 +148,10 @@ export type AgentWorkerRequest = AgentProtocolEnvelope &
     | {
         type: 'resume';
         invokeOffset: number;
+        /** Resume a provider-held logical Invoke instead of creating a new one. */
+        invokeId?: string;
+        /** Number of Attempts already recorded for the resumed Invoke. */
+        attemptOffset?: number;
         history: AgentHistorySnapshot;
         runtime: AgentWorkerExecutionRuntime;
       }
@@ -213,6 +217,9 @@ export function isAgentWorkerRequest(value: unknown): value is AgentWorkerReques
     case 'resume':
       return typeof value.invokeOffset === 'number' &&
         Number.isSafeInteger(value.invokeOffset) && value.invokeOffset >= 0 &&
+        (value.invokeId === undefined || typeof value.invokeId === 'string') &&
+        (value.attemptOffset === undefined ||
+          (typeof value.attemptOffset === 'number' && Number.isSafeInteger(value.attemptOffset) && value.attemptOffset >= 0)) &&
         isHistorySnapshot(value.history) && isExecutionRuntime(value.runtime);
     case 'supervise-terminal':
       return typeof value.supervisionId === 'string' && isTerminalSupervisionInput(value.input);
