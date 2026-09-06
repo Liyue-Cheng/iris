@@ -7,6 +7,9 @@ import { buildAgentContext, buildAgentTrace, type AgentTrace } from './trace-con
 
 export const AGENT_COMPACTION_PROMPT_VERSION = 1 as const;
 
+/** Conservative allowance for the four runtime tool schemas sent to the provider. */
+export const AGENT_TOOL_SCHEMA_TOKEN_BUDGET = 2_048;
+
 /** Retained verbatim history target. Kept well inside typical windows. */
 const DEFAULT_KEEP_RECENT_TOKENS = 20_000;
 /** Output headroom reserved so a compacted request still has room to answer. */
@@ -27,6 +30,7 @@ export interface AgentCompactionThresholds {
   contextWindow?: number;
   reserveTokens?: number;
   keepRecentTokens?: number;
+  triggerTokens?: number;
 }
 
 /**
@@ -62,9 +66,27 @@ export function estimateAgentContextTokens(
   return tokens;
 }
 
+/** Estimates the complete provider request, including method layers and tool schemas. */
+export function estimateAgentRequestTokens(
+  prompt: string,
+  context: Pick<AgentHistorySnapshot, 'messages'>,
+  toolSchemaTokens = AGENT_TOOL_SCHEMA_TOKEN_BUDGET,
+): number {
+  return Math.max(0, toolSchemaTokens) + estimateAgentTokens(prompt) +
+    estimateAgentContextTokens(context);
+}
+
+/** Provider errors that mean the request cannot fit in the model context window. */
+export function isAgentContextOverflowError(message: string): boolean {
+  return /(?:context[\s_-]*(?:length|window|limit)|maximum\s+(?:context|input)|too\s+many\s+tokens|prompt\s+is\s+too\s+long|token\s+limit|input[\s_-]*length|(?:prompt|input)\s+token(?:\s+count)?\s+(?:exceeds?|over))/iu.test(message);
+}
+
 /** The point at which a request should be compacted before it is sent. */
 export function agentCompactionTrigger(thresholds: AgentCompactionThresholds = {}): number {
   const contextWindow = thresholds.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+  if (thresholds.triggerTokens !== undefined) {
+    return Math.max(1, Math.min(contextWindow - 1, thresholds.triggerTokens));
+  }
   const reserve = Math.min(thresholds.reserveTokens ?? DEFAULT_RESERVE_TOKENS, contextWindow - 1);
   return Math.max(1, contextWindow - reserve);
 }

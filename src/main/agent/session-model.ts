@@ -55,6 +55,8 @@ export interface AgentIntent {
   pauseReason?: IrisAgentPauseReason;
   pauseMessage?: string;
   assembledInputAvailable: boolean;
+  /** Number of automatic context-overflow retries already consumed. */
+  contextOverflowRetries?: number;
   createdAt: number;
   closedAt?: number;
 }
@@ -313,6 +315,12 @@ export function cloneAgentSession(session: AgentSessionAggregate): AgentSessionA
 export function normalizeAgentSessionAggregate(session: AgentSessionAggregate): AgentSessionAggregate {
   if (!Array.isArray(session.compactions)) session.compactions = [];
   if (session.activeCompactionId === undefined) session.activeCompactionId = null;
+  for (const intent of session.intents) {
+    if (intent.contextOverflowRetries !== undefined &&
+      (!Number.isSafeInteger(intent.contextOverflowRetries) || intent.contextOverflowRetries < 0)) {
+      intent.contextOverflowRetries = 0;
+    }
+  }
   return session;
 }
 

@@ -89,6 +89,7 @@ import {
 import {
   addIrisAgentProviderProfile,
   removeIrisAgentProviderProfile,
+  updateIrisAgentProviderProfileApiKey,
   updateIrisAgentProviderModels,
 } from './agent/provider-profiles';
 import { logger } from './logger';
@@ -1233,6 +1234,19 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
   );
 
   ipcMain.handle(
+    CHANNELS.IRIS_AGENT_PROVIDER_PROFILE_SET_KEY,
+    async (
+      _event,
+      payload: { profileId: string; apiKey: string },
+    ): Promise<IrisAgentProviderCatalog> => {
+      prepareProviderConfigurationChange();
+      await updateIrisAgentProviderProfileApiKey(payload.profileId, payload.apiKey, appDataDir());
+      await finishProviderConfigurationChange();
+      return loadIrisProviderCatalog(irisPiAgentDir(), appDataDir());
+    },
+  );
+
+  ipcMain.handle(
     CHANNELS.IRIS_AGENT_PROVIDER_PROFILE_MODELS,
     async (
       _event,
@@ -1252,21 +1266,32 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       const profileCatalog = await loadIrisProviderCatalog(irisPiAgentDir(), appDataDir());
       const profile = profileCatalog.profiles.find((item) => item.id === payload.profileId);
       if (!profile) throw new Error('Provider profile was not found.');
-      const discovered = await loadIrisModelCatalog(irisPiAgentDir(), appDataDir());
-      const models = discovered.models
+      const discovered = await loadIrisModelCatalog(irisPiAgentDir(), appDataDir(), true);
+      const remoteModels = discovered.models
         .filter((model) => model.provider === `iris-profile-${payload.profileId}`)
-        .map((model) => ({
-          modelId: model.modelId,
-          displayName: model.name,
-          api: model.api === 'anthropic-messages' ? 'anthropic-messages' as const : 'openai-responses' as const,
-          contextWindowTokens: model.contextWindowTokens ?? 128_000,
-          maxOutputTokens: model.maxOutputTokens ?? 16_384,
-          reserveOutputTokens: 16_384,
-          keepRecentTokens: 20_000,
-          compactTrigger: Math.max(1, (model.contextWindowTokens ?? 128_000) - 16_384),
-          enabled: true,
-          source: 'discovered' as const,
-        }));
+      const existingById = new Map((profile.models ?? []).map((model) => [model.modelId, model]));
+      const remoteIds = new Set(remoteModels.map((model) => model.modelId));
+      const models = [
+        ...remoteModels.map((model) => {
+          const existing = existingById.get(model.modelId);
+          if (existing) return { ...existing };
+          const contextWindowTokens = model.contextWindowTokens ?? 128_000;
+          const reserveOutputTokens = 16_384;
+          return {
+            modelId: model.modelId,
+            displayName: model.name,
+            api: model.api === 'anthropic-messages' ? 'anthropic-messages' as const : 'openai-responses' as const,
+            contextWindowTokens,
+            maxOutputTokens: model.maxOutputTokens ?? reserveOutputTokens,
+            reserveOutputTokens,
+            keepRecentTokens: 20_000,
+            compactTrigger: Math.max(1, contextWindowTokens - reserveOutputTokens),
+            enabled: true,
+            source: 'discovered' as const,
+          };
+        }),
+        ...(profile.models ?? []).filter((model) => model.source === 'manual' && !remoteIds.has(model.modelId)),
+      ];
       if (models.length === 0) throw new Error(discovered.error ?? '供应商目录没有返回模型。');
       await updateIrisAgentProviderModels(payload.profileId, models, appDataDir());
       await finishProviderConfigurationChange();

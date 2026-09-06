@@ -58,7 +58,7 @@ class FakeWorker extends EventEmitter implements AgentWorkerPort {
       correlation: message.correlation,
       runtime: {
         protocolVersion: IRIS_AGENT_PROTOCOL_VERSION,
-        piVersion: 'test',
+        executorVersion: 'test',
         nodeVersion: process.versions.node,
         workerEpoch: message.correlation.workerEpoch ?? 0,
         historyRevision: message.history.revision,
@@ -190,6 +190,50 @@ function emitReply(
 }
 
 describe('IrisAgentSessionManager v2 timeline', () => {
+  it('starts a document session with the default task when the input is empty', async () => {
+    const userData = await createTempDataDir('iris-agent-manager-default-document-task-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const worker = new FakeWorker();
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => worker,
+      modelCatalogLoader: async () => catalog,
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({
+        scope,
+        anchor: { kind: 'document', path: '.iris/issue/task.md' },
+      });
+      await manager.send(scope, created.id, '   ');
+      const current = (await manager.list(scope)).sessions[0]!;
+      expect(current.intents[0]?.user.content).toBe('请根据文档内容开始工作');
+      expect(worker.last('run').prompt).toContain('<user-request>\n请根据文档内容开始工作\n</user-request>');
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('still requires an explicit task for a workspace session with empty input', async () => {
+    const userData = await createTempDataDir('iris-agent-manager-empty-workspace-task-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      modelCatalogLoader: async () => catalog,
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({
+        scope,
+        anchor: { kind: 'workspace', path: '.iris' },
+      });
+      await expect(manager.send(scope, created.id, '')).rejects.toThrow('Enter a task');
+      expect((await manager.list(scope)).sessions[0]?.intents).toHaveLength(0);
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
   it('publishes the accepted user message before a cold Worker becomes ready', async () => {
     const userData = await createTempDataDir('iris-agent-manager-cold-message-');
     const scope: ProjectScope = { root: userData, generation: 1 };
@@ -1263,6 +1307,7 @@ describe('Iris Agent model catalog startup', () => {
       const first = manager.listModels();
       const second = manager.listModels();
       expect(loader).toHaveBeenCalledOnce();
+      expect(loader).toHaveBeenNthCalledWith(1, false);
       resolveFirst(catalog);
       await expect(Promise.all([first, second])).resolves.toEqual([catalog, catalog]);
 
@@ -1270,6 +1315,7 @@ describe('Iris Agent model catalog startup', () => {
       expect(loader).toHaveBeenCalledOnce();
       await expect(manager.listModels(true)).resolves.toEqual(catalog);
       expect(loader).toHaveBeenCalledTimes(2);
+      expect(loader).toHaveBeenNthCalledWith(2, true);
     } finally {
       await manager.shutdown();
       await removeTempDataDir(userData);
@@ -1563,6 +1609,46 @@ describe('IrisAgentSessionManager context compaction', () => {
       expect(summarize.mock.calls.length).toBeLessThanOrEqual(afterFirst + 1);
       const contents = worker.last('run').history.messages.map((message) => message.content);
       expect(contents.some((content) => content.includes('stable summary'))).toBe(true);
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('compacts and retries the same Intent once after a context overflow', async () => {
+    const userData = await createTempDataDir('iris-agent-compact-overflow-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const firstWorker = new FakeWorker();
+    const retryWorker = new FakeWorker();
+    let workerCount = 0;
+    const summarize = summarizer('overflow summary');
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => (++workerCount === 1 ? firstWorker : retryWorker),
+      modelCatalogLoader: async () => catalog,
+      summarizeContext: summarize,
+      compactionThresholds: { contextWindow: 100_000, reserveTokens: 1_000, keepRecentTokens: 1 },
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
+      await settleIntent(manager, firstWorker, scope, created.id, 'first message', 'first answer');
+      await settleIntent(manager, firstWorker, scope, created.id, 'second message', 'second answer');
+      const before = (await manager.list(scope)).sessions[0]!;
+      const started = await manager.send(scope, created.id, 'third message', { expectedRevision: before.revision });
+      const intentId = started.currentIntentId;
+      const failedRun = firstWorker.last('run');
+      firstWorker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'execution-paused',
+        correlation: failedRun.correlation,
+        reason: 'runtime-error',
+        message: 'maximum context length exceeded',
+      });
+      await vi.waitFor(() => expect(retryWorker.last('run').prompt).toContain('third message'));
+      const afterRetry = (await manager.list(scope)).sessions[0]!;
+      expect(afterRetry.currentIntentId).toBe(intentId);
+      expect(afterRetry.state).toBe('running');
+      expect(summarize).toHaveBeenCalledWith(expect.objectContaining({ material: expect.any(String) }));
     } finally {
       await manager.shutdown();
       await removeTempDataDir(userData);

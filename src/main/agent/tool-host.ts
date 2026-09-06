@@ -1,13 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import { dirname, join, normalize, relative, resolve, sep } from 'node:path';
+import { join, normalize, relative, resolve } from 'node:path';
 import {
   AgentCommandPty,
   type AgentCommandPtyEvent,
   type AgentCommandPtyOptions,
 } from './command-pty';
 import { writeFileAtomic } from '../atomic-write';
-import { generateUnifiedPatch } from '@earendil-works/pi-coding-agent';
 import type {
   AgentCommandShell,
   AgentCorrelation,
@@ -108,7 +107,7 @@ export class IrisAgentToolHost {
   }> {
     if (input.tool === 'terminal') return this.executeTerminal(input, correlation, started);
 
-    const target = await this.resolveOperationPath(input.absolutePath);
+    const target = this.resolveUnrestrictedPath(input.absolutePath);
     const relPath = toProjectPath(relative(this.options.projectRoot, target));
     if (input.operation === 'access') {
       await fs.access(target);
@@ -170,10 +169,6 @@ export class IrisAgentToolHost {
       if (err.code === 'ENOENT') return null;
       throw err;
     });
-    if (before === null && isIrisManagedPath(relPath)) {
-      throw new Error('Iris Agent cannot create new .iris documents without an explicit user request.');
-    }
-    await this.assertWritableParent(target);
     if (before === content) {
       return {
         result: { kind: 'void' },
@@ -233,7 +228,7 @@ export class IrisAgentToolHost {
     >;
     effects: AgentEffect[];
   }> {
-    const cwd = await this.resolveOperationPath(input.cwd);
+    const cwd = this.resolveUnrestrictedPath(input.cwd);
     const terminalId = randomUUID();
     const outputPath = join(
       this.options.artifactRoot,
@@ -295,29 +290,22 @@ export class IrisAgentToolHost {
     };
   }
 
-  private async resolveOperationPath(path: string): Promise<string> {
-    const absolute = normalize(resolve(this.options.projectRoot, path));
-    assertInside(this.options.projectRoot, absolute);
-    const metadata = await fs.lstat(absolute).catch(() => null);
-    if (metadata?.isSymbolicLink()) {
-      assertInside(this.options.projectRoot, normalize(await fs.realpath(absolute)));
-    }
-    return absolute;
-  }
-
-  private async assertWritableParent(path: string): Promise<void> {
-    const parent = dirname(path);
-    assertInside(this.options.projectRoot, parent);
-    const realParent = await fs.realpath(parent);
-    assertInside(this.options.projectRoot, normalize(realParent));
+  private resolveUnrestrictedPath(path: string): string {
+    return normalize(resolve(this.options.projectRoot, path));
   }
 }
 
-function assertInside(root: string, target: string): void {
-  const normalizedRoot = normalize(root);
-  if (target !== normalizedRoot && !target.startsWith(normalizedRoot + sep)) {
-    throw new Error('Iris Agent tool path is outside the active project.');
-  }
+function generateUnifiedPatch(path: string, before: string, after: string): string {
+  const oldLines = before.split(/\r?\n/u);
+  const newLines = after.split(/\r?\n/u);
+  let start = 0;
+  while (start < oldLines.length && start < newLines.length && oldLines[start] === newLines[start]) start += 1;
+  let oldEnd = oldLines.length - 1;
+  let newEnd = newLines.length - 1;
+  while (oldEnd >= start && newEnd >= start && oldLines[oldEnd] === newLines[newEnd]) { oldEnd -= 1; newEnd -= 1; }
+  const removed = oldLines.slice(start, oldEnd + 1).map((line) => `-${line}`);
+  const added = newLines.slice(start, newEnd + 1).map((line) => `+${line}`);
+  return [`--- a/${path}`, `+++ b/${path}`, `@@ -${start + 1},${Math.max(0, oldEnd - start + 1)} +${start + 1},${Math.max(0, newEnd - start + 1)} @@`, ...removed, ...added].join('\n');
 }
 
 function sanitizeEnv(env: Record<string, string | undefined> | undefined): NodeJS.ProcessEnv {
@@ -343,10 +331,6 @@ function tailText(value: string, maxBytes: number): { text: string; truncated: b
 function normalizeSuccessExitCodes(value: number[] | undefined): number[] {
   const normalized = value?.filter((code) => Number.isSafeInteger(code)) ?? [];
   return normalized.length > 0 ? [...new Set(normalized)] : [0];
-}
-
-function isIrisManagedPath(path: string): boolean {
-  return path === '.iris' || path.startsWith('.iris/');
 }
 
 function toProjectPath(path: string): string {

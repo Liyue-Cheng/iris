@@ -42,7 +42,7 @@
     "dist": "npm run build && npm run metadata:check && npm run licenses:check && node scripts/clean-release.mjs && electron-builder --win --x64"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@earendil-works/pi-ai": "0.84.1",
     "@xterm/addon-search": "^0.17.0-beta.256",
     "@xterm/addon-serialize": "^0.15.0-beta.256",
     "@xterm/headless": "^6.1.0-beta.256",

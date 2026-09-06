@@ -6,6 +6,7 @@ import {
   agentCompactionTrigger,
   completeAgentCompaction,
   estimateAgentContextTokens,
+  estimateAgentRequestTokens,
   estimateAgentTokens,
   inheritAgentCompactionInto,
   openAgentCompaction,
@@ -13,6 +14,7 @@ import {
   realignActiveCompaction,
   renderAgentCompactionSource,
   settleAgentCompaction,
+  isAgentContextOverflowError,
 } from './compaction';
 import { activeAgentContextPolicy, buildAgentContext, buildAgentTrace } from './trace-context';
 
@@ -105,6 +107,11 @@ describe('Agent compaction', () => {
 
   it('derives a trigger that leaves output headroom inside the window', () => {
     expect(agentCompactionTrigger({ contextWindow: 100_000, reserveTokens: 20_000 })).toBe(80_000);
+    expect(agentCompactionTrigger({
+      contextWindow: 100_000,
+      reserveTokens: 20_000,
+      triggerTokens: 70_000,
+    })).toBe(70_000);
   });
 
   it('places the boundary between whole Intents and always retains a recent tail', () => {
@@ -295,5 +302,21 @@ describe('Agent compaction', () => {
       buildAgentContext(buildAgentTrace(compacted), activeAgentContextPolicy(compacted)),
     );
     expect(after).toBeLessThan(before);
+  });
+
+  it('counts method layers, history, and tool schemas in request estimates', () => {
+    const history = { messages: [{
+      id: 'm1', intentId: 'i1', role: 'user' as const, content: 'history', createdAt: 1,
+    }] };
+    expect(estimateAgentRequestTokens('prompt', history, 100)).toBe(
+      estimateAgentTokens('prompt') + estimateAgentContextTokens(history) + 100,
+    );
+  });
+
+  it('recognizes only context-size provider failures as overflow', () => {
+    expect(isAgentContextOverflowError('maximum context length is 128k')).toBe(true);
+    expect(isAgentContextOverflowError('context_length_exceeded')).toBe(true);
+    expect(isAgentContextOverflowError('request failed: token limit exceeded')).toBe(true);
+    expect(isAgentContextOverflowError('network timeout while contacting provider')).toBe(false);
   });
 });

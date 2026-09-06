@@ -696,7 +696,7 @@ export interface IrisAgentProviderProfileInfo {
   name: string;
   templateId: string;
   baseUrl: string;
-  apiKey: string;
+  hasCredential: boolean;
   models?: IrisAgentConfiguredModel[];
 }
 

@@ -29,41 +29,21 @@ const licenseTextOverrides = {
   },
   '@aws-sdk/credential-provider-http': {
     license: 'Apache-2.0',
-    from: 'node_modules/@earendil-works/pi-coding-agent/node_modules/@aws-sdk/core/LICENSE',
+    from: 'node_modules/@aws-sdk/core/LICENSE',
   },
   '@aws-sdk/credential-provider-login': {
     license: 'Apache-2.0',
-    from: 'node_modules/@earendil-works/pi-coding-agent/node_modules/@aws-sdk/core/LICENSE',
+    from: 'node_modules/@aws-sdk/core/LICENSE',
   },
   '@aws-sdk/nested-clients': {
     license: 'Apache-2.0',
-    from: 'node_modules/@earendil-works/pi-coding-agent/node_modules/@aws-sdk/core/LICENSE',
-  },
-  '@earendil-works/pi-agent-core': {
-    license: 'MIT',
-    copyright: 'Copyright (c) 2025 Mario Zechner',
+    from: 'node_modules/@aws-sdk/core/LICENSE',
   },
   '@earendil-works/pi-ai': {
     license: 'MIT',
     copyright: 'Copyright (c) 2025 Mario Zechner',
   },
-  '@earendil-works/pi-client': {
-    license: 'MIT',
-    copyright: 'Copyright (c) 2025 Mario Zechner',
-  },
-  '@earendil-works/pi-coding-agent': {
-    license: 'MIT',
-    copyright: 'Copyright (c) 2025 Mario Zechner',
-  },
-  '@earendil-works/pi-protocol': {
-    license: 'MIT',
-    copyright: 'Copyright (c) 2025 Mario Zechner',
-  },
   '@earendil-works/pi-telemetry': {
-    license: 'MIT',
-    copyright: 'Copyright (c) 2025 Mario Zechner',
-  },
-  '@earendil-works/pi-tui': {
     license: 'MIT',
     copyright: 'Copyright (c) 2025 Mario Zechner',
   },

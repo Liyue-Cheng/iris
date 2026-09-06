@@ -1,6 +1,11 @@
 import type { ReactNode, RefObject } from 'react';
 import { CaseSensitive, ChevronDown, ChevronUp, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@renderer/components/ui/tooltip';
 
 export interface TerminalSearchBarProps {
   inputRef: RefObject<HTMLInputElement>;
@@ -49,7 +54,7 @@ export function TerminalSearchBar(props: TerminalSearchBarProps): JSX.Element {
           : '-'}
       </span>
       <IconButton
-        aria-label={t('terminal.previous')}
+        tooltip={t('terminal.previous')}
         ariaLabel={t('terminal.previousAria')}
         disabled={disabled}
         onClick={() => props.onSearch('previous')}
@@ -57,7 +62,7 @@ export function TerminalSearchBar(props: TerminalSearchBarProps): JSX.Element {
         <ChevronUp className="size-3.5" />
       </IconButton>
       <IconButton
-        aria-label={t('terminal.next')}
+        tooltip={t('terminal.next')}
         ariaLabel={t('terminal.nextAria')}
         disabled={disabled}
         onClick={() => props.onSearch('next')}
@@ -65,7 +70,7 @@ export function TerminalSearchBar(props: TerminalSearchBarProps): JSX.Element {
         <ChevronDown className="size-3.5" />
       </IconButton>
       <IconButton
-        aria-label={t('terminal.matchCase')}
+        tooltip={t('terminal.matchCase')}
         ariaLabel={t('terminal.matchCase')}
         pressed={props.caseSensitive}
         onClick={() => props.onCaseSensitiveChange(!props.caseSensitive)}
@@ -73,7 +78,7 @@ export function TerminalSearchBar(props: TerminalSearchBarProps): JSX.Element {
         <CaseSensitive className="size-3.5" />
       </IconButton>
       <IconButton
-        aria-label={t('terminal.closeSearch')}
+        tooltip={t('terminal.closeSearch')}
         ariaLabel={t('terminal.closeSearchAria')}
         destructive
         onClick={props.onClose}
@@ -85,7 +90,7 @@ export function TerminalSearchBar(props: TerminalSearchBarProps): JSX.Element {
 }
 
 function IconButton(props: {
-  title: string;
+  tooltip: string;
   ariaLabel: string;
   disabled?: boolean;
   pressed?: boolean;
@@ -94,18 +99,22 @@ function IconButton(props: {
   children: ReactNode;
 }): JSX.Element {
   return (
-    <button
-      type="button"
-      className={`flex h-6 w-6 items-center justify-center rounded-sm border hover:bg-accent disabled:opacity-40 ${
-        props.pressed ? 'bg-accent text-accent-foreground' : ''
-      } ${props.destructive ? 'hover:bg-destructive hover:text-destructive-foreground' : ''}`}
-      onClick={props.onClick}
-      aria-label={props.title}
-      aria-label={props.ariaLabel}
-      aria-pressed={props.pressed}
-      disabled={props.disabled}
-    >
-      {props.children}
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className={`flex h-6 w-6 items-center justify-center rounded-sm border hover:bg-accent disabled:opacity-40 ${
+            props.pressed ? 'bg-accent text-accent-foreground' : ''
+          } ${props.destructive ? 'hover:bg-destructive hover:text-destructive-foreground' : ''}`}
+          onClick={props.onClick}
+          aria-label={props.ariaLabel}
+          aria-pressed={props.pressed}
+          disabled={props.disabled}
+        >
+          {props.children}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{props.tooltip}</TooltipContent>
+    </Tooltip>
   );
 }

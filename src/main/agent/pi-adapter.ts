@@ -1,25 +1,25 @@
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
+import { promises as fs } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
-  DefaultResourceLoader,
-  ModelRuntime,
-  SessionManager as PiSessionManager,
-  SettingsManager,
-  VERSION,
-  createAgentSession,
-  createBashToolDefinition,
-  createEditToolDefinition,
-  createReadToolDefinition,
-  createWriteToolDefinition,
-  getAgentDir,
-  readStoredCredential,
-  type CreateAgentSessionOptions,
-  type EditOperations,
-  type ReadOperations,
-  type WriteOperations,
-  type ToolDefinition,
-} from '@earendil-works/pi-coding-agent';
-import { Type, type TSchema } from 'typebox';
+  createModels,
+  createProvider,
+  type Api,
+  type AssistantMessage,
+  type AssistantMessageEventStream,
+  type Context,
+  type Message,
+  type Model,
+  type Provider,
+  type SimpleStreamOptions,
+  type Tool,
+  type ToolCall,
+  type ToolResultMessage,
+} from '@earendil-works/pi-ai/compat';
+import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
+import { Type } from 'typebox';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import type {
   AgentCommandShell,
@@ -28,6 +28,7 @@ import type {
   AgentTerminalIntent,
 } from '@shared/agent-protocol';
 import type {
+  IrisAgentConfiguredModel,
   IrisAgentModelCatalog,
   IrisAgentModelOption,
   IrisAgentModelRef,
@@ -43,7 +44,7 @@ import {
   runtimeProviderId,
 } from './provider-profiles';
 
-export const IRIS_PI_VERSION = VERSION;
+export const IRIS_EXECUTOR_VERSION = 'iris-executor-1';
 export const IRIS_PI_TOOL_NAMES = ['read', 'edit', 'write', 'terminal'] as const;
 
 const irisToolCallContext = new AsyncLocalStorage<string>();
@@ -71,39 +72,72 @@ interface IrisTerminalOperations {
 }
 
 export function irisPiAgentDir(): string {
-  return getAgentDir();
+  const configured = process.env.PI_CODING_AGENT_DIR;
+  return configured ? configured.replace(/^~(?=$|[\\/])/u, homedir()) : join(homedir(), '.pi', 'agent');
 }
 
 export interface IrisToolHostOperations {
-  read: ReadOperations;
-  edit: EditOperations;
-  write: WriteOperations;
+  read: {
+    access: (absolutePath: string) => Promise<void>;
+    readFile: (absolutePath: string) => Promise<Buffer>;
+  };
+  edit: {
+    access: (absolutePath: string) => Promise<void>;
+    readFile: (absolutePath: string) => Promise<Buffer>;
+    writeFile: (absolutePath: string, content: string) => Promise<void>;
+  };
+  write: {
+    mkdir: (absolutePath: string) => Promise<void>;
+    writeFile: (absolutePath: string, content: string) => Promise<void>;
+  };
   terminal: IrisTerminalOperations;
 }
 
+type StoredCredential = { type: 'api_key'; key: string };
+
+async function readCredentialFile(path: string): Promise<Record<string, StoredCredential>> {
+  try {
+    const value: unknown = JSON.parse(await fs.readFile(path, 'utf8'));
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).flatMap(([id, credential]) => {
+      if (!credential || typeof credential !== 'object' || Array.isArray(credential)) return [];
+      const item = credential as Record<string, unknown>;
+      return item.type === 'api_key' && typeof item.key === 'string' ? [[id, { type: 'api_key', key: item.key }]] : [];
+    }));
+  } catch {
+    return {};
+  }
+}
+
 export function hasStoredPiCredential(providerId: string, authPath?: string): boolean {
-  return readStoredCredential(providerId, authPath) !== undefined;
+  if (!authPath) return false;
+  return Object.hasOwn(readCredentialFileSync(authPath), providerId);
 }
 
 export function storedPiCredentialSecrets(providerId: string, agentDir: string): unknown {
-  return readStoredCredential(providerId, join(agentDir, 'auth.json'));
+  // Kept synchronous for the worker redaction hook. Credential writes are serialized
+  // through the async helpers below; this read is best-effort and never throws.
+  try {
+    const text = readFileSync(join(agentDir, 'auth.json'), 'utf8');
+    const credentials = JSON.parse(text) as Record<string, unknown>;
+    return credentials[providerId];
+  } catch {
+    return undefined;
+  }
 }
 
-export async function createIrisPiResourceLoader(cwd: string, agentDir: string) {
-  const loader = new DefaultResourceLoader({
-    cwd,
-    agentDir,
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    noContextFiles: true,
-    systemPrompt: IRIS_AGENT_PROMPT,
-    systemPromptOverride: () => IRIS_AGENT_PROMPT,
-    appendSystemPromptOverride: () => [],
-  });
-  await loader.reload();
-  return loader;
+function readCredentialFileSync(path: string): Record<string, StoredCredential> {
+  try {
+    const value: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).flatMap(([id, credential]) => {
+      if (!credential || typeof credential !== 'object' || Array.isArray(credential)) return [];
+      const item = credential as Record<string, unknown>;
+      return item.type === 'api_key' && typeof item.key === 'string' ? [[id, { type: 'api_key', key: item.key }]] : [];
+    }));
+  } catch {
+    return {};
+  }
 }
 
 export function createIrisPiToolDefinitions(
@@ -111,22 +145,6 @@ export function createIrisPiToolDefinitions(
   operations: IrisToolHostOperations,
   commandShell: AgentCommandShell = defaultToolShell(),
 ) {
-  const terminalBase = createBashToolDefinition(cwd, {
-    operations: {
-      exec: (command, commandCwd, options) => {
-        const terminalContext = irisTerminalContext.getStore();
-        if (!terminalContext) throw new Error('Iris terminal context is missing.');
-        return operations.terminal.exec(
-          command,
-          terminalContext.intent,
-          terminalContext.successExitCodes,
-          commandCwd,
-          options,
-        );
-      },
-    },
-    exposeSessionEnvironment: false,
-  });
   const terminalParameters = Type.Object({
     command: Type.String({ description: 'PowerShell or shell command to execute.' }),
     intent: Type.Union([
@@ -141,60 +159,136 @@ export function createIrisPiToolDefinitions(
       uniqueItems: true,
     })),
   });
-  const { prepareArguments: _legacyPrepareArguments, ...terminalBaseDefinition } = terminalBase;
   const terminal = {
-    ...terminalBaseDefinition,
+    name: 'terminal',
+    label: commandShell.kind === 'powershell' ? 'PowerShell' : 'Terminal',
+    description: `Execute a visible ${commandShell.displayName} (${commandShell.executable}) command in the current project.`,
+    promptGuidelines: [
+      ...(commandShell.kind === 'powershell'
+        ? ['Use PowerShell syntax and quoting. Do not emit Bash-only commands, operators, or environment-variable syntax.']
+        : [`Use the ${commandShell.displayName} shell dialect and quoting.`]),
+      'Set intent to information only for read-only inspection; use operation for side effects.',
+    ],
     parameters: terminalParameters,
     execute: (
-      toolCallId: string,
+      _toolCallId: string,
       params: { command: string; intent: AgentTerminalIntent; successExitCodes?: number[] },
       signal: AbortSignal | undefined,
-      onUpdate: Parameters<typeof terminalBase.execute>[3],
-      context: Parameters<typeof terminalBase.execute>[4],
+      _onUpdate?: unknown,
+      _context?: unknown,
     ) => irisTerminalContext.run(
       { intent: params.intent, successExitCodes: params.successExitCodes ?? [0] },
-      () => terminalBase.execute(
-        toolCallId,
-        { command: params.command },
-        signal,
-        onUpdate,
-        context,
-      ),
+      async () => {
+        const chunks: Buffer[] = [];
+        const result = await operations.terminal.exec(
+          params.command,
+          params.intent,
+          params.successExitCodes ?? [0],
+          cwd,
+          { onData: (data) => chunks.push(data), ...(signal ? { signal } : {}), env: process.env },
+        );
+        return { content: [{ type: 'text' as const, text: chunks.length ? Buffer.concat(chunks).toString('utf8') : `exit code: ${String(result.exitCode)}` }], details: result };
+      },
     ),
   };
   return [
-    withIrisToolCallContext(createReadToolDefinition(cwd, { operations: operations.read })),
-    withIrisToolCallContext(createEditToolDefinition(cwd, { operations: operations.edit })),
-    withIrisToolCallContext(createWriteToolDefinition(cwd, { operations: operations.write })),
-    withIrisToolCallContext({
-      ...terminal,
-      name: 'terminal',
-      label: commandShell.kind === 'powershell' ? 'PowerShell' : 'Terminal',
-      description: commandShell.kind === 'powershell'
-        ? `Execute a PowerShell command in the current project with ${commandShell.displayName} (${commandShell.executable}). Returns stdout, stderr, and the exit code. The intent field is required: information is only for read-only inspection; operation is for commands that may have side effects.`
-        : `Execute a shell command in the current project with ${commandShell.displayName}. Returns stdout, stderr, and the exit code. The intent field is required: information is only for read-only inspection; operation is for commands that may have side effects.`,
-      promptSnippet: commandShell.kind === 'powershell'
-        ? `Execute visible PowerShell commands with ${commandShell.displayName}`
-        : `Execute visible commands with ${commandShell.displayName}`,
-      promptGuidelines: commandShell.kind === 'powershell'
-        ? [
-            'Use PowerShell syntax and quoting. Do not emit Bash-only commands, operators, or environment-variable syntax.',
-            'Set intent to information only for read-only inspection. Use operation for tests, builds, installs, process control, writes, and uncertain commands.',
-          ]
-        : [
-            `Use the ${commandShell.displayName} shell dialect and quoting.`,
-            'Set intent to information only for read-only inspection. Use operation for tests, builds, installs, process control, writes, and uncertain commands.',
-          ],
-    }),
+    withIrisToolCallContext(fileTool('read', Type.Object({ path: Type.String() }), async (_id, params) => {
+      await operations.read.access(join(cwd, params.path));
+      const content = await operations.read.readFile(join(cwd, params.path));
+      return { content: [{ type: 'text' as const, text: content.toString('utf8') }], details: {} };
+    })),
+    withIrisToolCallContext(fileTool('edit', Type.Object({ path: Type.String(), content: Type.String() }), async (_id, params) => {
+      await operations.edit.writeFile(join(cwd, params.path), params.content);
+      return { content: [{ type: 'text' as const, text: 'updated' }], details: {} };
+    })),
+    withIrisToolCallContext(fileTool('write', Type.Object({ path: Type.String(), content: Type.String() }), async (_id, params) => {
+      await operations.write.writeFile(join(cwd, params.path), params.content);
+      return { content: [{ type: 'text' as const, text: 'written' }], details: {} };
+    })),
+    withIrisToolCallContext(terminal),
   ] as const;
 }
 
-function withIrisToolCallContext<TParams extends TSchema, TDetails, TState>(
-  tool: ToolDefinition<TParams, TDetails, TState>,
-): ToolDefinition<TParams, TDetails, TState> {
+interface IrisModelRuntime {
+  setProvider(provider: Provider): void;
+  getProviders(): readonly Provider[];
+  getProvider(providerId: string): Provider | undefined;
+  getModels(providerId?: string): readonly Model<Api>[];
+  getModel(providerId: string, modelId: string): Model<Api> | undefined;
+  getAvailable(): Promise<readonly Model<Api>[]>;
+  getError(): string | undefined;
+  listCredentials(): Promise<readonly { providerId: string; type: 'api_key' | 'oauth' }[]>;
+  getProviderAuthStatus(providerId: string): { configured: boolean; source?: string };
+  login(providerId: string, type: 'api_key', interaction: { prompt: (prompt: { type: string }) => Promise<string>; notify: () => void }): Promise<unknown>;
+  logout(providerId: string): Promise<void>;
+  streamSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream;
+  completeSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessage>;
+}
+
+function credentialStore(path: string) {
+  return {
+    async read(providerId: string) {
+      return (await readCredentialFile(path))[providerId];
+    },
+    async list() {
+      return Object.keys(await readCredentialFile(path)).map((providerId) => ({ providerId, type: 'api_key' as const }));
+    },
+    async modify(providerId: string, fn: (current: StoredCredential | undefined) => Promise<StoredCredential | undefined>) {
+      const current = await readCredentialFile(path);
+      const next = await fn(current[providerId]);
+      if (next) current[providerId] = next;
+      else delete current[providerId];
+      await fs.mkdir(dirname(path), { recursive: true });
+      await fs.writeFile(path, JSON.stringify(current, null, 2) + '\n', 'utf8');
+      return next;
+    },
+    async delete(providerId: string) {
+      const current = await readCredentialFile(path);
+      delete current[providerId];
+      await fs.writeFile(path, JSON.stringify(current, null, 2) + '\n', 'utf8');
+    },
+  };
+}
+
+function createIrisRuntime(agentDir: string): IrisModelRuntime {
+  const models = createModels({ credentials: credentialStore(join(agentDir, 'auth.json')) });
+  for (const provider of builtinProviders()) models.setProvider(provider);
+  const store = credentialStore(join(agentDir, 'auth.json'));
+  return {
+    setProvider: (provider) => models.setProvider(provider),
+    getProviders: () => models.getProviders(),
+    getProvider: (providerId) => models.getProvider(providerId),
+    getModels: (providerId) => models.getModels(providerId),
+    getModel: (providerId, modelId) => models.getModel(providerId, modelId),
+    getAvailable: () => models.getAvailable(),
+    getError: () => undefined,
+    listCredentials: () => store.list(),
+    getProviderAuthStatus: (providerId) => ({
+      configured: Object.hasOwn(readCredentialFileSync(join(agentDir, 'auth.json')), providerId),
+      ...(Object.hasOwn(readCredentialFileSync(join(agentDir, 'auth.json')), providerId) ? { source: 'stored API key' } : {}),
+    }),
+    login: async (providerId, _type, interaction) => {
+      const provider = models.getProvider(providerId);
+      if (!provider?.auth.apiKey?.login) throw new Error(`${provider?.name ?? providerId} does not support API key setup.`);
+      await models.login(providerId, 'api_key', {
+        prompt: async (prompt) => interaction.prompt(prompt),
+        notify: interaction.notify,
+      });
+    },
+    logout: (providerId) => models.logout(providerId),
+    streamSimple: (model, context, options) => models.streamSimple(model, context, options),
+    completeSimple: (model, context, options) => models.completeSimple(model, context, options),
+  };
+}
+
+function fileTool(name: string, parameters: unknown, execute: (id: string, params: any) => Promise<unknown>): any {
+  return { name, label: name, description: `${name} a file`, parameters, execute };
+}
+
+function withIrisToolCallContext<T extends { execute: (...args: any[]) => any }>(tool: T): T {
   return {
     ...tool,
-    execute: (toolCallId, params, signal, onUpdate, context) =>
+    execute: (toolCallId: string, params: unknown, signal?: AbortSignal, onUpdate?: unknown, context?: unknown) =>
       irisToolCallContext.run(
         toolCallId,
         () => tool.execute(toolCallId, params, signal, onUpdate, context),
@@ -205,11 +299,13 @@ function withIrisToolCallContext<TParams extends TSchema, TDetails, TState>(
 export async function loadIrisModelCatalog(
   agentDir: string,
   profileRoot: string,
+  discoverRemote = false,
 ): Promise<IrisAgentModelCatalog> {
   try {
     const profileErrors: string[] = [];
     const runtime = await createIrisModelRuntime(agentDir, profileRoot, {
       kind: 'discover',
+      discoverRemote,
       onError: (profileName, error) => {
         profileErrors.push(`${profileName}: ${error instanceof Error ? error.message : String(error)}`);
       },
@@ -218,8 +314,19 @@ export async function loadIrisModelCatalog(
     const profileNames = new Map(
       profiles.map((profile) => [runtimeProviderId(profile.id), profile.name]),
     );
+    const configuredModels = new Map<string, IrisAgentConfiguredModel>();
+    for (const profile of profiles) {
+      const providerId = runtimeProviderId(profile.id);
+      for (const model of profile.models) {
+        configuredModels.set(modelKey(providerId, model.modelId), model);
+      }
+    }
     const models = (await runtime.getAvailable())
-      .map((model) => toIrisModelOption(model, profileNames.get(model.provider)))
+      .map((model) => toIrisModelOption(
+        model,
+        profileNames.get(model.provider),
+        configuredModels.get(modelKey(model.provider, model.id)),
+      ))
       .sort(compareModels);
     const runtimeError = runtime.getError();
     const errors = [runtimeError, ...profileErrors].filter((error): error is string => !!error);
@@ -324,18 +431,7 @@ export async function removeIrisProviderCredential(
   return loadIrisProviderCatalog(agentDir, profileRoot);
 }
 
-export async function createIrisPiSession(
-  options: Omit<
-    CreateAgentSessionOptions,
-    | 'cwd'
-    | 'resourceLoader'
-    | 'sessionManager'
-    | 'settingsManager'
-    | 'tools'
-    | 'customTools'
-    | 'modelRuntime'
-    | 'model'
-  > & {
+export async function createIrisPiSession(options: {
     cwd: string;
     agentDir: string;
     providerProfileRoot: string;
@@ -344,6 +440,8 @@ export async function createIrisPiSession(
     model: IrisAgentModelRef;
     commandShell: AgentCommandShell;
     providerProxy: AgentProviderProxy;
+    systemPrompt?: string;
+    executeToolCall?: (toolCall: ToolCall) => Promise<ToolResultMessage>;
     onProviderPayload?: (
       payload: unknown,
       model: { provider: string; id: string; api: string },
@@ -352,24 +450,8 @@ export async function createIrisPiSession(
       failure: string | null,
       model: { provider: string; id: string; api: string },
     ) => void | Promise<void>;
-  },
-) {
-  const {
-    cwd,
-    agentDir,
-    providerProfileRoot,
-    operations,
-    history,
-    model: modelRef,
-    commandShell,
-    providerProxy,
-    onProviderPayload,
-    onProviderFailure,
-    ...piOptions
-  } = options;
-  const resourceLoader = await createIrisPiResourceLoader(cwd, agentDir);
-  const sessionManager = PiSessionManager.inMemory(cwd);
-  restoreIrisPiHistory(sessionManager, history);
+}) {
+  const { agentDir, providerProfileRoot, model: modelRef, providerProxy, onProviderPayload, onProviderFailure } = options;
   const modelRuntime = await createIrisModelRuntime(agentDir, providerProfileRoot, {
     kind: 'selected',
     model: modelRef,
@@ -381,27 +463,66 @@ export async function createIrisPiSession(
     );
   }
   const transport = createProviderTransport(providerProxy);
-  instrumentProviderPayloads(modelRuntime, onProviderPayload, onProviderFailure, transport.fetch);
-  try {
-    const result = await createAgentSession({
-      ...piOptions,
-      cwd,
-      agentDir,
-      resourceLoader,
-      sessionManager,
-      model,
-      modelRuntime,
-      settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
-      tools: [...IRIS_PI_TOOL_NAMES],
-      customTools: createIrisPiToolDefinitions(cwd, operations, commandShell) as unknown as NonNullable<
-        CreateAgentSessionOptions['customTools']
-      >,
-    });
-    return { ...result, modelRuntime, model, disposeProviderTransport: transport.dispose };
-  } catch (error) {
-    await transport.dispose();
-    throw error;
-  }
+  const streamRuntime = instrumentProviderPayloads(modelRuntime, onProviderPayload, onProviderFailure, transport.fetch);
+  const messages = options.history.messages.map(toPiHistoryMessage);
+  const listeners = new Set<(event: unknown) => void | Promise<void>>();
+  let aborted = false;
+  let activeAbortController: AbortController | null = null;
+  const state = { messages };
+  const emit = async (event: unknown) => {
+    for (const listener of listeners) await listener(event);
+  };
+  const tools = createIrisPiToolDefinitions(options.cwd, {
+    read: { access: async () => undefined, readFile: async () => Buffer.from('') },
+    edit: { access: async () => undefined, readFile: async () => Buffer.from(''), writeFile: async () => undefined },
+    write: { mkdir: async () => undefined, writeFile: async () => undefined },
+    terminal: { exec: async () => ({ exitCode: 0 }) },
+  }, options.commandShell).map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters })) as Tool[];
+  const execute = async (input?: string) => {
+    if (input !== undefined) state.messages.push({ role: 'user', content: input, timestamp: Date.now() });
+    while (!aborted) {
+      activeAbortController = new AbortController();
+      const context: Context = { systemPrompt: options.systemPrompt ?? IRIS_AGENT_PROMPT, messages: state.messages, tools };
+      const stream = streamRuntime.streamSimple(model, context, { signal: activeAbortController.signal });
+      let final: AssistantMessage | undefined;
+      for await (const event of stream) {
+        if (event.type === 'text_delta' || event.type === 'thinking_delta' || event.type === 'toolcall_delta') {
+          await emit({ type: 'message_update', assistantMessageEvent: event, message: event.partial });
+        }
+        if (event.type === 'done') final = event.message;
+        if (event.type === 'error') final = event.error;
+      }
+      const response = final ?? await stream.result();
+      state.messages.push(response);
+      await emit({ type: 'message_end', message: response });
+      if (response.stopReason === 'error' || response.stopReason === 'aborted' || response.content.every((part) => part.type !== 'toolCall')) break;
+      const calls = response.content.flatMap((part) => part.type === 'toolCall' ? [part] : []);
+      for (const call of calls) {
+        if (aborted) break;
+        const result = options.executeToolCall
+          ? await irisToolCallContext.run(call.id, () => options.executeToolCall!(call))
+          : { role: 'toolResult' as const, toolCallId: call.id, toolName: call.name, content: [{ type: 'text' as const, text: 'Tool execution is unavailable.' }], isError: true, timestamp: Date.now() };
+        state.messages.push(result);
+        await emit({ type: 'message_end', message: result });
+      }
+      activeAbortController = null;
+    }
+    activeAbortController = null;
+    await emit({ type: 'agent_end', messages: state.messages });
+  };
+  return {
+    session: {
+      agent: { state, continue: () => execute() },
+      subscribe(listener: (event: unknown) => void | Promise<void>) { listeners.add(listener); return () => listeners.delete(listener); },
+      prompt: (input: string) => execute(input),
+      continue: () => execute(),
+      abort: async () => { aborted = true; activeAbortController?.abort(); },
+      dispose: () => { aborted = true; listeners.clear(); },
+    },
+    modelRuntime,
+    model,
+    disposeProviderTransport: transport.dispose,
+  };
 }
 
 /**
@@ -487,18 +608,19 @@ function createProviderTransport(providerProxy: AgentProviderProxy): {
 
 type IrisProfileModelMode =
   | { kind: 'none' }
-  | { kind: 'discover'; onError?: (profileName: string, error: unknown) => void }
+  | {
+      kind: 'discover';
+      discoverRemote: boolean;
+      onError?: (profileName: string, error: unknown) => void;
+    }
   | { kind: 'selected'; model: IrisAgentModelRef };
 
 async function createIrisModelRuntime(
   agentDir: string,
   profileRoot: string,
-  profileMode: IrisProfileModelMode = { kind: 'discover' },
-): Promise<ModelRuntime> {
-  const runtime = await ModelRuntime.create({
-    authPath: join(agentDir, 'auth.json'),
-    modelsPath: join(agentDir, 'models.json'),
-  });
+  profileMode: IrisProfileModelMode = { kind: 'discover', discoverRemote: true },
+): Promise<IrisModelRuntime> {
+  const runtime = createIrisRuntime(agentDir);
   const profiles = await loadProviderProfiles(profileRoot);
   if (profileMode.kind === 'none') return runtime;
   if (profileMode.kind === 'discover') {
@@ -512,9 +634,9 @@ async function createIrisModelRuntime(
           providerId: runtimeProviderId(profile.id),
           template,
           baseUrl,
-          modelIds: profile.models?.length
-            ? profile.models.filter((model) => model.enabled).map((model) => model.modelId)
-            : await fetchIrisProviderModelIds(template, baseUrl, profile.apiKey),
+          modelIds: profileMode.discoverRemote
+            ? await fetchIrisProviderModelIds(template, baseUrl, profile.apiKey)
+            : profile.models.filter((model) => model.enabled).map((model) => model.modelId),
         };
       } catch (error) {
         profileMode.onError?.(profile.name, error);
@@ -523,18 +645,8 @@ async function createIrisModelRuntime(
     }));
     for (const discovery of discoveries) {
       if (!discovery) continue;
-      runtime.registerProvider(discovery.providerId, {
-        name: discovery.profile.name,
-        ...(discovery.baseUrl ? { baseUrl: discovery.baseUrl } : {}),
-        api: discovery.template.api,
-        apiKey: discovery.profile.apiKey,
-        models: profileModelsConfig(
-          runtime.getModels(discovery.template.sourceProvider),
-          discovery.template.api,
-          discovery.modelIds,
-          discovery.profile.models,
-        ),
-      });
+      registerProfileProvider(runtime, discovery.providerId, discovery.profile.name, discovery.template,
+        discovery.baseUrl, discovery.profile.apiKey, discovery.modelIds, discovery.profile.models);
     }
     return runtime;
   }
@@ -544,20 +656,48 @@ async function createIrisModelRuntime(
     const template = findIrisAgentProviderTemplate(profile.templateId);
     if (!template) continue;
     const baseUrl = profile.baseUrl || template.defaultBaseUrl;
-    runtime.registerProvider(providerId, {
-      name: profile.name,
-      ...(baseUrl ? { baseUrl } : {}),
-      api: template.api,
-      apiKey: profile.apiKey,
-      models: profileModelsConfig(
-        runtime.getModels(template.sourceProvider),
-        template.api,
-        [profileMode.model.modelId],
-        profile.models,
-      ),
-    });
+    registerProfileProvider(runtime, providerId, profile.name, template, baseUrl, profile.apiKey,
+      [profileMode.model.modelId], profile.models);
   }
   return runtime;
+}
+
+export async function createIrisModelRuntimeForTest(agentDir: string, profileRoot: string): Promise<IrisModelRuntime> {
+  return createIrisModelRuntime(agentDir, profileRoot, { kind: 'none' });
+}
+
+function registerProfileProvider(
+  runtime: IrisModelRuntime,
+  providerId: string,
+  name: string,
+  template: typeof IRIS_AGENT_PROVIDER_TEMPLATES[number],
+  baseUrl: string,
+  apiKey: string,
+  modelIds: readonly string[],
+  configuredModels: readonly IrisAgentConfiguredModel[],
+): void {
+  const source = runtime.getProvider(template.sourceProvider);
+  if (!source) throw new Error(`Built-in provider is unavailable: ${template.sourceProvider}`);
+  const models = profileModelsConfig(runtime.getModels(template.sourceProvider), template.api, modelIds, configuredModels)
+    .map((model) => ({ ...model, provider: providerId, baseUrl: baseUrl || source.baseUrl || '' }));
+  const provider = createProvider({
+    id: providerId,
+    name,
+    ...(baseUrl ? { baseUrl } : {}),
+    auth: {
+      apiKey: {
+        name: `${name} API key`,
+        resolve: async () => ({ auth: { apiKey }, source: name }),
+        login: async (interaction) => ({ type: 'api_key' as const, key: await interaction.prompt({ type: 'secret', message: `${name} API key` }) }),
+      },
+    },
+    models,
+    api: {
+      stream: source.stream.bind(source),
+      streamSimple: source.streamSimple.bind(source),
+    },
+  });
+  runtime.setProvider(provider);
 }
 
 function loadProviderProfiles(profileRoot: string) {
@@ -623,7 +763,7 @@ function toIrisModelOption(model: {
   reasoning: boolean;
   contextWindow?: number;
   maxTokens?: number;
-}, providerName?: string): IrisAgentModelOption {
+}, providerName?: string, configured?: IrisAgentConfiguredModel): IrisAgentModelOption {
   return {
     provider: model.provider,
     modelId: model.id,
@@ -633,7 +773,22 @@ function toIrisModelOption(model: {
     ...(model.contextWindow ? { contextWindowTokens: model.contextWindow } : {}),
     ...(model.maxTokens ? { maxOutputTokens: model.maxTokens } : {}),
     ...(providerName ? { providerName } : {}),
+    ...(configured
+      ? {
+          contextPolicy: {
+            reserveOutputTokens: configured.reserveOutputTokens,
+            keepRecentTokens: configured.keepRecentTokens,
+            compactTrigger: configured.compactTrigger,
+          },
+          source: configured.source,
+          enabled: configured.enabled,
+        }
+      : {}),
   };
+}
+
+function modelKey(provider: string, modelId: string): string {
+  return `${provider}\0${modelId}`;
 }
 
 function compareModels(left: IrisAgentModelOption, right: IrisAgentModelOption): number {
@@ -651,7 +806,7 @@ function defaultToolShell(): AgentCommandShell {
 }
 
 export function restoreIrisPiHistory(
-  sessionManager: PiSessionManager,
+  sessionManager: IrisHistoryManager,
   history: AgentHistorySnapshot,
 ): void {
   for (const item of history.messages) {
@@ -659,8 +814,14 @@ export function restoreIrisPiHistory(
   }
 }
 
+export class IrisHistoryManager {
+  readonly messages: Message[] = [];
+  appendMessage(message: Message): void { this.messages.push(message); }
+  buildSessionContext(): Context { return { messages: [...this.messages] }; }
+}
+
 export function instrumentProviderPayloads(
-  modelRuntime: ModelRuntime,
+  modelRuntime: IrisModelRuntime,
   capture?: (
     payload: unknown,
     model: { provider: string; id: string; api: string },
@@ -670,7 +831,7 @@ export function instrumentProviderPayloads(
     model: { provider: string; id: string; api: string },
   ) => void | Promise<void>,
   providerFetch?: typeof globalThis.fetch,
-): void {
+): IrisModelRuntime {
   const streamSimple = modelRuntime.streamSimple.bind(modelRuntime);
   modelRuntime.streamSimple = ((model, context, options) => {
     const modelIdentity = { provider: model.provider, id: model.id, api: model.api };
@@ -721,7 +882,8 @@ export function instrumentProviderPayloads(
         return transformed;
       },
     });
-  }) as ModelRuntime['streamSimple'];
+  }) as IrisModelRuntime['streamSimple'];
+  return modelRuntime;
 }
 
 async function captureProviderFailure(
@@ -793,7 +955,7 @@ function isErrorRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-type IrisPiContext = Parameters<ModelRuntime['streamSimple']>[1];
+type IrisPiContext = Context;
 type IrisPiAssistantMessage = Extract<IrisPiContext['messages'][number], { role: 'assistant' }>;
 
 export function normalizeIrisProviderContext(context: IrisPiContext): IrisPiContext {
@@ -883,7 +1045,7 @@ export function normalizeIrisInterruptedAssistantMessage(
 
 function toPiHistoryMessage(
   item: AgentHistorySnapshot['messages'][number],
-): Parameters<PiSessionManager['appendMessage']>[0] {
+): Message {
   if (item.role === 'assistant') {
     const content = [
       ...(item.content ? [{ type: 'text' as const, text: item.content }] : []),
@@ -910,7 +1072,7 @@ function toPiHistoryMessage(
       },
       stopReason: item.toolCalls?.length ? 'toolUse' : 'stop',
       timestamp: item.createdAt,
-    } as Parameters<PiSessionManager['appendMessage']>[0];
+    } as AssistantMessage;
   }
   if (item.role === 'tool' && item.toolCallId && item.tool) {
     return {
@@ -920,7 +1082,7 @@ function toPiHistoryMessage(
       content: [{ type: 'text', text: item.content }],
       isError: item.isError ?? false,
       timestamp: item.createdAt,
-    } as Parameters<PiSessionManager['appendMessage']>[0];
+    } as ToolResultMessage;
   }
   return {
     role: 'user',

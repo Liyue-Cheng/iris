@@ -72,7 +72,6 @@ export function DisplayMenu({
           variant="ghost"
           className={compact ? 'h-7 w-7 shrink-0' : 'h-7 gap-1.5 px-2 text-xs'}
           aria-label={t('collection.display')}
-          aria-label={t('collection.display')}
         >
           <SlidersHorizontal className="h-3.5 w-3.5" />
           {!compact && t('collection.display')}

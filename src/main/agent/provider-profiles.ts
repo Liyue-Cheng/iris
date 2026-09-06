@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { copyFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
+import type { Api, Model } from '@earendil-works/pi-ai/compat';
 import type { IrisAgentConfiguredModel, IrisAgentProviderProfileInfo, IrisAgentProviderTemplate } from '@shared/types';
 import { writeFileAtomic } from '../atomic-write';
 
@@ -36,7 +36,7 @@ export const IRIS_AGENT_PROVIDER_TEMPLATES: readonly IrisAgentProviderTemplate[]
   },
 ];
 
-export interface StoredIrisAgentProviderProfile extends IrisAgentProviderProfileInfo {
+export interface StoredIrisAgentProviderProfile extends Omit<IrisAgentProviderProfileInfo, 'hasCredential'> {
   apiKey: string;
   models: IrisAgentConfiguredModel[];
 }
@@ -121,6 +121,25 @@ export async function updateIrisAgentProviderModels(
     candidate.id === profileId ? { ...candidate, models: normalized } : candidate));
 }
 
+export async function updateIrisAgentProviderProfileApiKey(
+  profileId: string,
+  apiKeyInput: string,
+  root: string,
+): Promise<IrisAgentProviderProfileInfo[]> {
+  const apiKey = apiKeyInput.trim();
+  if (!apiKey) throw new Error('API key is required.');
+  if (apiKey.length > 20_000) throw new Error('API key is too long.');
+  const profiles = await loadStoredIrisAgentProviderProfiles(root);
+  if (!profiles.some((profile) => profile.id === profileId)) {
+    throw new Error('Provider profile was not found.');
+  }
+  const updated = profiles.map((profile) => profile.id === profileId
+    ? { ...profile, apiKey }
+    : profile);
+  await writeProviderProfileFile(providerProfilesPath(root), updated);
+  return profilesForRenderer(updated);
+}
+
 export async function removeIrisAgentProviderProfile(
   profileId: string,
   root: string,
@@ -146,8 +165,11 @@ export function profilesForRenderer(
   profiles: readonly StoredIrisAgentProviderProfile[],
 ): IrisAgentProviderProfileInfo[] {
   return profiles.map((profile) => ({
-    ...profile,
-    apiKey: profile.apiKey,
+    id: profile.id,
+    name: profile.name,
+    templateId: profile.templateId,
+    baseUrl: profile.baseUrl,
+    hasCredential: profile.apiKey.length > 0,
     models: profile.models?.map((model) => ({ ...model })) ?? [],
   }));
 }
@@ -174,7 +196,7 @@ function normalizeConfiguredModel(model: IrisAgentConfiguredModel): IrisAgentCon
 }
 
 export function profileModelsConfig(
-  sourceModels: ReturnType<ModelRuntime['getModels']>,
+  sourceModels: readonly Model<Api>[],
   api: IrisAgentProviderTemplate['api'],
   modelIds: readonly string[],
   configuredModels: readonly IrisAgentConfiguredModel[] = [],

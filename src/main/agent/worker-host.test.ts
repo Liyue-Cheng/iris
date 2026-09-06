@@ -62,7 +62,7 @@ function readyEvent(
     correlation: { sessionId, workerEpoch },
     runtime: {
       protocolVersion: IRIS_AGENT_PROTOCOL_VERSION,
-      piVersion: 'test',
+      executorVersion: 'test',
       nodeVersion: process.versions.node,
       workerEpoch,
       historyRevision,
@@ -442,7 +442,7 @@ describe('Iris Agent Worker provider attempts', () => {
 
     vi.doMock('node:worker_threads', () => ({ parentPort: port }));
     vi.doMock('./pi-adapter', () => ({
-      IRIS_PI_VERSION: 'test',
+      IRIS_EXECUTOR_VERSION: 'test',
       createIrisPiSession: vi.fn(async (options: typeof providerHooks) => {
         providerHooks = options;
         executionModels.push((options as unknown as { model: { provider: string; modelId: string } }).model);

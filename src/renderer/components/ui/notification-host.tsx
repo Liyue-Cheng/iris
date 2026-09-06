@@ -47,7 +47,6 @@ export function NotificationHost(): JSX.Element | null {
                     className="-mr-1 -mt-1 h-7 w-7 shrink-0"
                     onClick={() => dismissNotification(notification.id)}
                     aria-label={translate('common.close')}
-                    aria-label={translate('common.close')}
                   >
                     <X className="h-3.5 w-3.5" />
                   </Button>

@@ -64,14 +64,14 @@ import {
   AGENT_COMPACTION_INSTRUCTION,
   agentCompactionTrigger,
   completeAgentCompaction,
-  estimateAgentContextTokens,
-  estimateAgentTokens,
+  estimateAgentRequestTokens,
   inheritAgentCompactionInto,
   openAgentCompaction,
   planAgentCompaction,
   realignActiveCompaction,
   renderAgentCompactionSource,
   settleAgentCompaction,
+  isAgentContextOverflowError,
   type AgentCompactionThresholds,
 } from './compaction';
 import {
@@ -84,6 +84,8 @@ import {
 } from './session-model';
 import { SOFTWARE_PROMPT_TEMPLATE } from '../iris-templates';
 import { AppError } from '@shared/app-error';
+
+export const DEFAULT_DOCUMENT_AGENT_MESSAGE = '请根据文档内容开始工作';
 
 interface LoadedStore {
   root: string;
@@ -99,7 +101,7 @@ export interface IrisAgentSessionManagerOptions {
   workerFactory?: () => AgentWorkerPort;
   workerIdleTimeoutMs?: number;
   appVersion?: string;
-  modelCatalogLoader?: () => Promise<IrisAgentModelCatalog>;
+  modelCatalogLoader?: (forceRefresh: boolean) => Promise<IrisAgentModelCatalog>;
   providerProfileRoot?: string;
   /** Machine-level settings store; persists the user's last selected model. */
   settingsManager?: SettingsManager;
@@ -315,20 +317,24 @@ export class IrisAgentSessionManager extends EventEmitter {
     const store = await this.ensureStore(scope.root);
     let session = await this.requireSession(scope, sessionId);
     assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
+    const effectiveMessage = await this.resolveUserMessage(session, message);
     this.assertUsableModel(session);
     if (isAgentSessionBusy(session)) throw new Error('Iris Agent session is already running.');
     if (session.state === 'paused') {
       await this.shutdownHost(sessionId);
       session = supersedeOpenAgentIntent(await this.requireSession(scope, sessionId));
     }
-    // Compact before the request is assembled, never after a reply has landed:
-    // the user is already waiting here, and the tidy-up is cancellable.
-    session = await this.compactForThreshold(scope, store, session, message);
+    // Assemble once for the complete budget preflight. The final prompt is
+    // assembled again after compaction so its request facts match the send.
+    const budgetPrompt = await this.preparePrompt(session, effectiveMessage);
+    session = await this.compactForThreshold(
+      scope, store, session, effectiveMessage, budgetPrompt.prompt,
+    );
     const intentId = randomUUID();
     const now = Date.now();
     session.intents.push({
       id: intentId,
-      content: message,
+      content: effectiveMessage,
       turnIds: [],
       state: 'running',
       assembledInputAvailable: false,
@@ -340,7 +346,7 @@ export class IrisAgentSessionManager extends EventEmitter {
     let running = await store.commit(session);
     this.emitChanged(scope, running);
     try {
-      const prepared = await this.preparePrompt(running, message, intentId);
+      const prepared = await this.preparePrompt(running, effectiveMessage, intentId);
       let assembledInputAvailable = false;
       try {
         await store.savePromptSnapshot(session.id, prepared.intentId, prepared.prompt);
@@ -375,6 +381,22 @@ export class IrisAgentSessionManager extends EventEmitter {
     }
   }
 
+  private async resolveUserMessage(
+    session: AgentSessionAggregate,
+    message: string,
+  ): Promise<string> {
+    const trimmed = message.trim();
+    if (trimmed) return trimmed;
+    if (session.anchor.kind !== 'document' || session.intents.length > 0) {
+      throw new Error('Enter a task before starting Iris Agent.');
+    }
+    const anchor = await this.readAnchorText(session.anchor);
+    if (!anchor.text.trim()) {
+      throw new Error('The anchor document is empty. Enter a task before starting Iris Agent.');
+    }
+    return DEFAULT_DOCUMENT_AGENT_MESSAGE;
+  }
+
   /** User-initiated tidy-up of a quiescent Session. */
   async compact(
     scope: ProjectScope,
@@ -398,19 +420,21 @@ export class IrisAgentSessionManager extends EventEmitter {
   }
 
   /**
-   * Compacts ahead of a request whose projected Context would crowd the window.
-   * A failed or unavailable compaction never blocks the request: the send simply
-   * proceeds on the previous projection.
+   * Compacts ahead of a request whose complete projected payload would crowd
+   * the window. A failed or unavailable compaction never blocks the request.
    */
   private async compactForThreshold(
     scope: ProjectScope,
     store: IrisAgentSessionStore,
     session: AgentSessionAggregate,
     pendingMessage: string,
+    preparedPrompt?: string,
   ): Promise<AgentSessionAggregate> {
     if (!this.options.summarizeContext) return session;
-    const projected = estimateAgentContextTokens(store.history(session.id)) +
-      estimateAgentTokens(pendingMessage);
+    const projected = estimateAgentRequestTokens(
+      preparedPrompt ?? pendingMessage,
+      store.history(session.id),
+    );
     const thresholds = this.compactionThresholdsFor(session);
     if (projected < agentCompactionTrigger(thresholds)) return session;
     const plan = planAgentCompaction(session, thresholds);
@@ -989,6 +1013,10 @@ export class IrisAgentSessionManager extends EventEmitter {
         return;
       }
       case 'execution-paused':
+        if (isAgentContextOverflowError(event.message) &&
+          await this.retryAfterContextOverflow(scope, store, session)) {
+          return;
+        }
         await this.pauseSessionExecution(
           session.id,
           event.message,
@@ -1005,6 +1033,58 @@ export class IrisAgentSessionManager extends EventEmitter {
       case 'stopped':
         return;
     }
+  }
+
+  /**
+   * Compacts settled history and retries the same Intent once after a provider
+   * context overflow. The old Worker is shut down first; its trailing events
+   * then fail the worker-epoch check and cannot pause the retried Intent.
+   */
+  private async retryAfterContextOverflow(
+    scope: ProjectScope,
+    store: IrisAgentSessionStore,
+    source: AgentSessionAggregate,
+  ): Promise<boolean> {
+    if (!this.options.summarizeContext) return false;
+    const latest = store.get(source.id) ?? source;
+    const intent = currentAgentIntent(latest);
+    if (!intent || intent.state !== 'running' || (intent.contextOverflowRetries ?? 0) >= 1) {
+      return false;
+    }
+    const thresholds = this.compactionThresholdsFor(latest);
+    const plan = planAgentCompaction(latest, thresholds);
+    if (!plan) return false;
+
+    intent.contextOverflowRetries = (intent.contextOverflowRetries ?? 0) + 1;
+    const marked = await this.commitAndEmit(scope, store, latest);
+    await this.shutdownHost(source.id);
+    await this.runCompaction(scope, store, marked, plan, 'overflow');
+    const current = await this.requireSession(scope, source.id);
+    const currentIntent = currentAgentIntent(current);
+    if (!currentIntent || currentIntent.id !== intent.id || currentIntent.state !== 'running') return false;
+
+    const prepared = await this.preparePrompt(current, currentIntent.content, currentIntent.id);
+    try {
+      await store.savePromptSnapshot(current.id, currentIntent.id, prepared.prompt);
+      currentIntent.assembledInputAvailable = true;
+    } catch {
+      currentIntent.assembledInputAvailable = false;
+    }
+    current.requestFacts.push(prepared.facts);
+    const saved = await this.commitAndEmit(scope, store, current);
+    const host = await this.hostFor(saved, store, scope);
+    await host.ensureStarted();
+    const running = await this.requireSession(scope, source.id);
+    const accepted = currentAgentIntent(running);
+    if (!accepted || accepted.id !== intent.id || accepted.state !== 'running') return false;
+    await host.post({
+      type: 'run',
+      correlation: activeIntentCorrelation(running, host.workerEpoch),
+      prompt: prepared.prompt,
+      history: store.history(source.id),
+      runtime: await this.executionRuntimeFor(running),
+    });
+    return true;
   }
 
   private async persistProviderContext(
@@ -1644,31 +1724,30 @@ export class IrisAgentSessionManager extends EventEmitter {
   private compactionThresholdsFor(session: AgentSessionAggregate): AgentCompactionThresholds {
     const configured = session.model && this.modelCatalogCache?.models.find((model) =>
       model.provider === session.model?.provider && model.modelId === session.model?.modelId);
-    if (!configured) return this.options.compactionThresholds ?? {};
+    const defaults = this.options.compactionThresholds ?? {};
+    if (!configured) return defaults;
     return {
+      ...defaults,
       ...(configured.contextWindowTokens ? { contextWindow: configured.contextWindowTokens } : {}),
       ...(configured.contextPolicy?.reserveOutputTokens || configured.maxOutputTokens
         ? { reserveTokens: configured.contextPolicy?.reserveOutputTokens ?? configured.maxOutputTokens }
         : {}),
       ...(configured.contextPolicy?.keepRecentTokens ? { keepRecentTokens: configured.contextPolicy.keepRecentTokens } : {}),
+      ...(configured.contextPolicy?.compactTrigger ? { triggerTokens: configured.contextPolicy.compactTrigger } : {}),
     };
   }
 
   private async loadModelCatalog(forceRefresh = false): Promise<IrisAgentModelCatalog> {
-    if (
-      forceRefresh &&
-      this.modelCatalogLoad?.generation !== this.modelCatalogGeneration
-    ) {
-      this.invalidateModelCatalog();
-    }
+    if (forceRefresh) this.invalidateModelCatalog();
     if (this.modelCatalogCache) return structuredClone(this.modelCatalogCache);
     const generation = this.modelCatalogGeneration;
     if (this.modelCatalogLoad?.generation === generation) {
       return structuredClone(await this.modelCatalogLoad.promise);
     }
-    const promise = (this.options.modelCatalogLoader?.() ?? loadIrisModelCatalog(
+    const promise = (this.options.modelCatalogLoader?.(forceRefresh) ?? loadIrisModelCatalog(
       irisPiAgentDir(),
       this.options.providerProfileRoot ?? this.userDataPath,
+      forceRefresh,
     )).then((catalog) => {
       if (this.modelCatalogGeneration === generation) {
         this.modelCatalogCache = structuredClone(catalog);

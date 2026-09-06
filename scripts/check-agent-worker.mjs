@@ -12,7 +12,6 @@ if (!protocolVersionMatch) {
   throw new Error('Could not read the Iris Agent protocol version from source.');
 }
 const protocolVersion = Number(protocolVersionMatch[1]);
-const model = { provider: 'openai', modelId: 'gpt-5.2' };
 const commandShell = process.platform === 'win32'
   ? { kind: 'powershell', executable: 'powershell.exe', displayName: 'Windows PowerShell' }
   : { kind: 'posix', executable: process.env.SHELL || '/bin/bash', displayName: process.env.SHELL || '/bin/bash' };
@@ -63,13 +62,20 @@ const probe = `
   const timeout = setTimeout(() => {
     console.error('agent worker check timed out');
     process.exit(2);
-  }, 60000);
+  }, 15000);
   worker.once('error', (error) => {
     console.error(error);
     process.exit(3);
   });
   worker.on('message', async (message) => {
-    if (message && message.type !== 'ready') return;
+    if (message?.type === 'failure') {
+      clearTimeout(timeout);
+      console.error('agent worker failure [' + message.code + ']: ' + message.message);
+      await worker.terminate();
+      rmSync(agentDir, { recursive: true, force: true });
+      process.exit(4);
+    }
+    if (!message || message.type !== 'ready') return;
     clearTimeout(timeout);
     console.log(JSON.stringify(message));
     await worker.terminate();
@@ -84,9 +90,7 @@ const probe = `
       cwd: process.cwd(),
       agentDir,
       providerProfileRoot: agentDir,
-      model: ${JSON.stringify(model)},
       commandShell: ${JSON.stringify(commandShell)},
-      providerProxy: { mode: 'direct' },
     },
   });
 `;
@@ -122,13 +126,11 @@ if (
   event.correlation?.sessionId !== 'runtime-check' ||
   event.correlation?.workerEpoch !== 4 ||
   event.runtime?.protocolVersion !== protocolVersion ||
-  event.runtime?.piVersion !== '0.84.1' ||
+  event.runtime?.executorVersion !== 'iris-executor-1' ||
   event.runtime?.workerEpoch !== 4 ||
   event.runtime?.historyRevision !== 7 ||
   event.runtime?.historyMessageCount !== 0 ||
   event.runtime?.historyDigest !== historyDigest(history) ||
-  event.runtime?.model?.provider !== model.provider ||
-  event.runtime?.model?.modelId !== model.modelId ||
   event.runtime?.commandShell?.kind !== commandShell.kind ||
   event.runtime?.commandShell?.executable !== commandShell.executable
 ) {
@@ -136,5 +138,5 @@ if (
 }
 
 console.log(
-  `[agent-worker] Electron Node ${event.runtime.nodeVersion}, Pi ${event.runtime.piVersion}, protocol v${event.version}`,
+  `[agent-worker] Electron Node ${event.runtime.nodeVersion}, executor ${event.runtime.executorVersion}, protocol v${event.version}`,
 );

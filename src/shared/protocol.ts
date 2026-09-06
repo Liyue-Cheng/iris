@@ -155,6 +155,7 @@ export const CHANNELS = {
   IRIS_AGENT_PROVIDER_SET_KEY: 'iris-agent:provider-set-key',
   IRIS_AGENT_PROVIDER_REMOVE: 'iris-agent:provider-remove',
   IRIS_AGENT_PROVIDER_PROFILE_ADD: 'iris-agent:provider-profile-add',
+  IRIS_AGENT_PROVIDER_PROFILE_SET_KEY: 'iris-agent:provider-profile-set-key',
   IRIS_AGENT_PROVIDER_PROFILE_REMOVE: 'iris-agent:provider-profile-remove',
   IRIS_AGENT_PROVIDER_PROFILE_MODELS: 'iris-agent:provider-profile-models',
   IRIS_AGENT_PROVIDER_PROFILE_DISCOVER: 'iris-agent:provider-profile-discover',

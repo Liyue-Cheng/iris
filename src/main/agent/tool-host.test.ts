@@ -61,7 +61,7 @@ describe('IrisAgentToolHost', () => {
     }
   });
 
-  it('rejects unmanaged .iris document creation without classifying command text as interactive', async () => {
+  it('allows write tools to create managed documents in the first version', async () => {
     const projectRoot = await createTempDataDir('iris-agent-tool-project-');
     const artifactRoot = await createTempDataDir('iris-agent-tool-output-');
     try {
@@ -75,8 +75,8 @@ describe('IrisAgentToolHost', () => {
         },
         correlation,
       );
-      expect(write.update.state).toBe('failed');
-      expect(write.update.error).toContain('cannot create new .iris documents');
+      expect(write.update.state).toBe('completed');
+      expect(await fs.readFile(join(projectRoot, '.iris', 'issue', 'new.md'), 'utf8')).toBe('no');
 
       const terminal = await host.execute(
         {
@@ -96,6 +96,87 @@ describe('IrisAgentToolHost', () => {
     } finally {
       await removeTempDataDir(projectRoot);
       await removeTempDataDir(artifactRoot);
+    }
+  });
+
+  it('allows every tool to follow arbitrary junction paths in the first version', async () => {
+    const projectRoot = await createTempDataDir('iris-agent-tool-link-project-');
+    const artifactRoot = await createTempDataDir('iris-agent-tool-link-output-');
+    const outsideRoot = await createTempDataDir('iris-agent-tool-link-outside-');
+    try {
+      const linkedDirectory = join(projectRoot, 'linked');
+      await fs.writeFile(join(outsideRoot, 'secret.txt'), 'outside', 'utf8');
+      await fs.symlink(outsideRoot, linkedDirectory, 'junction');
+      const host = new IrisAgentToolHost({
+        projectRoot,
+        artifactRoot,
+        commandShell,
+      });
+
+      const read = await host.execute(
+        { tool: 'read', operation: 'readFile', absolutePath: join(linkedDirectory, 'secret.txt') },
+        correlation,
+      );
+      expect(read.update.state).toBe('completed');
+      expect(read.result).toMatchObject({
+        kind: 'file',
+        contentBase64: Buffer.from('outside').toString('base64'),
+      });
+
+      const access = await host.execute(
+        { tool: 'read', operation: 'access', absolutePath: join(linkedDirectory, 'secret.txt') },
+        correlation,
+      );
+      expect(access.update.state).toBe('completed');
+
+      const mkdir = await host.execute(
+        { tool: 'write', operation: 'mkdir', absolutePath: join(linkedDirectory, 'created') },
+        correlation,
+      );
+      expect(mkdir.update.state).toBe('completed');
+      await expect(fs.access(join(outsideRoot, 'created'))).resolves.toBeUndefined();
+
+      const write = await host.execute(
+        {
+          tool: 'write',
+          operation: 'writeFile',
+          absolutePath: join(linkedDirectory, 'written.txt'),
+          content: 'written outside',
+        },
+        correlation,
+      );
+      expect(write.update.state).toBe('completed');
+      await expect(fs.readFile(join(outsideRoot, 'written.txt'), 'utf8')).resolves.toBe('written outside');
+
+      const edit = await host.execute(
+        {
+          tool: 'edit',
+          operation: 'writeFile',
+          absolutePath: join(linkedDirectory, 'edited.txt'),
+          content: 'edited outside',
+        },
+        correlation,
+      );
+      expect(edit.update.state).toBe('completed');
+      await expect(fs.readFile(join(outsideRoot, 'edited.txt'), 'utf8')).resolves.toBe('edited outside');
+
+      const terminal = await host.execute(
+        {
+          tool: 'terminal',
+          operation: 'exec',
+          command: 'Write-Output (Get-Location).Path',
+          intent: 'information',
+          cwd: linkedDirectory,
+        },
+        correlation,
+      );
+      expect(terminal.update.state).toBe('completed');
+      expect(terminal.result).toMatchObject({ kind: 'terminal', exitCode: 0, success: true });
+      if (terminal.result.kind === 'terminal') expect(terminal.result.outputText).toContain(linkedDirectory);
+    } finally {
+      await removeTempDataDir(projectRoot);
+      await removeTempDataDir(artifactRoot);
+      await removeTempDataDir(outsideRoot);
     }
   });
 

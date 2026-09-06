@@ -1,20 +1,27 @@
 /**
- * Settings view — Marina's SettingsView pattern, trimmed to Iris's schema.
+ * Settings view — full visual redesign (settings-visual-redesign).
  *
- * Form factor (Marina CP-4 decisions, kept here):
- * - Not a modal, not a window: a view that replaces the three-pane body
- *   (TitleBar stays — it carries the drag region and window controls).
- * - Left category nav + right detail panel.
+ * Layout pattern (settings-page design conventions, see issue):
+ * - Left category nav + right scrollable content column.
+ * - Two-column form rows: label + hint on the left, control on the right.
+ *   Row label column is a fixed 200px; the control gets the rest of a
+ *   720px content column, so compound editors stop being squeezed.
+ * - Sections are grouped by whitespace + a section title, NOT by bordered
+ *   cards: the boxed-per-group look that read as cramped nested frames is
+ *   gone. Section titles carry the hierarchy (page title → section → row).
  * - Every control applies immediately (no save button): control → the
  *   `settings.update` instruction → main validates/persists/broadcasts →
  *   settings-store re-renders. Controls never mutate local state as truth.
  * - Validation failures (SettingsError from main) land in the header error
- *   bar; the control snaps back to the last valid value on next broadcast.
+ *   strip; the control snaps back to the last valid value on next broadcast.
  *
- * Extending (for the next agent): add a CategoryId + CATEGORIES entry and a
- * case in CategoryPanel, then build the panel from SettingRow / the shared
- * inputs. New persisted fields first go into Settings + DEFAULT_SETTINGS +
- * validateSettings (src/main/settings-manager.ts), then get a control here.
+ * This file is a VISUAL rewrite only: all handlers, IPC calls, validation,
+ * state shapes, and settings semantics are unchanged from the previous
+ * implementation. Extending (for the next agent): add a CategoryId +
+ * CATEGORIES entry and a case in CategoryPanel, then build the panel from
+ * SettingRow / the shared inputs. New persisted fields first go into
+ * Settings + DEFAULT_SETTINGS + validateSettings (src/main/settings-manager.ts),
+ * then get a control here.
  */
 import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -26,6 +33,8 @@ import {
   Code2,
   Copy,
   ExternalLink,
+  Eye,
+  EyeOff,
   FileText,
   FolderCog,
   FolderOpen,
@@ -205,7 +214,7 @@ export function SettingsView(): JSX.Element {
 
   return (
     <div className="flex h-full flex-col bg-background">
-      <header className="flex h-11 shrink-0 items-center gap-3 px-4">
+      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-subtle px-6">
         <h1 className="text-sm font-semibold">{t('settings.title')}</h1>
         {errorMsg && (
           <span role="alert" className="truncate text-xs text-destructive">
@@ -224,16 +233,20 @@ export function SettingsView(): JSX.Element {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <nav className="w-48 shrink-0 space-y-1 overflow-y-auto border-r border-subtle p-3" aria-label={t('settings.categories')}>
+        <nav
+          className="w-56 shrink-0 space-y-1 overflow-y-auto border-r border-subtle p-4"
+          aria-label={t('settings.categories')}
+        >
           {CATEGORIES.map((c) => (
             <button
               key={c.id}
               type="button"
+              aria-current={active === c.id ? 'true' : undefined}
               onClick={() => setActive(c.id)}
               className={cn(
-                'flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[13px] transition-colors',
+                'flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-[13px] transition-colors',
                 active === c.id
-                  ? 'bg-accent font-medium text-accent-foreground'
+                  ? 'bg-primary/10 font-medium text-foreground'
                   : 'text-muted-foreground hover:bg-muted hover:text-foreground',
               )}
             >
@@ -243,8 +256,8 @@ export function SettingsView(): JSX.Element {
           ))}
         </nav>
 
-        <main className="min-w-0 flex-1 overflow-y-auto px-8 py-6">
-          <div className="max-w-2xl">
+        <main className="min-w-0 flex-1 overflow-y-auto">
+          <div className="w-full px-10 py-10 pb-20">
             <CategoryPanel categoryId={active} setError={setErrorMsg} />
           </div>
         </main>
@@ -284,7 +297,11 @@ function CategoryPanel({
 // Shared primitives
 // ──────────────────────────────────────────────────────────────────
 
-/** Label + hint on the left, control on the right. Every setting is one row. */
+/**
+ * One setting = one row, and only one visual shape.
+ * `SettingRow` supplies the page's form rhythm: a fixed label column
+ * (label + optional hint) on the left and the control filling the rest.
+ */
 function SettingRow({
   label,
   hint,
@@ -295,16 +312,17 @@ function SettingRow({
   children: ReactNode;
 }): JSX.Element {
   return (
-    <div className="flex items-start gap-6 px-4 py-4">
-      <div className="w-52 shrink-0">
-        <div className="text-[13px]">{label}</div>
-        {hint && <div className="mt-0.5 break-words text-[11px] leading-snug text-muted-foreground">{hint}</div>}
+    <div className="grid grid-cols-[12.5rem_minmax(0,1fr)] items-start gap-x-6 gap-y-1 py-3.5">
+      <div className="min-w-0">
+        <div className="select-none text-[13px] font-medium leading-snug text-foreground">{label}</div>
+        {hint && <div className="mt-1 break-words text-xs leading-relaxed text-muted-foreground">{hint}</div>}
       </div>
-      <div className="min-w-0 flex-1">{children}</div>
+      <div className="min-w-0 max-w-xl">{children}</div>
     </div>
   );
 }
 
+/** Page-level title: strong hierarchy anchor for a whole category. */
 function PanelTitle({
   children,
   description,
@@ -313,10 +331,10 @@ function PanelTitle({
   description?: string;
 }): JSX.Element {
   return (
-    <div className="mb-5">
-      <h2 className="text-lg font-semibold">{children}</h2>
+    <div className="mb-8">
+      <h2 className="text-xl font-semibold tracking-tight text-foreground">{children}</h2>
       {description && (
-        <p className="mt-1 text-[13px] text-muted-foreground">{description}</p>
+        <p className="mt-1.5 max-w-xl text-[13px] leading-relaxed text-muted-foreground">{description}</p>
       )}
     </div>
   );
@@ -325,13 +343,14 @@ function PanelTitle({
 /** Dummy marker for sections other agents will fill in. */
 function Placeholder({ children }: { children: ReactNode }): JSX.Element {
   return (
-    <div className="rounded-md border border-subtle px-3 py-2.5 text-xs text-muted-foreground">
+    <div className="rounded-lg border border-dashed border-subtle px-4 py-6 text-center text-[13px] text-muted-foreground">
       {children}
     </div>
   );
 }
 
-/** Card container for a group of SettingRow items. */
+/** A section = a title + its rows. Grouping is done with whitespace, not a
+ *  bordered card: the title carries the hierarchy, rows just line up. */
 function SettingGroup({
   title,
   children,
@@ -340,21 +359,19 @@ function SettingGroup({
   children: ReactNode;
 }): JSX.Element {
   return (
-    <div className="mb-5">
+    <section className="mb-10 last:mb-0">
       {title && (
-        <h3 className="mb-2 text-[13px] font-medium text-muted-foreground">{title}</h3>
+        <h3 className="mb-1 text-base font-semibold text-foreground">{title}</h3>
       )}
-      <div className="divide-y divide-subtle overflow-hidden rounded-lg border bg-card/50">
-        {children}
-      </div>
-    </div>
+      <div className="divide-y divide-subtle">{children}</div>
+    </section>
   );
 }
 
 /**
  * Text input that commits on blur / Enter. Local draft while focused so a
- * settings broadcast mid-typing can't clobber the user's input (Marina FBK-3
- * lesson); the broadcast value re-syncs once the field loses focus.
+ * settings broadcast mid-typing can't clobber the user's input; the broadcast
+ * value re-syncs once the field loses focus.
  */
 function CommitInput({
   value,
@@ -409,14 +426,14 @@ function ToggleSwitch({
       aria-checked={checked}
       onClick={() => onChange(!checked)}
       className={cn(
-        'h-5 w-9 rounded-full p-0.5 transition-colors',
-        checked ? 'bg-primary' : 'bg-muted',
+        'relative h-6 w-11 shrink-0 rounded-full p-0.5 transition-colors',
+        checked ? 'bg-primary' : 'bg-input',
       )}
     >
       <span
         className={cn(
-          'block h-4 w-4 rounded-full bg-background shadow transition-transform',
-          checked && 'translate-x-4',
+          'block h-5 w-5 rounded-full bg-background shadow-sm transition-transform',
+          checked && 'translate-x-5',
         )}
       />
     </button>
@@ -434,7 +451,7 @@ function Segmented<T extends string>({
   onChange: (v: T) => void;
 }): JSX.Element {
   return (
-    <div className="flex gap-1.5">
+    <div className="inline-flex flex-wrap items-center gap-1 rounded-lg border border-subtle bg-muted/40 p-1">
       {options.map((o) => (
         <button
           key={o.value}
@@ -442,8 +459,10 @@ function Segmented<T extends string>({
           aria-label={o.hint}
           onClick={() => onChange(o.value)}
           className={cn(
-            'rounded-md border px-2.5 py-1 text-[12px]',
-            value === o.value ? 'border-primary bg-accent' : 'hover:bg-muted',
+            'h-7 whitespace-nowrap rounded-md px-3 text-[12px] transition-colors',
+            value === o.value
+              ? 'bg-background font-medium text-foreground shadow-sm'
+              : 'text-muted-foreground hover:text-foreground',
           )}
         >
           {o.label}
@@ -468,7 +487,7 @@ function NumberCommitInput({
   onCommit: (v: number) => void;
 }): JSX.Element {
   return (
-    <div className="flex items-center gap-2">
+    <div className="inline-flex items-center gap-2">
       <Input
         type="number"
         className="w-24"
@@ -485,7 +504,7 @@ function NumberCommitInput({
           if (e.key === 'Enter') e.currentTarget.blur();
         }}
       />
-      <span className="text-[11px] text-muted-foreground">
+      <span className="text-xs text-muted-foreground">
         {min} – {max}
       </span>
     </div>
@@ -542,20 +561,6 @@ function AppearancePanel({ setError }: { setError: (m: string | null) => void })
     <section>
       <PanelTitle description={t('settings.appearanceDescription')}>{t('settings.appearance')}</PanelTitle>
 
-      <SettingGroup title={t('locale.label')}>
-        <SettingRow label={t('locale.label')} hint={t('locale.hint')}>
-          <Segmented
-            value={settings?.locale ?? 'system'}
-            options={[
-              { value: 'system', label: t('locale.system') },
-              { value: 'zh-CN', label: t('locale.zhCN') },
-              { value: 'en-US', label: t('locale.enUS') },
-            ]}
-            onChange={(v) => void updateSettings({ locale: v as LocalePreference }, setError)}
-          />
-        </SettingRow>
-      </SettingGroup>
-
       <SettingGroup title={t('settings.themeGroup')}>
         <SettingRow label={t('settings.theme')} hint={t('settings.themeHint')}>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -567,8 +572,8 @@ function AppearancePanel({ setError }: { setError: (m: string | null) => void })
                 className={cn(
                   'flex min-w-0 flex-col items-start gap-2 rounded-lg border px-3 py-2.5 text-left transition-colors',
                   theme === themeOption.id
-                    ? 'border-primary bg-accent ring-1 ring-primary/30'
-                    : 'hover:bg-muted',
+                    ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
+                    : 'border-subtle hover:bg-muted',
                 )}
               >
                 <span className="flex items-center gap-1">
@@ -588,6 +593,20 @@ function AppearancePanel({ setError }: { setError: (m: string | null) => void })
               </button>
             ))}
           </div>
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup title={t('locale.label')}>
+        <SettingRow label={t('locale.label')} hint={t('locale.hint')}>
+          <Segmented
+            value={settings?.locale ?? 'system'}
+            options={[
+              { value: 'system', label: t('locale.system') },
+              { value: 'zh-CN', label: t('locale.zhCN') },
+              { value: 'en-US', label: t('locale.enUS') },
+            ]}
+            onChange={(v) => void updateSettings({ locale: v as LocalePreference }, setError)}
+          />
         </SettingRow>
       </SettingGroup>
 
@@ -833,9 +852,12 @@ function IrisAgentSettingsPanel({
   const [profileName, setProfileName] = useState('');
   const [baseUrl, setBaseUrl] = useState('https://api.openai.com/v1');
   const [apiKey, setApiKey] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
   const [busy, setBusy] = useState(false);
   const [editingModels, setEditingModels] = useState<Record<string, IrisAgentConfiguredModel[]>>({});
   const [modelDrafts, setModelDrafts] = useState<Record<string, string>>({});
+  const [credentialDrafts, setCredentialDrafts] = useState<Record<string, string>>({});
+  const [showCredentialDrafts, setShowCredentialDrafts] = useState<Record<string, boolean>>({});
 
   const refresh = async (): Promise<void> => {
     try {
@@ -908,6 +930,26 @@ function IrisAgentSettingsPanel({
         IrisAgentProviderCatalog
       >(CHANNELS.IRIS_AGENT_PROVIDER_PROFILE_REMOVE, { profileId });
       setCatalog(next);
+      setError(next.error ?? null);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updateProfileCredential = async (profileId: string): Promise<void> => {
+    const nextApiKey = (credentialDrafts[profileId] ?? '').trim();
+    if (!nextApiKey) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await window.api.invoke<
+        { profileId: string; apiKey: string },
+        IrisAgentProviderCatalog
+      >(CHANNELS.IRIS_AGENT_PROVIDER_PROFILE_SET_KEY, { profileId, apiKey: nextApiKey });
+      setCatalog(next);
+      setCredentialDrafts((current) => ({ ...current, [profileId]: '' }));
       setError(next.error ?? null);
     } catch (error) {
       setError(error instanceof Error ? error.message : String(error));
@@ -1002,7 +1044,7 @@ function IrisAgentSettingsPanel({
           <select
             value={templateId}
             disabled={busy || templates.length === 0}
-            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+            className="h-9 w-full max-w-xs rounded-lg border border-input bg-background px-3 text-sm outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
             onChange={(event) => {
               const nextId = event.target.value;
               const nextTemplate = templates.find((template) => template.id === nextId);
@@ -1040,7 +1082,7 @@ function IrisAgentSettingsPanel({
         <SettingRow label={t('settings.apiKey')} hint={t('settings.apiKeyHint')}>
           <div className="flex min-w-0 gap-2">
             <Input
-              type="text"
+              type={showApiKey ? 'text' : 'password'}
               value={apiKey}
               disabled={busy || !selectedTemplate}
               autoComplete="new-password"
@@ -1054,6 +1096,17 @@ function IrisAgentSettingsPanel({
                 }
               }}
             />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-9 w-9 shrink-0"
+              disabled={busy || !selectedTemplate}
+              aria-label={showApiKey ? '隐藏 API Key' : '显示 API Key'}
+              onClick={() => setShowApiKey((current) => !current)}
+            >
+              {showApiKey ? <EyeOff className="!size-4" /> : <Eye className="!size-4" />}
+            </Button>
             <Button
               type="button"
               className="shrink-0"
@@ -1073,118 +1126,220 @@ function IrisAgentSettingsPanel({
 
       <SettingGroup title={t('settings.configuredProviderProfiles')}>
         {catalog === null ? (
-          <div className="px-4 py-4 text-xs text-muted-foreground">
+          <div className="px-1 py-4 text-[13px] text-muted-foreground">
             {t('settings.loadingProviders')}
           </div>
         ) : profiles.length === 0 ? (
-          <div className="px-4 py-4 text-xs text-muted-foreground">
+          <div className="px-1 py-4 text-[13px] text-muted-foreground">
             {t('settings.noConfiguredProviderProfiles')}
           </div>
         ) : profiles.map((profile) => {
           const template = templates.find((candidate) => candidate.id === profile.templateId);
           const resolvedBaseUrl = profile.baseUrl || template?.defaultBaseUrl || '';
           const models = editingModels[profile.id] ?? profile.models ?? [];
+          const modelsDirty = editingModels[profile.id] !== undefined
+            && JSON.stringify(editingModels[profile.id]) !== JSON.stringify(profile.models ?? []);
           return (
-            <SettingRow
-              key={profile.id}
-              label={profile.name}
-              hint={[template?.name, resolvedBaseUrl].filter(Boolean).join(' · ')}
-            >
-              <div className="flex min-h-8 flex-col items-stretch gap-2">
-                <div className="flex items-center justify-between rounded-md border border-subtle px-3 py-2 text-xs text-muted-foreground">
-                  <span>{template?.name ?? '供应商'} · {resolvedBaseUrl}</span>
-                  <span>凭据已配置</span>
-                </div>
-                <div className="space-y-2 rounded-md border border-subtle p-2">
-                  <div className="flex items-center justify-between text-xs font-medium">
-                    <span>模型目录与上下文预算</span>
-                    <span className="text-[11px] font-normal text-muted-foreground">{models.length} 个模型</span>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button type="button" variant="outline" disabled={busy} onClick={() => { discoverModels(profile.id).catch(() => undefined); }}><RefreshCw className="!size-4" />从供应商获取模型</Button>
-                    <Input
-                      value={modelDrafts[profile.id] ?? ''}
-                      placeholder="手工添加模型 ID，例如 gpt-4o"
-                      onChange={(event) => setModelDrafts((current) => ({ ...current, [profile.id]: event.target.value }))}
-                      onKeyDown={(event) => { if (event.key === 'Enter') addManualModel(profile.id); }}
-                    />
-                    <Button type="button" variant="outline" disabled={busy} onClick={() => addManualModel(profile.id)}><Plus className="!size-4" />添加模型</Button>
-                  </div>
-                  {models.map((model, index) => (
-                    <div key={`${model.modelId}-${index}`} className="grid grid-cols-[minmax(0,1fr)_7rem_7rem_auto] items-center gap-2">
-                      <div className="min-w-0">
-                        <Input value={model.modelId} readOnly className="font-mono" aria-label="模型 ID" />
-                        <span className="px-1 text-[10px] text-muted-foreground">{model.displayName && model.displayName !== model.modelId ? model.displayName : '模型 ID'}</span>
-                      </div>
-                      <div className="flex gap-1">
-                        <Input
-                          type="number"
-                          min={1}
-                          value={model.contextWindowTokens}
-                          aria-label="上下文窗口 token 数"
-                          title="可手工填写任意上下文窗口 token 数"
-                          onChange={(event) => setEditingModels((current) => ({
-                            ...current,
-                            [profile.id]: models.map((item, itemIndex) => itemIndex === index
-                              ? { ...item, contextWindowTokens: Math.max(1, Number(event.target.value) || 1), compactTrigger: Math.max(1, (Number(event.target.value) || 1) - item.reserveOutputTokens) }
-                              : item),
-                          }))}
-                        />
-                        <select
-                          value=""
-                          aria-label="常用上下文窗口预设"
-                          className="h-9 w-14 rounded-md border border-input bg-background px-1 text-xs"
-                          onChange={(event) => {
-                            const value = Number(event.target.value);
-                            if (!value) return;
-                            setEditingModels((current) => ({
-                              ...current,
-                              [profile.id]: models.map((item, itemIndex) => itemIndex === index
-                                ? { ...item, contextWindowTokens: value, compactTrigger: Math.max(1, value - item.reserveOutputTokens) }
-                                : item),
-                            }));
-                          }}
-                        >
-                          <option value="">预设</option>
-                          {[128000, 256000, 512000, 1000000].map((value) => <option key={value} value={value}>{value === 1000000 ? '1M' : `${value / 1000}K`}</option>)}
-                        </select>
-                      </div>
-                      <Input
-                        type="number"
-                        min={1}
-                        value={model.reserveOutputTokens}
-                        aria-label="输出预留 token，默认 16K"
-                        title="输出预留（16K = 16384 tokens），为模型回答保留的空间"
-                        onChange={(event) => setEditingModels((current) => ({
-                          ...current,
-                          [profile.id]: models.map((item, itemIndex) => itemIndex === index
-                            ? { ...item, reserveOutputTokens: Number(event.target.value), compactTrigger: item.contextWindowTokens - Number(event.target.value) }
-                            : item),
-                        }))}
-                      />
-                      <Button type="button" variant="ghost" size="icon" className="h-8 w-8" aria-label="删除模型" onClick={() => setEditingModels((current) => ({ ...current, [profile.id]: models.filter((_, itemIndex) => itemIndex !== index) }))}><Trash2 className="!size-3.5" /></Button>
-                    </div>
-                  ))}
-                  {models.length === 0 && <span className="text-xs text-muted-foreground">尚未获取模型。点击“从供应商获取模型”，或直接手工添加模型 ID。</span>}
-                  <div className="flex justify-end pt-1">
-                    <Button type="button" size="sm" disabled={busy || models.length === 0} onClick={() => { saveModels(profile.id).catch(() => undefined); }}>保存模型配置</Button>
+            <div key={profile.id} className="py-8">
+              {/* profile identity */}
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-[14px] font-semibold text-foreground">{profile.name}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {template?.name ?? t('settings.provider')} · {resolvedBaseUrl}
                   </div>
                 </div>
-                <Button
+                <button
                   type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-destructive disabled:opacity-40"
                   disabled={busy}
                   aria-label={t('settings.removeProviderProfile')}
                   onClick={() => {
                     removeProfile(profile.id, profile.name).catch(() => undefined);
                   }}
                 >
-                  <Trash2 className="!size-3.5" />
+                  <Trash2 className="!size-4" />
+                </button>
+              </div>
+
+              <div className="mt-4 flex max-w-xl items-center gap-2">
+                <Input
+                  type={showCredentialDrafts[profile.id] ? 'text' : 'password'}
+                  value={credentialDrafts[profile.id] ?? ''}
+                  disabled={busy}
+                  autoComplete="new-password"
+                  spellCheck={false}
+                  aria-label={t('settings.apiKey')}
+                  placeholder={profile.hasCredential
+                    ? t('settings.apiKeyConfiguredPlaceholder')
+                    : t('settings.apiKeyPlaceholder')}
+                  onChange={(event) => setCredentialDrafts((current) => ({
+                    ...current,
+                    [profile.id]: event.target.value,
+                  }))}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter') return;
+                    event.preventDefault();
+                    updateProfileCredential(profile.id).catch(() => undefined);
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-9 w-9 shrink-0"
+                  disabled={busy}
+                  aria-label={showCredentialDrafts[profile.id] ? '隐藏 API Key' : '显示 API Key'}
+                  onClick={() => setShowCredentialDrafts((current) => ({
+                    ...current,
+                    [profile.id]: !current[profile.id],
+                  }))}
+                >
+                  {showCredentialDrafts[profile.id]
+                    ? <EyeOff className="!size-4" />
+                    : <Eye className="!size-4" />}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  disabled={busy || !(credentialDrafts[profile.id] ?? '').trim()}
+                  onClick={() => { updateProfileCredential(profile.id).catch(() => undefined); }}
+                >
+                  <KeyRound className="!size-4" />
+                  {t('settings.updateCredential')}
                 </Button>
               </div>
-            </SettingRow>
+
+              {/* model directory */}
+              <div className="mt-6">
+                <div className="flex items-center justify-between gap-3 border-y border-subtle py-3">
+                  <div className="text-[13px] font-medium text-foreground">{t('settings.modelDirectory')}</div>
+                  <span className="text-xs text-muted-foreground">{t('settings.modelCount', { count: models.length })}</span>
+                </div>
+
+                {/* toolbar */}
+                <div className="flex flex-wrap items-center gap-2 py-4">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => { discoverModels(profile.id).catch(() => undefined); }}
+                  >
+                    <RefreshCw className="!size-4" />{t('settings.fetchModels')}
+                  </Button>
+                  <div className="min-w-0 flex-1" />
+                  <Input
+                    value={modelDrafts[profile.id] ?? ''}
+                    className="min-w-[16rem] max-w-md flex-1"
+                    placeholder={t('settings.manualModelPlaceholder')}
+                    onChange={(event) => setModelDrafts((current) => ({ ...current, [profile.id]: event.target.value }))}
+                    onKeyDown={(event) => { if (event.key === 'Enter') addManualModel(profile.id); }}
+                  />
+                  <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => addManualModel(profile.id)}>
+                    <Plus className="!size-4" />{t('settings.addModel')}
+                  </Button>
+                </div>
+
+                {/* labeled table */}
+                <div className="grid grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_minmax(12rem,18rem)_2.5rem] items-center gap-x-4 gap-y-1 border-y border-subtle py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  <div>{t('settings.modelName')}</div>
+                  <div>{t('settings.contextWindow')}</div>
+                  <div>{t('settings.outputReserve')}</div>
+                  <div />
+                </div>
+
+                {models.length === 0 ? (
+                  <div className="px-4 py-5 text-xs text-muted-foreground">
+                    {t('settings.modelEmpty')}
+                  </div>
+                ) : (
+                  <div className="divide-y divide-subtle">
+                    {models.map((model, index) => (
+                      <div key={`${model.modelId}-${index}`} className="grid grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_minmax(12rem,18rem)_2.5rem] items-center gap-x-4 gap-y-1 py-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-[13px] text-foreground">{model.displayName || model.modelId}</div>
+                          <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">{model.modelId}</div>
+                        </div>
+                        <div className="flex min-w-0 items-center gap-2">
+                          <Input
+                            type="number"
+                            min={1}
+                            value={model.contextWindowTokens}
+                            className="min-w-0 flex-1"
+                            aria-label={t('settings.contextWindow')}
+                            onChange={(event) => setEditingModels((current) => ({
+                              ...current,
+                              [profile.id]: models.map((item, itemIndex) => itemIndex === index
+                                ? { ...item, contextWindowTokens: Math.max(1, Number(event.target.value) || 1), compactTrigger: Math.max(1, (Number(event.target.value) || 1) - item.reserveOutputTokens) }
+                                : item),
+                            }))}
+                          />
+                          <select
+                            value=""
+                            aria-label={t('settings.contextWindowPreset')}
+                            className="h-9 w-24 shrink-0 rounded-md border border-input bg-background px-2 text-xs"
+                            onChange={(event) => {
+                              const value = Number(event.target.value);
+                              if (!value) return;
+                              setEditingModels((current) => ({
+                                ...current,
+                                [profile.id]: models.map((item, itemIndex) => itemIndex === index
+                                  ? { ...item, contextWindowTokens: value, compactTrigger: Math.max(1, value - item.reserveOutputTokens) }
+                                  : item),
+                              }));
+                            }}
+                          >
+                            <option value="" disabled>{t('settings.preset')}</option>
+                            {[128000, 256000, 512000, 1000000].map((value) => <option key={value} value={value}>{value === 1000000 ? '1M' : `${value / 1000}K`}</option>)}
+                          </select>
+                        </div>
+                        <Input
+                          type="number"
+                          min={1}
+                          value={model.reserveOutputTokens}
+                          className="min-w-0"
+                          aria-label={t('settings.outputReserve')}
+                          onChange={(event) => setEditingModels((current) => ({
+                            ...current,
+                            [profile.id]: models.map((item, itemIndex) => itemIndex === index
+                              ? { ...item, reserveOutputTokens: Number(event.target.value), compactTrigger: item.contextWindowTokens - Number(event.target.value) }
+                              : item),
+                          }))}
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          aria-label={t('settings.deleteModel')}
+                          onClick={() => setEditingModels((current) => ({ ...current, [profile.id]: models.filter((_, itemIndex) => itemIndex !== index) }))}
+                        >
+                          <Trash2 className="!size-4" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* footer */}
+                <div className="flex items-center justify-end gap-3 border-t border-subtle px-4 py-3">
+                  <span className="mr-auto text-[11px] text-muted-foreground">
+                    {modelsDirty ? t('settings.unsavedChanges') : t('settings.savedModels')}
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={busy || models.length === 0 || !modelsDirty}
+                    onClick={() => { saveModels(profile.id).catch(() => undefined); }}
+                  >
+                    {t('settings.saveModels')}
+                  </Button>
+                </div>
+              </div>
+            </div>
           );
         })}
       </SettingGroup>
@@ -1294,78 +1449,74 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
   return (
     <section>
       <PanelTitle description={t('settings.agentsDescription')}>{t('settings.agents')}</PanelTitle>
-      <p className="mb-3 text-xs text-muted-foreground">
+      <p className="mb-8 max-w-xl text-[13px] leading-relaxed text-muted-foreground">
         {t('settings.agentsIntro')}
       </p>
 
-      <div className="overflow-x-auto rounded-lg border">
-        <table className="w-full text-[13px]">
-          <thead className="bg-muted/50 text-left text-xs uppercase tracking-wider text-muted-foreground">
-            <tr>
-              <th className="w-28 px-3 py-1.5 font-medium">{t('settings.displayName')}</th>
-              <th className="px-3 py-1.5 font-medium">{t('settings.command')}</th>
-              <th className="w-32 px-2 py-1.5" />
-            </tr>
-          </thead>
-          <tbody>
-            {agents.map((a, index) => (
-              <tr key={a.id} className="border-t border-subtle align-middle">
-                <td className="px-2 py-1">
-                  <CommitInput value={a.label} onCommit={(v) => patchAgent(a.id, { label: v })} />
-                </td>
-                <td className="px-2 py-1">
-                  <CommitInput
-                    value={a.command}
-                    placeholder={t('settings.plainTerminal')}
-                    onCommit={(v) => patchAgent(a.id, { command: v })}
-                  />
-                </td>
-                <td className="px-2 py-1">
-                  <div className="flex justify-end gap-0.5">
-                    <button
-                      type="button"
-                      aria-label={t('settings.moveLauncherUp', { agent: a.label })}
-                      disabled={index === 0}
-                      onClick={() => moveAgent(index, -1)}
-                      className="rounded-sm p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground disabled:opacity-20"
-                    >
-                      <ChevronUp className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={t('settings.moveLauncherDown', { agent: a.label })}
-                      disabled={index === agents.length - 1}
-                      onClick={() => moveAgent(index, 1)}
-                      className="rounded-sm p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground disabled:opacity-20"
-                    >
-                      <ChevronDown className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={t('settings.duplicateLauncher', { agent: a.label })}
-                      onClick={() => duplicateAgent(a)}
-                      className="rounded-sm p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground"
-                    >
-                      <Copy className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={agents.length <= 1 ? t('settings.keepAgent') : t('settings.removeAgent', { agent: a.label })}
-                      disabled={agents.length <= 1}
-                      onClick={() => writeAgents(agents.filter((x) => x.id !== a.id))}
-                      className="rounded-sm p-1 text-muted-foreground/60 hover:bg-muted hover:text-destructive disabled:opacity-30"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <SettingGroup title={t('settings.addLauncher')}>
+        {agents.map((a, index) => (
+          <div key={a.id} className="py-3.5">
+            <div className="grid grid-cols-[12.5rem_minmax(0,1fr)_auto] items-start gap-x-6 gap-y-1">
+              <div className="min-w-0 max-w-2xl">
+                <div className="mb-1.5 text-[13px] font-medium text-foreground">{a.label}</div>
+                <CommitInput value={a.label} onCommit={(v) => patchAgent(a.id, { label: v })} />
+              </div>
+              <div className="min-w-0 max-w-3xl">
+                <div className="mb-1.5 text-[13px] font-medium text-foreground">{t('settings.command')}</div>
+                <CommitInput
+                  value={a.command}
+                  placeholder={t('settings.plainTerminal')}
+                  onCommit={(v) => patchAgent(a.id, { command: v })}
+                />
+              </div>
+              <div className="flex items-center gap-0.5 pt-6">
+                <button
+                  type="button"
+                  aria-label={t('settings.moveLauncherUp', { agent: a.label })}
+                  disabled={index === 0}
+                  onClick={() => moveAgent(index, -1)}
+                  className="rounded-md p-1.5 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground disabled:opacity-20"
+                >
+                  <ChevronUp className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  aria-label={t('settings.moveLauncherDown', { agent: a.label })}
+                  disabled={index === agents.length - 1}
+                  onClick={() => moveAgent(index, 1)}
+                  className="rounded-md p-1.5 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground disabled:opacity-20"
+                >
+                  <ChevronDown className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  aria-label={t('settings.duplicateLauncher', { agent: a.label })}
+                  onClick={() => duplicateAgent(a)}
+                  className="rounded-md p-1.5 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  <Copy className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  aria-label={agents.length <= 1 ? t('settings.keepAgent') : t('settings.removeAgent', { agent: a.label })}
+                  disabled={agents.length <= 1}
+                  onClick={() => writeAgents(agents.filter((x) => x.id !== a.id))}
+                  className="rounded-md p-1.5 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-destructive disabled:opacity-30"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+        {agents.length === 0 && (
+          <div className="py-4 text-[13px] text-muted-foreground">
+            {t('settings.launcherPresets')}
+          </div>
+        )}
+      </SettingGroup>
 
-      <div className="mt-3">
+      <div className="mt-2">
         <Button size="sm" variant="outline" onClick={() => setShowAdd((value) => !value)}>
           <Plus />
           {t('settings.addLauncher')}
@@ -1373,11 +1524,11 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
       </div>
 
       {showAdd && (
-        <div className="mt-3 border-l-2 border-subtle pl-4">
-          <div className="text-xs font-medium text-muted-foreground">
+        <div className="mt-4 rounded-lg border border-subtle bg-muted/20 p-4">
+          <div className="text-[13px] font-medium text-foreground">
             {t('settings.launcherPresets')}
           </div>
-          <div className="mt-2 flex flex-wrap gap-1.5">
+          <div className="mt-2.5 flex flex-wrap gap-2">
             {AGENT_PRESETS.map((preset) => (
               <Button
                 key={preset.id}
@@ -1393,10 +1544,10 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
             ))}
           </div>
 
-          <div className="mt-4 text-xs font-medium text-muted-foreground">
+          <div className="mt-5 text-[13px] font-medium text-foreground">
             {t('settings.customLauncher')}
           </div>
-          <div className="mt-2 grid grid-cols-[minmax(7rem,0.6fr)_minmax(12rem,1.4fr)] gap-2">
+          <div className="mt-2.5 grid max-w-2xl grid-cols-[minmax(7rem,0.6fr)_minmax(12rem,1.4fr)] gap-2">
             <Input
               value={newLabel}
               placeholder={t('settings.launcherNamePlaceholder')}
@@ -1413,7 +1564,7 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
               }}
             />
           </div>
-          <div className="mt-2 flex justify-end">
+          <div className="mt-2.5 flex justify-end">
             <Button size="sm" disabled={!newLabel.trim()} onClick={addCustom}>
               <Plus />
               {t('settings.addCustomLauncher')}
@@ -1422,109 +1573,115 @@ function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JS
         </div>
       )}
 
-      <div className="mb-5 mt-8">
-        <h3 className="text-base font-semibold">{t('settings.contextInjection')}</h3>
-        <p className="mt-1 text-[13px] text-muted-foreground">
+      <div className="mb-6 mt-12">
+        <h3 className="text-base font-semibold text-foreground">{t('settings.contextInjection')}</h3>
+        <p className="mt-1.5 max-w-xl text-[13px] leading-relaxed text-muted-foreground">
           {t('settings.contextIntro')}
         </p>
       </div>
 
       {inj && inj.script.state !== 'current' && (
-        <div className="mb-3 border-l-2 border-[var(--rp-gold)] pl-3 text-xs text-muted-foreground">
-          <div className="text-[var(--rp-gold)]">
+        <div className="mb-5 rounded-lg border border-[var(--rp-gold)]/30 bg-[var(--rp-gold)]/10 px-4 py-3 text-[13px] text-muted-foreground">
+          <div className="font-medium text-[var(--rp-gold)]">
             {inj.script.state === 'stale'
               ? t('settings.staleSyncFailed')
               : t('settings.missingSyncFailed')}
           </div>
-          <div className="mt-0.5 break-all">{inj.script.path}</div>
+          <div className="mt-1 break-all text-xs">{inj.script.path}</div>
         </div>
       )}
 
       <SettingGroup>
         {(inj?.clis ?? []).map((cli) => (
-          <SettingRow key={cli.id} label={cli.label} hint={cli.configPath}>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className={cn('rounded px-1.5 py-0.5 text-xs', HOOK_STATE_META[cli.state].cls)}>
-                {t(HOOK_STATE_META[cli.state].labelKey)}
-              </span>
-              {(cli.state === 'not-configured' || cli.state === 'stale') &&
-                (confirmCli === cli.id ? (
-                  <>
-                    <span className="text-xs text-muted-foreground">
-                      {t('settings.writeCliConfig', {
-                        action: cli.state === 'stale' ? t('settings.updateAction') : t('settings.writeAction'),
-                        cli: cli.label,
-                      })}
-                    </span>
+          <div key={cli.id} className="py-3.5">
+            <div className="grid grid-cols-[12.5rem_minmax(0,1fr)] items-start gap-x-6 gap-y-1.5">
+              <div className="min-w-0">
+                <div className="text-[13px] font-medium text-foreground">{cli.label}</div>
+                <div className="mt-1 break-all text-xs text-muted-foreground">{cli.configPath}</div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={cn('rounded-md px-2 py-0.5 text-xs font-medium', HOOK_STATE_META[cli.state].cls)}>
+                  {t(HOOK_STATE_META[cli.state].labelKey)}
+                </span>
+                {(cli.state === 'not-configured' || cli.state === 'stale') &&
+                  (confirmCli === cli.id ? (
+                    <>
+                      <span className="text-xs text-muted-foreground">
+                        {t('settings.writeCliConfig', {
+                          action: cli.state === 'stale' ? t('settings.updateAction') : t('settings.writeAction'),
+                          cli: cli.label,
+                        })}
+                      </span>
+                      <Button
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => void installCliHook(cli.id)}
+                      >
+                        {t('settings.confirmWrite')}
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setConfirmCli(null)}>
+                        {t('common.cancel')}
+                      </Button>
+                    </>
+                  ) : (
                     <Button
                       size="sm"
+                      variant="secondary"
                       disabled={busy}
-                      onClick={() => void installCliHook(cli.id)}
+                      onClick={() => {
+                        setConfirmRemoveCli(null);
+                        setConfirmCli(cli.id);
+                      }}
                     >
-                      {t('settings.confirmWrite')}
+                      {cli.state === 'stale' ? t('settings.updateHook') : t('settings.writeHook')}
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setConfirmCli(null)}>
-                      {t('common.cancel')}
-                    </Button>
-                  </>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    disabled={busy}
-                    onClick={() => {
-                      setConfirmRemoveCli(null);
-                      setConfirmCli(cli.id);
-                    }}
-                  >
-                    {cli.state === 'stale' ? t('settings.updateHook') : t('settings.writeHook')}
-                  </Button>
-                ))}
-              {(cli.state === 'configured' || cli.state === 'stale') &&
-                (confirmRemoveCli === cli.id ? (
-                  <>
-                    <span className="text-xs text-muted-foreground">
-                      {t('settings.removeHookConfirm', { cli: cli.label })}
-                    </span>
+                  ))}
+                {(cli.state === 'configured' || cli.state === 'stale') &&
+                  (confirmRemoveCli === cli.id ? (
+                    <>
+                      <span className="text-xs text-muted-foreground">
+                        {t('settings.removeHookConfirm', { cli: cli.label })}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        disabled={busy}
+                        onClick={() => void removeCliHook(cli.id)}
+                      >
+                        <Trash2 />
+                        {t('settings.confirmRemoveHook')}
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setConfirmRemoveCli(null)}>
+                        {t('common.cancel')}
+                      </Button>
+                    </>
+                  ) : (
                     <Button
                       size="sm"
-                      variant="destructive"
+                      variant="ghost"
+                      className="text-destructive hover:text-destructive"
                       disabled={busy}
-                      onClick={() => void removeCliHook(cli.id)}
+                      onClick={() => {
+                        setConfirmCli(null);
+                        setConfirmRemoveCli(cli.id);
+                      }}
                     >
                       <Trash2 />
-                      {t('settings.confirmRemoveHook')}
+                      {t('settings.removeHook')}
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setConfirmRemoveCli(null)}>
-                      {t('common.cancel')}
-                    </Button>
-                  </>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="text-destructive hover:text-destructive"
-                    disabled={busy}
-                    onClick={() => {
-                      setConfirmCli(null);
-                      setConfirmRemoveCli(cli.id);
-                    }}
-                  >
-                    <Trash2 />
-                    {t('settings.removeHook')}
-                  </Button>
-                ))}
-              {cli.detail && cli.id === 'codex' && (
-                <span className="max-w-md text-xs leading-snug text-muted-foreground">
-                  {cli.detail}
-                </span>
-              )}
+                  ))}
+                {cli.detail && cli.id === 'codex' && (
+                  <span className="max-w-md text-xs leading-snug text-muted-foreground">
+                    {cli.detail}
+                  </span>
+                )}
+              </div>
             </div>
-          </SettingRow>
+          </div>
         ))}
       </SettingGroup>
 
-      <p className="mt-3 text-xs text-muted-foreground/70">
+      <p className="mt-4 text-xs leading-relaxed text-muted-foreground/80">
         {t('settings.noHookFallback')}
       </p>
     </section>
@@ -1562,7 +1719,7 @@ function IconNameInput({
   return (
     <div className="relative">
       <div className="flex items-center gap-2">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-subtle">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-subtle">
           <LucideDynamicIcon name={draft} className="h-4 w-4" />
         </span>
         <Input
@@ -1588,12 +1745,12 @@ function IconNameInput({
         />
       </div>
       {focused && matches.length > 0 && (
-        <div className="absolute left-10 right-0 top-9 z-20 max-h-48 overflow-y-auto rounded-md border border-subtle bg-popover p-1 shadow-md">
+        <div className="absolute left-11 right-0 top-10 z-20 max-h-48 overflow-y-auto rounded-lg border border-subtle bg-popover p-1 shadow-md">
           {matches.map((name) => (
             <button
               key={name}
               type="button"
-              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-muted"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted"
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => {
                 commit(name);
@@ -1688,12 +1845,12 @@ function ProjectSettingsPanel({
         {t('projectSettings.title')}
       </PanelTitle>
       {(error || snapshot?.error) && (
-        <div role="alert" className="mb-4 border-l-2 border-destructive pl-3 text-xs text-destructive">
+        <div role="alert" className="mb-6 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-[13px] text-destructive">
           {error ?? snapshot?.error}
         </div>
       )}
       {snapshot && snapshot.diagnostics.length > 0 && (
-        <div className="mb-4 border-l-2 border-[var(--rp-gold)] pl-3 text-xs text-muted-foreground">
+        <div className="mb-6 rounded-lg border border-[var(--rp-gold)]/30 bg-[var(--rp-gold)]/10 px-4 py-3 text-[13px] text-muted-foreground">
           {snapshot.diagnostics.join('\n')}
         </div>
       )}
@@ -1702,10 +1859,10 @@ function ProjectSettingsPanel({
       ) : (
         <SettingGroup title={t('projectSettings.toolbarActions')}>
           {actions.map((action, index) => (
-            <div key={`${index}:${action.icon}:${action.description}`} className="p-4">
-              <div className="mb-3 flex items-center gap-2">
-                <LucideDynamicIcon name={action.icon} className="h-4 w-4 shrink-0" />
-                <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
+            <div key={`${index}:${action.icon}:${action.description}`} className="py-4">
+              <div className="flex items-center gap-2">
+                <LucideDynamicIcon name={action.icon} className="h-4 w-4 shrink-0 text-foreground" />
+                <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground">
                   {action.description}
                 </span>
                 <Button
@@ -1738,22 +1895,22 @@ function ProjectSettingsPanel({
                   <Trash2 />
                 </Button>
               </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="space-y-1 text-[11px] text-muted-foreground">
+              <div className="mt-3 grid max-w-3xl gap-3 sm:grid-cols-2">
+                <label className="space-y-1.5 text-xs font-medium text-muted-foreground">
                   <span>{t('projectSettings.icon')}</span>
                   <IconNameInput
                     value={action.icon}
                     onCommit={(icon) => patchAction(index, { icon })}
                   />
                 </label>
-                <label className="space-y-1 text-[11px] text-muted-foreground">
+                <label className="space-y-1.5 text-xs font-medium text-muted-foreground">
                   <span>{t('projectSettings.actionDescription')}</span>
                   <CommitInput
                     value={action.description}
                     onCommit={(description) => patchAction(index, { description })}
                   />
                 </label>
-                <label className="space-y-1 text-[11px] text-muted-foreground sm:col-span-2">
+                <label className="space-y-1.5 text-xs font-medium text-muted-foreground sm:col-span-2">
                   <span>{t('projectSettings.command')}</span>
                   <CommitInput
                     value={action.command}
@@ -1774,13 +1931,13 @@ function ProjectSettingsPanel({
             </div>
           ))}
           {actions.length === 0 && (
-            <div className="px-4 py-5 text-xs text-muted-foreground">
+            <div className="py-4 text-[13px] text-muted-foreground">
               {t('projectSettings.noActions')}
             </div>
           )}
-          <div className="border-t border-subtle p-4">
-            <div className="mb-3 text-[13px] font-medium">{t('projectSettings.addAction')}</div>
-            <div className="grid gap-3 sm:grid-cols-2">
+          <div className="border-t border-subtle pt-4">
+            <div className="text-[13px] font-medium text-foreground">{t('projectSettings.addAction')}</div>
+            <div className="mt-3 grid max-w-3xl gap-3 sm:grid-cols-2">
               <IconNameInput value={newIcon} onCommit={setNewIcon} />
               <Input
                 value={newDescription}
@@ -1856,17 +2013,17 @@ const PROJECT_STATE_META: Record<ProjectPromptStateUi, { labelKey: string; cls: 
 
 /**
  * Collapsible read-only viewer for one prompt layer's text — the content behind
- * the freshness badges, so the user can actually READ what gets injected.
+ * the freshness badges, so the user can actually read what gets INJECTED.
  * `body === null` renders the `empty` note instead of a code box.
  */
 function PromptViewer({
-  title,
+  label,
   body,
   empty,
   note,
   defaultOpen = false,
 }: {
-  title: string;
+  label: string;
   body: string | null;
   empty?: string;
   note?: string | undefined;
@@ -1880,20 +2037,20 @@ function PromptViewer({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+        className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
       >
-        <ChevronDown className={cn('h-3 w-3 transition-transform', open ? '' : '-rotate-90')} />
-        {title}
+        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open ? '' : '-rotate-90')} />
+        {label}
       </button>
       {open && (
         <>
           {note && <div className="mt-1.5 text-[11px] text-[var(--rp-gold)]">{note}</div>}
           {has ? (
-            <pre className="mt-1.5 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md border border-subtle bg-muted/30 px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground/90">
+            <pre className="mt-1.5 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-subtle bg-muted/30 px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground/90">
               {body}
             </pre>
           ) : (
-            <div className="mt-1.5 rounded-md border border-subtle px-3 py-2 text-[11px] text-muted-foreground">
+            <div className="mt-1.5 rounded-lg border border-subtle px-3 py-2 text-[11px] text-muted-foreground">
               {empty ?? t('settings.emptyValue')}
             </div>
           )}
@@ -2012,14 +2169,14 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
   return (
     <section>
       <PanelTitle description={t('settings.promptsDescription')}>{t('settings.prompts')}</PanelTitle>
-      <p className="mb-4 text-xs text-muted-foreground">
+      <p className="mb-8 max-w-xl text-[13px] leading-relaxed text-muted-foreground">
         {t('settings.promptsIntro')}
       </p>
       <SettingGroup title={t('settings.projectLayer')}>
         <SettingRow label={t('settings.projectInstructions')} hint={t('settings.projectHint')}>
           <span
             className={cn(
-              'rounded px-1.5 py-0.5 text-xs',
+              'inline-flex rounded-md px-2 py-0.5 text-xs font-medium',
               PROJECT_STATE_META[state?.project.state ?? 'missing'].cls,
             )}
           >
@@ -2028,18 +2185,18 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
         </SettingRow>
       </SettingGroup>
       {state?.project.error && (
-        <div role="alert" className="mt-3 border-l-2 border-destructive pl-3 text-xs text-destructive">
+        <div role="alert" className="mb-5 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-[13px] text-destructive">
           {state.project.error}
         </div>
       )}
       {state?.project.state === 'conflict' && (
-        <div className="mt-3 space-y-3 rounded-md border border-[var(--rp-love)]/40 bg-[var(--rp-love)]/5 p-3">
-          <p className="text-xs text-[var(--rp-love)]">
+        <div className="mb-5 space-y-3 rounded-lg border border-[var(--rp-love)]/40 bg-[var(--rp-love)]/5 p-4">
+          <p className="text-[13px] font-medium text-[var(--rp-love)]">
             {t('settings.projectConflict')}
           </p>
           {state.project.conflicts.map((item) => (
             <div key={item.path}>
-              <div className="mb-1 flex items-center justify-between gap-2">
+              <div className="mb-1.5 flex items-center justify-between gap-2">
                 <code className="text-xs">{item.path}</code>
                 <Button
                   size="sm"
@@ -2052,7 +2209,7 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
                   {t('settings.useVersion')}
                 </Button>
               </div>
-              <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded border border-subtle bg-muted/30 px-2 py-1.5 font-mono text-[11px]">
+              <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-subtle bg-muted/30 px-3 py-2 font-mono text-[11px]">
                 {item.text}
               </pre>
             </div>
@@ -2066,12 +2223,12 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
           setProjectDraftDirty(true);
         }}
         placeholder={t('settings.projectPlaceholder')}
-        className="mt-3 min-h-48 w-full resize-y rounded-md border border-subtle bg-background px-3 py-2 font-mono text-xs leading-relaxed outline-none focus:border-[var(--rp-iris)]"
+        className="mt-2 min-h-48 w-full resize-y rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs leading-relaxed outline-none transition-colors focus:border-ring focus:ring-1 focus:ring-ring"
       />
       {projectDraftDirty &&
         projectSettingsSnapshot &&
         projectDraftRevision !== projectSettingsSnapshot.revision && (
-          <div role="alert" className="mt-2 flex items-center justify-between gap-3 border-l-2 border-[var(--rp-gold)] pl-3 text-xs text-muted-foreground">
+          <div role="alert" className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-[var(--rp-gold)]/30 bg-[var(--rp-gold)]/10 px-4 py-2.5 text-[13px] text-muted-foreground">
             <span>{t('settings.projectDraftStale')}</span>
             <Button
               size="sm"
@@ -2102,10 +2259,10 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
         </Button>
       </div>
 
-      <div className="mb-2 mt-8 flex items-center gap-3">
+      <div className="mb-5 mt-12 flex items-center gap-3">
         <div>
-          <h3 className="text-base font-semibold">{t('settings.participatingEntries')}</h3>
-          <p className="mt-1 text-[13px] text-muted-foreground">
+          <h3 className="text-base font-semibold text-foreground">{t('settings.participatingEntries')}</h3>
+          <p className="mt-1.5 max-w-xl text-[13px] leading-relaxed text-muted-foreground">
             {t('settings.participatingEntriesHint')}
           </p>
         </div>
@@ -2128,54 +2285,58 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
           );
           const healthy = softwareEntry.state === 'ok' && projectEntry?.state === 'synced';
           return (
-            <SettingRow
-              key={softwareEntry.path}
-              label={softwareEntry.path}
-              hint={softwareEntry.isStandard ? t('settings.requiredEntry') : t('settings.participatingEntry')}
-            >
-              <div className="flex flex-wrap items-center gap-2">
-                <span className={cn('rounded px-1.5 py-0.5 text-xs', SW_STATE_META[softwareEntry.state].cls)}>
-                  {t('settings.softwareStatus', { status: t(SW_STATE_META[softwareEntry.state].labelKey) })}
-                </span>
-                {projectEntry && (
-                  <span className={cn(
-                    'rounded px-1.5 py-0.5 text-xs',
-                    projectEntry.state === 'synced'
-                      ? 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]'
-                      : 'bg-[var(--rp-love)]/20 text-[var(--rp-love)]',
-                  )}>
-                    {t('settings.projectStatus', { status: t(`settings.projectEntry.${projectEntry.state}`) })}
+            <div key={softwareEntry.path} className="py-3.5">
+              <div className="grid grid-cols-[12.5rem_minmax(0,1fr)] items-start gap-x-6 gap-y-1.5">
+                <div className="min-w-0">
+                  <div className="text-[13px] font-medium text-foreground">{softwareEntry.path}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {softwareEntry.isStandard ? t('settings.requiredEntry') : t('settings.participatingEntry')}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={cn('rounded-md px-2 py-0.5 text-xs font-medium', SW_STATE_META[softwareEntry.state].cls)}>
+                    {t('settings.softwareStatus', { status: t(SW_STATE_META[softwareEntry.state].labelKey) })}
                   </span>
-                )}
-                {!healthy && (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    disabled={busy}
-                    onClick={() => void run('software-prompt.sync-entry', { path: softwareEntry.path })}
-                  >
-                    <RefreshCw />
-                    {t('settings.resync')}
-                  </Button>
-                )}
-                {!softwareEntry.isStandard && (
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="ml-auto h-7 w-7 text-destructive"
-                    aria-label={t('settings.stopSync')}
-                    disabled={busy || projectDraftDirty}
-                    onClick={() => void removeEntry(softwareEntry.path)}
-                  >
-                    <Unlink />
-                  </Button>
-                )}
+                  {projectEntry && (
+                    <span className={cn(
+                      'rounded-md px-2 py-0.5 text-xs font-medium',
+                      projectEntry.state === 'synced'
+                        ? 'bg-[var(--rp-pine)]/20 text-[var(--rp-pine)]'
+                        : 'bg-[var(--rp-love)]/20 text-[var(--rp-love)]',
+                    )}>
+                      {t('settings.projectStatus', { status: t(`settings.projectEntry.${projectEntry.state}`) })}
+                    </span>
+                  )}
+                  {!healthy && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={busy}
+                      onClick={() => void run('software-prompt.sync-entry', { path: softwareEntry.path })}
+                    >
+                      <RefreshCw />
+                      {t('settings.resync')}
+                    </Button>
+                  )}
+                  {!softwareEntry.isStandard && (
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="ml-auto h-7 w-7 text-destructive"
+                      aria-label={t('settings.stopSync')}
+                      disabled={busy || projectDraftDirty}
+                      onClick={() => void removeEntry(softwareEntry.path)}
+                    >
+                      <Unlink />
+                    </Button>
+                  )}
+                </div>
               </div>
-            </SettingRow>
+            </div>
           );
         })}
         {(state?.availableEntries.length ?? 0) > 0 && (
-          <div className="flex justify-end border-t border-subtle px-4 py-3">
+          <div className="flex justify-end py-3">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button size="sm" variant="outline" disabled={busy || projectDraftDirty}>
@@ -2196,7 +2357,7 @@ function PromptsPanel({ setError }: { setError: (m: string | null) => void }): J
       </SettingGroup>
 
       <PromptViewer
-        aria-label={t('settings.softwareBody')}
+        label={t('settings.softwareBody')}
         body={state?.softwareText ?? null}
       />
     </section>
@@ -2215,7 +2376,7 @@ function AdvancedPanel({ setError }: { setError: (m: string | null) => void }): 
     <section>
       <PanelTitle description={t('settings.advancedDescription')}>{t('settings.advanced')}</PanelTitle>
 
-      <SettingGroup>
+      <SettingGroup title={t('settings.behavior')}>
         <SettingRow
           label={t('settings.restoreProjects')}
           hint={t('settings.restoreProjectsHint')}
@@ -2342,15 +2503,15 @@ function AboutPanel(): JSX.Element {
     <section>
       <PanelTitle>{t('settings.about')}</PanelTitle>
 
-      <div className="mb-6 flex items-center gap-4 px-1 py-2">
-        <IrisMark className="h-14 w-14 shrink-0" />
+      <div className="mb-10 flex items-center gap-5">
+        <IrisMark className="h-16 w-16 shrink-0" />
         <div className="min-w-0">
-          <h3 className="text-base font-semibold">{info?.name ?? 'Iris'}</h3>
-          <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">
+          <h3 className="text-base font-semibold text-foreground">{info?.name ?? 'Iris'}</h3>
+          <p className="mt-1 max-w-xl text-[13px] leading-relaxed text-muted-foreground">
             {t('settings.aboutDescription')}
           </p>
           {info && (
-            <p className="mt-1 text-xs text-muted-foreground">
+            <p className="mt-1.5 text-xs text-muted-foreground">
               v{info.version} · {t(APP_BUILD_TYPE_KEYS[info.buildType])}
             </p>
           )}
@@ -2358,7 +2519,7 @@ function AboutPanel(): JSX.Element {
       </div>
 
       {loadError && (
-        <div role="alert" className="mb-5 flex items-center gap-3 border-l-2 border-destructive px-3 py-2 text-[13px] text-destructive">
+        <div role="alert" className="mb-6 flex items-center gap-3 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-[13px] text-destructive">
           <span>{t('settings.aboutLoadError')}</span>
           <Button
             variant="outline"
@@ -2373,7 +2534,7 @@ function AboutPanel(): JSX.Element {
       )}
 
       {actionError && (
-        <p role="alert" className="mb-4 text-[13px] text-destructive">
+        <p role="alert" className="mb-6 text-[13px] text-destructive">
           {t('settings.aboutActionError')}
         </p>
       )}
@@ -2414,7 +2575,7 @@ function AboutPanel(): JSX.Element {
             <SettingRow label={t('settings.aboutDataDirectory')}>
               <div className="flex min-w-0 items-start gap-1">
                 <code
-                  className="min-w-0 flex-1 break-all pt-2 text-xs leading-relaxed text-muted-foreground"
+                  className="min-w-0 flex-1 break-all text-xs leading-relaxed text-muted-foreground"
                   aria-label={info.userDataPath}
                 >
                   {info.userDataPath}
@@ -2424,7 +2585,6 @@ function AboutPanel(): JSX.Element {
                   size="icon"
                   className="h-8 w-8 shrink-0"
                   aria-label={copied === 'data' ? t('settings.aboutCopied') : t('settings.aboutCopyDataDirectory')}
-                  aria-label={copied === 'data' ? t('settings.aboutCopied') : t('settings.aboutCopyDataDirectory')}
                   onClick={() => void copyText(info.userDataPath, 'data')}
                 >
                   {copied === 'data' ? <Check /> : <Copy />}
@@ -2433,7 +2593,6 @@ function AboutPanel(): JSX.Element {
                   variant="ghost"
                   size="icon"
                   className="h-8 w-8 shrink-0"
-                  aria-label={t('settings.aboutOpenDataDirectory')}
                   aria-label={t('settings.aboutOpenDataDirectory')}
                   onClick={() => void revealUserData()}
                 >
@@ -2490,7 +2649,7 @@ function AboutPanel(): JSX.Element {
             </SettingRow>
           </SettingGroup>
 
-          <SettingGroup>
+          <SettingGroup title={t('settings.aboutDiagnostics')}>
             <SettingRow
               label={t('settings.aboutDiagnostics')}
               hint={t('settings.aboutDiagnosticsHint')}

@@ -166,7 +166,7 @@ export type AgentWorkerEvent = AgentProtocolEnvelope &
         type: 'ready';
         runtime: {
           protocolVersion: typeof IRIS_AGENT_PROTOCOL_VERSION;
-          piVersion: string;
+          executorVersion: string;
           nodeVersion: string;
           workerEpoch: number;
           historyRevision: number;

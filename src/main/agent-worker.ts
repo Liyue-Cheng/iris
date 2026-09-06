@@ -16,7 +16,7 @@ import {
   type AgentWorkerRequest,
 } from '@shared/agent-protocol';
 import {
-  IRIS_PI_VERSION,
+  IRIS_EXECUTOR_VERSION,
   createIrisPiSession,
   currentIrisProviderToolCallId,
   normalizeIrisInterruptedAssistantMessage,
@@ -161,10 +161,7 @@ async function handleMessage(message: unknown): Promise<void> {
     flushAssistantDelta();
     try {
       await runExecution(message.correlation, async () => {
-        await runtime!.session.prompt(message.prompt, {
-          expandPromptTemplates: false,
-          source: 'interactive',
-        });
+        await runtime!.session.prompt(message.prompt);
       });
     } finally {
       await disposeRuntime();
@@ -247,7 +244,7 @@ async function initialize(message: Extract<AgentWorkerRequest, { type: 'initiali
     correlation: message.correlation,
     runtime: {
       protocolVersion: IRIS_AGENT_PROTOCOL_VERSION,
-      piVersion: IRIS_PI_VERSION,
+      executorVersion: IRIS_EXECUTOR_VERSION,
       nodeVersion: process.versions.node,
       workerEpoch: message.correlation.workerEpoch ?? 0,
       historyRevision: message.history.revision,
@@ -282,6 +279,23 @@ async function prepareExecution(
     model: execution.model,
     commandShell: baseRuntime.commandShell,
     providerProxy: execution.providerProxy,
+    executeToolCall: async (toolCall) => {
+      const input = providerToolCallInput(toolCall.name, toolCall.arguments, baseRuntime.cwd);
+      const result = await requestTool(input);
+      const text = result.kind === 'file'
+        ? Buffer.from(result.contentBase64, 'base64').toString('utf8')
+        : result.kind === 'terminal'
+          ? result.outputText
+          : '';
+      return {
+        role: 'toolResult' as const,
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        content: [{ type: 'text' as const, text }],
+        isError: result.kind === 'terminal' && !result.success,
+        timestamp: Date.now(),
+      };
+    },
     operations,
     history,
     onProviderPayload: async (payload, model) => {
@@ -342,6 +356,33 @@ async function prepareExecution(
     cwd: baseRuntime.cwd,
     agentDir: baseRuntime.agentDir,
   };
+}
+
+function providerToolCallInput(
+  name: string,
+  args: Record<string, unknown>,
+  cwd: string,
+): AgentToolOperationInput {
+  const path = typeof args.path === 'string' ? args.path : '';
+  if (name === 'read') return { tool: 'read', operation: 'readFile', absolutePath: path.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(path) ? path : `${cwd}/${path}` };
+  if (name === 'edit') return {
+    tool: 'edit', operation: 'writeFile',
+    absolutePath: path.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(path) ? path : `${cwd}/${path}`,
+    content: typeof args.content === 'string' ? args.content : '',
+  };
+  if (name === 'write') return {
+    tool: 'write', operation: 'writeFile',
+    absolutePath: path.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(path) ? path : `${cwd}/${path}`,
+    content: typeof args.content === 'string' ? args.content : '',
+  };
+  if (name === 'terminal') return {
+    tool: 'terminal', operation: 'exec', command: typeof args.command === 'string' ? args.command : '',
+    intent: args.intent === 'operation' ? 'operation' : 'information', cwd,
+    ...(Array.isArray(args.successExitCodes)
+      ? { successExitCodes: args.successExitCodes.filter((value): value is number => typeof value === 'number') }
+      : {}),
+  };
+  throw new Error(`Unknown Iris Agent tool: ${name}`);
 }
 
 async function superviseTerminal(

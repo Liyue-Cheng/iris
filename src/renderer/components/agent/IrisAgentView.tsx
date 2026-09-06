@@ -11,6 +11,7 @@ import {
   FolderSearch,
   GitBranch,
   LoaderCircle,
+  Play,
   RotateCcw,
   Send,
   Square,
@@ -137,7 +138,7 @@ export function IrisAgentView({
   }, []);
 
   useEffect(() => {
-    const unsubscribe = window.api.on(EVENTS.IRIS_AGENT_PROVIDERS_CHANGED, () => refreshModels(true));
+    const unsubscribe = window.api.on(EVENTS.IRIS_AGENT_PROVIDERS_CHANGED, () => refreshModels());
     refreshModels();
     return () => {
       modelRequest.current += 1;
@@ -185,7 +186,9 @@ export function IrisAgentView({
       void stopIrisAgent(session.id);
       return;
     }
-    if (draft.trim() === '' || !selectedModelAvailable) return;
+    const canStartFromDocument = session.anchor.kind === 'document' && session.intents.length === 0;
+    if (draft.trim() === '' && !canStartFromDocument) return;
+    if (!selectedModelAvailable) return;
     const text = draft;
     setDraft('');
     void sendIrisAgentMessage(session.id, text);
@@ -272,7 +275,6 @@ export function IrisAgentView({
         <select
           value={selectedModelValue}
           disabled={running || models.length === 0}
-          aria-label="Provider and model"
           aria-label={modelError ?? 'Provider and model'}
           className="h-7 w-44 max-w-[42%] min-w-0 shrink rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
           onChange={(event) => {
@@ -331,7 +333,6 @@ export function IrisAgentView({
             className="h-7 w-7 shrink-0"
             onClick={() => void rewindIrisAgent(session.id)}
             aria-label="回退最后一项意图及可安全还原的文件改动"
-            aria-label="回退上一项意图"
           >
             <Undo2 className="!size-3.5" />
           </Button>
@@ -360,7 +361,6 @@ export function IrisAgentView({
                 <span
                   role="button"
                   tabIndex={0}
-                  aria-label="关闭终端工作面"
                   aria-label="关闭终端工作面"
                   className="ml-0.5 rounded p-0.5 hover:bg-muted"
                   onClick={(event) => {
@@ -535,11 +535,14 @@ export function IrisAgentView({
           <Button
             type="submit"
             size="icon"
-            disabled={running ? false : !selectedModelAvailable || draft.trim() === ''}
-            aria-label={running ? '停止' : '发送'}
-            aria-label={running ? '停止' : '发送'}
+            disabled={running ? false : !selectedModelAvailable || (
+              draft.trim() === '' && !(session.anchor.kind === 'document' && session.intents.length === 0)
+            )}
+            aria-label={running ? '停止' : draft.trim() === '' ? '开始' : '发送'}
           >
-            {running ? <Square className="!size-4" /> : <Send className="!size-4" />}
+            {running ? <Square className="!size-4" /> : draft.trim() === '' && session.anchor.kind === 'document' && session.intents.length === 0
+              ? <Play className="!size-4" />
+              : <Send className="!size-4" />}
           </Button>
         </div>
       </form>
@@ -797,7 +800,7 @@ function LocalRetrievalCard({
     <CardFrame
       cardType="retrievals"
       icon={<FolderSearch className="h-4 w-4" />}
-      aria-label="信息检索"
+      title="信息检索"
       summary={failed > 0 ? `${summary} · ${failed} 项失败` : summary}
       state={card.state}
       action={card.items.length > 5 ? (
@@ -806,7 +809,6 @@ function LocalRetrievalCard({
           variant="ghost"
           size="icon"
           className="h-6 w-6"
-          aria-label={expanded ? '收起获取记录' : '展开全部获取记录'}
           aria-label={expanded ? '收起获取记录' : '展开全部获取记录'}
           onClick={() => setExpanded((value) => !value)}
         >
@@ -857,7 +859,7 @@ function FileChangeGroupCard({
     <CardFrame
       cardType="files"
       icon={<FileDiff className="h-4 w-4" />}
-      aria-label="文件变更"
+      title="文件变更"
       summary={summary}
       state={groupState(cards)}
     >
@@ -941,7 +943,7 @@ function TerminalOperationCard({
     <CardFrame
       cardType="operations"
       icon={<SquareTerminal className="h-4 w-4" />}
-      aria-label="执行命令"
+      title="执行命令"
       summary={cardStateLabel(card.state)}
       state={card.state}
       action={multiline ? (
@@ -950,7 +952,6 @@ function TerminalOperationCard({
           variant="ghost"
           size="icon"
           className="h-6 w-6"
-          aria-label={expanded ? '收起命令' : '展开完整命令'}
           aria-label={expanded ? '收起命令' : '展开完整命令'}
           onClick={() => setExpanded((value) => !value)}
         >
@@ -1012,7 +1013,7 @@ function AgentReplyCard({
     <CardFrame
       cardType="message"
       icon={<BotMessageSquare className="h-4 w-4" />}
-      aria-label="AI 回复"
+      title="AI 回复"
       summary={card.state === 'running'
         ? '正在回复'
         : card.state === 'stopped'
@@ -1027,7 +1028,6 @@ function AgentReplyCard({
           variant="ghost"
           size="icon"
           className="h-6 w-6 text-muted-foreground"
-          aria-label="从此回复创建对话分支"
           aria-label="从此回复创建对话分支"
           onClick={onFork}
         >
@@ -1173,7 +1173,7 @@ function CompactRowStateIcon({
   detail?: string | undefined;
   onClick?: (() => void) | undefined;
 }): JSX.Element {
-  const label = retrievalStateLabel(state);
+  const label = detail ? `${retrievalStateLabel(state)}：${detail}` : retrievalStateLabel(state);
   const icon = state === 'running'
     ? <LoaderCircle className="h-3 w-3 animate-spin" style={{ color: accent }} />
     : state === 'failed' || state === 'partial'
@@ -1238,7 +1238,6 @@ function UserMessage({
               size="icon"
               className="h-6 w-6 shrink-0 text-muted-foreground"
               aria-label={artifactTitle}
-              aria-label={artifactTitle}
               onClick={onOpenPrompt}
             >
               <FileText className="!size-3.5" />
@@ -1250,7 +1249,6 @@ function UserMessage({
               variant="ghost"
               size="icon"
               className="h-6 w-6 shrink-0 text-muted-foreground"
-              aria-label="从此输入重新开始"
               aria-label="从此输入重新开始"
               onClick={onFork}
             >

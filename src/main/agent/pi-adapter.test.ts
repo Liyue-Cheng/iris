@@ -2,10 +2,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { ModelRuntime, SessionManager as PiSessionManager } from '@earendil-works/pi-coding-agent';
 import { IRIS_AGENT_PROMPT } from './prompt';
 import {
-  createIrisPiResourceLoader,
   createIrisPiToolDefinitions,
   currentIrisProviderToolCallId,
   instrumentProviderPayloads,
@@ -20,11 +18,14 @@ import {
   saveIrisProviderApiKey,
   storedPiCredentialSecrets,
   unwrapProviderErrorMessage,
+  IrisHistoryManager,
 } from './pi-adapter';
 import {
   addIrisAgentProviderProfile,
   loadStoredIrisAgentProviderProfiles,
   removeIrisAgentProviderProfile,
+  updateIrisAgentProviderProfileApiKey,
+  updateIrisAgentProviderModels,
   runtimeProviderId,
 } from './provider-profiles';
 
@@ -54,16 +55,8 @@ describe('Iris Pi adapter', () => {
     )).toBe(renderRawError(transport));
   });
 
-  it('loads only the built-in Iris prompt and no discovered Pi resources', async () => {
-    const root = process.cwd();
-    const loader = await createIrisPiResourceLoader(root, join(root, '.not-used-pi-agent'));
-    expect(loader.getExtensions().extensions).toEqual([]);
-    expect(loader.getSkills().skills).toEqual([]);
-    expect(loader.getPrompts().prompts).toEqual([]);
-    expect(loader.getThemes().themes).toEqual([]);
-    expect(loader.getAgentsFiles().agentsFiles).toEqual([]);
-    expect(loader.getAppendSystemPrompt()).toEqual([]);
-    expect(loader.getSystemPrompt()).toBe(IRIS_AGENT_PROMPT);
+  it('uses the built-in Iris prompt without discovered resources', () => {
+    expect(IRIS_AGENT_PROMPT).toContain('operating inside Iris Agent');
   });
 
   it('exposes only wrapped public Pi tool definitions and delegates operations', async () => {
@@ -133,7 +126,7 @@ describe('Iris Pi adapter', () => {
   });
 
   it('injects persisted provider messages and tool results into Pi context', () => {
-    const manager = PiSessionManager.inMemory(process.cwd());
+    const manager = new IrisHistoryManager();
     restoreIrisPiHistory(manager, {
       revision: 9,
       anchor: { kind: 'workspace', path: '.iris' },
@@ -324,7 +317,7 @@ describe('Iris Pi adapter', () => {
   });
 
   it('keeps a persisted stopped partial after Pi session restoration and provider transformation', async () => {
-    const manager = PiSessionManager.inMemory(process.cwd());
+    const manager = new IrisHistoryManager();
     restoreIrisPiHistory(manager, {
       revision: 2,
       anchor: { kind: 'workspace', path: '.iris' },
@@ -386,7 +379,7 @@ describe('Iris Pi adapter', () => {
   });
 
   it('normalizes legacy assistant text restored without a provider message', () => {
-    const manager = PiSessionManager.inMemory(process.cwd());
+    const manager = new IrisHistoryManager();
     restoreIrisPiHistory(manager, {
       revision: 1,
       anchor: { kind: 'workspace', path: '.iris' },
@@ -501,10 +494,8 @@ describe('Iris Pi adapter', () => {
 
       expect(firstProjection).toHaveLength(1);
       expect(secondProjection).toHaveLength(2);
-      expect(secondProjection.map((profile) => profile.apiKey)).toEqual([
-        'sk-primary-secret',
-        'sk-backup-secret',
-      ]);
+      expect(secondProjection.map((profile) => profile.hasCredential)).toEqual([true, true]);
+      expect(JSON.stringify(secondProjection)).not.toContain('secret');
       const stored = await loadStoredIrisAgentProviderProfiles(root);
       expect(stored.map((profile) => profile.apiKey)).toEqual([
         'sk-primary-secret',
@@ -514,6 +505,17 @@ describe('Iris Pi adapter', () => {
         templateId: 'openai',
         baseUrl: 'https://proxy.example.com/v1',
       });
+      await updateIrisAgentProviderModels(stored[0]!.id, [{
+        modelId: 'gpt-available',
+        displayName: 'GPT Available',
+        contextWindowTokens: 96_000,
+        maxOutputTokens: 12_000,
+        reserveOutputTokens: 10_000,
+        keepRecentTokens: 8_000,
+        compactTrigger: 80_000,
+        enabled: true,
+        source: 'manual',
+      }], root);
 
       const catalog = await loadIrisProviderCatalog(root, root);
       expect(catalog.templates.map((template) => template.id)).toContain('openai-compatible');
@@ -521,12 +523,32 @@ describe('Iris Pi adapter', () => {
         'OpenAI primary',
         'OpenAI backup',
       ]);
-      expect(catalog.profiles.map((profile) => profile.apiKey)).toEqual([
-        'sk-primary-secret',
-        'sk-backup-secret',
-      ]);
+      expect(catalog.profiles.map((profile) => profile.hasCredential)).toEqual([true, true]);
+      expect(JSON.stringify(catalog.profiles)).not.toContain('secret');
 
-      const modelCatalog = await loadIrisModelCatalog(root, root);
+      const updatedProjection = await updateIrisAgentProviderProfileApiKey(
+        stored[0]!.id,
+        'sk-replaced-secret',
+        root,
+      );
+      expect(updatedProjection[0]).toMatchObject({ hasCredential: true });
+      expect(JSON.stringify(updatedProjection)).not.toContain('sk-replaced-secret');
+      expect((await loadStoredIrisAgentProviderProfiles(root))[0]?.apiKey).toBe('sk-replaced-secret');
+
+      const modelCatalog = await loadIrisModelCatalog(root, root, true);
+      expect(modelCatalog.models).toContainEqual(expect.objectContaining({
+        provider: runtimeProviderId(stored[0]!.id),
+        modelId: 'gpt-available',
+        contextWindowTokens: 96_000,
+        maxOutputTokens: 12_000,
+        contextPolicy: {
+          reserveOutputTokens: 10_000,
+          keepRecentTokens: 8_000,
+          compactTrigger: 80_000,
+        },
+        source: 'manual',
+        enabled: true,
+      }));
       const profileProviders = new Set(stored.map((profile) => runtimeProviderId(profile.id)));
       expect(profileProviders.size).toBe(2);
       expect(modelCatalog.models.filter((model) => profileProviders.has(model.provider))).toEqual(expect.arrayContaining([
@@ -566,7 +588,11 @@ describe('Iris Pi adapter', () => {
         apiKey: 'sk-secret',
       }, root);
 
-      const catalog = await loadIrisModelCatalog(root, root);
+      const localCatalog = await loadIrisModelCatalog(root, root);
+      expect(localCatalog.models.some((model) => model.providerName === 'Healthy provider')).toBe(false);
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+
+      const catalog = await loadIrisModelCatalog(root, root, true);
       expect(catalog.models).toContainEqual(expect.objectContaining({
         modelId: 'healthy-model',
         providerName: 'Healthy provider',
@@ -614,7 +640,7 @@ describe('Iris Pi adapter', () => {
         apiKey: 'sk-fast',
       }, root);
 
-      const pending = loadIrisModelCatalog(root, root);
+      const pending = loadIrisModelCatalog(root, root, true);
       await vi.waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2));
       resolveSlow(new Response(JSON.stringify({ data: [{ id: 'slow-model' }] }), { status: 200 }));
 
@@ -647,12 +673,8 @@ async function captureDeepSeekProviderPayload(
 ): Promise<unknown> {
   const agentDir = await mkdtemp(join(tmpdir(), 'iris-pi-provider-'));
   try {
-    const runtime = await ModelRuntime.create({
-      authPath: join(agentDir, 'auth.json'),
-      modelsPath: null,
-      refreshOnCreate: false,
-    });
-    await runtime.setRuntimeApiKey('deepseek', 'test-key');
+    await saveIrisProviderApiKey('deepseek', 'test-key', agentDir, agentDir);
+    const runtime = await (await import('./pi-adapter')).createIrisModelRuntimeForTest(agentDir, agentDir);
     const model = runtime.getModel('deepseek', 'deepseek-v4-pro');
     if (!model) throw new Error('The pinned Pi model catalog is missing deepseek-v4-pro');
     let captured: unknown;

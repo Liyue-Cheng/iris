@@ -72,7 +72,9 @@ export async function openIrisAgent(anchor: IrisAgentAnchor): Promise<IrisAgentS
 
 export async function sendIrisAgentMessage(sessionId: string, message: string): Promise<void> {
   const trimmed = message.trim();
-  if (!trimmed) return;
+  const session = irisAgentStore.get().sessions.find((candidate) => candidate.id === sessionId);
+  const canStartFromDocument = session?.anchor.kind === 'document' && session.intents.length === 0;
+  if (!trimmed && !canStartFromDocument) return;
   await runUserAction(
     {
       title: 'Iris Agent 发送失败',

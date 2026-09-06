@@ -21,10 +21,11 @@ Guidelines:
 - Be concise in your responses
 - Show file paths clearly when working with files
 
-All file and terminal operations are hosted by Iris and constrained to the current project boundary.`;
+Iris hosts all operations. In the first version, read, edit, write, and terminal may access any path explicitly
+requested by the user. Do not add a path restriction unless the user asks for one.`;
 
 export const IRIS_AGENT_PROMPT_METADATA = {
-  upstreamPackage: '@earendil-works/pi-coding-agent',
+  upstreamPackage: '@earendil-works/pi-ai',
   upstreamVersion: '0.84.1',
   upstreamPromptCwd: 'C:/iris-prompt-root',
   upstreamPromptSha256: 'bfd83ad660a7f76ee86a8beee63c80eda1441be7f717ae156dedaf0029c85293',
@@ -36,6 +37,7 @@ export const IRIS_AGENT_PROMPT_METADATA = {
     'remove custom-tool, PI_* environment, docs, extension, TUI, and skill guidance',
     'make terminal guidance shell-neutral so the runtime tool contract selects the dialect',
     'require every terminal call to declare information or operation intent',
+    'allow first-version access by every tool to explicitly requested paths; defer the unified security model',
   ],
   adaptedBasePromptSha256: sha256(IRIS_AGENT_PROMPT),
   finalPromptCwd: 'C:/iris-prompt-root',

@@ -57,7 +57,12 @@ const OverflowTooltip = ({
   return (
     <Tooltip>
       <TooltipTrigger asChild>{trigger}</TooltipTrigger>
-      <TooltipContent side={side} className={className}>{content}</TooltipContent>
+      <TooltipContent
+        {...(side !== undefined ? { side } : {})}
+        {...(className !== undefined ? { className } : {})}
+      >
+        {content}
+      </TooltipContent>
     </Tooltip>
   );
 };
