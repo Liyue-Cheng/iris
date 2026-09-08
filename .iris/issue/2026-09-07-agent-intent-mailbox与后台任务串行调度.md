@@ -204,3 +204,24 @@ Task 终态与 outbox 事件需要同一持久化事务或等价的恢复机制�
 - [ ] 应用重启后 pending Intent、Task 终态和日志可恢复，无法重连的任务明确标记 `lost`。
 - [ ] UI 能区分 Agent 忙碌、前台 terminal 等待、后台 Task 运行、取消处理中和待处理终态。
 - [ ] 在实际 Windows ConPTY 环境手工验证进程树清理、输出收尾、关闭和异常恢复。
+
+## 设计讨论：Task 独立卡片与工具 intent（2026-09-08）
+
+用户提出 Task 使用独立卡片，并考虑不再设置 `intent`。建议采用：从上文 `task_start` schema 和 Task 启动快照中去掉 `intent: 'information' | 'operation'`，启动接口简化为：
+
+```ts
+task_start({
+  command: string,
+  title: string,
+  successExitCodes?: number[]
+})
+```
+
+现有实现中，这个分类参数决定 terminal 是否归入信息检索卡片：`session-model.ts` 的 `isLocalRetrieval` 将 `intent === 'information'` 的 terminal 与 read 合并展示，其余 terminal 单独展示。Tool Host 执行命令时没有根据该分类分支处理。Task 固定使用独立卡片后，不需要模型再填写这个字段，也不需要内部补一个固定的 `operation` 值。前台 terminal 仍保留现有分类。
+
+每个 Task 用稳定的 `taskId` 关联一张任务卡片，展示标题、运行状态、日志入口和取消操作。卡片随 Task 生命周期更新，启动工具调用返回后，卡片仍能显示后台进程的实际状态；Task 状态与当前 Agent Intent 的执行状态分别表达。
+
+这里移除的是工具参数中的分类 `intent`。调度层的 Agent Intent、Task 的 `causedByIntentId` 来源关联，以及 Task 终态进入 mailbox 的标准 Intent 仍然保留。任务卡片负责展示执行状态，终态 Intent 负责让 Agent 串行处理结果，两者承担不同职责。
+
+- [ ] `task_start` schema 和 Task 启动快照不包含 `information / operation` 分类；前台 terminal 保留该分类。
+- [ ] 每个 Task 使用独立卡片，启动调用返回后持续展示实际任务状态，不并入信息检索卡片。
