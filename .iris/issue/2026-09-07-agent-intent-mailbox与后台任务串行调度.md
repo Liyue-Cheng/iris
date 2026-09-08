@@ -239,3 +239,7 @@ task_start({
 自动化验证已通过：`npm run typecheck`、相关 Agent 单测 90 项，以及单 worker 全量 `vitest`（85 个测试文件、513 项）。未运行打包命令。以下验收仍需要在真实 Windows ConPTY 环境手工确认：
 
 - [ ] 验证真实进程树清理、输出收尾、关闭和异常恢复，并确认超时/Stop/abort 竞争只产生一个终态结果。
+
+`npm run agent:worker-check` 当前因 `out/main/agent-worker.js` 仍是 protocol v14，而源码已升级到 v15 未通过；按项目约束没有运行 build，构建后需重新执行该检查。
+
+- [ ] 构建后重新运行 `npm run agent:worker-check`，确认 Electron Worker 产物与源码协议版本一致。
