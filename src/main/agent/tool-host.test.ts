@@ -19,6 +19,37 @@ const correlation = {
 };
 
 describe('IrisAgentToolHost', () => {
+  it('rejects patch text and empty edit lists without changing the file', async () => {
+    const projectRoot = await createTempDataDir('iris-agent-edit-guard-');
+    try {
+      const target = join(projectRoot, 'src', 'value.ts');
+      await fs.mkdir(join(projectRoot, 'src'), { recursive: true });
+      await fs.writeFile(target, 'const value = 1;\n', 'utf8');
+      const host = new IrisAgentToolHost({ projectRoot, commandShell });
+
+      const empty = await host.execute(
+        { tool: 'edit', operation: 'writeFile', absolutePath: target, edits: [] },
+        correlation,
+      );
+      expect(empty.update.state).toBe('failed');
+      expect(await fs.readFile(target, 'utf8')).toBe('const value = 1;\n');
+
+      const patch = await host.execute(
+        {
+          tool: 'edit',
+          operation: 'writeFile',
+          absolutePath: target,
+          edits: [{ oldText: '*** Begin Patch', newText: '' }],
+        },
+        correlation,
+      );
+      expect(patch.update.state).toBe('failed');
+      expect(await fs.readFile(target, 'utf8')).toBe('const value = 1;\n');
+    } finally {
+      await removeTempDataDir(projectRoot);
+    }
+  });
+
   it('writes files without creating a separate effect ledger', async () => {
     const projectRoot = await createTempDataDir('iris-agent-tool-project-');
         try {
@@ -37,7 +68,12 @@ describe('IrisAgentToolHost', () => {
       });
 
       const write = await host.execute(
-        { tool: 'edit', operation: 'writeFile', absolutePath: target, content: 'after' },
+        {
+          tool: 'edit',
+          operation: 'writeFile',
+          absolutePath: target,
+          edits: [{ oldText: 'before', newText: 'after' }],
+        },
         correlation,
       );
       expect(await fs.readFile(target, 'utf8')).toBe('after');
@@ -46,6 +82,28 @@ describe('IrisAgentToolHost', () => {
       expect(write.update.diff).toContain('-before');
       expect(write.update.diff).toContain('+after');
 
+    } finally {
+      await removeTempDataDir(projectRoot);
+    }
+  });
+
+  it('matches Pi read offset/limit behavior and returns continuation guidance', async () => {
+    const projectRoot = await createTempDataDir('iris-agent-read-range-');
+    try {
+      const target = join(projectRoot, 'lines.txt');
+      await fs.writeFile(target, 'one\ntwo\nthree\nfour\n', 'utf8');
+      const host = new IrisAgentToolHost({ projectRoot, commandShell });
+      const result = await host.execute(
+        { tool: 'read', operation: 'readFile', absolutePath: target, offset: 2, limit: 2 },
+        correlation,
+      );
+      expect(result.result).toMatchObject({ kind: 'file' });
+      if (result.result.kind === 'file') {
+        expect(Buffer.from(result.result.contentBase64, 'base64').toString('utf8'))
+          .toContain('two\nthree');
+        expect(Buffer.from(result.result.contentBase64, 'base64').toString('utf8'))
+          .toContain('Use offset=4 to continue');
+      }
     } finally {
       await removeTempDataDir(projectRoot);
     }
@@ -133,13 +191,14 @@ describe('IrisAgentToolHost', () => {
       );
       expect(write.update.state).toBe('completed');
       await expect(fs.readFile(join(outsideRoot, 'written.txt'), 'utf8')).resolves.toBe('written outside');
+      await fs.writeFile(join(outsideRoot, 'edited.txt'), 'outside', 'utf8');
 
       const edit = await host.execute(
         {
           tool: 'edit',
           operation: 'writeFile',
           absolutePath: join(linkedDirectory, 'edited.txt'),
-          content: 'edited outside',
+          edits: [{ oldText: 'outside', newText: 'edited outside' }],
         },
         correlation,
       );
@@ -199,6 +258,7 @@ describe('IrisAgentToolHost', () => {
       await removeTempDataDir(projectRoot);
     }
   });
+
 
   it('uses explicitly allowed nonzero exit codes consistently', async () => {
     const projectRoot = await createTempDataDir('iris-agent-tool-allowed-exit-project-');

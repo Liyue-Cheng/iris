@@ -90,6 +90,9 @@ describe('Iris Pi adapter', () => {
     });
     expect(tools.map((tool) => tool.name)).toEqual(['read', 'edit', 'write', 'terminal']);
     const read = tools[0]!;
+    expect(tools[1]!.parameters.required).toEqual(['path', 'edits']);
+    expect(Object.keys(tools[1]!.parameters.properties)).toEqual(['path', 'edits']);
+    expect(tools[2]!.parameters.required).toEqual(['path', 'content']);
     const result = await read.execute(
       'call-1',
       { path: 'README.md' },
@@ -99,6 +102,37 @@ describe('Iris Pi adapter', () => {
     );
     expect(operations.read.readFile).toHaveBeenCalledWith(join(root, 'README.md'));
     expect(result.content).toEqual([{ type: 'text', text: 'hello' }]);
+    await read.execute(
+      'call-1',
+      { path: 'README.md', offset: 3, limit: 5 },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    expect(operations.read.readFile).toHaveBeenLastCalledWith(
+      join(root, 'README.md'),
+      { offset: 3, limit: 5 },
+    );
+    const editResult = await tools[1]!.execute(
+      'call-edit',
+      { path: 'README.md', edits: [{ oldText: 'before', newText: 'after' }] },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    expect(editResult.content[0]).toEqual({
+      type: 'text', text: 'Successfully replaced 1 block(s) in README.md.',
+    });
+    const writeResult = await tools[2]!.execute(
+      'call-write',
+      { path: 'out.txt', content: '你好' },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    expect(writeResult.content[0]).toEqual({
+      type: 'text', text: 'Successfully wrote 6 bytes to out.txt',
+    });
     expect(tools[3]).toMatchObject({ name: 'terminal', label: 'PowerShell' });
     expect(tools[3]!.description).toContain('PowerShell 7 (pwsh.exe)');
     expect(tools[3]!.description.toLowerCase()).not.toContain('bash');

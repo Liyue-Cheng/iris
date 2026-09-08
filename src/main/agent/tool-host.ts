@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
+import { constants } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import { join, normalize, relative, resolve } from 'node:path';
 import {
@@ -15,6 +16,8 @@ import type {
   AgentToolOperationResult,
 } from '@shared/agent-protocol';
 import type { AgentToolActivity } from './session-model';
+import { applyTextEdits, type TextEdit } from './edit-diff';
+import { defaultProcessTreeKiller } from '../terminal/process-tree';
 
 export interface IrisAgentToolHostResult {
   result: AgentToolOperationResult;
@@ -100,7 +103,7 @@ export class IrisAgentToolHost {
     const target = this.resolveUnrestrictedPath(input.absolutePath);
     const relPath = toProjectPath(relative(this.options.projectRoot, target));
     if (input.operation === 'access') {
-      await fs.access(target);
+      await fs.access(target, input.tool === 'edit' ? constants.R_OK | constants.W_OK : constants.R_OK);
       return {
         result: { kind: 'void' },
         update: { path: relPath, resultSummary: 'access ok' },
@@ -108,11 +111,14 @@ export class IrisAgentToolHost {
     }
     if (input.operation === 'readFile') {
       const bytes = await fs.readFile(target);
+      const output = input.tool === 'read'
+        ? truncateReadBuffer(bytes, input.offset, input.limit)
+        : { bytes, truncated: false };
       return {
-        result: { kind: 'file', contentBase64: bytes.toString('base64') },
+        result: { kind: 'file', contentBase64: output.bytes.toString('base64') },
         update: {
           path: relPath,
-          resultSummary: String(bytes.byteLength) + ' bytes',
+          resultSummary: String(bytes.byteLength) + ' bytes' + (output.truncated ? ' (truncated)' : ''),
         },
       };
     }
@@ -132,6 +138,19 @@ export class IrisAgentToolHost {
     ) {
       throw new Error('Unsupported Iris Agent file operation.');
     }
+    if (input.tool === 'edit') {
+      if (!Array.isArray(input.edits) || input.edits.length === 0) {
+        throw new Error('Edit tool requires at least one oldText/newText replacement.');
+      }
+      const before = await fs.readFile(target, 'utf8');
+      const content = applyTextEdits(before, input.edits as TextEdit[], relPath);
+      const diff = generateUnifiedPatch(relPath, before, content);
+      await writeFileAtomic(target, content);
+      return {
+        result: { kind: 'void', message: `Successfully replaced ${input.edits.length} block(s) in ${relPath}.` },
+        update: { path: relPath, resultSummary: 'updated', diff },
+      };
+    }
     const content = input.content ?? '';
     const before = await fs.readFile(target, 'utf8').catch((err: NodeJS.ErrnoException) => {
       if (err.code === 'ENOENT') return null;
@@ -146,7 +165,7 @@ export class IrisAgentToolHost {
     const diff = generateUnifiedPatch(relPath, before ?? '', content);
     await writeFileAtomic(target, content);
     return {
-      result: { kind: 'void' },
+      result: { kind: 'void', message: `Successfully wrote ${Buffer.byteLength(content, 'utf8')} bytes to ${relPath}` },
       update: {
         path: relPath,
         resultSummary: before === null ? 'created' : 'updated',
@@ -178,6 +197,7 @@ export class IrisAgentToolHost {
       outputPath,
       env: sanitizeEnv(input.env),
       commandShell: this.options.commandShell,
+      processTreeKillFn: defaultProcessTreeKiller(),
       displayThresholdMs: this.options.displayThresholdMs ?? 3000,
       onEvent: (event) => this.options.onTerminalEvent?.(event, { correlation, outputPath }),
     };
@@ -187,6 +207,10 @@ export class IrisAgentToolHost {
     const result = await pty.result;
     const relCwd = toProjectPath(relative(this.options.projectRoot, cwd));
     const outputText = tailText(result.plainText, 64 * 1024);
+    const outputWasTruncated = outputText.truncated || result.outputTruncated || result.outputBytes > 64 * 1024;
+    const modelOutput = outputWasTruncated
+      ? `${outputText.text}\n\n[Showing the available tail preview; full output is available at ${result.outputPath}.]`
+      : outputText.text;
     const successExitCodes = normalizeSuccessExitCodes(input.successExitCodes);
     const success = successExitCodes.includes(result.exitCode);
     return {
@@ -194,8 +218,8 @@ export class IrisAgentToolHost {
         kind: 'terminal',
         exitCode: result.exitCode,
         success,
-        outputText: outputText.text,
-        outputTruncated: outputText.truncated || result.outputTruncated || result.outputBytes > 64 * 1024,
+        outputText: modelOutput,
+        outputTruncated: outputWasTruncated,
         terminalId,
         outputPath: result.outputPath,
         shown: result.shown,
@@ -260,4 +284,44 @@ function normalizeSuccessExitCodes(value: number[] | undefined): number[] {
 
 function toProjectPath(path: string): string {
   return path.replaceAll('\\', '/');
+}
+
+const READ_MAX_LINES = 2000;
+const READ_MAX_BYTES = 50 * 1024;
+
+function truncateReadBuffer(
+  bytes: Buffer,
+  offset: number | undefined,
+  limit: number | undefined,
+): { bytes: Buffer; truncated: boolean } {
+  const text = bytes.toString('utf8');
+  const lines = text.split('\n');
+  const start = offset === undefined ? 0 : Math.max(0, Math.floor(offset) - 1);
+  if (start >= lines.length) {
+    throw new Error(`Offset ${String(offset)} is beyond end of file (${lines.length} lines total)`);
+  }
+  const requestedEnd = limit === undefined ? lines.length : Math.min(lines.length, start + Math.max(0, Math.floor(limit)));
+  const maxLines = Math.min(
+    READ_MAX_LINES,
+    limit === undefined ? READ_MAX_LINES : Math.max(0, Math.floor(limit)),
+  );
+  const lineLimitedEnd = Math.min(requestedEnd, start + maxLines);
+  let output = lines.slice(start, lineLimitedEnd).join('\n');
+  let truncated = lineLimitedEnd < requestedEnd || (limit === undefined && lineLimitedEnd < lines.length);
+  const outputBytes = Buffer.from(output, 'utf8');
+  if (outputBytes.byteLength > READ_MAX_BYTES) {
+    let end = READ_MAX_BYTES;
+    while (end > 0 && (outputBytes[end]! & 0xc0) === 0x80) end -= 1;
+    output = outputBytes.subarray(0, end).toString('utf8');
+    truncated = true;
+  }
+  if (truncated) {
+    const shownLines = output.split('\n').length;
+    const nextOffset = start + shownLines + 1;
+    const suffix = `\n\n[Showing lines ${start + 1}-${start + shownLines} of ${lines.length}. Use offset=${nextOffset} to continue.]`;
+    output += suffix;
+  } else if (limit !== undefined && requestedEnd < lines.length) {
+    output += `\n\n[${lines.length - requestedEnd} more lines in file. Use offset=${requestedEnd + 1} to continue.]`;
+  }
+  return { bytes: Buffer.from(output, 'utf8'), truncated };
 }

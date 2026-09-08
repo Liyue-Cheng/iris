@@ -35,6 +35,7 @@ import type {
   IrisAgentProviderCatalog,
 } from '@shared/types';
 import { IRIS_AGENT_PROMPT } from './prompt';
+import type { TextEdit } from './edit-diff';
 import {
   IRIS_AGENT_PROVIDER_TEMPLATES,
   findIrisAgentProviderTemplate,
@@ -79,12 +80,12 @@ export function irisPiAgentDir(): string {
 export interface IrisToolHostOperations {
   read: {
     access: (absolutePath: string) => Promise<void>;
-    readFile: (absolutePath: string) => Promise<Buffer>;
+    readFile: (absolutePath: string, options?: { offset?: number; limit?: number }) => Promise<Buffer>;
   };
   edit: {
     access: (absolutePath: string) => Promise<void>;
     readFile: (absolutePath: string) => Promise<Buffer>;
-    writeFile: (absolutePath: string, content: string) => Promise<void>;
+    writeFile: (absolutePath: string, edits: TextEdit[]) => Promise<void>;
   };
   write: {
     mkdir: (absolutePath: string) => Promise<void>;
@@ -192,18 +193,37 @@ export function createIrisPiToolDefinitions(
     ),
   };
   return [
-    withIrisToolCallContext(fileTool('read', Type.Object({ path: Type.String() }), async (_id, params) => {
+    withIrisToolCallContext(fileTool('read', Type.Object({
+      path: Type.String({ description: 'Path to the file to read (relative or absolute)' }),
+      offset: Type.Optional(Type.Number({ description: '1-indexed line number to start reading from' })),
+      limit: Type.Optional(Type.Number({ description: 'Maximum number of lines to read' })),
+    }), async (_id, params) => {
       await operations.read.access(join(cwd, params.path));
-      const content = await operations.read.readFile(join(cwd, params.path));
+      const readOptions = {
+        ...(params.offset === undefined ? {} : { offset: params.offset }),
+        ...(params.limit === undefined ? {} : { limit: params.limit }),
+      };
+      const content = Object.keys(readOptions).length > 0
+        ? await operations.read.readFile(join(cwd, params.path), readOptions)
+        : await operations.read.readFile(join(cwd, params.path));
       return { content: [{ type: 'text' as const, text: content.toString('utf8') }], details: {} };
     })),
-    withIrisToolCallContext(fileTool('edit', Type.Object({ path: Type.String(), content: Type.String() }), async (_id, params) => {
-      await operations.edit.writeFile(join(cwd, params.path), params.content);
-      return { content: [{ type: 'text' as const, text: 'updated' }], details: {} };
+    withIrisToolCallContext(fileTool('edit', Type.Object({
+      path: Type.String(),
+      edits: Type.Array(Type.Object({ oldText: Type.String(), newText: Type.String() }), { minItems: 1 }),
+    }), async (_id, params) => {
+      await operations.edit.writeFile(join(cwd, params.path), params.edits);
+      return {
+        content: [{ type: 'text' as const, text: `Successfully replaced ${params.edits.length} block(s) in ${params.path}.` }],
+        details: {},
+      };
     })),
-    withIrisToolCallContext(fileTool('write', Type.Object({ path: Type.String(), content: Type.String() }), async (_id, params) => {
+    withIrisToolCallContext(fileTool('write', Type.Object({
+      path: Type.String({ description: 'Path to the file to write (relative or absolute)' }),
+      content: Type.String({ description: 'Content to write to the file' }),
+    }), async (_id, params) => {
       await operations.write.writeFile(join(cwd, params.path), params.content);
-      return { content: [{ type: 'text' as const, text: 'written' }], details: {} };
+      return { content: [{ type: 'text' as const, text: `Successfully wrote ${Buffer.byteLength(params.content, 'utf8')} bytes to ${params.path}` }], details: {} };
     })),
     withIrisToolCallContext(terminal),
   ] as const;

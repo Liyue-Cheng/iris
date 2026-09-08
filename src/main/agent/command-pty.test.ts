@@ -112,6 +112,21 @@ describe('AgentCommandPty', () => {
     }
   });
 
+  it('marks output truncated when the terminal mirror scrollback is exceeded', async () => {
+    const fake = fakePty();
+    const command = new AgentCommandPty({
+      terminalId: 'terminal-truncated',
+      command: 'many-lines',
+      cwd: process.cwd(),
+      outputPath: 'output.bin',
+      spawnFn: () => fake.pty,
+      outputStore: { append: async () => {} },
+    });
+    fake.data(`${'line\n'.repeat(5_001)}`);
+    fake.exit(0);
+    await expect(command.result).resolves.toMatchObject({ outputTruncated: true });
+  });
+
   it('rejects instead of hanging when full-output persistence fails', async () => {
     const fake = fakePty();
     const command = new AgentCommandPty({
@@ -138,6 +153,30 @@ describe('AgentCommandPty', () => {
       outputStore: { append: async () => {} },
     });
     command.abort();
+    expect(fake.pty.kill).toHaveBeenCalledOnce();
+    fake.exit(130);
+    await expect(command.result).resolves.toMatchObject({ exitCode: 130 });
+  });
+
+  it('kills the process tree before closing the PTY when configured', async () => {
+    const fake = fakePty();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const killTree = vi.fn(async () => gate);
+    const command = new AgentCommandPty({
+      terminalId: 'terminal-tree-abort',
+      command: 'long',
+      cwd: process.cwd(),
+      outputPath: 'output.bin',
+      spawnFn: () => fake.pty,
+      processTreeKillFn: killTree,
+      outputStore: { append: async () => {} },
+    });
+    command.abort();
+    expect(killTree).toHaveBeenCalledWith(42);
+    expect(fake.pty.kill).not.toHaveBeenCalled();
+    release();
+    await new Promise((resolve) => setImmediate(resolve));
     expect(fake.pty.kill).toHaveBeenCalledOnce();
     fake.exit(130);
     await expect(command.result).resolves.toMatchObject({ exitCode: 130 });

@@ -6,6 +6,7 @@ import { spawn, type IDisposable, type IPty } from 'node-pty';
 import type { AgentCommandShell } from '@shared/agent-protocol';
 import { buildSpawnEnv } from '../pty-utils';
 import { TerminalMirror } from '../terminal/terminal-mirror';
+import type { ProcessTreeKillFn } from '../terminal/process-tree';
 
 export interface AgentCommandPtyResult {
   terminalId: string;
@@ -41,6 +42,8 @@ export interface AgentCommandPtyOptions {
   displayThresholdMs?: number;
   spawnFn?: typeof spawn;
   outputStore?: AgentCommandOutputStore;
+  /** Optional platform-specific descendant cleanup, used before closing the PTY. */
+  processTreeKillFn?: ProcessTreeKillFn | null;
   onEvent?: (event: AgentCommandPtyEvent) => void;
 }
 
@@ -52,8 +55,10 @@ export class AgentCommandPty {
   private readonly outputDecoder = new StringDecoder('utf8');
   private outputChain = Promise.resolve();
   private cursor = 0;
+  private outputLineCount = 1;
   private shown = false;
   private settled = false;
+  private aborting = false;
   private resolveResult!: (result: AgentCommandPtyResult) => void;
   private rejectResult!: (error: Error) => void;
   readonly result: Promise<AgentCommandPtyResult>;
@@ -89,7 +94,18 @@ export class AgentCommandPty {
   }
 
   abort(): void {
-    if (!this.settled) this.pty.kill();
+    if (this.settled || this.aborting) return;
+    this.aborting = true;
+    const killTree = this.options.processTreeKillFn;
+    if (!killTree || !this.pty.pid) {
+      this.pty.kill();
+      return;
+    }
+    void killTree(this.pty.pid)
+      .catch(() => undefined)
+      .finally(() => {
+        if (!this.settled) this.pty.kill();
+      });
   }
 
   dispose(): void {
@@ -124,7 +140,10 @@ export class AgentCommandPty {
     const startCursor = this.cursor;
     this.cursor += bytes.length;
     const plainChunk = this.outputDecoder.write(bytes);
-    if (plainChunk) this.mirror.write(plainChunk);
+    if (plainChunk) {
+      this.outputLineCount += countNewlines(plainChunk);
+      this.mirror.write(plainChunk);
+    }
     const store = this.options.outputStore ?? fileOutputStore;
     this.outputChain = this.outputChain.then(() => store.append(this.options.outputPath, bytes));
     this.options.onEvent?.({
@@ -149,7 +168,10 @@ export class AgentCommandPty {
     try {
       await this.outputChain;
       const finalChunk = this.outputDecoder.end();
-      if (finalChunk) this.mirror.write(finalChunk);
+      if (finalChunk) {
+        this.outputLineCount += countNewlines(finalChunk);
+        this.mirror.write(finalChunk);
+      }
       await this.mirror.fence(250, () => undefined);
     } catch (error) {
       this.rejectResult(error instanceof Error ? error : new Error(String(error)));
@@ -164,11 +186,17 @@ export class AgentCommandPty {
       finalCursor: this.cursor,
       shown: this.shown,
       plainText: this.mirror.plainText(5000),
-      outputTruncated: false,
+      outputTruncated: this.outputLineCount > 5000,
     };
     this.options.onEvent?.({ type: 'completed', terminalId: this.options.terminalId, result });
     this.resolveResult(result);
   }
+}
+
+function countNewlines(value: string): number {
+  let count = 0;
+  for (const char of value) if (char === '\n') count += 1;
+  return count;
 }
 
 export function commandShell(

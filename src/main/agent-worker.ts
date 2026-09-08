@@ -15,6 +15,7 @@ import {
   type AgentWorkerInitRuntime,
   type AgentWorkerRequest,
 } from '@shared/agent-protocol';
+import type { AgentTextEdit } from '@shared/agent-protocol';
 import {
   IRIS_EXECUTOR_VERSION,
   createIrisPiSession,
@@ -304,7 +305,7 @@ async function prepareExecution(
         ? Buffer.from(result.contentBase64, 'base64').toString('utf8')
         : result.kind === 'terminal'
           ? result.outputText
-          : '';
+          : result.message ?? '';
       return {
         role: 'toolResult' as const,
         toolCallId: toolCall.id,
@@ -382,11 +383,16 @@ function providerToolCallInput(
   cwd: string,
 ): AgentToolOperationInput {
   const path = typeof args.path === 'string' ? args.path : '';
-  if (name === 'read') return { tool: 'read', operation: 'readFile', absolutePath: path.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(path) ? path : `${cwd}/${path}` };
+  if (name === 'read') return {
+    tool: 'read', operation: 'readFile',
+    absolutePath: path.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(path) ? path : `${cwd}/${path}`,
+    ...(typeof args.offset === 'number' ? { offset: args.offset } : {}),
+    ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
+  };
   if (name === 'edit') return {
     tool: 'edit', operation: 'writeFile',
     absolutePath: path.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(path) ? path : `${cwd}/${path}`,
-    content: typeof args.content === 'string' ? args.content : '',
+    edits: parseTextEdits(args.edits),
   };
   if (name === 'write') return {
     tool: 'write', operation: 'writeFile',
@@ -457,8 +463,8 @@ function createWorkerOperations(): IrisToolHostOperations {
       access: async (absolutePath) => {
         await requestTool({ tool: 'read', operation: 'access', absolutePath });
       },
-      readFile: async (absolutePath) => {
-        const result = await requestTool({ tool: 'read', operation: 'readFile', absolutePath });
+      readFile: async (absolutePath, options) => {
+        const result = await requestTool({ tool: 'read', operation: 'readFile', absolutePath, ...options });
         if (result.kind !== 'file') throw new Error('Iris Agent readFile returned a non-file result');
         return Buffer.from(result.contentBase64, 'base64');
       },
@@ -473,7 +479,7 @@ function createWorkerOperations(): IrisToolHostOperations {
         return Buffer.from(result.contentBase64, 'base64');
       },
       writeFile: async (absolutePath, content) => {
-        await requestTool({ tool: 'edit', operation: 'writeFile', absolutePath, content });
+        await requestTool({ tool: 'edit', operation: 'writeFile', absolutePath, edits: content });
       },
     },
     write: {
@@ -504,6 +510,17 @@ function createWorkerOperations(): IrisToolHostOperations {
       },
     },
   };
+}
+
+function parseTextEdits(value: unknown): AgentTextEdit[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+    const item = entry as Record<string, unknown>;
+    return typeof item.oldText === 'string' && typeof item.newText === 'string'
+      ? [{ oldText: item.oldText, newText: item.newText } satisfies AgentTextEdit]
+      : [];
+  });
 }
 
 async function requestTool(input: AgentToolOperationInput): Promise<AgentToolOperationResult> {

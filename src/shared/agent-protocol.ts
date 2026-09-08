@@ -3,6 +3,10 @@ import type {
   IrisAgentModelRef,
   IrisAgentProviderContextCall,
 } from './types';
+export interface AgentTextEdit {
+  oldText: string;
+  newText: string;
+}
 
 export const IRIS_AGENT_PROTOCOL_VERSION = 14 as const;
 
@@ -103,9 +107,10 @@ export interface AgentCommandShell {
 }
 
 export type AgentToolOperationInput =
-  | { tool: 'read'; operation: 'access' | 'readFile'; absolutePath: string }
-  | { tool: 'edit'; operation: 'access' | 'readFile' | 'writeFile'; absolutePath: string; content?: string }
-  | { tool: 'write'; operation: 'mkdir' | 'writeFile'; absolutePath: string; content?: string }
+  | { tool: 'read'; operation: 'access' | 'readFile'; absolutePath: string; offset?: number; limit?: number }
+  | { tool: 'edit'; operation: 'access' | 'readFile' | 'writeFile'; absolutePath: string; edits?: AgentTextEdit[] }
+  | { tool: 'write'; operation: 'mkdir'; absolutePath: string }
+  | { tool: 'write'; operation: 'writeFile'; absolutePath: string; content: string }
   | {
       tool: 'terminal';
       operation: 'exec';
@@ -117,7 +122,7 @@ export type AgentToolOperationInput =
     };
 
 export type AgentToolOperationResult =
-  | { kind: 'void' }
+  | { kind: 'void'; message?: string }
   | { kind: 'file'; contentBase64: string }
   | {
       kind: 'terminal';
