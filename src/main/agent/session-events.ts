@@ -193,6 +193,9 @@ function assertAggregateReferences(session: AgentSessionAggregate): void {
   assertUnique(session.toolOperations.map((operation) => operation.id), 'tool operation ID');
   assertUnique(session.requestFacts.map((facts) => facts.id), 'Request facts ID');
   assertUnique(session.activeIntentIds, 'active Intent path entry');
+  assertUnique(session.tasks.map((task) => task.taskId), 'Task ID');
+  assertUnique(session.mailbox.map((entry) => entry.id), 'Mailbox entry ID');
+  assertUnique(session.mailbox.map((entry) => String(entry.sequence)), 'Mailbox sequence');
 
   for (let index = 0; index < session.timeline.length; index += 1) {
     if (session.timeline[index]!.ordinal <= (session.timeline[index - 1]?.ordinal ?? 0)) {
@@ -268,6 +271,17 @@ function assertAggregateReferences(session: AgentSessionAggregate): void {
   }
   for (const facts of session.requestFacts) {
     if (!intents.has(facts.intentId)) throw new Error('Request facts Intent is missing.');
+  }
+  for (const task of session.tasks) {
+    if (task.sessionId !== session.id || !intents.has(task.intentId)) {
+      throw new Error('Task Session or Intent correlation is invalid.');
+    }
+  }
+  for (const entry of session.mailbox) {
+    if (entry.source === 'task-terminal' &&
+      (!entry.taskId || !session.tasks.some((task) => task.taskId === entry.taskId))) {
+      throw new Error('Task terminal mailbox correlation is invalid.');
+    }
   }
   for (const compaction of session.compactions) {
     if (!intents.has(compaction.coveredThroughIntentId)) {

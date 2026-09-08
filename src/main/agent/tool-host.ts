@@ -5,6 +5,7 @@ import { promises as fs } from 'node:fs';
 import { join, normalize, relative, resolve } from 'node:path';
 import {
   AgentCommandPty,
+  AGENT_TERMINAL_MAX_TIMEOUT_SECONDS,
   type AgentCommandPtyEvent,
   type AgentCommandPtyOptions,
 } from './command-pty';
@@ -27,6 +28,7 @@ export interface IrisAgentToolHostResult {
     'terminalState' | 'terminalOutcome' | 'terminalStartedAt' |
     'terminalCompletedAt' | 'terminalExitCode' | 'terminalSuccessExitCodes' |
     'terminalOutputBytes' | 'terminalOutputPreview'
+    | 'taskId' | 'taskStatus'
   >>;
 }
 
@@ -56,7 +58,8 @@ export class IrisAgentToolHost {
     try {
       const executed = await this.executeUnchecked(input, correlation, started);
       const terminalExitCode = executed.result.kind === 'terminal' ? executed.result.exitCode : null;
-      const terminalFailed = executed.result.kind === 'terminal' && !executed.result.success;
+      const terminalFailed = executed.result.kind === 'terminal' &&
+        (!executed.result.success || executed.result.termination === 'timeout' || executed.result.termination === 'aborted');
       return {
         result: executed.result,
         update: {
@@ -64,7 +67,11 @@ export class IrisAgentToolHost {
           state: terminalFailed ? 'failed' : 'completed',
           completedAt: Date.now(),
           ...(terminalFailed
-            ? { error: `Command exited with code ${String(terminalExitCode)}.` }
+            ? {
+                error: executed.result.kind === 'terminal' && executed.result.termination === 'timeout'
+                  ? `Command timed out after ${String(input.tool === 'terminal' ? input.timeout : '')} seconds.`
+                  : `Command exited with code ${String(terminalExitCode)}.`,
+              }
             : {}),
         },
       };
@@ -99,6 +106,10 @@ export class IrisAgentToolHost {
     update: Partial<Pick<AgentToolActivity, 'resultSummary' | 'diff' | 'path' | 'terminalId'>>;
   }> {
     if (input.tool === 'terminal') return this.executeTerminal(input, correlation, started);
+    if (input.tool === 'task_start' || input.tool === 'task_get' ||
+      input.tool === 'task_list' || input.tool === 'task_cancel') {
+      throw new Error('Background task operations must be handled by the Task Manager.');
+    }
 
     const target = this.resolveUnrestrictedPath(input.absolutePath);
     const relPath = toProjectPath(relative(this.options.projectRoot, target));
@@ -188,6 +199,7 @@ export class IrisAgentToolHost {
     >;
   }> {
     const cwd = this.resolveUnrestrictedPath(input.cwd);
+    const timeoutSeconds = validateTerminalTimeout(input.timeout);
     const terminalId = randomUUID();
     const outputPath = join(tmpdir(), 'iris-agent-terminals', terminalId + '.log');
     const terminalOptions: AgentCommandPtyOptions = {
@@ -199,6 +211,7 @@ export class IrisAgentToolHost {
       commandShell: this.options.commandShell,
       processTreeKillFn: defaultProcessTreeKiller(),
       displayThresholdMs: this.options.displayThresholdMs ?? 3000,
+      timeoutMs: timeoutSeconds * 1000,
       onEvent: (event) => this.options.onTerminalEvent?.(event, { correlation, outputPath }),
     };
     const pty = this.options.terminalFactory?.(terminalOptions) ??
@@ -212,7 +225,7 @@ export class IrisAgentToolHost {
       ? `${outputText.text}\n\n[Showing the available tail preview; full output is available at ${result.outputPath}.]`
       : outputText.text;
     const successExitCodes = normalizeSuccessExitCodes(input.successExitCodes);
-    const success = successExitCodes.includes(result.exitCode);
+    const success = result.termination === undefined && successExitCodes.includes(result.exitCode);
     return {
       result: {
         kind: 'terminal',
@@ -223,12 +236,17 @@ export class IrisAgentToolHost {
         terminalId,
         outputPath: result.outputPath,
         shown: result.shown,
+        ...(result.termination ? { termination: result.termination } : {}),
       },
       update: {
         terminalId,
         path: relCwd || '.',
         terminalState: 'exited',
-        terminalOutcome: success ? 'success' : 'command-failed',
+        terminalOutcome: result.termination === 'timeout'
+          ? 'timeout'
+          : result.termination === 'aborted'
+            ? 'canceled'
+            : success ? 'success' : 'command-failed',
         terminalStartedAt: started,
         terminalCompletedAt: Date.now(),
         terminalExitCode: result.exitCode,
@@ -280,6 +298,17 @@ function tailText(value: string, maxBytes: number): { text: string; truncated: b
 function normalizeSuccessExitCodes(value: number[] | undefined): number[] {
   const normalized = value?.filter((code) => Number.isSafeInteger(code)) ?? [];
   return normalized.length > 0 ? [...new Set(normalized)] : [0];
+}
+
+/** Validate a foreground terminal deadline in protocol seconds. */
+export function validateTerminalTimeout(value: number | undefined): number {
+  if (value === undefined) {
+    throw new Error('Terminal timeout is required.');
+  }
+  if (!Number.isFinite(value) || value <= 0 || value > AGENT_TERMINAL_MAX_TIMEOUT_SECONDS) {
+    throw new Error(`Terminal timeout must be a finite positive value no greater than ${AGENT_TERMINAL_MAX_TIMEOUT_SECONDS} seconds.`);
+  }
+  return value;
 }
 
 function toProjectPath(path: string): string {

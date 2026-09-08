@@ -8,9 +8,11 @@ export interface AgentTextEdit {
   newText: string;
 }
 
-export const IRIS_AGENT_PROTOCOL_VERSION = 14 as const;
+export const IRIS_AGENT_PROTOCOL_VERSION = 15 as const;
 
-export type AgentToolName = 'read' | 'edit' | 'write' | 'terminal';
+export type AgentToolName =
+  | 'read' | 'edit' | 'write' | 'terminal'
+  | 'task_start' | 'task_get' | 'task_list' | 'task_cancel';
 export type AgentTerminalIntent = 'information' | 'operation';
 
 export interface AgentCorrelation {
@@ -116,10 +118,16 @@ export type AgentToolOperationInput =
       operation: 'exec';
       command: string;
       intent: AgentTerminalIntent;
+      /** Frontend-facing seconds. The tool schema requires this field. */
+      timeout: number;
       cwd: string;
       successExitCodes?: number[];
       env?: Record<string, string | undefined>;
-    };
+    }
+  | { tool: 'task_start'; operation: 'start'; command: string; title: string; successExitCodes?: number[] }
+  | { tool: 'task_get'; operation: 'get'; taskId: string; cursor?: string; maxBytes?: number }
+  | { tool: 'task_list'; operation: 'list'; scope?: 'active' | 'all'; cursor?: string; limit?: number }
+  | { tool: 'task_cancel'; operation: 'cancel'; taskId: string };
 
 export type AgentToolOperationResult =
   | { kind: 'void'; message?: string }
@@ -133,6 +141,15 @@ export type AgentToolOperationResult =
       terminalId: string;
       outputPath: string;
       shown: boolean;
+      termination?: 'natural' | 'timeout' | 'aborted';
+    }
+  | {
+      kind: 'task';
+      taskId?: string;
+      status?: 'queued' | 'starting' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'lost';
+      outputText: string;
+      outputTruncated?: boolean;
+      logRef?: string;
     };
 
 interface AgentProtocolEnvelope {
@@ -304,7 +321,8 @@ function isAnchor(value: unknown): value is IrisAgentAnchor {
 }
 
 function isToolName(value: unknown): value is AgentToolName {
-  return value === 'read' || value === 'edit' || value === 'write' || value === 'terminal';
+  return value === 'read' || value === 'edit' || value === 'write' || value === 'terminal' ||
+    value === 'task_start' || value === 'task_get' || value === 'task_list' || value === 'task_cancel';
 }
 
 function isInitRuntime(value: unknown): value is AgentWorkerInitRuntime {
@@ -356,6 +374,15 @@ function isToolOperationResult(value: unknown): value is AgentToolOperationResul
   if (!isRecord(value) || typeof value.kind !== 'string') return false;
   if (value.kind === 'void') return true;
   if (value.kind === 'file') return typeof value.contentBase64 === 'string';
+  if (value.kind === 'task') {
+    return typeof value.outputText === 'string' &&
+      (value.taskId === undefined || typeof value.taskId === 'string') &&
+      (value.status === undefined || value.status === 'queued' || value.status === 'starting' ||
+        value.status === 'running' || value.status === 'succeeded' || value.status === 'failed' ||
+        value.status === 'canceled' || value.status === 'lost') &&
+      (value.outputTruncated === undefined || typeof value.outputTruncated === 'boolean') &&
+      (value.logRef === undefined || typeof value.logRef === 'string');
+  }
   return (
     value.kind === 'terminal' &&
     (typeof value.exitCode === 'number' || value.exitCode === null) &&
@@ -364,7 +391,9 @@ function isToolOperationResult(value: unknown): value is AgentToolOperationResul
     typeof value.outputTruncated === 'boolean' &&
     typeof value.terminalId === 'string' &&
     typeof value.outputPath === 'string' &&
-    typeof value.shown === 'boolean'
+    typeof value.shown === 'boolean' &&
+    (value.termination === undefined || value.termination === 'natural' ||
+      value.termination === 'timeout' || value.termination === 'aborted')
   );
 }
 

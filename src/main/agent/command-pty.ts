@@ -18,6 +18,8 @@ export interface AgentCommandPtyResult {
   shown: boolean;
   plainText: string;
   outputTruncated: boolean;
+  /** Why the PTY was closed, when it was closed by the host. */
+  termination?: 'natural' | 'timeout' | 'aborted';
 }
 
 export interface AgentCommandPtyEvent {
@@ -40,6 +42,8 @@ export interface AgentCommandPtyOptions {
   env?: NodeJS.ProcessEnv;
   commandShell?: AgentCommandShell;
   displayThresholdMs?: number;
+  /** Hard foreground deadline in milliseconds. Omit only for legacy callers. */
+  timeoutMs?: number;
   spawnFn?: typeof spawn;
   outputStore?: AgentCommandOutputStore;
   /** Optional platform-specific descendant cleanup, used before closing the PTY. */
@@ -47,10 +51,14 @@ export interface AgentCommandPtyOptions {
   onEvent?: (event: AgentCommandPtyEvent) => void;
 }
 
+/** Protocol limit for foreground terminal calls. Background tasks have no deadline. */
+export const AGENT_TERMINAL_MAX_TIMEOUT_SECONDS = 3_600;
+
 export class AgentCommandPty {
   private readonly pty: IPty;
   private readonly disposables: IDisposable[] = [];
   private readonly displayTimer: ReturnType<typeof setTimeout>;
+  private readonly timeoutTimer: ReturnType<typeof setTimeout> | null;
   private readonly mirror = new TerminalMirror(80, 24, 5000);
   private readonly outputDecoder = new StringDecoder('utf8');
   private outputChain = Promise.resolve();
@@ -59,11 +67,22 @@ export class AgentCommandPty {
   private shown = false;
   private settled = false;
   private aborting = false;
+  private termination: 'natural' | 'timeout' | 'aborted' = 'natural';
+  private cleanupPromise: Promise<void> = Promise.resolve();
   private resolveResult!: (result: AgentCommandPtyResult) => void;
   private rejectResult!: (error: Error) => void;
   readonly result: Promise<AgentCommandPtyResult>;
 
+  get pid(): number | undefined {
+    return this.pty.pid || undefined;
+  }
+
   constructor(private readonly options: AgentCommandPtyOptions) {
+    if (options.timeoutMs !== undefined &&
+      (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0 ||
+        options.timeoutMs > AGENT_TERMINAL_MAX_TIMEOUT_SECONDS * 1000)) {
+      throw new Error(`Terminal timeout must be a finite positive value no greater than ${AGENT_TERMINAL_MAX_TIMEOUT_SECONDS} seconds.`);
+    }
     this.result = new Promise((resolve, reject) => {
       this.resolveResult = resolve;
       this.rejectResult = reject;
@@ -87,21 +106,26 @@ export class AgentCommandPty {
       () => this.show(),
       options.displayThresholdMs ?? 3_000,
     );
+    this.timeoutTimer = options.timeoutMs === undefined
+      ? null
+      : setTimeout(() => this.abort('timeout'), options.timeoutMs);
     this.disposables.push(
       this.pty.onData((data) => this.acceptOutput(Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8'))),
       this.pty.onExit((event) => void this.finish(event.exitCode, event.signal)),
     );
   }
 
-  abort(): void {
+  abort(reason: 'user' | 'timeout' = 'user'): void {
     if (this.settled || this.aborting) return;
     this.aborting = true;
+    this.termination = reason === 'timeout' ? 'timeout' : 'aborted';
     const killTree = this.options.processTreeKillFn;
     if (!killTree || !this.pty.pid) {
       this.pty.kill();
+      this.cleanupPromise = Promise.resolve();
       return;
     }
-    void killTree(this.pty.pid)
+    this.cleanupPromise = killTree(this.pty.pid)
       .catch(() => undefined)
       .finally(() => {
         if (!this.settled) this.pty.kill();
@@ -164,8 +188,10 @@ export class AgentCommandPty {
     if (this.settled) return;
     this.settled = true;
     clearTimeout(this.displayTimer);
+    if (this.timeoutTimer) clearTimeout(this.timeoutTimer);
     for (const disposable of this.disposables) disposable.dispose();
     try {
+      await this.cleanupPromise;
       await this.outputChain;
       const finalChunk = this.outputDecoder.end();
       if (finalChunk) {
@@ -187,6 +213,7 @@ export class AgentCommandPty {
       shown: this.shown,
       plainText: this.mirror.plainText(5000),
       outputTruncated: this.outputLineCount > 5000,
+      ...(this.termination === 'natural' ? {} : { termination: this.termination }),
     };
     this.options.onEvent?.({ type: 'completed', terminalId: this.options.terminalId, result });
     this.resolveResult(result);

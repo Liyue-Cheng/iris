@@ -1222,6 +1222,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
             operation: 'exec',
             command,
             intent: 'operation',
+            timeout: 30,
             cwd: userData,
           },
         });

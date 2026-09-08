@@ -705,6 +705,7 @@ async function recoverInterrupted(
     }
   }
   session.state = 'paused';
+  session.mailboxPaused = true;
   delete session.stopRequestedIntentId;
   delete session.terminalSupervisionAlert;
   return session;
@@ -1060,6 +1061,8 @@ export function migrateLegacyAgentSession(legacy: Record<string, unknown>): Agen
     requestFacts,
     compactions: [],
     activeCompactionId: null,
+    mailbox: [],
+    tasks: [],
     injection: {
       methods: { agent: 'current', software: 'current', project: 'current' },
       anchor: {

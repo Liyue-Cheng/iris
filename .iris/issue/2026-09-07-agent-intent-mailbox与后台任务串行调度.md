@@ -1,6 +1,6 @@
 ---
 title: Terminal 超时兼容与 Agent 后台任务串行调度
-status: Todo
+status: In Review
 ---
 
 # Terminal 超时兼容与 Agent 后台任务串行调度
@@ -223,5 +223,19 @@ task_start({
 
 这里移除的是工具参数中的分类 `intent`。调度层的 Agent Intent、Task 的 `causedByIntentId` 来源关联，以及 Task 终态进入 mailbox 的标准 Intent 仍然保留。任务卡片负责展示执行状态，终态 Intent 负责让 Agent 串行处理结果，两者承担不同职责。
 
-- [ ] `task_start` schema 和 Task 启动快照不包含 `information / operation` 分类；前台 terminal 保留该分类。
-- [ ] 每个 Task 使用独立卡片，启动调用返回后持续展示实际任务状态，不并入信息检索卡片。
+- [x] `task_start` schema 和 Task 启动快照不包含 `information / operation` 分类；前台 terminal 保留该分类。
+- [x] 每个 Task 使用独立卡片，启动调用返回后持续展示实际任务状态，不并入信息检索卡片。
+
+## 实现记录（2026-09-08）
+
+已完成第一版实现：
+
+- `terminal` 现在要求有限正数 `timeout`（秒），TypeBox、Worker、Tool Host 和 PTY 统一校验，超时会清理进程树并等待日志收尾后只发出一次结果。
+- 新增无 `intent` 的 `task_start`、`task_get`、`task_list`、`task_cancel`。Task Manager 持久化任务元数据和完整日志，使用 session/tool call 幂等键，支持状态恢复为 `lost`、日志游标分页和取消。
+- Task 启动工具调用仍保留在 Trace，但投影为独立 Task 卡片；Task 终态用带 `taskId`、状态、退出码、输出字节数和日志引用的标准 mailbox 内容通知 Agent。
+- 用户消息和 Task 终态消息进入持久化 FIFO mailbox；Agent 仍只有一个 current Intent 和一个串行消费者。Stop/Pause 会暂停 mailbox，Continue 或新输入后再恢复消费。
+- IPC、renderer store/actions 和 Agent UI 已接入任务状态、日志查看及取消操作；旧 Session 数据会补齐 mailbox/tasks 默认值。
+
+自动化验证已通过：`npm run typecheck`、相关 Agent 单测 90 项，以及单 worker 全量 `vitest`（85 个测试文件、513 项）。未运行打包命令。以下验收仍需要在真实 Windows ConPTY 环境手工确认：
+
+- [ ] 验证真实进程树清理、输出收尾、关闭和异常恢复，并确认超时/Stop/abort 竞争只产生一个终态结果。

@@ -25,6 +25,7 @@ import {
   unwrapProviderErrorMessage,
   type IrisToolHostOperations,
 } from './agent/pi-adapter';
+import { AGENT_TERMINAL_MAX_TIMEOUT_SECONDS } from './agent/command-pty';
 import { collectKnownSecrets, sanitizeProviderPayload } from './agent/context-artifact';
 import { loadStoredIrisAgentProviderProfiles } from './agent/provider-profiles';
 import { AGENT_SUPERVISION_RULE } from './agent/supervision';
@@ -305,6 +306,8 @@ async function prepareExecution(
         ? Buffer.from(result.contentBase64, 'base64').toString('utf8')
         : result.kind === 'terminal'
           ? result.outputText
+          : result.kind === 'task'
+            ? result.outputText
           : result.message ?? '';
       return {
         role: 'toolResult' as const,
@@ -399,12 +402,42 @@ function providerToolCallInput(
     absolutePath: path.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(path) ? path : `${cwd}/${path}`,
     content: typeof args.content === 'string' ? args.content : '',
   };
-  if (name === 'terminal') return {
-    tool: 'terminal', operation: 'exec', command: typeof args.command === 'string' ? args.command : '',
-    intent: args.intent === 'operation' ? 'operation' : 'information', cwd,
+  if (name === 'terminal') {
+    const timeout = args.timeout;
+    if (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout <= 0 ||
+      timeout > AGENT_TERMINAL_MAX_TIMEOUT_SECONDS) {
+      throw new Error(`Terminal timeout must be a finite positive value no greater than ${AGENT_TERMINAL_MAX_TIMEOUT_SECONDS} seconds.`);
+    }
+    return {
+      tool: 'terminal', operation: 'exec', command: typeof args.command === 'string' ? args.command : '',
+      intent: args.intent === 'operation' ? 'operation' : 'information', cwd,
+      timeout,
+      ...(Array.isArray(args.successExitCodes)
+        ? { successExitCodes: args.successExitCodes.filter((value): value is number => typeof value === 'number') }
+        : {}),
+    };
+  }
+  if (name === 'task_start') return {
+    tool: 'task_start', operation: 'start',
+    command: typeof args.command === 'string' ? args.command : '',
+    title: typeof args.title === 'string' ? args.title : '',
     ...(Array.isArray(args.successExitCodes)
       ? { successExitCodes: args.successExitCodes.filter((value): value is number => typeof value === 'number') }
       : {}),
+  };
+  if (name === 'task_get') return {
+    tool: 'task_get', operation: 'get', taskId: typeof args.taskId === 'string' ? args.taskId : '',
+    ...(typeof args.cursor === 'string' ? { cursor: args.cursor } : {}),
+    ...(typeof args.maxBytes === 'number' ? { maxBytes: args.maxBytes } : {}),
+  };
+  if (name === 'task_list') return {
+    tool: 'task_list', operation: 'list',
+    ...(args.scope === 'all' || args.scope === 'active' ? { scope: args.scope } : {}),
+    ...(typeof args.cursor === 'string' ? { cursor: args.cursor } : {}),
+    ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
+  };
+  if (name === 'task_cancel') return {
+    tool: 'task_cancel', operation: 'cancel', taskId: typeof args.taskId === 'string' ? args.taskId : '',
   };
   throw new Error(`Unknown Iris Agent tool: ${name}`);
 }
@@ -492,11 +525,15 @@ function createWorkerOperations(): IrisToolHostOperations {
     },
     terminal: {
       exec: async (command, intent, successExitCodes, cwd, options) => {
+        if (options.timeout === undefined) {
+          throw new Error('Terminal timeout is required.');
+        }
         const input: AgentToolOperationInput = {
           tool: 'terminal',
           operation: 'exec',
           command,
           intent,
+          timeout: options.timeout,
           cwd,
           successExitCodes,
           ...(options.env === undefined ? {} : { env: options.env }),
@@ -508,6 +545,18 @@ function createWorkerOperations(): IrisToolHostOperations {
         options.onData(Buffer.from(result.outputText, 'utf8'));
         return { exitCode: result.success ? 0 : result.exitCode };
       },
+    },
+    task: {
+      start: async (command, title, successExitCodes) => requestTool({
+        tool: 'task_start', operation: 'start', command, title, ...(successExitCodes ? { successExitCodes } : {}),
+      }),
+      get: async (taskId, cursor, maxBytes) => requestTool({
+        tool: 'task_get', operation: 'get', taskId, ...(cursor ? { cursor } : {}), ...(maxBytes === undefined ? {} : { maxBytes }),
+      }),
+      list: async (scope, cursor, limit) => requestTool({
+        tool: 'task_list', operation: 'list', ...(scope ? { scope } : {}), ...(cursor ? { cursor } : {}), ...(limit === undefined ? {} : { limit }),
+      }),
+      cancel: async (taskId) => requestTool({ tool: 'task_cancel', operation: 'cancel', taskId }),
     },
   };
 }

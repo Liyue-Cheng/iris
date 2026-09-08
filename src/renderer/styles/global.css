@@ -30,6 +30,7 @@
   /* Agent card theme colors */
   --iris-card-files: var(--rp-iris);
   --iris-card-operations: var(--rp-pine);
+  --iris-card-tasks: var(--rp-iris);
   --iris-card-retrievals: var(--rp-foam);
   --iris-card-message: var(--rp-gold);
 }

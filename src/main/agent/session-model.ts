@@ -2,6 +2,8 @@ import type {
   IrisAgentAnchor,
   IrisAgentCardState,
   IrisAgentCardView,
+  IrisAgentTaskStatus,
+  IrisAgentTaskView,
   IrisAgentModelRef,
   IrisAgentPauseReason,
   IrisAgentRuntimeState,
@@ -41,6 +43,11 @@ export interface AgentSessionAggregate {
   requestFacts: AgentRequestFacts[];
   compactions: AgentCompaction[];
   activeCompactionId: string | null;
+  /** Persisted mailbox entries awaiting the single Intent consumer. */
+  mailbox: AgentMailboxEntry[];
+  mailboxPaused?: boolean;
+  /** Task summaries are journaled with the Session while the Task Manager owns execution. */
+  tasks: AgentTaskSummary[];
   injection: AgentInjection;
   createdAt: number;
   updatedAt: number;
@@ -59,6 +66,22 @@ export interface AgentIntent {
   contextOverflowRetries?: number;
   createdAt: number;
   closedAt?: number;
+}
+
+export interface AgentMailboxEntry {
+  id: string;
+  sequence: number;
+  source: 'user' | 'task-terminal';
+  content: string;
+  createdAt: number;
+  dedupeKey?: string;
+  taskId?: string;
+  state: 'queued' | 'running' | 'completed' | 'superseded';
+}
+
+export interface AgentTaskSummary extends IrisAgentTaskView {
+  /** Internal dedupe marker: only one terminal Intent may be created. */
+  terminalIntentEnqueued?: boolean;
 }
 
 export interface AgentTurn {
@@ -173,11 +196,12 @@ export interface AgentToolActivity extends AgentActivityBase {
   turnId: string;
   invokeId: string;
   toolCallId: string;
-  tool: 'read' | 'edit' | 'write' | 'terminal';
+  /** Background task tools are kept in the Trace for auditability. */
+  tool: 'read' | 'edit' | 'write' | 'terminal' | 'task_start' | 'task_get' | 'task_list' | 'task_cancel';
   intent?: 'information' | 'operation';
   state: 'running' | 'completed' | 'failed' | 'canceled';
   inputSummary: string;
-  operation?: 'access' | 'readFile' | 'writeFile' | 'mkdir' | 'exec';
+  operation?: 'access' | 'readFile' | 'writeFile' | 'mkdir' | 'exec' | 'start' | 'get' | 'list' | 'cancel';
   command?: string;
   cwd?: string;
   resultSummary?: string;
@@ -186,7 +210,9 @@ export interface AgentToolActivity extends AgentActivityBase {
   path?: string;
   terminalId?: string;
   terminalState?: 'running' | 'exited';
-  terminalOutcome?: 'success' | 'command-failed' | 'launch-failed' | 'canceled';
+  terminalOutcome?: 'success' | 'command-failed' | 'launch-failed' | 'timeout' | 'canceled';
+  taskId?: string;
+  taskStatus?: IrisAgentTaskStatus;
   terminalRevealedAt?: number;
   terminalStartedAt?: number;
   terminalCompletedAt?: number;
@@ -250,6 +276,8 @@ export function createEmptyAgentSession(input: {
     requestFacts: [],
     compactions: [],
     activeCompactionId: null,
+    mailbox: [],
+    tasks: [],
     injection: structuredClone(input.injection),
     createdAt: input.now,
     updatedAt: input.now,
@@ -277,6 +305,14 @@ export function normalizeAgentSessionAggregate(session: AgentSessionAggregate): 
   }
   if (!Array.isArray(session.compactions)) session.compactions = [];
   if (session.activeCompactionId === undefined) session.activeCompactionId = null;
+  if (!Array.isArray(session.mailbox)) session.mailbox = [];
+  if (!Array.isArray(session.tasks)) session.tasks = [];
+  // A mailbox entry marked running belongs to a dispatch attempt that cannot
+  // be resumed safely after a process restart. Keep the audit record while
+  // preventing an automatic replay of potentially side-effecting work.
+  for (const entry of session.mailbox) {
+    if (entry.state === 'running') entry.state = 'superseded';
+  }
   for (const intent of session.intents) {
     if (intent.contextOverflowRetries !== undefined &&
       (!Number.isSafeInteger(intent.contextOverflowRetries) || intent.contextOverflowRetries < 0)) {
@@ -346,6 +382,8 @@ export function projectAgentSession(
       ? { supervisionAlert: { ...session.terminalSupervisionAlert } }
       : {}),
     intents: visibleIntents.map((intent) => projectIntent(session, intent)),
+    tasks: session.tasks.map((task) => projectTask(task)),
+    queuedIntentCount: session.mailbox.filter((entry) => entry.state === 'queued').length,
     terminals: session.timeline.flatMap((activity) => {
       if (
         activity.kind !== 'tool' || activity.tool !== 'terminal' ||
@@ -441,6 +479,9 @@ function projectIntent(
     (activity) => activity.intentId === intent.id,
   );
   const cards = projectCards(activities);
+  for (const task of session.tasks.filter((candidate) => candidate.intentId === intent.id)) {
+    cards.push(taskCard(task));
+  }
   const invokeCount = session.invokes.filter((invoke) => invoke.intentId === intent.id).length;
   return {
     id: intent.id,
@@ -461,6 +502,33 @@ function projectIntent(
   };
 }
 
+function projectTask(task: AgentTaskSummary): IrisAgentTaskView {
+  const { terminalIntentEnqueued: _terminalIntentEnqueued, ...view } = task;
+  return structuredClone(view);
+}
+
+function taskCard(task: AgentTaskSummary): Extract<IrisAgentCardView, { kind: 'task' }> {
+  return {
+    kind: 'task',
+    id: `task-card:${task.taskId}`,
+    taskId: task.taskId,
+    title: task.title,
+    command: task.command,
+    state: taskCardState(task.status),
+    status: task.status,
+    outputBytes: task.outputBytes,
+    ...(task.logRef ? { logRef: task.logRef } : {}),
+    ...(task.error ? { error: task.error } : {}),
+  };
+}
+
+function taskCardState(status: IrisAgentTaskStatus): Extract<IrisAgentCardState, 'running' | 'completed' | 'failed' | 'stopped'> {
+  if (status === 'failed' || status === 'lost') return 'failed';
+  if (status === 'canceled') return 'stopped';
+  if (status === 'succeeded') return 'completed';
+  return 'running';
+}
+
 export function projectCards(activities: AgentTimelineActivity[]): IrisAgentCardView[] {
   const cards: IrisAgentCardView[] = [];
   for (const activity of activities) {
@@ -476,6 +544,8 @@ export function projectCards(activities: AgentTimelineActivity[]): IrisAgentCard
       continue;
     }
     if (activity.kind !== 'tool') continue;
+    if (activity.tool === 'task_start' || activity.tool === 'task_get' ||
+      activity.tool === 'task_list' || activity.tool === 'task_cancel') continue;
     if (isLocalRetrieval(activity)) {
       const item = localRetrievalItem(activity);
       const previous = cards[cards.length - 1];

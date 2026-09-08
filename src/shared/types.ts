@@ -710,6 +710,32 @@ export type IrisAgentCardState =
   | 'stopped'
   | 'unchanged';
 
+export type IrisAgentTaskStatus =
+  | 'queued'
+  | 'starting'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'canceled'
+  | 'lost';
+
+/** Renderer-safe summary of an independently running Agent background task. */
+export interface IrisAgentTaskView {
+  taskId: string;
+  sessionId: string;
+  intentId: string;
+  title: string;
+  command: string;
+  status: IrisAgentTaskStatus;
+  createdAt: number;
+  startedAt?: number;
+  completedAt?: number;
+  exitCode?: number | null;
+  outputBytes: number;
+  logRef?: string;
+  error?: string;
+}
+
 export interface IrisAgentUserView {
   id: string;
   content: string;
@@ -737,7 +763,7 @@ export interface IrisAgentTerminalView {
   cwd: string;
   revealed: boolean;
   state: 'running' | 'exited';
-  outcome?: 'success' | 'command-failed' | 'launch-failed' | 'canceled';
+  outcome?: 'success' | 'command-failed' | 'launch-failed' | 'timeout' | 'canceled';
   exitCode?: number | null;
   startedAt: number;
   completedAt?: number;
@@ -785,6 +811,18 @@ export type IrisAgentCardView =
       terminalId?: string;
     }
   | {
+      kind: 'task';
+      id: string;
+      taskId: string;
+      title: string;
+      command: string;
+      state: Extract<IrisAgentCardState, 'running' | 'completed' | 'failed' | 'stopped'>;
+      status: IrisAgentTaskStatus;
+      outputBytes: number;
+      logRef?: string;
+      error?: string;
+    }
+  | {
       kind: 'agent-reply';
       id: string;
       state: Extract<IrisAgentCardState, 'running' | 'completed' | 'failed' | 'stopped'>;
@@ -830,6 +868,8 @@ export interface IrisAgentSessionInfo {
     createdAt: number;
   };
   intents: IrisAgentIntentView[];
+  tasks?: IrisAgentTaskView[];
+  queuedIntentCount?: number;
   terminals: IrisAgentTerminalView[];
   canRewindLatestIntent: boolean;
   selfHostingEligible: false;

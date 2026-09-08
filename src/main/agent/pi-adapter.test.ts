@@ -20,6 +20,7 @@ import {
   unwrapProviderErrorMessage,
   IrisHistoryManager,
 } from './pi-adapter';
+import type { IrisToolHostOperations } from './pi-adapter';
 import {
   addIrisAgentProviderProfile,
   loadStoredIrisAgentProviderProfiles,
@@ -137,14 +138,13 @@ describe('Iris Pi adapter', () => {
     expect(tools[3]!.description).toContain('PowerShell 7 (pwsh.exe)');
     expect(tools[3]!.description.toLowerCase()).not.toContain('bash');
     expect(tools[3]!.promptGuidelines?.[0]).toContain('Do not emit Bash-only commands');
-    expect(tools[3]!.parameters.required).toEqual(['command', 'intent']);
+    expect(tools[3]!.parameters.required).toEqual(['command', 'intent', 'timeout']);
     expect(Object.keys(tools[3]!.parameters.properties)).toEqual([
-      'command', 'intent', 'successExitCodes',
+      'command', 'intent', 'timeout', 'successExitCodes',
     ]);
-    expect(tools[3]!.parameters.properties).not.toHaveProperty('timeout');
     const terminalResult = await tools[3]!.execute(
       'call-2',
-      { command: 'git status', intent: 'information' },
+      { command: 'git status', intent: 'information', timeout: 30 },
       undefined,
       undefined,
       {} as never,
@@ -157,6 +157,33 @@ describe('Iris Pi adapter', () => {
       expect.objectContaining({ onData: expect.any(Function) }),
     );
     expect(terminalResult.content).toEqual([{ type: 'text', text: 'terminal output' }]);
+  });
+
+  it('exposes background task tools without an intent classifier', async () => {
+    const operations: IrisToolHostOperations = {
+      read: { access: vi.fn(async () => {}), readFile: vi.fn(async () => Buffer.from('')) },
+      edit: { access: vi.fn(async () => {}), readFile: vi.fn(async () => Buffer.from('')), writeFile: vi.fn(async () => {}) },
+      write: { mkdir: vi.fn(async () => {}), writeFile: vi.fn(async () => {}) },
+      terminal: { exec: vi.fn(async () => ({ exitCode: 0 })) },
+      task: {
+        start: vi.fn(async () => ({ kind: 'task' as const, taskId: 'task-1', status: 'running' as const, outputText: 'started' })),
+        get: vi.fn(async () => ({ kind: 'task' as const, taskId: 'task-1', status: 'running' as const, outputText: 'snapshot' })),
+        list: vi.fn(async () => ({ kind: 'task' as const, outputText: '{"tasks":[]}' })),
+        cancel: vi.fn(async () => ({ kind: 'task' as const, taskId: 'task-1', status: 'canceled' as const, outputText: 'canceled' })),
+      },
+    };
+    const tools = createIrisPiToolDefinitions('C:/project', operations, {
+      kind: 'powershell', executable: 'pwsh.exe', displayName: 'PowerShell 7',
+    });
+    expect(tools.map((tool) => tool.name)).toEqual([
+      'read', 'edit', 'write', 'terminal', 'task_start', 'task_get', 'task_list', 'task_cancel',
+    ]);
+    expect(tools[4]!.parameters.required).toEqual(['command', 'title']);
+    expect(Object.keys(tools[4]!.parameters.properties)).toEqual(['command', 'title', 'successExitCodes']);
+    expect(tools[4]!.parameters.properties).not.toHaveProperty('intent');
+    const taskStart = tools[4] as unknown as { execute: (id: string, params: unknown) => Promise<unknown> };
+    await taskStart.execute('task-call', { command: 'watch', title: 'Watch server' });
+    expect(operations.task!.start).toHaveBeenCalledWith('watch', 'Watch server', undefined);
   });
 
   it('injects persisted provider messages and tool results into Pi context', () => {

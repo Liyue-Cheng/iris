@@ -49,6 +49,8 @@ import {
   sendIrisAgentMessage,
   setIrisAgentModel,
   stopIrisAgent,
+  getIrisAgentTask,
+  cancelIrisAgentTask,
   writeIrisAgentTerminal,
   continueIrisAgentTerminalSupervision,
 } from '@renderer/lib/iris-agent-actions';
@@ -480,6 +482,7 @@ export function IrisAgentView({
                   ) : (
                     <AgentActivityCard
                       key={group.card.id}
+                      sessionId={session.id}
                       card={group.card}
                       canRetry={false}
                       onRetry={() => undefined}
@@ -750,12 +753,14 @@ function terminalTitle(terminal: IrisAgentTerminalView): string {
 }
 
 function AgentActivityCard({
+  sessionId,
   card,
   canRetry,
   onRetry,
   onOpenTerminal,
   onFork,
 }: {
+  sessionId: string;
   card: IrisAgentCardView;
   canRetry: boolean;
   onRetry: () => void;
@@ -769,6 +774,8 @@ function AgentActivityCard({
       return <FileChangeGroupCard cards={[card]} />;
     case 'terminal-operation':
       return <TerminalOperationCard card={card} onOpenTerminal={onOpenTerminal} />;
+    case 'task':
+      return <BackgroundTaskCard sessionId={sessionId} card={card} />;
     case 'agent-reply':
       return <AgentReplyCard
         card={card}
@@ -997,6 +1004,88 @@ function TerminalOperationCard({
   );
 }
 
+function BackgroundTaskCard({
+  sessionId,
+  card,
+}: {
+  sessionId: string;
+  card: Extract<IrisAgentCardView, { kind: 'task' }>;
+}): JSX.Element {
+  const [log, setLog] = useState<string | null>(null);
+  const [logError, setLogError] = useState<string | null>(null);
+  const [loadingLog, setLoadingLog] = useState(false);
+  const status = card.status === 'succeeded'
+    ? '已完成'
+    : card.status === 'failed' || card.status === 'lost'
+      ? '失败'
+      : card.status === 'canceled'
+        ? '已取消'
+        : card.status === 'starting'
+          ? '启动中'
+          : '运行中';
+  return (
+    <CardFrame
+      cardType="tasks"
+      icon={<Play className="h-4 w-4" />}
+      title={card.title}
+      summary={`${status} · ${card.taskId}`}
+      state={card.state}
+      action={card.state === 'running' ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-6 text-[11px]"
+          onClick={() => void cancelIrisAgentTask(sessionId, card.taskId).catch(() => undefined)}
+        >
+          <Square className="mr-1 !size-3" />
+          取消
+        </Button>
+      ) : undefined}
+    >
+      <div className="space-y-2 px-4 py-3.5 text-xs">
+        <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5">
+          {card.command}
+        </pre>
+        <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+          <span>{card.outputBytes.toLocaleString()} bytes</span>
+          {card.logRef && <span className="truncate font-mono" aria-label={card.logRef}>日志已持久化</span>}
+        </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-6 text-[11px]"
+          disabled={loadingLog}
+          onClick={() => {
+            setLoadingLog(true);
+            setLogError(null);
+            void getIrisAgentTask(card.taskId).then((result) => {
+              if (result.kind !== 'task') return;
+              try {
+                const parsed: unknown = JSON.parse(result.outputText);
+                const output = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+                  ? (parsed as Record<string, unknown>).output : undefined;
+                setLog(typeof output === 'string' ? output : result.outputText);
+              } catch {
+                setLog(result.outputText);
+              }
+            }).catch((error: unknown) => {
+              setLogError(error instanceof Error ? error.message : String(error));
+            }).finally(() => setLoadingLog(false));
+          }}
+        >
+          <FileText className="mr-1 !size-3" />
+          查看日志
+        </Button>
+        {log !== null && <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border bg-background p-2 font-mono text-[11px]">{log || '暂无输出'}</pre>}
+        {logError && <div className="text-destructive">{logError}</div>}
+        {card.error && <div className="whitespace-pre-wrap break-words text-destructive">{card.error}</div>}
+      </div>
+    </CardFrame>
+  );
+}
+
 function AgentReplyCard({
   card,
   canRetry,
@@ -1066,7 +1155,7 @@ function AgentReplyCard({
   );
 }
 
-type CardType = 'files' | 'operations' | 'retrievals' | 'message';
+type CardType = 'files' | 'operations' | 'retrievals' | 'tasks' | 'message';
 
 function CardFrame({
   cardType,

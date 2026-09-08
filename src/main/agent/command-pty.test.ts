@@ -182,6 +182,35 @@ describe('AgentCommandPty', () => {
     await expect(command.result).resolves.toMatchObject({ exitCode: 130 });
   });
 
+  it('claims timeout once, cleans up the process tree, and reports the timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const fake = fakePty();
+      const killTree = vi.fn(async () => undefined);
+      const events: AgentCommandPtyEvent[] = [];
+      const command = new AgentCommandPty({
+        terminalId: 'terminal-timeout',
+        command: 'long',
+        cwd: process.cwd(),
+        outputPath: 'output.bin',
+        timeoutMs: 1_000,
+        spawnFn: () => fake.pty,
+        processTreeKillFn: killTree,
+        outputStore: { append: async () => undefined },
+        onEvent: (event) => events.push(event),
+      });
+      fake.data('before timeout');
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(killTree).toHaveBeenCalledWith(42);
+      fake.exit(137);
+      await vi.advanceTimersByTimeAsync(250);
+      await expect(command.result).resolves.toMatchObject({ termination: 'timeout', exitCode: 137 });
+      expect(events.filter((event) => event.type === 'completed')).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('decodes UTF-8 text across raw PTY chunk boundaries', async () => {
     const fake = fakePty();
     const command = new AgentCommandPty({

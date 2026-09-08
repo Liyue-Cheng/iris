@@ -1,4 +1,5 @@
 import { CHANNELS } from '@shared/protocol';
+import type { AgentToolOperationResult } from '@shared/agent-protocol';
 import type {
   IrisAgentAnchor,
   IrisAgentModelCatalog,
@@ -122,6 +123,35 @@ export async function stopIrisAgent(sessionId: string): Promise<void> {
         },
         IrisAgentSessionInfo
       >(CHANNELS.IRIS_AGENT_STOP, projectScoped(scope, { sessionId, ...precondition }));
+      irisAgentStore.handleChanged(session);
+    },
+  );
+}
+
+export async function getIrisAgentTask(taskId: string, cursor?: string, maxBytes?: number): Promise<AgentToolOperationResult> {
+  const scope = scopeOrThrow();
+  return window.api.invoke<{
+    taskId: string;
+    cursor?: string;
+    maxBytes?: number;
+    expectedScope: ProjectScope;
+  }, AgentToolOperationResult>(CHANNELS.IRIS_AGENT_TASK_GET, projectScoped(scope, {
+    taskId,
+    ...(cursor ? { cursor } : {}),
+    ...(maxBytes === undefined ? {} : { maxBytes }),
+  }));
+}
+
+export async function cancelIrisAgentTask(sessionId: string, taskId: string): Promise<void> {
+  await runUserAction(
+    { title: '后台任务取消失败', dedupeKey: `iris-agent:task-cancel:${taskId}` },
+    async () => {
+      const scope = scopeOrThrow();
+      const session = await window.api.invoke<{
+        sessionId: string;
+        taskId: string;
+        expectedScope: ProjectScope;
+      }, IrisAgentSessionInfo>(CHANNELS.IRIS_AGENT_TASK_CANCEL, projectScoped(scope, { sessionId, taskId }));
       irisAgentStore.handleChanged(session);
     },
   );

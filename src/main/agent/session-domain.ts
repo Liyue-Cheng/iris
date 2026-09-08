@@ -166,6 +166,7 @@ export function resumePausedAgentIntent(source: AgentSessionAggregate): AgentSes
   delete intent.pauseReason;
   delete intent.pauseMessage;
   session.state = 'running';
+  session.mailboxPaused = false;
   return session;
 }
 

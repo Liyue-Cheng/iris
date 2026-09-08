@@ -131,4 +131,35 @@ describe('Iris Agent terminal projection', () => {
     })]);
     expect(projectAgentSession(session, 1).terminals[0]).not.toHaveProperty('outcome');
   });
+
+  it('projects each background task as its own card without folding it into retrievals', () => {
+    const session = createEmptyAgentSession({
+      id: 'session-task-card',
+      anchor: { kind: 'workspace', path: '.iris' },
+      model: { provider: 'openai', modelId: 'gpt-test' },
+      projectRoot: process.cwd(),
+      displayName: 'Iris Agent',
+      injection,
+      now: 1,
+    });
+    session.intents.push({
+      id: 'intent-task-card', content: 'run a server', turnIds: [], state: 'completed',
+      assembledInputAvailable: true, createdAt: 1,
+    });
+    session.activeIntentIds.push('intent-task-card');
+    session.tasks.push({
+      taskId: 'task-1', sessionId: session.id, intentId: 'intent-task-card', title: 'Dev server',
+      command: 'npm run dev', status: 'running', createdAt: 2, outputBytes: 12,
+      logRef: 'tasks/task-1.log',
+    });
+    session.timeline.push(terminalActivity({
+      id: 'task-start-tool', toolCallId: 'task-start-tool', tool: 'task_start',
+      operation: 'start', inputSummary: 'start Dev server: npm run dev', state: 'completed',
+    }));
+
+    const cards = projectAgentSession(session, 1).intents[0]!.cards;
+    expect(cards).toContainEqual(expect.objectContaining({ kind: 'task', taskId: 'task-1', state: 'running' }));
+    expect(cards.some((card) => card.kind === 'local-retrieval' && card.items.some((item) => item.id === 'task-start-tool')))
+      .toBe(false);
+  });
 });

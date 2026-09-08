@@ -166,6 +166,9 @@ export const CHANNELS = {
   IRIS_AGENT_SUPERVISION_CONTINUE: 'iris-agent:supervision-continue',
   IRIS_AGENT_CLOSE: 'iris-agent:close',
   IRIS_AGENT_LIST: 'iris-agent:list',
+  IRIS_AGENT_TASK_GET: 'iris-agent:task-get',
+  IRIS_AGENT_TASK_LIST: 'iris-agent:task-list',
+  IRIS_AGENT_TASK_CANCEL: 'iris-agent:task-cancel',
 } as const;
 
 export type WindowEditAction = 'cut' | 'copy' | 'paste' | 'selectAll';

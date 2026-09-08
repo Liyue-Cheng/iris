@@ -20,6 +20,7 @@ import { stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { CHANNELS, EVENTS, type WindowEditAction } from '@shared/protocol';
+import type { AgentToolOperationResult } from '@shared/agent-protocol';
 import { mainT } from './i18n';
 import type {
   AssetImportPayload,
@@ -1395,6 +1396,33 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_LIST);
       return ctx.agentSessionManager.list(scope);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_TASK_GET,
+    (event, payload: { taskId: string; cursor?: string; maxBytes?: number } & ProjectScopedPayload): Promise<AgentToolOperationResult> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_TASK_GET);
+      return ctx.agentSessionManager.getTask(scope, payload.taskId, payload.cursor, payload.maxBytes);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_TASK_LIST,
+    (event, payload: { scope?: 'active' | 'all'; cursor?: string; limit?: number } & ProjectScopedPayload): Promise<AgentToolOperationResult> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_TASK_LIST);
+      return ctx.agentSessionManager.listTasks(scope, payload.scope, payload.cursor, payload.limit);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_TASK_CANCEL,
+    (event, payload: { sessionId: string; taskId: string } & ProjectScopedPayload): Promise<IrisAgentSessionInfo> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_TASK_CANCEL);
+      return ctx.agentSessionManager.cancelTask(scope, payload.sessionId, payload.taskId);
     },
   );
 
