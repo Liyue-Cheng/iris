@@ -297,7 +297,9 @@ export function IrisAgentView({
                 ? '正在加载模型…'
                 : modelError && models.length === 0
                   ? '模型加载失败'
-                  : '选择模型'}
+                  : models.length === 0
+                    ? '未配置供应商模型（请先在设置中添加供应商档案）'
+                    : '选择模型'}
             </option>
           )}
           {session.model && !selectedModelAvailable && (

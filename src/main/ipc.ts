@@ -84,8 +84,6 @@ import {
   irisPiAgentDir,
   loadIrisProviderCatalog,
   loadIrisModelCatalog,
-  removeIrisProviderCredential,
-  saveIrisProviderApiKey,
 } from './agent/pi-adapter';
 import {
   addIrisAgentProviderProfile,
@@ -1178,42 +1176,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
 
   ipcMain.handle(
     CHANNELS.IRIS_AGENT_PROVIDERS,
-    (): Promise<IrisAgentProviderCatalog> => loadIrisProviderCatalog(irisPiAgentDir(), appDataDir()),
-  );
-
-  ipcMain.handle(
-    CHANNELS.IRIS_AGENT_PROVIDER_SET_KEY,
-    async (
-      _event,
-      payload: { providerId: string; apiKey: string },
-    ): Promise<IrisAgentProviderCatalog> => {
-      prepareProviderConfigurationChange();
-      const catalog = await saveIrisProviderApiKey(
-        payload.providerId,
-        payload.apiKey,
-        irisPiAgentDir(),
-        appDataDir(),
-      );
-      await finishProviderConfigurationChange();
-      return catalog;
-    },
-  );
-
-  ipcMain.handle(
-    CHANNELS.IRIS_AGENT_PROVIDER_REMOVE,
-    async (
-      _event,
-      payload: { providerId: string },
-    ): Promise<IrisAgentProviderCatalog> => {
-      prepareProviderConfigurationChange();
-      const catalog = await removeIrisProviderCredential(
-        payload.providerId,
-        irisPiAgentDir(),
-        appDataDir(),
-      );
-      await finishProviderConfigurationChange();
-      return catalog;
-    },
+    (): Promise<IrisAgentProviderCatalog> => loadIrisProviderCatalog(appDataDir()),
   );
 
   ipcMain.handle(
@@ -1225,7 +1188,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       prepareProviderConfigurationChange();
       await addIrisAgentProviderProfile(payload, appDataDir());
       await finishProviderConfigurationChange();
-      return loadIrisProviderCatalog(irisPiAgentDir(), appDataDir());
+      return loadIrisProviderCatalog(appDataDir());
     },
   );
 
@@ -1238,7 +1201,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       prepareProviderConfigurationChange();
       await removeIrisAgentProviderProfile(payload.profileId, appDataDir());
       await finishProviderConfigurationChange();
-      return loadIrisProviderCatalog(irisPiAgentDir(), appDataDir());
+      return loadIrisProviderCatalog(appDataDir());
     },
   );
 
@@ -1251,7 +1214,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       prepareProviderConfigurationChange();
       await updateIrisAgentProviderProfileApiKey(payload.profileId, payload.apiKey, appDataDir());
       await finishProviderConfigurationChange();
-      return loadIrisProviderCatalog(irisPiAgentDir(), appDataDir());
+      return loadIrisProviderCatalog(appDataDir());
     },
   );
 
@@ -1264,7 +1227,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       prepareProviderConfigurationChange();
       await updateIrisAgentProviderModels(payload.profileId, payload.models, appDataDir());
       await finishProviderConfigurationChange();
-      return loadIrisProviderCatalog(irisPiAgentDir(), appDataDir());
+      return loadIrisProviderCatalog(appDataDir());
     },
   );
 
@@ -1272,7 +1235,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     CHANNELS.IRIS_AGENT_PROVIDER_PROFILE_DISCOVER,
     async (_event, payload: { profileId: string }): Promise<IrisAgentProviderCatalog> => {
       prepareProviderConfigurationChange();
-      const profileCatalog = await loadIrisProviderCatalog(irisPiAgentDir(), appDataDir());
+      const profileCatalog = await loadIrisProviderCatalog(appDataDir());
       const profile = profileCatalog.profiles.find((item) => item.id === payload.profileId);
       if (!profile) throw new Error('Provider profile was not found.');
       const discovered = await loadIrisModelCatalog(irisPiAgentDir(), appDataDir(), true);
@@ -1304,7 +1267,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       if (models.length === 0) throw new Error(discovered.error ?? '供应商目录没有返回模型。');
       await updateIrisAgentProviderModels(payload.profileId, models, appDataDir());
       await finishProviderConfigurationChange();
-      return loadIrisProviderCatalog(irisPiAgentDir(), appDataDir());
+      return loadIrisProviderCatalog(appDataDir());
     },
   );
 

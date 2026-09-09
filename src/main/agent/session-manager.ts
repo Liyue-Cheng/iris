@@ -1048,11 +1048,10 @@ export class IrisAgentSessionManager extends EventEmitter {
 
   private async executionRuntimeFor(session: AgentSessionAggregate): Promise<AgentWorkerExecutionRuntime> {
     if (!session.model) throw new Error('Iris Agent Session has no configured model.');
-    const agentDir = irisPiAgentDir();
     const providerProfileRoot = this.options.providerProfileRoot ?? this.userDataPath;
     const providerProxy = this.options.resolveProxy
       ? parseElectronProxyRules(await this.options.resolveProxy(
-          await resolveIrisModelBaseUrl(agentDir, providerProfileRoot, session.model),
+          await resolveIrisModelBaseUrl(providerProfileRoot, session.model),
         ))
       : { mode: 'direct' as const };
     return { model: { ...session.model }, providerProxy };

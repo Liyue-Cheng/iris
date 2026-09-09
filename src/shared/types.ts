@@ -652,19 +652,7 @@ export interface IrisAgentModelCatalog {
   error?: string;
 }
 
-export interface IrisAgentProviderOption {
-  providerId: string;
-  name: string;
-  configured: boolean;
-  hasStoredCredential: boolean;
-  credentialType?: 'api_key' | 'oauth';
-  source?: string;
-  supportsApiKey: boolean;
-  supportsOAuth: boolean;
-}
-
 export interface IrisAgentProviderCatalog {
-  providers: IrisAgentProviderOption[];
   templates: IrisAgentProviderTemplate[];
   profiles: IrisAgentProviderProfileInfo[];
   error?: string;

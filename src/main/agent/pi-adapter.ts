@@ -122,34 +122,16 @@ async function readCredentialFile(path: string): Promise<Record<string, StoredCr
   }
 }
 
-export function hasStoredPiCredential(providerId: string, authPath?: string): boolean {
-  if (!authPath) return false;
-  return Object.hasOwn(readCredentialFileSync(authPath), providerId);
-}
-
 export function storedPiCredentialSecrets(providerId: string, agentDir: string): unknown {
-  // Kept synchronous for the worker redaction hook. Credential writes are serialized
-  // through the async helpers below; this read is best-effort and never throws.
+  // Kept synchronous for the worker redaction hook. Iris no longer manages Pi's
+  // builtin providers, but a stale Pi credential must still never leak into a
+  // provider artifact if one is present.
   try {
     const text = readFileSync(join(agentDir, 'auth.json'), 'utf8');
     const credentials = JSON.parse(text) as Record<string, unknown>;
     return credentials[providerId];
   } catch {
     return undefined;
-  }
-}
-
-function readCredentialFileSync(path: string): Record<string, StoredCredential> {
-  try {
-    const value: unknown = JSON.parse(readFileSync(path, 'utf8'));
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-    return Object.fromEntries(Object.entries(value).flatMap(([id, credential]) => {
-      if (!credential || typeof credential !== 'object' || Array.isArray(credential)) return [];
-      const item = credential as Record<string, unknown>;
-      return item.type === 'api_key' && typeof item.key === 'string' ? [[id, { type: 'api_key', key: item.key }]] : [];
-    }));
-  } catch {
-    return {};
   }
 }
 
@@ -307,16 +289,10 @@ function taskToolResponse(result: AgentToolOperationResult): { content: Array<{ 
 
 interface IrisModelRuntime {
   setProvider(provider: Provider): void;
-  getProviders(): readonly Provider[];
   getProvider(providerId: string): Provider | undefined;
   getModels(providerId?: string): readonly Model<Api>[];
   getModel(providerId: string, modelId: string): Model<Api> | undefined;
-  getAvailable(): Promise<readonly Model<Api>[]>;
   getError(): string | undefined;
-  listCredentials(): Promise<readonly { providerId: string; type: 'api_key' | 'oauth' }[]>;
-  getProviderAuthStatus(providerId: string): { configured: boolean; source?: string };
-  login(providerId: string, type: 'api_key', interaction: { prompt: (prompt: { type: string }) => Promise<string>; notify: () => void }): Promise<unknown>;
-  logout(providerId: string): Promise<void>;
   streamSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream;
   completeSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessage>;
 }
@@ -346,32 +322,22 @@ function credentialStore(path: string) {
   };
 }
 
+/**
+ * Pi is used here as an API transport and model-metadata library only. Its
+ * builtin providers are registered so a configured Iris provider profile can
+ * borrow the matching API implementation and model metadata, but they are never
+ * a model source: the user-facing model list is owned entirely by Iris provider
+ * profiles.
+ */
 function createIrisRuntime(agentDir: string): IrisModelRuntime {
   const models = createModels({ credentials: credentialStore(join(agentDir, 'auth.json')) });
   for (const provider of builtinProviders()) models.setProvider(provider);
-  const store = credentialStore(join(agentDir, 'auth.json'));
   return {
     setProvider: (provider) => models.setProvider(provider),
-    getProviders: () => models.getProviders(),
     getProvider: (providerId) => models.getProvider(providerId),
     getModels: (providerId) => models.getModels(providerId),
     getModel: (providerId, modelId) => models.getModel(providerId, modelId),
-    getAvailable: () => models.getAvailable(),
     getError: () => undefined,
-    listCredentials: () => store.list(),
-    getProviderAuthStatus: (providerId) => ({
-      configured: Object.hasOwn(readCredentialFileSync(join(agentDir, 'auth.json')), providerId),
-      ...(Object.hasOwn(readCredentialFileSync(join(agentDir, 'auth.json')), providerId) ? { source: 'stored API key' } : {}),
-    }),
-    login: async (providerId, _type, interaction) => {
-      const provider = models.getProvider(providerId);
-      if (!provider?.auth.apiKey?.login) throw new Error(`${provider?.name ?? providerId} does not support API key setup.`);
-      await models.login(providerId, 'api_key', {
-        prompt: async (prompt) => interaction.prompt(prompt),
-        notify: interaction.notify,
-      });
-    },
-    logout: (providerId) => models.logout(providerId),
     streamSimple: (model, context, options) => models.streamSimple(model, context, options),
     completeSimple: (model, context, options) => models.completeSimple(model, context, options),
   };
@@ -417,12 +383,18 @@ export async function loadIrisModelCatalog(
         configuredModels.set(modelKey(providerId, model.modelId), model);
       }
     }
-    const models = (await runtime.getAvailable())
-      .map((model) => toIrisModelOption(
-        model,
-        profileNames.get(model.provider),
-        configuredModels.get(modelKey(model.provider, model.id)),
-      ))
+    // Iris owns the model list: only models of configured provider profiles are
+    // exposed. Pi's builtin catalog is metadata for those profiles, never a
+    // source of selectable models.
+    const models = profiles
+      .flatMap((profile) => {
+        const providerId = runtimeProviderId(profile.id);
+        return runtime.getModels(providerId).map((model) => toIrisModelOption(
+          model,
+          profileNames.get(providerId),
+          configuredModels.get(modelKey(providerId, model.id)),
+        ));
+      })
       .sort(compareModels);
     const runtimeError = runtime.getError();
     const errors = [runtimeError, ...profileErrors].filter((error): error is string => !!error);
@@ -436,95 +408,22 @@ export async function loadIrisModelCatalog(
 }
 
 export async function loadIrisProviderCatalog(
-  agentDir: string,
   profileRoot: string,
 ): Promise<IrisAgentProviderCatalog> {
   try {
-    const runtime = await createIrisModelRuntime(agentDir, profileRoot, { kind: 'none' });
-    const credentials = new Map(
-      (await runtime.listCredentials()).map((credential) => [credential.providerId, credential]),
-    );
-    const providers = runtime.getProviders().map((provider) => {
-      const status = runtime.getProviderAuthStatus(provider.id);
-      const credential = credentials.get(provider.id);
-      return {
-        providerId: provider.id,
-        name: provider.name,
-        configured: status.configured,
-        hasStoredCredential: credential !== undefined,
-        ...(credential ? { credentialType: credential.type } : {}),
-        ...(status.source ? { source: status.source } : {}),
-        supportsApiKey: provider.auth.apiKey?.login !== undefined,
-        supportsOAuth: provider.auth.oauth !== undefined,
-      };
-    }).sort((left, right) => left.name.localeCompare(right.name));
-    const runtimeError = runtime.getError();
     const profiles = await loadProviderProfiles(profileRoot);
     return {
-      providers,
       templates: [...IRIS_AGENT_PROVIDER_TEMPLATES],
       profiles: profilesForRenderer(profiles),
-      ...(runtimeError ? { error: runtimeError } : {}),
     };
   } catch (error) {
     const profiles = await loadProviderProfiles(profileRoot).catch(() => []);
     return {
-      providers: [],
       templates: [...IRIS_AGENT_PROVIDER_TEMPLATES],
       profiles: profilesForRenderer(profiles),
       error: error instanceof Error ? error.message : String(error),
     };
   }
-}
-
-export async function saveIrisProviderApiKey(
-  providerId: string,
-  apiKey: string,
-  agentDir: string,
-  profileRoot: string,
-): Promise<IrisAgentProviderCatalog> {
-  const normalizedProviderId = providerId.trim();
-  const normalizedApiKey = apiKey.trim();
-  if (!normalizedProviderId) throw new Error('Provider is required.');
-  if (!normalizedApiKey) throw new Error('API key is required.');
-  if (normalizedApiKey.length > 20_000) throw new Error('API key is too long.');
-
-  const runtime = await createIrisModelRuntime(agentDir, profileRoot, { kind: 'none' });
-  const provider = runtime.getProvider(normalizedProviderId);
-  if (!provider) throw new Error(`Unknown provider: ${normalizedProviderId}`);
-  if (!provider.auth.apiKey?.login) {
-    throw new Error(`${provider.name} does not support API key setup.`);
-  }
-  let answeredSecretPrompt = false;
-  await runtime.login(normalizedProviderId, 'api_key', {
-    prompt: async (prompt) => {
-      if (prompt.type !== 'secret' || answeredSecretPrompt) {
-        throw new Error(
-          `${provider.name} requires an interactive login flow that Iris does not support yet.`,
-        );
-      }
-      answeredSecretPrompt = true;
-      return normalizedApiKey;
-    },
-    notify: () => undefined,
-  });
-  if (!answeredSecretPrompt) throw new Error(`${provider.name} did not request an API key.`);
-  return loadIrisProviderCatalog(agentDir, profileRoot);
-}
-
-export async function removeIrisProviderCredential(
-  providerId: string,
-  agentDir: string,
-  profileRoot: string,
-): Promise<IrisAgentProviderCatalog> {
-  const normalizedProviderId = providerId.trim();
-  if (!normalizedProviderId) throw new Error('Provider is required.');
-  const runtime = await createIrisModelRuntime(agentDir, profileRoot, { kind: 'none' });
-  if (!runtime.getProvider(normalizedProviderId)) {
-    throw new Error(`Unknown provider: ${normalizedProviderId}`);
-  }
-  await runtime.logout(normalizedProviderId);
-  return loadIrisProviderCatalog(agentDir, profileRoot);
 }
 
 export async function createIrisPiSession(options: {
@@ -663,23 +562,19 @@ export async function summarizeIrisAgentHistory(options: {
 }
 
 export async function resolveIrisModelBaseUrl(
-  agentDir: string,
   profileRoot: string,
   modelRef: IrisAgentModelRef,
 ): Promise<string> {
   const profiles = await loadProviderProfiles(profileRoot);
   const profile = profiles.find((candidate) => runtimeProviderId(candidate.id) === modelRef.provider);
-  if (profile) {
-    const template = findIrisAgentProviderTemplate(profile.templateId);
-    if (!template) throw new Error(`Configured Iris Agent provider template was not found: ${profile.templateId}`);
-    return profile.baseUrl || template.defaultBaseUrl;
+  if (!profile) {
+    throw new Error(
+      `Configured Iris Agent model is not provided by an Iris provider profile: ${modelRef.provider}/${modelRef.modelId}`,
+    );
   }
-  const runtime = await createIrisModelRuntime(agentDir, profileRoot, { kind: 'none' });
-  const model = runtime.getModel(modelRef.provider, modelRef.modelId);
-  if (!model) {
-    throw new Error(`Configured Iris Agent model was not found: ${modelRef.provider}/${modelRef.modelId}`);
-  }
-  return model.baseUrl;
+  const template = findIrisAgentProviderTemplate(profile.templateId);
+  if (!template) throw new Error(`Configured Iris Agent provider template was not found: ${profile.templateId}`);
+  return profile.baseUrl || template.defaultBaseUrl;
 }
 
 function createProviderTransport(providerProxy: AgentProviderProxy): {
@@ -742,6 +637,7 @@ async function createIrisModelRuntime(
     }
     return runtime;
   }
+  let registered = false;
   for (const profile of profiles) {
     const providerId = runtimeProviderId(profile.id);
     if (providerId !== profileMode.model.provider) continue;
@@ -750,6 +646,14 @@ async function createIrisModelRuntime(
     const baseUrl = profile.baseUrl || template.defaultBaseUrl;
     registerProfileProvider(runtime, providerId, profile.name, template, baseUrl, profile.apiKey,
       [profileMode.model.modelId], profile.models);
+    registered = true;
+  }
+  if (!registered) {
+    // A model whose provider is not one of our profiles must never fall through
+    // to a Pi builtin provider.
+    throw new Error(
+      `Configured Iris Agent model is not provided by an Iris provider profile: ${profileMode.model.provider}/${profileMode.model.modelId}`,
+    );
   }
   return runtime;
 }

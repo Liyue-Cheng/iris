@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -10,12 +10,10 @@ import {
   loadIrisModelCatalog,
   loadIrisProviderCatalog,
   normalizeIrisProviderContext,
-  removeIrisProviderCredential,
   resolveIrisModelBaseUrl,
   renderRawError,
   renderRawHttpFailure,
   restoreIrisPiHistory,
-  saveIrisProviderApiKey,
   storedPiCredentialSecrets,
   unwrapProviderErrorMessage,
   IrisHistoryManager,
@@ -499,29 +497,50 @@ describe('Iris Pi adapter', () => {
     expect(receivedFetch).toBe(providerFetch);
   });
 
-  it('persists and removes provider API keys without returning the secret', async () => {
-    const agentDir = await mkdtemp(join(tmpdir(), 'iris-pi-credentials-'));
+  it('owns the model list: Pi builtin providers are never a model source', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'iris-provider-ownership-'));
+    const originalFetch = globalThis.fetch;
+    const originalOpenAiKey = process.env.OPENAI_API_KEY;
+    globalThis.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ data: [{ id: 'managed-model' }] }), { status: 200 }));
+    // A leftover Pi credential and a Pi environment key would make Pi's builtin
+    // OpenAI provider "available" inside the embedded runtime.
+    await writeFile(join(root, 'auth.json'), JSON.stringify({
+      openai: { type: 'api_key', key: 'sk-pi-builtin' },
+    }), 'utf8');
+    process.env.OPENAI_API_KEY = 'sk-pi-env';
     try {
-      const saved = await saveIrisProviderApiKey('openai', 'sk-iris-test', agentDir, agentDir);
-      expect(saved.providers.find((provider) => provider.providerId === 'openai')).toMatchObject({
-        configured: true,
-        hasStoredCredential: true,
-        credentialType: 'api_key',
-      });
-      expect(JSON.stringify(saved)).not.toContain('sk-iris-test');
-      expect(storedPiCredentialSecrets('openai', agentDir)).toEqual({
+      expect(storedPiCredentialSecrets('openai', root)).toEqual({
         type: 'api_key',
-        key: 'sk-iris-test',
+        key: 'sk-pi-builtin',
       });
 
-      const removed = await removeIrisProviderCredential('openai', agentDir, agentDir);
-      expect(removed.providers.find((provider) => provider.providerId === 'openai')).toMatchObject({
-        hasStoredCredential: false,
+      const unconfigured = await loadIrisModelCatalog(root, root);
+      expect(unconfigured.models).toEqual([]);
+      const catalog = await loadIrisProviderCatalog(root);
+      expect(catalog.profiles).toEqual([]);
+      expect('providers' in catalog).toBe(false);
+
+      await addIrisAgentProviderProfile({
+        name: 'Managed provider',
+        templateId: 'openai-compatible',
+        baseUrl: 'https://managed.example.com/v1',
+        apiKey: 'sk-managed',
+      }, root);
+      const managed = await loadIrisModelCatalog(root, root, true);
+      expect(managed.models).toHaveLength(1);
+      expect(managed.models[0]).toMatchObject({
+        providerName: 'Managed provider',
+        modelId: 'managed-model',
       });
-      expect(storedPiCredentialSecrets('openai', agentDir)).toBeUndefined();
-      expect((await loadIrisProviderCatalog(agentDir, agentDir)).providers).not.toEqual([]);
+      expect(managed.models.every((model) => model.provider.startsWith('iris-profile-'))).toBe(true);
+      expect(JSON.stringify(managed)).not.toContain('sk-managed');
+      expect(JSON.stringify(managed)).not.toContain('sk-pi');
     } finally {
-      await rm(agentDir, { recursive: true, force: true });
+      globalThis.fetch = originalFetch;
+      if (originalOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = originalOpenAiKey;
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -578,7 +597,7 @@ describe('Iris Pi adapter', () => {
         source: 'manual',
       }], root);
 
-      const catalog = await loadIrisProviderCatalog(root, root);
+      const catalog = await loadIrisProviderCatalog(root);
       expect(catalog.templates.map((template) => template.id)).toContain('openai-compatible');
       expect(catalog.profiles.map((profile) => profile.name)).toEqual([
         'OpenAI primary',
@@ -668,7 +687,7 @@ describe('Iris Pi adapter', () => {
       const healthy = profiles.find((profile) => profile.name === 'Healthy provider')!;
       const fetchMock = vi.mocked(globalThis.fetch);
       fetchMock.mockClear();
-      await expect(resolveIrisModelBaseUrl(root, root, {
+      await expect(resolveIrisModelBaseUrl(root, {
         provider: runtimeProviderId(healthy.id),
         modelId: 'healthy-model',
       })).resolves.toBe('https://healthy.example.com/v1');
@@ -734,7 +753,9 @@ async function captureDeepSeekProviderPayload(
 ): Promise<unknown> {
   const agentDir = await mkdtemp(join(tmpdir(), 'iris-pi-provider-'));
   try {
-    await saveIrisProviderApiKey('deepseek', 'test-key', agentDir, agentDir);
+    await writeFile(join(agentDir, 'auth.json'), JSON.stringify({
+      deepseek: { type: 'api_key', key: 'test-key' },
+    }), 'utf8');
     const runtime = await (await import('./pi-adapter')).createIrisModelRuntimeForTest(agentDir, agentDir);
     const model = runtime.getModel('deepseek', 'deepseek-v4-pro');
     if (!model) throw new Error('The pinned Pi model catalog is missing deepseek-v4-pro');
