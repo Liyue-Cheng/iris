@@ -93,7 +93,11 @@ export function DeleteDocDialog(): JSX.Element | null {
         if (mode === 'close-sessions') {
           await pipeline.dispatch('session.close', { sessionId: s.id });
         } else {
-          await pipeline.dispatch('session.reanchor', { sessionId: s.id, docPath: null });
+          await pipeline.dispatch('session.reanchor', {
+            sessionId: s.id,
+            docPath: null,
+            workspacePath: '.iris',
+          });
         }
       }
       await pipeline.dispatch('doc.delete', { path: t.docPath });

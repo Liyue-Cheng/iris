@@ -877,12 +877,20 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     CHANNELS.SESSION_REANCHOR,
     (
       event,
-      payload: { sessionId: string; docPath: string | null } & ProjectScopedPayload,
+      payload: {
+        sessionId: string;
+        docPath: string | null;
+        workspacePath?: string | null;
+      } & ProjectScopedPayload,
     ): TerminalSessionInfo => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_REANCHOR);
       requireSessionInScope(ctx, payload.sessionId, scope, CHANNELS.SESSION_REANCHOR);
-      return ctx.terminalSessionManager.reanchor(payload.sessionId, payload.docPath);
+      return ctx.terminalSessionManager.reanchor(
+        payload.sessionId,
+        payload.docPath,
+        payload.workspacePath,
+      );
     },
   );
 
@@ -1492,6 +1500,10 @@ export function wireBroadcasts(
   const onIrisChanged = (e: FsIrisChangedEvent): void => {
     const scope = getProjectScope();
     if (!scope || scope.root !== e.projectRoot) return;
+    // Keep document-anchored PTYs visible when an external file operation
+    // removes their document. The session manager owns the live PTY and must
+    // update its projection before the renderer rescans the .iris tree.
+    terminalSessionManager.reanchorDeletedDocuments(e.changes, scope);
     send(EVENTS.FS_IRIS_CHANGED, { ...e, projectGeneration: scope.generation });
   };
   const onPromptChanged = (): void => send(EVENTS.PROMPT_CHANGED, undefined);

@@ -6,6 +6,7 @@ import type {
   ProjectScope,
   TerminalSessionInfo,
 } from '@shared/types';
+import { CHANNELS } from '@shared/protocol';
 import { appISA } from '@renderer/cpu/isa/app-isa';
 import { docISA } from '@renderer/cpu/isa/doc-isa';
 import { PROJECT_SCOPE_RESOURCE } from '@renderer/cpu/isa/project-resources';
@@ -347,6 +348,68 @@ describe('session activation transaction', () => {
     await expect(staleActivation).resolves.toBe(false);
     expect(projectStore.get().view).toEqual({ kind: 'doc', path: docPath });
     expect(sessionViewStore.selected(scope, docPath)).toBe('terminal:doc-2');
+  });
+});
+
+describe('external document deletion recovery', () => {
+  it('moves the selected document view to the surviving workspace hub', async () => {
+    const docPath = '.iris/issue/a.md';
+    const scope = openProjectState([scanDoc(docPath, 'issue')]);
+    sessionStore.reset(
+      [session(scope, 'doc-1', { docPath, workspacePath: '.iris' })],
+      scope,
+    );
+    await projectStore.selectDoc(docPath);
+    sessionViewStore.select(scope, docPath, terminalSessionKey('doc-1'));
+    sessionStore.handlePatch('doc-1', {
+      docPath: null,
+      workspacePath: '.iris',
+      orphanedDocPath: docPath,
+    });
+
+    const scan = projectStore.get().scan!;
+    invoke.mockImplementation((channel: string) =>
+      channel === CHANNELS.PROJECT_SCAN
+        ? Promise.resolve({
+            ...scan,
+            root: { ...scan.root!, docs: [] },
+          })
+        : Promise.resolve(docContent(docPath)),
+    );
+
+    await projectStore.refreshFromFs({
+      projectRoot: scope.root,
+      projectGeneration: scope.generation,
+      changes: [{ kind: 'unlink', path: docPath }],
+    });
+
+    expect(projectStore.get().view).toEqual({ kind: 'root' });
+    expect(sessionViewStore.selected(scope, workspaceAnchorKey('.iris'))).toBe(
+      terminalSessionKey('doc-1'),
+    );
+  });
+
+  it('keeps the current view when a deleted document has no linked session', async () => {
+    const docPath = '.iris/issue/a.md';
+    const scope = openProjectState([scanDoc(docPath, 'issue')]);
+    await projectStore.selectDoc(docPath);
+    const scan = projectStore.get().scan!;
+    invoke.mockImplementation((channel: string) =>
+      channel === CHANNELS.PROJECT_SCAN
+        ? Promise.resolve({
+            ...scan,
+            root: { ...scan.root!, docs: [] },
+          })
+        : Promise.resolve(docContent(docPath)),
+    );
+
+    await projectStore.refreshFromFs({
+      projectRoot: scope.root,
+      projectGeneration: scope.generation,
+      changes: [{ kind: 'unlink', path: docPath }],
+    });
+
+    expect(projectStore.get().view).toEqual({ kind: 'doc', path: null });
   });
 });
 

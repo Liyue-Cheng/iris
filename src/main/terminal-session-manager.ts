@@ -140,8 +140,10 @@ export class TerminalSessionError extends Error {
 export interface CreateSessionInput {
   /** Doc rel path (forward slashes) or null for a workspace-hub session. */
   docPath: string | null;
-  /** Hub workspace when docPath is null (`.iris` = root). Injected as
-   *  IRIS_WORKSPACE_PATH, never as FOCUS_DOC. Ignored when docPath is set. */
+  /** Hub workspace when docPath is null (`.iris` = root), or the owning
+   *  workspace retained as a fallback when a document session is orphaned.
+   *  Injected as IRIS_WORKSPACE_PATH only for hub sessions, never for a
+   *  document session. */
   workspacePath?: string | null;
   agentId: string;
   projectRoot: string;
@@ -328,9 +330,10 @@ export class TerminalSessionManager extends EventEmitter {
     const info: TerminalSessionInfo = {
       id: sessionId,
       docPath: input.docPath,
-      // Doc sessions carry no hub grouping; hub sessions default to the root
-      // workspace when none is given (back-compat with plain root spawns).
-      workspacePath: input.docPath ? null : (input.workspacePath ?? '.iris'),
+      // Keep the owning workspace on document sessions so an external delete
+      // can move the live session to the correct hub without losing scope.
+      // Hub sessions default to the root workspace when none is given.
+      workspacePath: input.workspacePath ?? (input.docPath ? null : '.iris'),
       agentId: agent.id,
       displayName: agent.label,
       terminalTitle: null,
@@ -447,14 +450,111 @@ export class TerminalSessionManager extends EventEmitter {
    * Marina's anchoring model: the path edits the doc — the PTY itself is
    * untouched, so the process keeps its original FOCUS_DOC env; the protocol
    * explicitly tolerates that ("没被读，人补一句话就行"). Used by the
-   * delete-file gesture to keep orphaned terminals alive under the root.
+   * delete-file gesture to keep orphaned terminals alive under a hub.
    */
-  reanchor(sessionId: string, docPath: string | null): TerminalSessionInfo {
+  reanchor(
+    sessionId: string,
+    docPath: string | null,
+    workspacePath?: string | null,
+  ): TerminalSessionInfo {
     const managed = this.sessions.get(sessionId);
     if (!managed) throw new Error(`[session:reanchor] unknown session ${sessionId}`);
     managed.info.docPath = docPath;
-    this.emitStateChanged(managed, { docPath });
+    if (workspacePath !== undefined) {
+      managed.info.workspacePath = workspacePath ?? '.iris';
+    }
+    if (docPath !== null) {
+      managed.info.orphanedDocPath = null;
+    } else {
+      managed.info.workspacePath = managed.info.workspacePath ?? '.iris';
+      // This is an explicit user re-anchor, so it clears any previous
+      // deleted-document warning.
+      managed.info.orphanedDocPath = null;
+    }
+    this.emitStateChanged(managed, {
+      docPath,
+      workspacePath: managed.info.workspacePath,
+      ...(managed.info.orphanedDocPath === undefined
+        ? {}
+        : { orphanedDocPath: managed.info.orphanedDocPath }),
+    });
     return { ...managed.info };
+  }
+
+  /**
+   * Preserve live PTYs whose document disappeared outside Iris. The watcher
+   * sends a debounced batch, so directory removals and same-batch restores are
+   * handled here before the batch is broadcast to the renderer.
+   */
+  reanchorDeletedDocuments(
+    changes: ReadonlyArray<{
+      kind: 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir';
+      path: string;
+    }>,
+    scope?: ProjectScope,
+  ): void {
+    const removedFiles = new Set(
+      changes.filter((change) => change.kind === 'unlink').map((change) => change.path),
+    );
+    const restoredDirs = new Set(
+      changes
+        .filter((change) => change.kind === 'addDir')
+        .map((change) => change.path.replace(/\/+$/, '')),
+    );
+    const removedDirs = changes
+      .filter((change) => change.kind === 'unlinkDir')
+      .map((change) => change.path.replace(/\/+$/, ''))
+      .filter((path) => !restoredDirs.has(path));
+    const restored = new Set(
+      changes
+        .filter((change) => change.kind === 'add' || change.kind === 'change')
+        .map((change) => change.path),
+    );
+    const restoredPaths = [...restored, ...restoredDirs];
+
+    for (const managed of this.sessions.values()) {
+      if (
+        scope &&
+        (managed.info.projectRoot !== scope.root ||
+          managed.info.projectGeneration !== scope.generation)
+      ) {
+        continue;
+      }
+      const docPath = managed.info.docPath;
+      if (!docPath || managed.info.orphanedDocPath) continue;
+      const removed =
+        (removedFiles.has(docPath) && !restored.has(docPath)) ||
+        removedDirs.some(
+          (dir) =>
+            (docPath === dir || docPath.startsWith(`${dir}/`)) &&
+            !restoredPaths.some(
+              (restoredPath) =>
+                docPath === restoredPath || docPath.startsWith(`${restoredPath}/`),
+            ),
+        );
+      if (!removed) continue;
+
+      managed.info.docPath = null;
+      managed.info.workspacePath = this.fallbackWorkspaceForRemoval(managed.info.workspacePath, removedDirs);
+      managed.info.orphanedDocPath = docPath;
+      this.emitStateChanged(managed, {
+        docPath: null,
+        workspacePath: managed.info.workspacePath,
+        orphanedDocPath: docPath,
+      });
+    }
+  }
+
+  private fallbackWorkspaceForRemoval(
+    workspacePath: string | null,
+    removedDirs: readonly string[],
+  ): string {
+    const candidate = workspacePath ?? '.iris';
+    return removedDirs.some(
+      (dir) => candidate === dir || candidate.startsWith(`${dir}/`),
+    )
+      ? '.iris'
+      : candidate;
   }
 
   shutdown(): Promise<void> {

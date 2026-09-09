@@ -16,7 +16,7 @@ Iris 是一个以持久项目记忆为核心的本地优先人机协同开发工
 
 项目状态以普通 Markdown 文件保存在 `.iris/` 下。外部 Agent 在项目根目录的真实 PTY 中运行，Git 仍然是协作与交付层。Iris 不需要账户或云端数据库，也不使用专有项目格式。
 
-> 当前版本：`0.1.0-beta.13`。实验性的 Iris Agent 仍处于非常早期阶段、默认关闭；现有的外部 Agent CLI 工作流不受影响。Iris 以 Windows 为优先平台，目前提供 Windows x64 版本。
+> 当前版本：`0.1.0-beta.17`。实验性的 Iris Agent 仍处于非常早期阶段、默认关闭；现有的外部 Agent CLI 工作流不受影响。Iris 以 Windows 为优先平台，目前提供 Windows x64 版本。
 
 ![Iris 工作区](docs/images/readme-overview.png)
 
@@ -205,7 +205,7 @@ Iris 不会通过解析 Agent 的终端文本来判断工作是否完成，而�
 
 ## 会话是工作记忆
 
-会话在创建时就确定 anchor。一个文档可以拥有多个会话，项目根和嵌套 workspace 也可以拥有没有焦点文档的 hub 会话。Iris 不会持续重定向一个正在运行的 Agent。
+会话在创建时就确定 anchor。一个文档可以拥有多个会话，项目根和嵌套 workspace 也可以拥有没有焦点文档的 hub 会话。文档被外部删除时，Iris 会把仍在运行的终端移到其 workspace/root hub 并标记警告；不会重定向仍然存在的文档或正在运行的 Agent 上下文。
 
 主进程持有 PTY 池。一个 headless xterm 镜像持续跟踪完整终端状态，包括 alternate-screen TUI。Renderer 重新挂载终端时，Iris 会序列化状态并恢复实时输出，同时避免在 replay 边界重复写入。
 

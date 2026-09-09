@@ -530,20 +530,22 @@ export type SessionState = 'active' | 'idle' | 'exited';
 export interface TerminalSessionInfo {
   id: string;
   /**
-   * The anchor (借鉴 Marina 的 path↔会话 → 文档↔会话): doc rel path, fixed
-   * at creation for the session's whole life. null = workspace-hub session
-   * (no FOCUS_DOC injected — the unfocused fallback). When null, workspacePath
-   * names which workspace hub it belongs to.
+   * The current UI anchor (借鉴 Marina 的 path↔会话 → 文档↔会话): doc rel
+   * path while the document exists. null = workspace-hub session (no
+   * FOCUS_DOC injected — the unfocused fallback), including a document session
+   * that was automatically moved after its document disappeared.
    */
   docPath: string | null;
   /**
-   * UI grouping for hub sessions (docPath null): which workspace's terminal
-   * hub this belongs to — `.iris` for the project root, a workspace rel path
-   * for a sub-workspace. null for doc-anchored sessions. Pure left-pane
-   * grouping; NEVER injected as FOCUS_DOC and never persisted to disk (a
-   * hub terminal is ephemeral and need not know its sub-workspace).
+   * UI grouping for hub sessions (docPath null), and the fallback workspace
+   * remembered for document sessions: `.iris` for the project root, or a
+   * workspace-relative path for a sub-workspace. Pure left-pane grouping;
+   * NEVER injected as FOCUS_DOC and never persisted to disk.
    */
   workspacePath: string | null;
+  /** Original document path when the session was auto-reanchored after an
+   * external unlink. User-initiated re-anchoring clears this field. */
+  orphanedDocPath?: string | null;
   agentId: string;
   /** Stable agent label (e.g. "Claude") — identity, fixed at creation. */
   displayName: string;

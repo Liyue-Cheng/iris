@@ -15,7 +15,11 @@ function initialTerminalDims(scope: TerminalLayoutScope): { cols: number; rows: 
   return getLastTerminalDims(projectStore.get().scan?.projectRoot, scope);
 }
 
-async function performOpenSession(docPath: string | null, agentId: string): Promise<void> {
+async function performOpenSession(
+  docPath: string | null,
+  agentId: string,
+  workspacePath?: string | null,
+): Promise<void> {
   // Flush first so the spawned agent reads the current document bytes.
   if (!(await editorStore.flushBeforeSwitch('before-external-action'))) return;
   const navigated = docPath === null
@@ -26,9 +30,21 @@ async function performOpenSession(docPath: string | null, agentId: string): Prom
     docPath === null ? { kind: 'root-hub' } : { kind: 'doc-right-pane' };
   const { cols, rows } = initialTerminalDims(scope);
   const created = await pipeline.dispatch<
-    { docPath: string | null; agentId: string; cols: number; rows: number },
+    {
+      docPath: string | null;
+      workspacePath?: string | null;
+      agentId: string;
+      cols: number;
+      rows: number;
+    },
     TerminalSessionInfo
-  >('session.open', { docPath, agentId, cols, rows });
+  >('session.open', {
+    docPath,
+    ...(workspacePath === undefined ? {} : { workspacePath }),
+    agentId,
+    cols,
+    rows,
+  });
   await projectStore.activateSession(created.id);
 }
 
@@ -74,10 +90,14 @@ async function runSessionOpen(
   );
 }
 
-export async function openSession(docPath: string | null, agentId: string): Promise<void> {
+export async function openSession(
+  docPath: string | null,
+  agentId: string,
+  workspacePath?: string | null,
+): Promise<void> {
   await runSessionOpen(
     `session:open:${docPath ?? 'root'}:${agentId}`,
-    () => performOpenSession(docPath, agentId),
+    () => performOpenSession(docPath, agentId, workspacePath),
   );
 }
 

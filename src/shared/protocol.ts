@@ -123,9 +123,10 @@ export const CHANNELS = {
   SESSION_OPEN: 'session:open',
   SESSION_CLOSE: 'session:close',
   /** Re-anchor a live session to another doc (Marina 锚定模型: path edits the
-   *  doc). Used by the delete-file gesture: orphaned sessions re-anchor to
-   *  the project root (docPath null). The live process env is untouched —
-   *  FOCUS_DOC degradation is the protocol's documented fallback. */
+   *  doc). Used by the delete-file gesture and external-delete recovery:
+   *  orphaned sessions re-anchor to a workspace/root hub (docPath null). The
+   *  live process env is untouched — FOCUS_DOC degradation is the protocol's
+   *  documented fallback. */
   SESSION_REANCHOR: 'session:reanchor',
   /**
    * Session streaming I/O — deliberately NOT instructions: keystrokes and

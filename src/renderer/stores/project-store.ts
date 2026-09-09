@@ -100,6 +100,44 @@ function workspaceExists(root: IrisWorkspace, path: string): boolean {
   return root.children.some((child) => workspaceExists(child, path));
 }
 
+function changeRemovesPath(
+  path: string,
+  changes: FsIrisChangedEvent['changes'],
+): boolean {
+  const restored = new Set(
+    changes
+      .filter((change) => change.kind === 'add' || change.kind === 'change')
+      .map((change) => change.path),
+  );
+  return changes.some(
+    (change) =>
+      (change.kind === 'unlink' && change.path === path && !restored.has(path)) ||
+      (change.kind === 'unlinkDir' &&
+        (path === change.path || path.startsWith(`${change.path.replace(/\/+$/, '')}/`))),
+  );
+}
+
+function selectedPathForView(view: MiddleView): string | null {
+  if (view.kind === 'doc') return view.path;
+  if (view.kind === 'collection') return view.selectedPath;
+  return null;
+}
+
+function terminalSessionId(sessionKey: string | null): string | null {
+  return sessionKey?.startsWith('terminal:') ? sessionKey.slice('terminal:'.length) : null;
+}
+
+function fallbackWorkspacePath(
+  sessions: readonly Pick<TerminalSessionInfo, 'workspacePath'>[],
+  scan: IrisScanResult | null,
+): string {
+  const candidate = sessions.find((session) => session.workspacePath)?.workspacePath ?? '.iris';
+  if (candidate === '.iris' || !scan?.root || workspaceExists(scan.root, candidate)) {
+    return candidate;
+  }
+  return '.iris';
+}
+
 async function refreshScanProjection(scope: ProjectScope): Promise<void> {
   const scan = await window.api.invoke<
     { expectedScope: ProjectScope },
@@ -392,6 +430,28 @@ export const projectStore = {
     ) {
       return;
     }
+
+    // Capture the pre-rescan view and linked sessions. The main process may
+    // deliver the session re-anchor event immediately before this filesystem
+    // event, so the current projection alone is not a reliable source of the
+    // deleted document's original workspace.
+    const viewBeforeRefresh = state.view;
+    const selectedPathBeforeRefresh = selectedPathForView(viewBeforeRefresh);
+    const selectedSessionKeyBeforeRefresh =
+      scope && selectedPathBeforeRefresh
+        ? sessionViewStore.selected(scope, selectedPathBeforeRefresh)
+        : null;
+    const deletedLinkedSessions = sessionStore
+      .get()
+      .sessions.filter(
+        (session) =>
+          session.docPath !== null && changeRemovesPath(session.docPath, event.changes),
+      )
+      .map((session) => ({
+        id: session.id,
+        workspacePath: session.workspacePath,
+        docPath: session.docPath,
+      }));
     if (scanInFlight) {
       scanDirty = true;
       return;
@@ -420,23 +480,69 @@ export const projectStore = {
     // reload, conflict flag, unlink) is handled by editorStore via the ISR
     // in cpu/interrupts.ts — not here. But if the selected doc vanished,
     // clear the selection.
-    const unlinkedPaths = new Set(
-      event.changes.filter((change) => change.kind === 'unlink').map((change) => change.path),
-    );
     for (const [key, path] of collectionSelectionByScope) {
-      if (unlinkedPaths.has(path)) collectionSelectionByScope.delete(key);
+      if (changeRemovesPath(path, event.changes)) collectionSelectionByScope.delete(key);
     }
 
-    const selectedPath =
-      state.view.kind === 'doc'
-        ? state.view.path
-        : state.view.kind === 'collection'
-          ? state.view.selectedPath
-          : null;
-    if (
-      selectedPath &&
-      event.changes.some((change) => change.kind === 'unlink' && change.path === selectedPath)
-    ) {
+    const selectedPath = selectedPathForView(state.view);
+    const selectedWasDeleted =
+      selectedPathBeforeRefresh !== null &&
+      changeRemovesPath(selectedPathBeforeRefresh, event.changes) &&
+      selectedPath === selectedPathBeforeRefresh;
+    if (selectedWasDeleted) {
+      const selectedDeletedSessions = deletedLinkedSessions.filter(
+        (candidate) => candidate.docPath === selectedPathBeforeRefresh,
+      );
+      const selectedReanchoredSessionId = terminalSessionId(selectedSessionKeyBeforeRefresh);
+      const selectedReanchoredSessions = selectedReanchoredSessionId
+        ? sessionStore
+            .get()
+            .sessions.filter(
+              (session) =>
+                session.id === selectedReanchoredSessionId && session.docPath === null,
+            )
+        : [];
+      const orphanedSessions = sessionStore.get().sessions.filter(
+        (session) =>
+          selectedDeletedSessions.some((candidate) => candidate.id === session.id) ||
+          session.orphanedDocPath === selectedPathBeforeRefresh ||
+          selectedReanchoredSessions.some((candidate) => candidate.id === session.id),
+      );
+      if (orphanedSessions.length > 0 || selectedDeletedSessions.length > 0) {
+        const fallback = fallbackWorkspacePath(
+          orphanedSessions.length > 0
+            ? orphanedSessions
+            : selectedDeletedSessions.map((candidate) => ({
+                workspacePath: candidate.workspacePath,
+              })),
+          state.scan,
+        );
+        const fallbackAnchor = workspaceAnchorKey(fallback);
+        beginNavigationIntent();
+        editorStore.closeSession();
+        if (
+          selectedSessionKeyBeforeRefresh &&
+          (orphanedSessions.some(
+            (session) => selectedSessionKeyBeforeRefresh === terminalSessionKey(session.id),
+          ) ||
+            selectedDeletedSessions.some(
+              (session) => selectedSessionKeyBeforeRefresh === terminalSessionKey(session.id),
+            )) &&
+          scope
+        ) {
+          sessionViewStore.select(scope, fallbackAnchor, selectedSessionKeyBeforeRefresh);
+        }
+        setState({
+          view:
+            fallback === '.iris'
+              ? { kind: 'root' }
+              : { kind: 'workspace', path: fallback },
+          docLoading: false,
+          docError: null,
+        });
+        return;
+      }
+
       beginNavigationIntent();
       editorStore.closeSession();
       if (state.view.kind === 'collection') {

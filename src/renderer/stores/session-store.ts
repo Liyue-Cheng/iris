@@ -119,10 +119,11 @@ export const sessionStore = {
 
 /**
  * Stable grouping key for a session's anchor. Doc sessions key by their doc
- * path; hub sessions (docPath null) key by `ws:<workspacePath>` (root =
- * `.iris`). The `ws:` prefix can never collide with a `.md` doc path, so the
- * two namespaces stay disjoint. This is the load-bearing decoupling: a hub
- * session groups by workspace WITHOUT carrying a FOCUS_DOC.
+ * path; hub sessions (docPath null), including a session orphaned by document
+ * deletion, key by `ws:<workspacePath>` (root = `.iris`). The `ws:` prefix can
+ * never collide with a `.md` doc path, so the two namespaces stay disjoint.
+ * This is the load-bearing decoupling: a hub session groups by workspace
+ * WITHOUT carrying a FOCUS_DOC.
  */
 export function sessionAnchorKey(s: Pick<TerminalSessionInfo, 'docPath' | 'workspacePath'>): string {
   return s.docPath != null ? s.docPath : `ws:${s.workspacePath ?? '.iris'}`;

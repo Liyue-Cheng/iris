@@ -22,6 +22,9 @@ export interface SessionProjection {
   busy: boolean;
   createdAt: number;
   updatedAt: number;
+  /** Original document path when the session was moved to a hub after an
+   * external deletion. */
+  orphanedDocPath?: string;
   capabilities: {
     close: boolean;
     select: boolean;
@@ -55,6 +58,7 @@ export function terminalSessionProjection(session: TerminalSessionInfo): Session
     busy: session.state === 'active',
     createdAt: session.createdAt,
     updatedAt: session.exitedAt ?? session.createdAt,
+    ...(session.orphanedDocPath ? { orphanedDocPath: session.orphanedDocPath } : {}),
     capabilities: { close: true, select: true },
   };
 }

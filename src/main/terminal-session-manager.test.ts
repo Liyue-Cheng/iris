@@ -329,6 +329,177 @@ describe('session shutdown', () => {
   });
 });
 
+describe('external document deletion recovery', () => {
+  it('moves every linked session to its workspace and records the deleted path', async () => {
+    const manager = new TerminalSessionManager(fakeSettingsManager(), {
+      spawnFn: () => fakePty(),
+      processTreeKillFn: null,
+      ptyExitWaitMs: 0,
+    });
+    const session = manager.createSession({
+      docPath: '.iris/platform/issue/deleted.md',
+      workspacePath: '.iris/platform',
+      agentId: 'shell',
+      projectRoot: process.cwd(),
+      projectGeneration: 1,
+      cols: 80,
+      rows: 24,
+    });
+    const changed: Array<{ sessionId: string; patch: Record<string, unknown> }> = [];
+    manager.on('sessionStateChanged', (event) => changed.push(event));
+
+    manager.reanchorDeletedDocuments([
+      { kind: 'unlink', path: '.iris/platform/issue/deleted.md' },
+    ]);
+
+    expect(manager.get(session.id)).toMatchObject({
+      docPath: null,
+      workspacePath: '.iris/platform',
+      orphanedDocPath: '.iris/platform/issue/deleted.md',
+    });
+    expect(changed).toHaveLength(1);
+    expect(changed[0]).toMatchObject({
+      sessionId: session.id,
+      patch: {
+        docPath: null,
+        workspacePath: '.iris/platform',
+        orphanedDocPath: '.iris/platform/issue/deleted.md',
+      },
+    });
+
+    // Watcher retries and duplicate batches must be idempotent.
+    manager.reanchorDeletedDocuments([
+      { kind: 'unlink', path: '.iris/platform/issue/deleted.md' },
+    ]);
+    expect(changed).toHaveLength(1);
+    await manager.shutdown();
+  });
+
+  it('falls back to the project root when the owning workspace is removed', async () => {
+    const manager = new TerminalSessionManager(fakeSettingsManager(), {
+      spawnFn: () => fakePty(),
+      processTreeKillFn: null,
+      ptyExitWaitMs: 0,
+    });
+    const session = manager.createSession({
+      docPath: '.iris/platform/issue/deleted.md',
+      workspacePath: '.iris/platform',
+      agentId: 'shell',
+      projectRoot: process.cwd(),
+      projectGeneration: 1,
+      cols: 80,
+      rows: 24,
+    });
+
+    manager.reanchorDeletedDocuments([
+      { kind: 'unlinkDir', path: '.iris/platform' },
+    ]);
+
+    expect(manager.get(session.id)).toMatchObject({
+      docPath: null,
+      workspacePath: '.iris',
+      orphanedDocPath: '.iris/platform/issue/deleted.md',
+    });
+    await manager.shutdown();
+  });
+
+  it('does not mark a path that was restored in the same watcher batch', async () => {
+    const manager = new TerminalSessionManager(fakeSettingsManager(), {
+      spawnFn: () => fakePty(),
+      processTreeKillFn: null,
+      ptyExitWaitMs: 0,
+    });
+    const session = manager.createSession({
+      docPath: '.iris/issue/restored.md',
+      workspacePath: '.iris',
+      agentId: 'shell',
+      projectRoot: process.cwd(),
+      projectGeneration: 1,
+      cols: 80,
+      rows: 24,
+    });
+
+    manager.reanchorDeletedDocuments([
+      { kind: 'unlink', path: '.iris/issue/restored.md' },
+      { kind: 'add', path: '.iris/issue/restored.md' },
+    ]);
+
+    expect(manager.get(session.id)).toMatchObject({
+      docPath: '.iris/issue/restored.md',
+      workspacePath: '.iris',
+    });
+    expect(manager.get(session.id)?.orphanedDocPath).toBeUndefined();
+    await manager.shutdown();
+  });
+
+  it('ignores restored descendants and sessions outside the active project scope', async () => {
+    const manager = new TerminalSessionManager(fakeSettingsManager(), {
+      spawnFn: () => fakePty(),
+      processTreeKillFn: null,
+      ptyExitWaitMs: 0,
+    });
+    const current = manager.createSession({
+      docPath: '.iris/platform/issue/current.md',
+      workspacePath: '.iris/platform',
+      agentId: 'shell',
+      projectRoot: process.cwd(),
+      projectGeneration: 2,
+      cols: 80,
+      rows: 24,
+    });
+    const stale = manager.createSession({
+      docPath: '.iris/platform/issue/stale.md',
+      workspacePath: '.iris/platform',
+      agentId: 'shell',
+      projectRoot: process.cwd(),
+      projectGeneration: 1,
+      cols: 80,
+      rows: 24,
+    });
+
+    manager.reanchorDeletedDocuments(
+      [
+        { kind: 'unlinkDir', path: '.iris/platform' },
+        { kind: 'addDir', path: '.iris/platform/issue' },
+      ],
+      { root: process.cwd(), generation: 2 },
+    );
+
+    expect(manager.get(current.id)?.orphanedDocPath).toBeUndefined();
+    expect(manager.get(stale.id)?.orphanedDocPath).toBeUndefined();
+    await manager.shutdown();
+  });
+
+  it('lets an explicit re-anchor override the fallback workspace and warning', async () => {
+    const manager = new TerminalSessionManager(fakeSettingsManager(), {
+      spawnFn: () => fakePty(),
+      processTreeKillFn: null,
+      ptyExitWaitMs: 0,
+    });
+    const session = manager.createSession({
+      docPath: '.iris/platform/issue/deleted.md',
+      workspacePath: '.iris/platform',
+      agentId: 'shell',
+      projectRoot: process.cwd(),
+      projectGeneration: 1,
+      cols: 80,
+      rows: 24,
+    });
+    manager.reanchorDeletedDocuments([
+      { kind: 'unlink', path: '.iris/platform/issue/deleted.md' },
+    ]);
+
+    const restored = manager.reanchor(session.id, null, '.iris');
+
+    expect(restored).toMatchObject({
+      docPath: null,
+      workspacePath: '.iris',
+      orphanedDocPath: null,
+    });
+    await manager.shutdown();
+  });
+});
+
 describe('focus-context PowerShell contract', () => {
   it('keeps all Iris-owned hook prompts in English', () => {
     expect(FOCUS_CONTEXT_SCRIPT).not.toMatch(/[\u3400-\u9fff]/u);

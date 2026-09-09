@@ -35,4 +35,18 @@ describe('session projection', () => {
     expect(views.map((view) => view.key)).toEqual(['terminal:t1', 'iris-agent:a1']);
     expect(aggregateProjectionState(views, 'issue/a.md')).toBe('active');
   });
+
+  it('projects an orphaned document session under its fallback workspace', () => {
+    const view = terminalSessionProjection(
+      terminal({
+        docPath: null,
+        workspacePath: '.iris/platform',
+        orphanedDocPath: '.iris/platform/issue/deleted.md',
+      }),
+    );
+
+    expect(view.anchor).toEqual({ kind: 'workspace', path: '.iris/platform' });
+    expect(view.orphanedDocPath).toBe('.iris/platform/issue/deleted.md');
+    expect(sessionProjectionAnchorKey(view.anchor)).toBe('ws:.iris/platform');
+  });
 });

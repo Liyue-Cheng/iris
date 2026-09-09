@@ -54,6 +54,7 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from '@renderer/components/ui/context-menu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip';
 import { setDocDragData } from '@renderer/lib/doc-drag';
 import { projectStore, useProject } from '@renderer/stores/project-store';
 import { compareDisplayText } from '@renderer/lib/locale';
@@ -284,13 +285,23 @@ function NewWorkspaceSessionButton({
  * terminals live here (above status/issue/…) with no section header. A click
  * stages that session in the full-width terminal. Empty → nothing.
  */
-function WorkspaceSessionList({ workspacePath }: { workspacePath: string }): JSX.Element | null {
+function WorkspaceSessionList({
+  workspacePath,
+  orphanedOnly = false,
+}: {
+  workspacePath: string;
+  orphanedOnly?: boolean;
+}): JSX.Element | null {
   const { t } = useTranslation();
   const projections = useSessionProjections();
   const { view, scope } = useProject();
   const hubKey = workspaceAnchorKey(workspacePath);
   const selectedItemId = useSelectedSessionView(scope, hubKey);
-  const hubSessions = projections.filter((s) => sessionProjectionAnchorKey(s.anchor) === hubKey);
+  const hubSessions = projections.filter(
+    (s) =>
+      sessionProjectionAnchorKey(s.anchor) === hubKey &&
+      (!orphanedOnly || s.orphanedDocPath),
+  );
   if (hubSessions.length === 0) return null;
   const effectiveSelectedKey = selectedItemId ?? hubSessions.at(-1)?.key ?? null;
   const isThisHubView =
@@ -317,10 +328,30 @@ function WorkspaceSessionList({ workspacePath }: { workspacePath: string }): JSX
                   'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm leading-tight',
                   active ? 'bg-accent text-accent-foreground' : 'hover:bg-muted',
                 )}
-                aria-label={s.title}
+                aria-label={
+                  s.orphanedDocPath
+                    ? `${s.title} — ${t('layout.orphanedSessionHint', { path: s.orphanedDocPath })}`
+                    : s.title
+                }
               >
                 <SessionDot state={s.indicator} />
                 <span className="truncate">{s.title}</span>
+                {s.orphanedDocPath && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span
+                        className="flex shrink-0"
+                        role="img"
+                        aria-label={t('layout.orphanedSessionHint', { path: s.orphanedDocPath })}
+                      >
+                        <FileWarning className="h-3.5 w-3.5 text-[var(--rp-gold)]" />
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {t('layout.orphanedSessionHint', { path: s.orphanedDocPath })}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
                 {s.kind === 'iris-agent' && <span className="ml-auto shrink-0 text-[11px] text-muted-foreground/60">Agent</span>}
               </button>
             </ContextMenuTrigger>
@@ -352,6 +383,8 @@ function WorkspaceSessionList({ workspacePath }: { workspacePath: string }): JSX
  * highlight and the header stays plain; the header highlights only when this
  * hub view shows no session (the launch pad). Archived workspaces freeze: no
  * +, no hub selection, sessions hidden — just grayed, collapsible docs.
+ * Orphaned sessions remain visible with a warning so an external document
+ * deletion cannot hide work.
  */
 function WorkspaceSection({
   ws,
@@ -427,7 +460,9 @@ function WorkspaceSection({
         )}
       </div>
       <div className={cn('space-y-2 pt-1', archived && 'opacity-75')}>
-        {!archived && <WorkspaceSessionList workspacePath={workspacePath} />}
+        {(!archived || hubSessions.some((session) => session.orphanedDocPath)) && (
+          <WorkspaceSessionList workspacePath={workspacePath} orphanedOnly={archived} />
+        )}
         {sectionsOpen &&
           TYPE_ORDER.map((t) => (
             <TypeSection

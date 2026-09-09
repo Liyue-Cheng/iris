@@ -33,7 +33,7 @@ export const sessionISA: Record<string, InstructionDefinition> = {
 
   'session.reanchor': {
     meta: {
-      description: 'Re-anchor a live session to another doc / the project root',
+      description: 'Re-anchor a live session to another doc / a workspace hub',
       category: 'system',
       resourceIdentifier: (p: { sessionId: string }) => [
         projectScopeRead(),
@@ -48,7 +48,13 @@ export const sessionISA: Record<string, InstructionDefinition> = {
     commit: async (result: TerminalSessionInfo) => {
       // The state-changed broadcast carries the same patch; applying the
       // authoritative result here just removes the visible lag.
-      sessionStore.handlePatch(result.id, { docPath: result.docPath });
+      sessionStore.handlePatch(result.id, {
+        docPath: result.docPath,
+        workspacePath: result.workspacePath,
+        ...(result.orphanedDocPath === undefined
+          ? {}
+          : { orphanedDocPath: result.orphanedDocPath }),
+      });
     },
   },
 

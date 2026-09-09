@@ -12,7 +12,16 @@
  * EmptyPathState, F-1): spawn happens only on an explicit click.
  */
 import { useState } from 'react';
-import { Bot, ChevronDown, Plus, X, FileText, FolderRoot, SquareTerminal } from 'lucide-react';
+import {
+  Bot,
+  ChevronDown,
+  FileText,
+  FileWarning,
+  FolderRoot,
+  Plus,
+  SquareTerminal,
+  X,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AgentConfig } from '@shared/types';
 import {
@@ -47,6 +56,7 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from '@renderer/components/ui/context-menu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip';
 
 const LAUNCHER_SEARCH_THRESHOLD = 6;
 
@@ -136,7 +146,7 @@ export function RightPane(): JSX.Element {
 
   const spawn = (agentId: string): void => {
     if (isHub) void openWorkspaceSession(hubWorkspacePath, agentId);
-    else void openSession(selectedPath, agentId);
+    else void openSession(selectedPath, agentId, anchorDoc?.workspacePath ?? null);
   };
 
   const visibleItems = !projectReady || anchorKey === null
@@ -178,7 +188,13 @@ export function RightPane(): JSX.Element {
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
-                      aria-label={t('layout.switchSession')}
+                      aria-label={
+                        shownItem.orphanedDocPath
+                          ? `${t('layout.switchSession')} — ${t('layout.orphanedSessionHint', {
+                              path: shownItem.orphanedDocPath,
+                            })}`
+                          : t('layout.switchSession')
+                      }
                       className="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm px-1.5 py-1 text-left text-[13px] hover:bg-muted/60"
                     >
                       {shownItem.kind === 'terminal' ? (
@@ -195,6 +211,24 @@ export function RightPane(): JSX.Element {
                           ? shownItem.title
                           : shownItem.title}
                       </span>
+                      {shownItem.orphanedDocPath && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span
+                              className="flex shrink-0"
+                              role="img"
+                              aria-label={t('layout.orphanedSessionHint', {
+                                path: shownItem.orphanedDocPath,
+                              })}
+                            >
+                              <FileWarning className="h-3.5 w-3.5 text-[var(--rp-gold)]" />
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {t('layout.orphanedSessionHint', { path: shownItem.orphanedDocPath })}
+                          </TooltipContent>
+                        </Tooltip>
+                      )}
                       {shownItem.kind === 'terminal' && shownItem.indicator === 'exited' && (
                         <span className="shrink-0 text-[11px] text-muted-foreground/60">
                           exited
@@ -227,6 +261,24 @@ export function RightPane(): JSX.Element {
                           <Bot className="h-3.5 w-3.5 shrink-0 text-primary" />
                         )}
                         <span className="shrink-0 font-medium">{item.title}</span>
+                        {item.orphanedDocPath && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span
+                                className="flex shrink-0"
+                                role="img"
+                                aria-label={t('layout.orphanedSessionHint', {
+                                  path: item.orphanedDocPath,
+                                })}
+                              >
+                                <FileWarning className="h-3.5 w-3.5 text-[var(--rp-gold)]" />
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {t('layout.orphanedSessionHint', { path: item.orphanedDocPath })}
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
                         {item.kind === 'terminal' && item.subtitle !== item.title && (
                           <span className="min-w-0 truncate text-[11px] text-muted-foreground/70">
                             {item.subtitle}
