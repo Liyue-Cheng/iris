@@ -11,10 +11,10 @@ import { SquareTerminal } from 'lucide-react';
 import '@xterm/xterm/css/xterm.css';
 import type { IrisAgentTerminalView, ProjectScope } from '@shared/types';
 import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-} from '@renderer/components/ui/dialog';
+  AgentStatusBadge,
+  AgentWorkbenchDialog,
+} from '@renderer/components/agent/AgentWorkbenchDialog';
+import { terminalStatusLabel, terminalStatusTone } from '@renderer/lib/agent-status';
 import { BrowserXtermAdapter } from '@renderer/terminal/xterm-adapter';
 import { IrisAgentTerminalTransport } from '@renderer/terminal/terminal-transport';
 import { TerminalReplayController } from '@renderer/terminal/replay-controller';
@@ -38,81 +38,19 @@ export function AgentTerminalDialog({
   onClose: () => void;
 }): JSX.Element {
   return (
-    <Dialog
-      open
-      onOpenChange={(open) => {
-        if (!open) onClose();
-      }}
+    <AgentWorkbenchDialog
+      icon={<SquareTerminal className="h-4 w-4" />}
+      title={terminal.command.trim() || 'Terminal'}
+      titleLabel={terminal.command}
+      monoTitle
+      badge={<AgentStatusBadge tone={terminalStatusTone(terminal)} label={terminalStatusLabel(terminal)} />}
+      subtitle={<span className="truncate">{terminal.cwd}</span>}
+      subtitleLabel={terminal.cwd}
+      onClose={onClose}
     >
-      <DialogContent
-        aria-describedby={undefined}
-        className="flex h-[min(760px,78vh)] w-[min(1100px,92vw)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:rounded-xl"
-      >
-        <header className="flex shrink-0 items-center gap-3 border-b bg-card/70 px-4 py-2.5 pr-12">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <SquareTerminal className="h-4 w-4" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-2">
-              <DialogTitle
-                className="min-w-0 truncate font-mono text-[13px] font-medium leading-5"
-                aria-label={terminal.command}
-              >
-                {terminal.command.trim() || 'Terminal'}
-              </DialogTitle>
-              <TerminalStateBadge terminal={terminal} />
-            </div>
-            <div
-              className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground"
-              aria-label={terminal.cwd}
-            >
-              {terminal.cwd}
-            </div>
-          </div>
-        </header>
-        <div className="relative min-h-0 flex-1">
-          <AgentTerminalPane sessionId={sessionId} terminal={terminal} />
-        </div>
-      </DialogContent>
-    </Dialog>
+      <AgentTerminalPane sessionId={sessionId} terminal={terminal} />
+    </AgentWorkbenchDialog>
   );
-}
-
-function TerminalStateBadge({ terminal }: { terminal: IrisAgentTerminalView }): JSX.Element {
-  if (terminal.state === 'running') {
-    return (
-      <span className="flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
-        <span
-          className="iris-agent-terminal-dot h-1.5 w-1.5 rounded-full bg-emerald-500"
-          data-running="true"
-          aria-hidden="true"
-        />
-        运行中
-      </span>
-    );
-  }
-  const state = terminalState(terminal);
-  return (
-    <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium ${state.tone}`}>
-      {state.label}
-    </span>
-  );
-}
-
-function terminalState(terminal: IrisAgentTerminalView): { label: string; tone: string } {
-  const neutral = 'border-border bg-muted/60 text-muted-foreground';
-  const success = 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400';
-  const failure = 'border-destructive/30 bg-destructive/10 text-destructive';
-  if (terminal.outcome === 'timeout') return { label: '已超时', tone: failure };
-  if (terminal.outcome === 'canceled') return { label: '已取消', tone: neutral };
-  if (terminal.outcome === 'launch-failed') return { label: '启动失败', tone: failure };
-  if (terminal.exitCode === undefined || terminal.exitCode === null) {
-    return { label: '已结束', tone: neutral };
-  }
-  return {
-    label: `退出码 ${terminal.exitCode}`,
-    tone: terminal.exitCode === 0 ? success : failure,
-  };
 }
 
 function AgentTerminalPane({

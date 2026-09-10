@@ -193,7 +193,7 @@ describe('Iris Agent terminal projection', () => {
     session.activeIntentIds.push('intent-task-card');
     session.tasks.push({
       taskId: 'task-1', sessionId: session.id, intentId: 'intent-task-card', title: 'Dev server',
-      command: 'npm run dev', status: 'running', createdAt: 2, outputBytes: 12,
+      command: 'npm run dev', cwd: '.', status: 'running', createdAt: 2, outputBytes: 12,
       logRef: 'tasks/task-1.log',
     });
     session.timeline.push(terminalActivity({
@@ -205,5 +205,10 @@ describe('Iris Agent terminal projection', () => {
     expect(cards).toContainEqual(expect.objectContaining({ kind: 'task', taskId: 'task-1', state: 'running' }));
     expect(cards.some((card) => card.kind === 'local-retrieval' && card.items.some((item) => item.id === 'task-start-tool')))
       .toBe(false);
+    // The dialog header shows the working directory, so the projection must
+    // carry it instead of stripping it like the internal fields.
+    expect(projectAgentSession(session, 1).tasks).toContainEqual(
+      expect.objectContaining({ taskId: 'task-1', cwd: '.' }),
+    );
   });
 });

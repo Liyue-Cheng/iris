@@ -176,6 +176,12 @@ export const CHANNELS = {
   IRIS_AGENT_TASK_GET: 'iris-agent:task-get',
   IRIS_AGENT_TASK_LIST: 'iris-agent:task-list',
   IRIS_AGENT_TASK_CANCEL: 'iris-agent:task-cancel',
+  /**
+   * Renderer-facing task log page (byte cursor). Deliberately separate from
+   * IRIS_AGENT_TASK_GET: that one answers the model with a JSON envelope, and
+   * the dialog must not reverse-engineer it to render bytes.
+   */
+  IRIS_AGENT_TASK_LOG: 'iris-agent:task-log',
 } as const;
 
 export type WindowEditAction = 'cut' | 'copy' | 'paste' | 'selectAll';

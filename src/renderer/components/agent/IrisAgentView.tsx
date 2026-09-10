@@ -28,6 +28,7 @@ import type {
   IrisAgentModelOption,
   IrisAgentSessionInfo,
   IrisAgentUserView,
+  IrisAgentTaskView,
   IrisAgentTerminalView,
 } from '@shared/types';
 import { EVENTS } from '@shared/protocol';
@@ -47,11 +48,18 @@ import {
   sendIrisAgentMessage,
   setIrisAgentModel,
   stopIrisAgent,
-  getIrisAgentTask,
   cancelIrisAgentTask,
   continueIrisAgentTerminalSupervision,
 } from '@renderer/lib/iris-agent-actions';
 import { AgentTerminalDialog } from '@renderer/components/agent/AgentTerminalDialog';
+import { AgentTaskDialog } from '@renderer/components/agent/AgentTaskDialog';
+import {
+  isActiveTaskStatus,
+  statusDotClass,
+  taskStatusLabel,
+  taskStatusTone,
+  terminalStatusLabel,
+} from '@renderer/lib/agent-status';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -88,6 +96,7 @@ export function IrisAgentView({
   const [modelsLoading, setModelsLoading] = useState(true);
   const [showErrorDialog, setShowErrorDialog] = useState(false);
   const [openTerminalId, setOpenTerminalId] = useState<string | null>(null);
+  const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
   const messagesContentRef = useRef<HTMLDivElement | null>(null);
@@ -99,6 +108,10 @@ export function IrisAgentView({
   // short commands stay reachable from their card's output button.
   const terminalWorkspaces = session.terminals.filter((terminal) => terminal.revealed);
   const openTerminal = session.terminals.find((terminal) => terminal.id === openTerminalId) ?? null;
+  // Tasks stay in the session projection, so an open dialog follows the live
+  // status instead of holding a copy taken when it was opened.
+  const tasks = session.tasks ?? [];
+  const openTask = tasks.find((task) => task.taskId === openTaskId) ?? null;
 
   // Restore the Session viewport before the first paint and keep its bottom
   // anchor stable while Markdown/cards change their measured height.
@@ -257,6 +270,7 @@ export function IrisAgentView({
         {terminalWorkspaces.length > 0 && (
           <TerminalLauncher terminals={terminalWorkspaces} onOpen={setOpenTerminalId} />
         )}
+        {tasks.length > 0 && <TaskLauncher tasks={tasks} onOpen={setOpenTaskId} />}
         {modelError && (
           <Button
             variant="ghost"
@@ -457,6 +471,7 @@ export function IrisAgentView({
                         }).catch(() => undefined);
                       } } : {})}
                       onOpenTerminal={(terminalId) => setOpenTerminalId(terminalId)}
+                      onOpenTask={(taskId) => setOpenTaskId(taskId)}
                     />
                   ))}
                   </div>
@@ -518,6 +533,15 @@ export function IrisAgentView({
           onClose={() => setOpenTerminalId(null)}
         />
       )}
+
+      {openTask && (
+        <AgentTaskDialog
+          key={openTask.taskId}
+          sessionId={session.id}
+          task={openTask}
+          onClose={() => setOpenTaskId(null)}
+        />
+      )}
     </div>
   );
 }
@@ -571,7 +595,7 @@ function TerminalLauncher({
               {terminal.command.trim() || 'Terminal'}
             </span>
             <span className="shrink-0 text-[10px] text-muted-foreground">
-              {terminalMenuState(terminal)}
+              {terminalStatusLabel(terminal)}
             </span>
           </DropdownMenuItem>
         ))}
@@ -580,12 +604,78 @@ function TerminalLauncher({
   );
 }
 
-function terminalMenuState(terminal: IrisAgentTerminalView): string {
-  if (terminal.state === 'running') return '运行中';
-  if (terminal.outcome === 'timeout') return '已超时';
-  if (terminal.outcome === 'canceled') return '已取消';
-  if (terminal.exitCode === undefined || terminal.exitCode === null) return '已结束';
-  return `退出码 ${terminal.exitCode}`;
+/** Menu keeps the newest few tasks behind the icon; the rest stay reachable. */
+const TASK_MENU_RECENT_LIMIT = 8;
+
+/**
+ * Header entry point for background tasks, next to the terminal one. It exists
+ * only when this Session has tasks, carries a count while any are still live,
+ * and opens the dialog in place — no navigation, no focus steal.
+ */
+function TaskLauncher({
+  tasks,
+  onOpen,
+}: {
+  tasks: IrisAgentTaskView[];
+  onOpen: (taskId: string) => void;
+}): JSX.Element {
+  const [showAll, setShowAll] = useState(false);
+  const newestFirst = (left: IrisAgentTaskView, right: IrisAgentTaskView): number =>
+    right.createdAt - left.createdAt;
+  const activeTasks = tasks.filter((task) => isActiveTaskStatus(task.status)).sort(newestFirst);
+  const settledTasks = tasks.filter((task) => !isActiveTaskStatus(task.status)).sort(newestFirst);
+  const ordered = [...activeTasks, ...settledTasks];
+  const visible = showAll ? ordered : ordered.slice(0, TASK_MENU_RECENT_LIMIT);
+  const trigger = (
+    <Button
+      variant="ghost"
+      size="icon"
+      className="relative h-7 w-7 shrink-0"
+      aria-label={activeTasks.length > 0
+        ? `查看后台任务（${activeTasks.length} 个仍在运行）`
+        : '查看后台任务'}
+      {...(ordered.length === 1 ? { onClick: () => onOpen(ordered[0]!.taskId) } : {})}
+    >
+      <Play className="!size-3.5" />
+      {activeTasks.length > 0 && (
+        <span
+          className="pointer-events-none absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-emerald-500 px-0.5 text-[9px] font-semibold leading-none text-white"
+          aria-hidden="true"
+        >
+          {activeTasks.length}
+        </span>
+      )}
+    </Button>
+  );
+  if (ordered.length === 1) return trigger;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="max-h-[60vh] w-80 overflow-y-auto">
+        <DropdownMenuLabel>后台任务</DropdownMenuLabel>
+        {visible.map((task) => (
+          <DropdownMenuItem key={task.taskId} onClick={() => onOpen(task.taskId)}>
+            <span
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDotClass(taskStatusTone(task.status))}`}
+              aria-hidden="true"
+            />
+            <span className="min-w-0 flex-1 truncate text-[11px]" aria-label={task.command}>
+              {task.title}
+            </span>
+            <span className="shrink-0 text-[10px] text-muted-foreground">
+              {taskStatusLabel(task.status)}
+            </span>
+          </DropdownMenuItem>
+        ))}
+        {!showAll && ordered.length > TASK_MENU_RECENT_LIMIT && (
+          <DropdownMenuItem onClick={() => setShowAll(true)}>
+            <ChevronRight className="!size-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 text-[11px]">查看全部 {ordered.length} 个任务</span>
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 }
 
 function AgentActivityCard({
@@ -594,6 +684,7 @@ function AgentActivityCard({
   canRetry,
   onRetry,
   onOpenTerminal,
+  onOpenTask,
   onFork,
 }: {
   sessionId: string;
@@ -601,6 +692,7 @@ function AgentActivityCard({
   canRetry: boolean;
   onRetry: () => void;
   onOpenTerminal: (terminalId: string) => void;
+  onOpenTask: (taskId: string) => void;
   onFork?: () => void;
 }): JSX.Element {
   switch (card.kind) {
@@ -611,7 +703,7 @@ function AgentActivityCard({
     case 'terminal-operation':
       return <TerminalOperationCard card={card} onOpenTerminal={onOpenTerminal} />;
     case 'task':
-      return <BackgroundTaskCard sessionId={sessionId} card={card} />;
+      return <BackgroundTaskCard sessionId={sessionId} card={card} onOpenTask={onOpenTask} />;
     case 'agent-reply':
       return <AgentReplyCard
         card={card}
@@ -843,39 +935,43 @@ function TerminalOperationCard({
 function BackgroundTaskCard({
   sessionId,
   card,
+  onOpenTask,
 }: {
   sessionId: string;
   card: Extract<IrisAgentCardView, { kind: 'task' }>;
+  onOpenTask: (taskId: string) => void;
 }): JSX.Element {
-  const [log, setLog] = useState<string | null>(null);
-  const [logError, setLogError] = useState<string | null>(null);
-  const [loadingLog, setLoadingLog] = useState(false);
-  const status = card.status === 'succeeded'
-    ? '已完成'
-    : card.status === 'failed' || card.status === 'lost'
-      ? '失败'
-      : card.status === 'canceled'
-        ? '已取消'
-        : card.status === 'starting'
-          ? '启动中'
-          : '运行中';
+  const active = isActiveTaskStatus(card.status);
+  const [canceling, setCanceling] = useState(false);
+  // The request is not the state change: keep the pending label until the
+  // session reports a settled status (or the request itself fails).
+  useEffect(() => {
+    if (!active) setCanceling(false);
+  }, [active]);
   return (
     <CardFrame
       cardType="tasks"
       icon={<Play className="h-4 w-4" />}
       title={card.title}
-      summary={`${status} · ${card.taskId}`}
+      summary={taskStatusLabel(card.status)}
       state={card.state}
-      action={card.state === 'running' ? (
+      action={active ? (
         <Button
           type="button"
           variant="ghost"
           size="sm"
           className="h-6 text-[11px]"
-          onClick={() => void cancelIrisAgentTask(sessionId, card.taskId).catch(() => undefined)}
+          disabled={canceling}
+          onClick={() => {
+            setCanceling(true);
+            // async-boundary: handled - the action reports its own failure and
+            // resets the pending label.
+            void cancelIrisAgentTask(sessionId, card.taskId).catch(() => setCanceling(false));
+          }}
         >
-          <Square className="mr-1 !size-3" />
-          取消
+          {canceling
+            ? <><LoaderCircle className="mr-1 !size-3 animate-spin" />取消中…</>
+            : <><Square className="mr-1 !size-3" />取消</>}
         </Button>
       ) : undefined}
     >
@@ -884,39 +980,22 @@ function BackgroundTaskCard({
           {card.command}
         </pre>
         <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-          <span>{card.outputBytes.toLocaleString()} bytes</span>
-          {card.logRef && <span className="truncate font-mono" aria-label={card.logRef}>日志已持久化</span>}
+          <span className="tabular-nums">{card.outputBytes.toLocaleString()} bytes</span>
+          <span>{active ? '输出持续写入日志文件' : '日志已保留在磁盘'}</span>
         </div>
+        {card.error && <div className="whitespace-pre-wrap break-words text-destructive">{card.error}</div>}
+      </div>
+      <div className="flex justify-end border-t border-border/40 bg-muted/10 px-3 py-1.5">
         <Button
           type="button"
           variant="ghost"
           size="sm"
           className="h-6 text-[11px]"
-          disabled={loadingLog}
-          onClick={() => {
-            setLoadingLog(true);
-            setLogError(null);
-            void getIrisAgentTask(card.taskId).then((result) => {
-              if (result.kind !== 'task') return;
-              try {
-                const parsed: unknown = JSON.parse(result.outputText);
-                const output = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-                  ? (parsed as Record<string, unknown>).output : undefined;
-                setLog(typeof output === 'string' ? output : result.outputText);
-              } catch {
-                setLog(result.outputText);
-              }
-            }).catch((error: unknown) => {
-              setLogError(error instanceof Error ? error.message : String(error));
-            }).finally(() => setLoadingLog(false));
-          }}
+          onClick={() => onOpenTask(card.taskId)}
         >
-          <FileText className="mr-1 !size-3" />
-          查看日志
+          <Play className="mr-1 !size-3" />
+          打开任务
         </Button>
-        {log !== null && <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border bg-background p-2 font-mono text-[11px]">{log || '暂无输出'}</pre>}
-        {logError && <div className="text-destructive">{logError}</div>}
-        {card.error && <div className="whitespace-pre-wrap break-words text-destructive">{card.error}</div>}
       </div>
     </CardFrame>
   );

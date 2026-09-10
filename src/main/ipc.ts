@@ -40,6 +40,7 @@ import type {
   IrisAgentSessionChangedPayload,
   IrisAgentSessionDestroyedPayload,
   IrisAgentSessionInfo,
+  IrisAgentTaskLog,
   IrisAgentTerminalReplay,
   IrisAgentTerminalOutputPayload,
   IrisScanResult,
@@ -1432,6 +1433,25 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_TASK_LIST);
       return ctx.agentSessionManager.listTasks(scope, payload.scope, payload.cursor, payload.limit);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_TASK_LOG,
+    (
+      event,
+      payload: {
+        sessionId: string;
+        taskId: string;
+        cursor?: number;
+        maxBytes?: number;
+      } & ProjectScopedPayload,
+    ): Promise<IrisAgentTaskLog> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_TASK_LOG);
+      return ctx.agentSessionManager.readTaskLog(
+        scope, payload.sessionId, payload.taskId, payload.cursor, payload.maxBytes,
+      );
     },
   );
 

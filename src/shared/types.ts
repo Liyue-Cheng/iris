@@ -716,6 +716,9 @@ export interface IrisAgentTaskView {
   intentId: string;
   title: string;
   command: string;
+  /** Working directory the command runs in, project-relative when it is inside
+   * the project root. The record itself keeps the absolute path. */
+  cwd: string;
   status: IrisAgentTaskStatus;
   createdAt: number;
   startedAt?: number;
@@ -724,6 +727,26 @@ export interface IrisAgentTaskView {
   outputBytes: number;
   logRef?: string;
   error?: string;
+}
+
+/**
+ * One renderer-facing page of a background task's raw PTY log. The UI reads the
+ * log file directly instead of decoding the model-facing `task_get` JSON, and
+ * `nextCursor` is a byte offset so an open dialog can keep appending.
+ */
+export interface IrisAgentTaskLog {
+  /** Fresh record projection, so the dialog header never depends on a session
+   * event having arrived for the same bytes. */
+  task: IrisAgentTaskView;
+  data: string;
+  /** Byte offset just past `data`; the cursor for the next incremental read. */
+  nextCursor: number;
+  /** Bytes before `data` that this window left out. */
+  hasOlder: boolean;
+  /** Total bytes in the log file, which can lead the record's own counter. */
+  outputBytes: number;
+  /** Some of the log is outside `data` (an older prefix or a newer tail). */
+  truncated: boolean;
 }
 
 export interface IrisAgentUserView {

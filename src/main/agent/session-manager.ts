@@ -53,6 +53,7 @@ import type {
   IrisAgentSessionInfo,
   IrisAgentTerminalOutputPayload,
   IrisAgentTerminalReplay,
+  IrisAgentTaskLog,
   ProjectScope,
   IrisAgentTaskStatus,
 } from '@shared/types';
@@ -61,9 +62,8 @@ import type {
   AgentRequestFacts,
   AgentSessionAggregate,
   AgentToolActivity,
-  AgentTaskSummary,
 } from './session-model';
-import { AgentTaskManager, type AgentTaskRecord } from './task-manager';
+import { AgentTaskManager, rendererTaskView, type AgentTaskRecord } from './task-manager';
 import { diffAnchorText, renderAnchorMaterial, buildAgentContextFromSession } from './trace-context';
 import {
   AGENT_COMPACTION_INSTRUCTION,
@@ -245,6 +245,23 @@ export class IrisAgentSessionManager extends EventEmitter {
   ): Promise<AgentToolOperationResult> {
     await this.ensureStore(scope.root);
     return this.taskManager.get({ taskId, ...(cursor ? { cursor } : {}), ...(maxBytes === undefined ? {} : { maxBytes }) }, scope.root);
+  }
+
+  /** One byte-cursor page of a task's raw log, for the task dialog. */
+  async readTaskLog(
+    scope: ProjectScope,
+    sessionId: string,
+    taskId: string,
+    cursor?: number,
+    maxBytes?: number,
+  ): Promise<IrisAgentTaskLog> {
+    await this.ensureStore(scope.root);
+    return this.taskManager.readLog({
+      taskId,
+      sessionId,
+      ...(cursor === undefined ? {} : { cursor }),
+      ...(maxBytes === undefined ? {} : { maxBytes }),
+    }, scope.root);
   }
 
   async listTasks(
@@ -528,7 +545,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       const session = store.get(task.sessionId);
       if (!session) return;
       const next = cloneAgentSession(session);
-      const summary = taskSummary(task);
+      const summary = rendererTaskView(task);
       const previous = next.tasks.find((candidate) => candidate.taskId === task.taskId);
       if (!previous || !isDeepStrictEqual(previous, summary)) {
         const index = next.tasks.findIndex((candidate) => candidate.taskId === task.taskId);
@@ -2619,20 +2636,6 @@ function isTerminalTaskStatus(status: IrisAgentTaskStatus): boolean {
 
 function nextMailboxSequence(session: AgentSessionAggregate): number {
   return Math.max(0, ...session.mailbox.map((entry) => entry.sequence)) + 1;
-}
-
-function taskSummary(task: AgentTaskRecord): AgentTaskSummary {
-  const {
-    projectRoot: _projectRoot,
-    cwd: _cwd,
-    successExitCodes: _successExitCodes,
-    operationKey: _operationKey,
-    dedupeKey: _dedupeKey,
-    executorPid: _executorPid,
-    cancelRequested: _cancelRequested,
-    ...summary
-  } = structuredClone(task);
-  return summary;
 }
 
 function taskTerminalContent(task: AgentTaskRecord): string {

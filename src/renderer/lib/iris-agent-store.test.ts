@@ -11,6 +11,23 @@ import { irisAgentSessionKey } from '@renderer/lib/session-projection';
 import { projectScopeState } from '@renderer/stores/project-scope-state';
 import type { IrisAgentSessionInfo, ProjectScope } from '@shared/types';
 
+// The view tree reaches the shell-action boundary, whose CPU pipeline publishes
+// a dev console handle on `window` while its module loads. A static render never
+// touches it, but the global has to exist before the import graph is evaluated.
+vi.hoisted(() => {
+  (globalThis as { window?: unknown }).window = {
+    setInterval,
+    clearInterval,
+    setTimeout,
+    clearTimeout,
+    api: {
+      windowsBuild: null,
+      invoke: async () => ({}),
+      on: () => () => undefined,
+    },
+  };
+});
+
 vi.mock('@renderer/lib/iris-agent-actions', () => ({
   branchIrisAgent: vi.fn(),
   listIrisAgentModels: vi.fn(async () => ({ models: [] })),
@@ -20,6 +37,9 @@ vi.mock('@renderer/lib/iris-agent-actions', () => ({
   sendIrisAgentMessage: vi.fn(),
   setIrisAgentModel: vi.fn(),
   stopIrisAgent: vi.fn(),
+  cancelIrisAgentTask: vi.fn(),
+  continueIrisAgentTerminalSupervision: vi.fn(),
+  readIrisAgentTaskLog: vi.fn(),
 }));
 
 const scope: ProjectScope = { root: 'C:/project', generation: 1 };
@@ -100,6 +120,49 @@ describe('irisAgentStore Intent projection', () => {
     expect(html.indexOf('src/a.ts')).toBeLessThan(html.indexOf('partial A'));
     expect(html.indexOf('partial A')).toBeLessThan(html.indexOf('answer B'));
     expect(html).toContain('未进入上下文');
+  });
+
+  it('renders a task card and header entry without inlining the log', () => {
+    const projected = session('a', '.iris/issue/a.md');
+    projected.state = 'running';
+    projected.tasks = [{
+      taskId: 'task-1',
+      sessionId: 'a',
+      intentId: 'intent-1',
+      title: 'Dev server',
+      command: 'npm run dev',
+      cwd: '.',
+      status: 'running',
+      createdAt: 1,
+      outputBytes: 2048,
+      logRef: 'C:/userData/iris-agent-tasks/logs/task-1.log',
+    }];
+    projected.intents = [{
+      id: 'intent-1',
+      state: 'running',
+      user: { id: 'user-1', content: 'run the server', createdAt: 1, contextAvailable: false },
+      cards: [{
+        kind: 'task',
+        id: 'task-card:task-1',
+        taskId: 'task-1',
+        title: 'Dev server',
+        command: 'npm run dev',
+        state: 'running',
+        status: 'running',
+        outputBytes: 2048,
+        logRef: 'C:/userData/iris-agent-tasks/logs/task-1.log',
+      }],
+      canFork: false,
+    }];
+
+    const html = renderToStaticMarkup(createElement(IrisAgentView, { session: projected }));
+
+    // The card is an entry point, not a log viewer: the dialog owns the bytes.
+    expect(html).toContain('打开任务');
+    expect(html).not.toContain('查看日志');
+    expect(html).toContain('运行中');
+    // The header icon appears with a live task count and opens the dialog.
+    expect(html).toContain('查看后台任务（1 个仍在运行）');
   });
 
   it('shows exactly one Continue control from the session pause projection', () => {

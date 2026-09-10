@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import type {
   AgentToolOperationResult,
 } from '@shared/agent-protocol';
+import type { IrisAgentTaskLog } from '@shared/types';
 import { writeFileAtomic } from '../atomic-write';
 import {
   AgentCommandPty,
@@ -37,8 +38,18 @@ export interface AgentTaskQuery {
   maxBytes?: number;
 }
 
+/** Renderer log query: byte offsets, because the dialog owns its own cursor. */
+export interface AgentTaskLogQuery {
+  taskId: string;
+  sessionId: string;
+  cursor?: number;
+  maxBytes?: number;
+}
+
 const DEFAULT_TAIL_BYTES = 16 * 1024;
 const MAX_TAIL_BYTES = 256 * 1024;
+/** The dialog asks in the same units it doubles on "load older history". */
+const MAX_RENDER_BYTES = 4 * 1024 * 1024;
 
 /**
  * Owns process lifetime, durable task metadata, and task logs. Session history
@@ -165,18 +176,12 @@ export class AgentTaskManager {
     const maxBytes = Number.isFinite(requestedMaxBytes)
       ? Math.min(MAX_TAIL_BYTES, Math.max(1, Math.floor(requestedMaxBytes)))
       : DEFAULT_TAIL_BYTES;
-    const bytes = await fs.readFile(task.logRef!).catch(() => Buffer.alloc(0));
-    const offset = decodeCursor(query.cursor);
+    const bytes = await readLogFile(task);
     const paged = query.cursor !== undefined;
-    const start = paged
-      ? alignUtf8Start(bytes, Math.min(bytes.length, Math.max(0, offset)))
-      : alignUtf8Start(bytes, Math.max(0, bytes.length - maxBytes));
-    const end = paged
-      ? alignUtf8End(bytes, Math.min(bytes.length, start + maxBytes))
-      : bytes.length;
-    const output = bytes.subarray(start, end).toString('utf8');
-    const truncated = paged ? end < bytes.length : start > 0;
-    const cursor = encodeCursor(end);
+    const slice = readLogSlice(bytes, paged ? decodeCursor(query.cursor) : undefined, maxBytes);
+    const output = slice.data;
+    const truncated = paged ? slice.end < slice.total : slice.start > 0;
+    const cursor = encodeCursor(slice.end);
     const text = JSON.stringify({
       taskId: task.taskId,
       status: task.status,
@@ -196,6 +201,33 @@ export class AgentTaskManager {
       outputText: text,
       outputTruncated: truncated,
       ...(task.logRef ? { logRef: task.logRef } : {}),
+    };
+  }
+
+  /**
+   * Renderer-facing log read. Same paging rule as `get`, but the caller gets
+   * real byte offsets back and never has to decode a model envelope: no cursor
+   * means "the newest `maxBytes`", and `nextCursor` is always usable for the
+   * next incremental poll even when the page reached the end of the file.
+   */
+  async readLog(query: AgentTaskLogQuery, projectRoot: string): Promise<IrisAgentTaskLog> {
+    const task = (await this.loadProject(projectRoot)).find((candidate) => candidate.taskId === query.taskId);
+    if (!task) throw new Error(`Task not found: ${query.taskId}`);
+    if (task.sessionId !== query.sessionId) {
+      throw new Error('The background task does not belong to this session.');
+    }
+    const requested = query.maxBytes ?? DEFAULT_TAIL_BYTES;
+    const maxBytes = Number.isFinite(requested)
+      ? Math.min(MAX_RENDER_BYTES, Math.max(1, Math.floor(requested)))
+      : DEFAULT_TAIL_BYTES;
+    const slice = readLogSlice(await readLogFile(task), query.cursor, maxBytes);
+    return {
+      task: rendererTaskView(task),
+      data: slice.data,
+      nextCursor: slice.end,
+      hasOlder: slice.start > 0,
+      outputBytes: slice.total,
+      truncated: slice.start > 0 || slice.end < slice.total,
     };
   }
 
@@ -383,7 +415,6 @@ function taskResult(task: AgentTaskRecord, message: string): AgentToolOperationR
 function publicTask(task: AgentTaskRecord): AgentTaskSummary {
   const {
     projectRoot: _projectRoot,
-    cwd: _cwd,
     successExitCodes: _successExitCodes,
     operationKey: _operationKey,
     dedupeKey: _dedupeKey,
@@ -393,6 +424,40 @@ function publicTask(task: AgentTaskRecord): AgentTaskSummary {
     ...summary
   } = structuredClone(task);
   return summary;
+}
+
+/**
+ * Summary for the renderer. Same record, but the working directory is made
+ * project-relative so the task dialog header reads like the terminal one; the
+ * absolute path belongs to the record and to the model-facing `task_list`.
+ */
+export function rendererTaskView(task: AgentTaskRecord): AgentTaskSummary {
+  return { ...publicTask(task), cwd: displayCwd(task.projectRoot, task.cwd) };
+}
+
+function displayCwd(projectRoot: string, cwd: string): string {
+  const relativePath = relative(resolve(projectRoot), resolve(cwd));
+  if (relativePath === '') return '.';
+  return relativePath.startsWith('..') ? cwd : relativePath;
+}
+
+async function readLogFile(task: AgentTaskRecord): Promise<Buffer> {
+  if (!task.logRef) return Buffer.alloc(0);
+  return fs.readFile(task.logRef).catch(() => Buffer.alloc(0));
+}
+
+function readLogSlice(
+  bytes: Buffer,
+  cursor: number | undefined,
+  maxBytes: number,
+): { data: string; start: number; end: number; total: number } {
+  const start = cursor === undefined
+    ? alignUtf8Start(bytes, Math.max(0, bytes.length - maxBytes))
+    : alignUtf8Start(bytes, Math.min(bytes.length, Math.max(0, cursor)));
+  const end = cursor === undefined
+    ? bytes.length
+    : alignUtf8End(bytes, Math.min(bytes.length, start + maxBytes));
+  return { data: bytes.subarray(start, end).toString('utf8'), start, end, total: bytes.length };
 }
 
 function isTaskRecord(value: unknown): value is AgentTaskRecord {

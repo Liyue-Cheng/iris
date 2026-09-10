@@ -1,10 +1,10 @@
 import { CHANNELS } from '@shared/protocol';
-import type { AgentToolOperationResult } from '@shared/agent-protocol';
 import type {
   IrisAgentAnchor,
   IrisAgentModelCatalog,
   IrisAgentModelRef,
   IrisAgentSessionInfo,
+  IrisAgentTaskLog,
   IrisAgentTerminalReplay,
   ProjectScope,
 } from '@shared/types';
@@ -143,17 +143,27 @@ export async function stopIrisAgent(sessionId: string): Promise<void> {
   );
 }
 
-export async function getIrisAgentTask(taskId: string, cursor?: string, maxBytes?: number): Promise<AgentToolOperationResult> {
+/**
+ * Read one page of a task's raw log. `cursor` is a byte offset, not the opaque
+ * cursor of the model-facing `task_get`: the dialog owns its own paging and
+ * must not decode a protocol meant for the model.
+ */
+export async function readIrisAgentTaskLog(
+  sessionId: string,
+  taskId: string,
+  request: { cursor?: number; maxBytes: number },
+): Promise<IrisAgentTaskLog> {
   const scope = scopeOrThrow();
   return window.api.invoke<{
+    sessionId: string;
     taskId: string;
-    cursor?: string;
+    cursor?: number;
     maxBytes?: number;
     expectedScope: ProjectScope;
-  }, AgentToolOperationResult>(CHANNELS.IRIS_AGENT_TASK_GET, projectScoped(scope, {
+  }, IrisAgentTaskLog>(CHANNELS.IRIS_AGENT_TASK_LOG, projectScoped(scope, {
+    sessionId,
     taskId,
-    ...(cursor ? { cursor } : {}),
-    ...(maxBytes === undefined ? {} : { maxBytes }),
+    ...request,
   }));
 }
 
