@@ -37,6 +37,7 @@ import { docDisplayTitle, isActiveIssue } from '@renderer/lib/doc-utils';
 import { useLensPrefs, type LensSort } from '@renderer/stores/lens-prefs';
 import { useSettings } from '@renderer/stores/settings-store';
 import { openWorkspaceSession } from '@renderer/lib/session-actions';
+import { openIrisAgent } from '@renderer/lib/iris-agent-actions';
 import { closeProjectedSession } from '@renderer/lib/session-projection-actions';
 import { isActiveReportStatus } from '@shared/document-status';
 import { StatusBadge } from '@renderer/components/ui/status-badge';
@@ -45,6 +46,7 @@ import { LauncherMenuItems } from '@renderer/components/layout/RightPane';
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from '@renderer/components/ui/dropdown-menu';
@@ -246,6 +248,8 @@ function selectHub(workspacePath: string): void {
  * The new-session +, beside a workspace header (主页重设计 + 子工作区平权):
  * spawns a hub session (docPath null, NO FOCUS_DOC) grouped under this
  * workspace. Both the root and every sub-workspace get one — terminal parity.
+ * When Iris Agent is enabled the same menu also offers an Agent session on the
+ * workspace anchor, so the two session domains launch from identical places.
  */
 function NewWorkspaceSessionButton({
   workspacePath,
@@ -257,6 +261,7 @@ function NewWorkspaceSessionButton({
   const { t } = useTranslation();
   const settings = useSettings();
   const agents = settings?.agents ?? [];
+  const irisAgentEnabled = settings?.experimental.irisAgent ?? false;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -270,6 +275,13 @@ function NewWorkspaceSessionButton({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="max-h-80 w-64 overflow-y-auto">
         <DropdownMenuLabel className="max-w-52 truncate">{t('layout.workspaceFallback', { name: label })}</DropdownMenuLabel>
+        {irisAgentEnabled && (
+          <DropdownMenuItem
+            onClick={() => void openIrisAgent({ kind: 'workspace', path: workspacePath })}
+          >
+            {t('layout.openWith', { agent: t('settings.irisAgent') })}
+          </DropdownMenuItem>
+        )}
         <LauncherMenuItems
           agents={agents}
           onSelect={(agentId) => void openWorkspaceSession(workspacePath, agentId)}

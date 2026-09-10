@@ -2,7 +2,31 @@ import type { ProjectScope, SessionOutputPayload } from '@shared/types';
 
 export type OutputEmitter = (payload: SessionOutputPayload) => void;
 
-export class TerminalOutputPump {
+/** Flow-pressure report from the batcher to whoever can slow the producer. */
+export interface OutputBatchFlow {
+  highBytes: number;
+  lowBytes: number;
+  setBlocked(blocked: boolean): void;
+}
+
+/** Payload shape the batcher addresses; the sequence is passed to `build`. */
+export type OutputPayloadBuilder<P> = (seq: number, data: string) => P;
+
+/**
+ * Coalesces raw output chunks into one payload per batch window and tracks
+ * in-flight bytes so the producer can be paused while the consumer catches up.
+ *
+ * The sequence is a DELIVERY counter, not a byte offset: the batcher owns it,
+ * so a snapshot-based replay can cut the stream at a boundary (`flush()` then
+ * `replayBoundarySeq`) without any byte arithmetic, and a payload is dropped as
+ * stale by a consumer that already received a snapshot covering it.
+ *
+ * The counter keeps advancing while delivery is disabled, which is what makes
+ * "nobody is watching" cheap: chunks skip encode + IPC entirely, yet the mirror
+ * snapshot a later client asks for is still authoritative and the sequences on
+ * both sides of the attach gap stay ordered.
+ */
+export class TerminalOutputBatcher<P> {
   private nextSequence = 0;
   private emittedSequence = -1;
   private pending: { chunks: Buffer[]; totalBytes: number; lastSeq: number } | null = null;
@@ -13,15 +37,10 @@ export class TerminalOutputPump {
   private lastAcknowledgedSeq = -1;
 
   constructor(
-    private readonly sessionId: string,
-    private readonly scope: () => ProjectScope,
-    private readonly emit: OutputEmitter,
+    private readonly build: OutputPayloadBuilder<P>,
+    private readonly emit: (payload: P) => void,
     private readonly batchMs = 8,
-    private readonly flow?: {
-      highBytes: number;
-      lowBytes: number;
-      setBlocked(blocked: boolean): void;
-    },
+    private readonly flow?: OutputBatchFlow,
     deliveryEnabled = true,
   ) {
     this.deliveryEnabled = deliveryEnabled;
@@ -37,6 +56,10 @@ export class TerminalOutputPump {
 
   get replayBoundarySeq(): number {
     return this.nextSequence - 1;
+  }
+
+  get isDeliveryEnabled(): boolean {
+    return this.deliveryEnabled;
   }
 
   enqueue(bytes: Buffer): number {
@@ -71,12 +94,7 @@ export class TerminalOutputPump {
     this.inFlight.push({ seq: lastSeq, bytes: bytes.length });
     this.inFlightBytes += bytes.length;
     if (this.flow && this.inFlightBytes >= this.flow.highBytes) this.flow.setBlocked(true);
-    this.emit({
-      scope: this.scope(),
-      sessionId: this.sessionId,
-      data: bytes.toString('base64'),
-      seq: lastSeq,
-    });
+    this.emit(this.build(lastSeq, bytes.toString('base64')));
   }
 
   acknowledge(seq: number): void {
@@ -125,5 +143,25 @@ export class TerminalOutputPump {
     this.inFlight.length = 0;
     this.inFlightBytes = 0;
     this.flow?.setBlocked(false);
+  }
+}
+
+/** Project-terminal specialization: payloads carry the session and its scope. */
+export class TerminalOutputPump extends TerminalOutputBatcher<SessionOutputPayload> {
+  constructor(
+    sessionId: string,
+    scope: () => ProjectScope,
+    emit: OutputEmitter,
+    batchMs = 8,
+    flow?: OutputBatchFlow,
+    deliveryEnabled = true,
+  ) {
+    super(
+      (seq, data) => ({ scope: scope(), sessionId, data, seq }),
+      emit,
+      batchMs,
+      flow,
+      deliveryEnabled,
+    );
   }
 }

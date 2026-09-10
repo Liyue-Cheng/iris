@@ -1304,6 +1304,53 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
   );
 
   ipcMain.handle(
+    CHANNELS.IRIS_AGENT_TERMINAL_ATTACH,
+    (
+      event,
+      payload: { sessionId: string; terminalId: string; attachmentId: string } & ProjectScopedPayload,
+    ): boolean => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_TERMINAL_ATTACH);
+      return ctx.agentSessionManager.attachTerminalOutput(
+        scope, payload.sessionId, payload.terminalId, payload.attachmentId,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_TERMINAL_DETACH,
+    (
+      event,
+      payload: { sessionId: string; terminalId: string; attachmentId: string } & ProjectScopedPayload,
+    ): void => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_TERMINAL_DETACH);
+      ctx.agentSessionManager.detachTerminalOutput(
+        scope, payload.sessionId, payload.terminalId, payload.attachmentId,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_TERMINAL_ACK,
+    (
+      event,
+      payload: {
+        sessionId: string;
+        terminalId: string;
+        attachmentId: string;
+        seq: number;
+      } & ProjectScopedPayload,
+    ): void => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_TERMINAL_ACK);
+      ctx.agentSessionManager.acknowledgeTerminalOutput(
+        scope, payload.sessionId, payload.terminalId, payload.attachmentId, payload.seq,
+      );
+    },
+  );
+
+  ipcMain.handle(
     CHANNELS.IRIS_AGENT_TERMINAL_INPUT,
     (
       event,

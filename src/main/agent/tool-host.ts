@@ -212,6 +212,9 @@ export class IrisAgentToolHost {
       processTreeKillFn: defaultProcessTreeKiller(),
       displayThresholdMs: this.options.displayThresholdMs ?? 3000,
       timeoutMs: timeoutSeconds * 1000,
+      // Foreground terminals are replayed into a dialog, so a mirror nobody has
+      // caught up with must be able to slow the command down.
+      mirrorBackpressure: true,
       onEvent: (event) => this.options.onTerminalEvent?.(event, { correlation, outputPath }),
     };
     const pty = this.options.terminalFactory?.(terminalOptions) ??

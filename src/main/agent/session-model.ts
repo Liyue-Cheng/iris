@@ -2,6 +2,8 @@ import type {
   IrisAgentAnchor,
   IrisAgentCardState,
   IrisAgentCardView,
+  IrisAgentContextBudget,
+  IrisAgentContextUsage,
   IrisAgentTaskStatus,
   IrisAgentTaskView,
   IrisAgentModelRef,
@@ -48,6 +50,17 @@ export interface AgentSessionAggregate {
   mailboxPaused?: boolean;
   /** Task summaries are journaled with the Session while the Task Manager owns execution. */
   tasks: AgentTaskSummary[];
+  /** Window this Session's context is measured against; resolved by the manager. */
+  contextBudget?: IrisAgentContextBudget;
+  /** Latest known occupancy of that window; absent until a request is assembled. */
+  contextUsage?: IrisAgentContextUsage;
+  /**
+   * Token size of the non-history half of the last assembled request: the
+   * method layers plus the request wrapper. Later measurements reuse it so a
+   * tool loop or a compaction is measured on the same request shape instead of
+   * silently dropping the method layers and moving the indicator backwards.
+   */
+  contextPromptTokens?: number;
   injection: AgentInjection;
   createdAt: number;
   updatedAt: number;
@@ -319,6 +332,20 @@ export function normalizeAgentSessionAggregate(session: AgentSessionAggregate): 
       intent.contextOverflowRetries = 0;
     }
   }
+  // Context readings are observations, not invariants: an entry that cannot
+  // describe a window or a count is dropped rather than shown as a broken
+  // indicator. A usage reading without its budget has no denominator left.
+  if (session.contextBudget && !isValidContextBudget(session.contextBudget)) {
+    delete session.contextBudget;
+  }
+  if (session.contextUsage &&
+    (!isValidContextUsage(session.contextUsage) || !session.contextBudget)) {
+    delete session.contextUsage;
+  }
+  if (session.contextPromptTokens !== undefined &&
+    (!Number.isSafeInteger(session.contextPromptTokens) || session.contextPromptTokens < 0)) {
+    delete session.contextPromptTokens;
+  }
   // `failed` was the pre-holding name for an Invoke that had exhausted its
   // concrete Attempts. Normalize old snapshots at the loading boundary so the
   // current runtime never treats provider failure as an Invoke terminal state.
@@ -333,6 +360,20 @@ export function normalizeAgentSessionAggregate(session: AgentSessionAggregate): 
 
 export function currentAgentIntent(session: AgentSessionAggregate): AgentIntent | undefined {
   return session.intents.find((intent) => intent.id === session.currentIntentId);
+}
+
+function isValidContextBudget(budget: IrisAgentContextBudget): boolean {
+  return isPositiveInteger(budget.windowTokens) && isPositiveInteger(budget.triggerTokens);
+}
+
+function isValidContextUsage(usage: IrisAgentContextUsage): boolean {
+  return isPositiveInteger(usage.usedTokens) &&
+    (usage.measurement === 'reported' || usage.measurement === 'estimated') &&
+    typeof usage.updatedAt === 'number' && Number.isFinite(usage.updatedAt);
+}
+
+function isPositiveInteger(value: unknown): boolean {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
 export function isAgentSessionBusy(session: AgentSessionAggregate): boolean {
@@ -370,6 +411,8 @@ export function projectAgentSession(
     updatedAt: session.updatedAt,
     revision: session.revision,
     currentIntentId: session.currentIntentId,
+    ...(session.contextBudget ? { contextBudget: { ...session.contextBudget } } : {}),
+    ...(session.contextUsage ? { contextUsage: { ...session.contextUsage } } : {}),
     ...(activeIntent?.state === 'paused'
       ? {
           pause: {

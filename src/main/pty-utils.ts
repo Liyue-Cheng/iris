@@ -51,6 +51,47 @@ export function injectTerminalHintEnv(
 }
 
 /**
+ * Non-interactive defaults for unattended PTYs.
+ *
+ * A real PTY makes `isatty()` true, so Git (and anything else that respects
+ * `PAGER`) assumes a human is watching and hands multi-screen output to a
+ * pager. Nothing in an Iris Agent command can answer `less` or a `vi` prompt,
+ * so the command stalls until the foreground deadline kills it. These values
+ * pin every interactive escape hatch to a non-interactive outcome instead:
+ *
+ * - `GIT_PAGER`/`PAGER` = `cat`: stream output straight through, equivalent
+ *   to `git --no-pager` for every Git subcommand at once.
+ * - `GIT_TERMINAL_PROMPT` = `0`: fail fast on a missing credential instead of
+ *   blocking on a prompt nobody can answer.
+ * - `GIT_EDITOR`/`GIT_SEQUENCE_EDITOR` = `false`: an operation that needs an
+ *   editor (`git commit` without `-m`, `git rebase -i`, `git tag -a`) exits
+ *   non-zero with Git's own actionable error — "Please supply the message
+ *   using either -m or -F option." — rather than hanging.
+ * - `GIT_MERGE_AUTOEDIT` = `no`: a merge commit uses its generated message
+ *   instead of opening an editor, so the merge succeeds instead of failing.
+ *
+ * These overwrite inherited values on purpose: the caller is a background
+ * command with no way to press a key, so an inherited `GIT_PAGER=less` is a
+ * defect here, not a preference to honor.
+ */
+export const NON_INTERACTIVE_ENV: Readonly<Record<string, string>> = Object.freeze({
+  GIT_PAGER: 'cat',
+  PAGER: 'cat',
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_EDITOR: 'false',
+  GIT_SEQUENCE_EDITOR: 'false',
+  GIT_MERGE_AUTOEDIT: 'no',
+});
+
+/** Apply the unattended-command defaults in place and return the same dict. */
+export function applyNonInteractiveEnv(
+  env: Record<string, string>,
+): Record<string, string> {
+  Object.assign(env, NON_INTERACTIVE_ENV);
+  return env;
+}
+
+/**
  * Clamp possibly-bogus cols/rows into ConPTY-safe bounds (0/negative throws
  * in ConPTY; >1000 balloons memory). 80x24 fallback.
  */

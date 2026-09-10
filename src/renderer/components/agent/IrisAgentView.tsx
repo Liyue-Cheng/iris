@@ -20,7 +20,6 @@ import {
   UserRound,
   X,
 } from 'lucide-react';
-import '@xterm/xterm/css/xterm.css';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type {
@@ -30,7 +29,6 @@ import type {
   IrisAgentSessionInfo,
   IrisAgentUserView,
   IrisAgentTerminalView,
-  ProjectScope,
 } from '@shared/types';
 import { EVENTS } from '@shared/protocol';
 import { Button } from '@renderer/components/ui/button';
@@ -51,21 +49,28 @@ import {
   stopIrisAgent,
   getIrisAgentTask,
   cancelIrisAgentTask,
-  writeIrisAgentTerminal,
   continueIrisAgentTerminalSupervision,
 } from '@renderer/lib/iris-agent-actions';
-import { BrowserXtermAdapter } from '@renderer/terminal/xterm-adapter';
-import { IrisAgentTerminalTransport } from '@renderer/terminal/terminal-transport';
-import { TerminalReplayController } from '@renderer/terminal/replay-controller';
-import { TerminalSessionRuntime } from '@renderer/terminal/terminal-runtime';
-import { TerminalViewportController } from '@renderer/terminal/viewport-controller';
-import { TerminalContextMenu } from '@renderer/components/terminal/TerminalContextMenu';
-import { TerminalSurface } from '@renderer/components/terminal/TerminalSurface';
-import { TerminalSearchBar } from '@renderer/components/terminal/TerminalSearchBar';
-import { readClipboardText, writeClipboardText } from '@renderer/lib/clipboard';
-import { getSettings, useSettings } from '@renderer/stores/settings-store';
-import { projectScopeState } from '@renderer/stores/project-scope-state';
+import { AgentTerminalDialog } from '@renderer/components/agent/AgentTerminalDialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from '@renderer/components/ui/dropdown-menu';
+import { TextEditContextMenu } from '@renderer/components/ui/text-edit-context-menu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip';
+import { agentContextBudgetForModel } from '@shared/agent-context-budget';
 import { irisAgentSessionKey } from '@renderer/lib/session-projection';
+import { AgentContextRing } from '@renderer/components/agent/AgentContextRing';
+import {
+  contextBudgetTitle,
+  contextUsageLabel,
+  contextUsageTitle,
+  contextUsageTone,
+  formatTokenCount,
+} from '@renderer/lib/agent-context-usage';
 import { SessionViewportController } from '@renderer/lib/session-viewport';
 
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
@@ -82,32 +87,18 @@ export function IrisAgentView({
   const [modelError, setModelError] = useState<string | null>(null);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [showErrorDialog, setShowErrorDialog] = useState(false);
-  const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(null);
-  const [hiddenTerminalIds, setHiddenTerminalIds] = useState<Set<string>>(() => new Set());
+  const [openTerminalId, setOpenTerminalId] = useState<string | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
+  const draftRef = useRef<HTMLTextAreaElement | null>(null);
   const messagesContentRef = useRef<HTMLDivElement | null>(null);
-  const knownTerminalIds = useRef(new Set(session.terminals.map((terminal) => terminal.id)));
   const modelRequest = useRef(0);
   const autoSelectingModel = useRef<string | null>(null);
   const running = isSessionRunning(session);
   const statusText = statusLabel(session.state);
-  const visibleTerminals = session.terminals.filter((terminal) =>
-    !hiddenTerminalIds.has(terminal.id) &&
-    (terminal.revealed || terminal.id === selectedTerminalId));
-  const selectedTerminal = visibleTerminals.find((terminal) => terminal.id === selectedTerminalId) ?? null;
-
-  useEffect(() => {
-    const added = session.terminals.find((terminal) => !knownTerminalIds.current.has(terminal.id));
-    for (const terminal of session.terminals) knownTerminalIds.current.add(terminal.id);
-    if (added?.revealed) {
-      setHiddenTerminalIds((current) => {
-        const next = new Set(current);
-        next.delete(added.id);
-        return next;
-      });
-      setSelectedTerminalId(added.id);
-    }
-  }, [session.terminals]);
+  // Only terminals that crossed the display threshold get a workspace entry;
+  // short commands stay reachable from their card's output button.
+  const terminalWorkspaces = session.terminals.filter((terminal) => terminal.revealed);
+  const openTerminal = session.terminals.find((terminal) => terminal.id === openTerminalId) ?? null;
 
   // Restore the Session viewport before the first paint and keep its bottom
   // anchor stable while Markdown/cards change their measured height.
@@ -263,6 +254,9 @@ export function IrisAgentView({
             )}
           </div>
         </div>
+        {terminalWorkspaces.length > 0 && (
+          <TerminalLauncher terminals={terminalWorkspaces} onOpen={setOpenTerminalId} />
+        )}
         {modelError && (
           <Button
             variant="ghost"
@@ -318,16 +312,35 @@ export function IrisAgentView({
         </select>
         {(() => {
           const selected = models.find((candidate) => modelValue(candidate.provider, candidate.modelId) === selectedModelValue);
-          const windowTokens = selected?.contextWindowTokens;
-          if (!windowTokens) return null;
-          const compactAt = selected.contextPolicy?.compactTrigger ?? Math.max(1, windowTokens - 16_384);
+          // The budget is resolved and persisted by main, so the ring knows its
+          // denominator without the model catalog; the catalog only covers the
+          // window before a Session has one of its own (a fresh branch, or a
+          // snapshot taken before budgets were stored). The fallback runs the
+          // same trigger rule as the main process, so its tick cannot drift.
+          const budget = session.contextBudget ??
+            (selected ? agentContextBudgetForModel(selected) : null);
+          if (!budget) return null;
+          // A reading always carries the window it was measured against, so it
+          // is only paired with the Session's own budget.
+          const usage = session.contextBudget ? session.contextUsage ?? null : null;
+          const detail = usage ? contextUsageTitle(usage, budget) : contextBudgetTitle(budget);
           return (
-            <span
-              className="shrink-0 rounded-md border border-border px-1.5 py-1 text-[10px] text-muted-foreground"
-              aria-label={`上下文窗口 ${windowTokens.toLocaleString()} tokens，整理水位 ${compactAt.toLocaleString()} tokens`}
-            >
-              {windowTokens >= 1_000_000 ? '1M' : `${Math.round(windowTokens / 1000)}K`} context
-            </span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div
+                  className="iris-agent-context-usage"
+                  data-tone={usage ? contextUsageTone(usage, budget) : 'normal'}
+                  role="img"
+                  aria-label={detail}
+                >
+                  <AgentContextRing usage={usage} budget={budget} />
+                  <span className="iris-agent-context-value tabular-nums">
+                    {usage ? contextUsageLabel(usage, budget) : formatTokenCount(budget.windowTokens)}
+                  </span>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>{detail}</TooltipContent>
+            </Tooltip>
           );
         })()}
         {!running && session.canRewindLatestIntent && (
@@ -342,51 +355,6 @@ export function IrisAgentView({
           </Button>
         )}
       </div>
-
-      {visibleTerminals.length > 0 && (
-        <div className="flex h-10 shrink-0 items-end gap-1 overflow-x-auto border-b bg-muted/20 px-2 pt-1">
-          <button
-            type="button"
-            className={`h-9 shrink-0 rounded-t-sm border-b-2 px-3 text-xs font-medium transition-colors ${selectedTerminal ? 'border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground' : 'border-primary bg-background text-foreground'}`}
-            onClick={() => setSelectedTerminalId(null)}
-          >
-            对话
-          </button>
-          {visibleTerminals.map((terminal) => (
-            <button
-              key={terminal.id}
-              type="button"
-              className={`flex h-9 max-w-52 shrink-0 items-center gap-1.5 rounded-t-sm border-b-2 px-2.5 text-xs transition-colors ${selectedTerminal?.id === terminal.id ? 'border-primary bg-background text-foreground' : 'border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground'}`}
-              onClick={() => setSelectedTerminalId(terminal.id)}
-            >
-              <SquareTerminal className="h-3.5 w-3.5 shrink-0" />
-              <span className="truncate">{terminalTitle(terminal)}</span>
-              {terminal.state === 'exited' && (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  aria-label="关闭终端工作面"
-                  className="ml-0.5 rounded p-0.5 hover:bg-muted"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setHiddenTerminalIds((current) => new Set(current).add(terminal.id));
-                    if (selectedTerminalId === terminal.id) setSelectedTerminalId(null);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key !== 'Enter' && event.key !== ' ') return;
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setHiddenTerminalIds((current) => new Set(current).add(terminal.id));
-                    if (selectedTerminalId === terminal.id) setSelectedTerminalId(null);
-                  }}
-                >
-                  <X className="h-3 w-3" />
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      )}
 
       {session.supervisionAlert && (
         <div className="shrink-0 border-b border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
@@ -423,11 +391,6 @@ export function IrisAgentView({
           </div>
         </div>
       )}
-
-      {selectedTerminal ? (
-        <AgentTerminalPane sessionId={session.id} terminal={selectedTerminal} />
-      ) : (
-        <>
 
       {session.pause && (
         <div className="flex shrink-0 items-start gap-2 border-b border-amber-500/30 bg-amber-500/8 px-3 py-2 text-xs">
@@ -493,14 +456,7 @@ export function IrisAgentView({
                           if (forked) onForked?.(forked);
                         }).catch(() => undefined);
                       } } : {})}
-                      onOpenTerminal={(terminalId) => {
-                        setHiddenTerminalIds((current) => {
-                          const next = new Set(current);
-                          next.delete(terminalId);
-                          return next;
-                        });
-                        setSelectedTerminalId(terminalId);
-                      }}
+                      onOpenTerminal={(terminalId) => setOpenTerminalId(terminalId)}
                     />
                   ))}
                   </div>
@@ -519,24 +475,27 @@ export function IrisAgentView({
         }}
       >
         <div className="flex gap-2">
-          <textarea
-            value={draft}
-            disabled={running}
-            rows={2}
-            className="min-h-10 flex-1 resize-none rounded-md border bg-background px-2 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
-            placeholder={running
-              ? 'Iris Agent 正在工作…'
-              : selectedModelAvailable
-                ? '输入给 Iris Agent 的任务'
-                : '先选择可用模型'}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-                event.preventDefault();
-                submitDraft();
-              }
-            }}
-          />
+          <TextEditContextMenu targetRef={draftRef} disabled={running}>
+            <textarea
+              ref={draftRef}
+              value={draft}
+              disabled={running}
+              rows={2}
+              className="min-h-10 flex-1 resize-none rounded-md border bg-background px-2 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
+              placeholder={running
+                ? 'Iris Agent 正在工作…'
+                : selectedModelAvailable
+                  ? '输入给 Iris Agent 的任务'
+                  : '先选择可用模型'}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  submitDraft();
+                }
+              }}
+            />
+          </TextEditContextMenu>
           <Button
             type="submit"
             size="icon"
@@ -551,207 +510,82 @@ export function IrisAgentView({
           </Button>
         </div>
       </form>
-        </>
+
+      {openTerminal && (
+        <AgentTerminalDialog
+          sessionId={session.id}
+          terminal={openTerminal}
+          onClose={() => setOpenTerminalId(null)}
+        />
       )}
     </div>
   );
 }
 
-function AgentTerminalPane({
-  sessionId,
-  terminal,
+/**
+ * Header entry point for Agent command terminals. The tab strip is gone, so
+ * this is the only way to open a terminal workspace. A running command shows a
+ * live dot but never steals focus or scroll position.
+ */
+function TerminalLauncher({
+  terminals,
+  onOpen,
 }: {
-  sessionId: string;
-  terminal: IrisAgentTerminalView;
+  terminals: IrisAgentTerminalView[];
+  onOpen: (terminalId: string) => void;
 }): JSX.Element {
-  const hostRef = useRef<HTMLDivElement | null>(null);
-  const adapterRef = useRef<BrowserXtermAdapter | null>(null);
-  const settings = useSettings();
-  const [hostRevealed, setHostRevealed] = useState(false);
-  const [contextHasSelection, setContextHasSelection] = useState(false);
-  const [searchVisible, setSearchVisible] = useState(false);
-  const [searchText, setSearchText] = useState('');
-  const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
-  const [searchResults, setSearchResults] = useState({ matches: 0, current: 0 });
-  const searchInputRef = useRef<HTMLInputElement | null>(null);
-
-  const closeSearch = useCallback(() => {
-    setSearchVisible(false);
-    adapterRef.current?.search.clearDecorations();
-    adapterRef.current?.terminal.focus();
-  }, []);
-
-  const performSearch = useCallback((direction: 'next' | 'previous') => {
-    const search = adapterRef.current?.search;
-    if (!search || !searchText) return;
-    const options = { caseSensitive: searchCaseSensitive };
-    if (direction === 'next') search.findNext(searchText, options);
-    else search.findPrevious(searchText, options);
-  }, [searchCaseSensitive, searchText]);
-
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!host) return;
-    const scope: ProjectScope | null = projectScopeState.get();
-    if (!scope) return;
-    const settings = getSettings();
-    const adapter = new BrowserXtermAdapter({
-      fontFamily: settings?.appearance.terminalFontFamily ?? "'Cascadia Mono', 'Consolas', monospace",
-      fontSize: settings?.appearance.terminalFontSize ?? 13,
-      lineHeight: settings?.appearance.terminalLineHeight ?? 1.2,
-      themeId: settings?.appearance.theme,
-      renderer: settings?.advanced.terminalRenderer ?? 'auto',
-      windowsBuild: window.api.windowsBuild,
-      openLink: () => undefined,
-    });
-    adapterRef.current = adapter;
-    adapter.open(host);
-    const term = adapter.terminal;
-    const runtime = new TerminalSessionRuntime(`${sessionId}:${terminal.id}`, scope);
-    const viewport = new TerminalViewportController(adapter.fit, 150);
-    const transport = new IrisAgentTerminalTransport(sessionId, terminal.id, scope);
-    const replayController = new TerminalReplayController(runtime, transport, {
-      get cols() { return term.cols; },
-      get rows() { return term.rows; },
-      write: (data, callback) => term.write(data, callback),
-      scrollToBottom: () => term.scrollToBottom(),
-      beginSynchronizedReplay: () => adapter.beginSynchronizedReplay(),
-      endSynchronizedReplay: (callback) => adapter.endSynchronizedReplay(callback),
-    }, viewport, {
-      chunkBytes: 16 * 1024,
-      timeoutMs: 5000,
-      reveal: () => setHostRevealed(true),
-      warn: (message, error) => console.warn(message, error),
-    });
-    viewport.observe(host);
-    const unsubscribe = transport.onOutput((payload) => replayController.onOutput(payload));
-    const dataDisposable = term.onData((data) => {
-      viewport.flushBeforeInput();
-      void transport.sendInput(data).catch(() => undefined);
-    });
-    const resizeDisposable = term.onResize(({ cols, rows }) => {
-      if (cols < 20 || rows < 5) return;
-      if (viewport.replayInProgress) return;
-      void transport.resize(cols, rows).catch(() => undefined);
-    });
-    const searchDisposable = adapter.search.onDidChangeResults?.((results) => {
-      const matches = results?.resultCount ?? 0;
-      const index = results?.resultIndex ?? -1;
-      setSearchResults({ matches, current: matches > 0 && index >= 0 ? index + 1 : 0 });
-    });
-    term.attachCustomKeyEventHandler((event) => {
-      if (event.type === 'keydown' && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
-        setSearchVisible(true);
-        requestAnimationFrame(() => searchInputRef.current?.focus());
-        return false;
-      }
-      return true;
-    });
-    // async-boundary: handled - replay controller degrades and reveals on transport failure.
-    void replayController.start().catch(() => undefined);
-    return () => {
-      unsubscribe();
-      dataDisposable.dispose();
-      resizeDisposable.dispose();
-      searchDisposable?.dispose();
-      runtime.dispose();
-      viewport.dispose();
-      // async-boundary: handled - detach is best-effort during unmount.
-      void transport.detach().catch(() => undefined);
-      transport.dispose();
-      adapter.dispose();
-      adapterRef.current = null;
-    };
-  }, [sessionId, terminal.id]);
-
-  useEffect(() => {
-    const adapter = adapterRef.current;
-    if (!adapter || !settings) return;
-    adapter.updateAppearance({
-      themeId: settings.appearance.theme,
-      fontFamily: settings.appearance.terminalFontFamily,
-      fontSize: settings.appearance.terminalFontSize,
-      lineHeight: settings.appearance.terminalLineHeight,
-    });
-    adapter.fit.fit();
-  }, [settings]);
-
-  useEffect(() => {
-    const search = adapterRef.current?.search;
-    if (!search || !searchVisible) return;
-    if (!searchText) {
-      search.clearDecorations();
-      setSearchResults({ matches: 0, current: 0 });
-      return;
-    }
-    performSearch('next');
-  }, [performSearch, searchText, searchVisible]);
-
-  const copySelection = (): void => {
-    const term = adapterRef.current?.terminal;
-    if (!term) return;
-    const selection = term.getSelection();
-    if (selection) void writeClipboardText(selection);
-    term.focus();
-  };
-
-  const pasteClipboard = (): void => {
-    // async-boundary: handled - clipboard helper reports read failures and terminal input handles its rejection.
-    void readClipboardText().then((text) => {
-      if (text === null) return;
-      void writeIrisAgentTerminal(sessionId, terminal.id, text).catch(() => undefined);
-      adapterRef.current?.terminal.focus();
-    });
-  };
-
-  return (
-    <div className="relative min-h-0 flex-1 bg-background">
-      <TerminalContextMenu
-        hasSelection={contextHasSelection}
-        onCopy={copySelection}
-        onPaste={pasteClipboard}
-        onClear={() => {
-          adapterRef.current?.terminal.clear();
-          adapterRef.current?.terminal.focus();
-        }}
-        onSearch={() => {
-          setSearchVisible(true);
-          requestAnimationFrame(() => searchInputRef.current?.focus());
-        }}
-        onOpenChange={(open) => {
-          if (open) setContextHasSelection(!!adapterRef.current?.terminal.getSelection());
-          else if (!searchVisible) requestAnimationFrame(() => adapterRef.current?.terminal.focus());
-        }}
-      >
-        <TerminalSurface
-          hostRef={hostRef}
-          revealed={hostRevealed}
-          onContextMenu={(event) => {
-            if ((getSettings()?.behavior.terminalRightClick ?? 'menu') !== 'paste') return;
-            event.preventDefault();
-            pasteClipboard();
-          }}
-        />
-      </TerminalContextMenu>
-      {searchVisible && (
-        <TerminalSearchBar
-          inputRef={searchInputRef}
-          text={searchText}
-          caseSensitive={searchCaseSensitive}
-          results={searchResults}
-          onTextChange={setSearchText}
-          onCaseSensitiveChange={setSearchCaseSensitive}
-          onSearch={performSearch}
-          onClose={closeSearch}
-        />
+  const ordered = [...terminals].reverse();
+  const running = terminals.some((terminal) => terminal.state === 'running');
+  const trigger = (
+    <Button
+      variant="ghost"
+      size="icon"
+      className="relative h-7 w-7 shrink-0"
+      aria-label={running ? '查看终端输出（有命令正在运行）' : '查看终端输出'}
+      {...(ordered.length === 1 ? { onClick: () => onOpen(ordered[0]!.id) } : {})}
+    >
+      <SquareTerminal className="!size-3.5" />
+      {running && (
+        <span className="pointer-events-none absolute right-0.5 top-0.5" aria-hidden="true">
+          <span
+            className="iris-agent-terminal-dot block h-1.5 w-1.5 rounded-full bg-emerald-500"
+            data-running="true"
+          />
+        </span>
       )}
-    </div>
+    </Button>
+  );
+  if (ordered.length === 1) return trigger;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-80">
+        <DropdownMenuLabel>终端输出</DropdownMenuLabel>
+        {ordered.map((terminal) => (
+          <DropdownMenuItem key={terminal.id} onClick={() => onOpen(terminal.id)}>
+            <SquareTerminal className="!size-3.5 shrink-0 text-muted-foreground" />
+            <span
+              className="min-w-0 flex-1 truncate font-mono text-[11px]"
+              aria-label={terminal.command}
+            >
+              {terminal.command.trim() || 'Terminal'}
+            </span>
+            <span className="shrink-0 text-[10px] text-muted-foreground">
+              {terminalMenuState(terminal)}
+            </span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
-function terminalTitle(terminal: IrisAgentTerminalView): string {
-  const first = terminal.command.trim().split(/\s+/u)[0] ?? 'Terminal';
-  return `${first}${terminal.state === 'running' ? ' · 运行中' : ''}`;
+function terminalMenuState(terminal: IrisAgentTerminalView): string {
+  if (terminal.state === 'running') return '运行中';
+  if (terminal.outcome === 'timeout') return '已超时';
+  if (terminal.outcome === 'canceled') return '已取消';
+  if (terminal.exitCode === undefined || terminal.exitCode === null) return '已结束';
+  return `退出码 ${terminal.exitCode}`;
 }
 
 function AgentActivityCard({

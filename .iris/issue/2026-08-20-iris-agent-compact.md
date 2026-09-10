@@ -1,6 +1,6 @@
 ---
 title: iris agent compact
-status: In Progress
+status: Done
 ---
 
 ## 2026-08-20 现状梳理

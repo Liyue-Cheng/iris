@@ -160,6 +160,14 @@ export const CHANNELS = {
   IRIS_AGENT_PROVIDER_PROFILE_DISCOVER: 'iris-agent:provider-profile-discover',
   IRIS_AGENT_OPEN_CONTEXT: 'iris-agent:open-context',
   IRIS_AGENT_TERMINAL_REPLAY: 'iris-agent:terminal-replay',
+  /**
+   * Agent terminal streaming I/O — like SESSION_* streaming, deliberately not a
+   * pipeline instruction: attaching a dialog to one command's live output is
+   * continuous interaction, not a discrete verb.
+   */
+  IRIS_AGENT_TERMINAL_ATTACH: 'iris-agent:terminal-attach',
+  IRIS_AGENT_TERMINAL_DETACH: 'iris-agent:terminal-detach',
+  IRIS_AGENT_TERMINAL_ACK: 'iris-agent:terminal-ack',
   IRIS_AGENT_TERMINAL_INPUT: 'iris-agent:terminal-input',
   IRIS_AGENT_TERMINAL_RESIZE: 'iris-agent:terminal-resize',
   IRIS_AGENT_SUPERVISION_CONTINUE: 'iris-agent:supervision-continue',

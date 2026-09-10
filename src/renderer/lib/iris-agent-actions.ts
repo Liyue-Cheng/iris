@@ -46,9 +46,24 @@ function intentPrecondition(sessionId: string): {
   return { ...commandPrecondition(sessionId), expectedIntentId: session.currentIntentId };
 }
 
+/**
+ * Bring the middle pane to the session's anchor BEFORE creating the session.
+ * The right pane is anchor-driven (issue 2026-06-16): a new session only shows
+ * when `view` already matches its anchor. The terminal launchers do the same
+ * in `session-actions.ts`; the Agent entry points (left-pane +, right-pane +,
+ * launch pad) share this single path. A rejected navigation (editor conflict,
+ * missing document) aborts the open instead of creating an invisible session.
+ */
+async function navigateToAnchor(anchor: IrisAgentAnchor): Promise<boolean> {
+  if (anchor.kind === 'document') return projectStore.selectDoc(anchor.path);
+  if (anchor.path === '.iris') return projectStore.selectRoot();
+  return projectStore.selectWorkspace(anchor.path);
+}
+
 export async function openIrisAgent(anchor: IrisAgentAnchor): Promise<IrisAgentSessionInfo | null> {
   const outcome = await attemptAction(async () => {
     if (!(await editorStore.flushBeforeSwitch('before-external-action'))) return null;
+    if (!(await navigateToAnchor(anchor))) return null;
     const scope = scopeOrThrow();
     const session = await window.api.invoke<
       { anchor: IrisAgentAnchor; expectedScope: ProjectScope },

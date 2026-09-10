@@ -171,9 +171,10 @@ export function RightPane(): JSX.Element {
       : selectedPath
         ? { kind: 'document' as const, path: selectedPath }
         : { kind: 'workspace' as const, path: '.iris' };
-    void openIrisAgent(anchor).then((session) => {
-      if (session && anchorKey && scope) sessionViewStore.select(scope, anchorKey, `iris-agent:${session.id}`);
-    });
+    // Navigation and selection live in openIrisAgent so every entry point
+    // (left-pane +, this +, launch pad) behaves the same; the render-time
+    // anchorKey captured here is stale once the view navigates.
+    void openIrisAgent(anchor);
   };
 
   return (
@@ -345,7 +346,7 @@ export function RightPane(): JSX.Element {
             </DropdownMenuLabel>
             {irisAgentEnabled && (
               <DropdownMenuItem onClick={spawnIrisAgent}>
-                用 Iris Agent 打开
+                {t('layout.openWith', { agent: t('settings.irisAgent') })}
               </DropdownMenuItem>
             )}
             <LauncherMenuItems agents={agents} onSelect={spawn} />
@@ -405,7 +406,7 @@ export function RightPane(): JSX.Element {
                   onClick={spawnIrisAgent}
                 >
                   <Bot className="!size-4" />
-                  用 Iris Agent 打开
+                  {t('layout.openWith', { agent: t('settings.irisAgent') })}
                 </Button>
               )}
               {agents.length > LAUNCHER_SEARCH_THRESHOLD && (

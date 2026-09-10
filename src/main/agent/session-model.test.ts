@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createEmptyAgentSession, projectAgentSession, type AgentToolActivity } from './session-model';
+import { createEmptyAgentSession, normalizeAgentSessionAggregate, projectAgentSession, type AgentToolActivity } from './session-model';
 import { assertIrisAgentCloseAllowed, assertIrisAgentExpectedRevision } from './session-domain';
 
 const injection = {
@@ -130,6 +130,50 @@ describe('Iris Agent terminal projection', () => {
       completedAt: 3,
     })]);
     expect(projectAgentSession(session, 1).terminals[0]).not.toHaveProperty('outcome');
+  });
+
+  it('projects context usage and drops a snapshot that cannot describe a window', () => {
+    const session = createEmptyAgentSession({
+      id: 'session-usage',
+      anchor: { kind: 'workspace', path: '.iris' },
+      model: { provider: 'openai', modelId: 'gpt-test' },
+      projectRoot: process.cwd(),
+      displayName: 'Iris Agent',
+      injection,
+      now: 1,
+    });
+    expect(projectAgentSession(session, 1).contextUsage).toBeUndefined();
+    session.contextBudget = { windowTokens: 128_000, triggerTokens: 112_000 };
+    session.contextUsage = { usedTokens: 12_000, measurement: 'reported', updatedAt: 2 };
+    expect(projectAgentSession(session, 1).contextBudget).toEqual({
+      windowTokens: 128_000, triggerTokens: 112_000,
+    });
+    expect(projectAgentSession(session, 1).contextUsage).toEqual({
+      usedTokens: 12_000, measurement: 'reported', updatedAt: 2,
+    });
+
+    const legacy = createEmptyAgentSession({
+      id: 'session-usage-legacy',
+      anchor: { kind: 'workspace', path: '.iris' },
+      model: { provider: 'openai', modelId: 'gpt-test' },
+      projectRoot: process.cwd(),
+      displayName: 'Iris Agent',
+      injection,
+      now: 1,
+    });
+    legacy.contextBudget = { windowTokens: 0, triggerTokens: 0 };
+    legacy.contextUsage = { usedTokens: 120, measurement: 'reported', updatedAt: 1 };
+    legacy.contextPromptTokens = -1;
+    normalizeAgentSessionAggregate(legacy);
+    expect(legacy.contextBudget).toBeUndefined();
+    // A reading without its window has no denominator left, so it goes too.
+    expect(legacy.contextUsage).toBeUndefined();
+    // The reused method-layer size is a count or nothing.
+    expect(legacy.contextPromptTokens).toBeUndefined();
+    legacy.contextBudget = { windowTokens: 128_000, triggerTokens: 112_000 };
+    legacy.contextPromptTokens = 2_523;
+    normalizeAgentSessionAggregate(legacy);
+    expect(legacy.contextPromptTokens).toBe(2_523);
   });
 
   it('projects each background task as its own card without folding it into retrievals', () => {

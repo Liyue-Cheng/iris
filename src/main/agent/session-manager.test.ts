@@ -79,6 +79,8 @@ class FakeInteractiveTerminal {
   private cursor = 0;
   private text = '';
   private running = true;
+  /** Flow blockers reported by the session manager, in order. */
+  readonly flowBlocked: boolean[] = [];
   private resolveResult!: (result: AgentCommandPtyResult) => void;
   readonly result: Promise<AgentCommandPtyResult>;
 
@@ -107,8 +109,12 @@ class FakeInteractiveTerminal {
 
   dispose(): void {}
 
-  async replay(): Promise<{ data: string; cursor: number }> {
-    return { data: Buffer.from(this.text).toString('base64'), cursor: this.cursor };
+  setOutputBlocked(_blocker: 'renderer', blocked: boolean): void {
+    this.flowBlocked.push(blocked);
+  }
+
+  async replay(): Promise<{ data: string }> {
+    return { data: Buffer.from(this.text).toString('base64') };
   }
 
   async observation(): Promise<{ cursor: number; text: string; running: boolean }> {
@@ -123,7 +129,7 @@ class FakeInteractiveTerminal {
       type: 'output',
       terminalId: this.options.terminalId,
       cursor,
-      data: Buffer.from(value).toString('base64'),
+      bytes: Buffer.from(value),
     });
   }
 
@@ -1232,9 +1238,12 @@ describe('IrisAgentSessionManager v2 timeline', () => {
           expect(terminal).toMatchObject({ state: 'running', command, userInput: false });
         }, { timeout: 5_000 });
         const running = (await manager.list(scope)).sessions[0]!.terminals[0]!;
+        // Nobody is watching this terminal yet, so the command must not pay for
+        // IPC: the mirror already holds the output for a later attach.
+        expect(outputEvents).toHaveLength(0);
+        expect(manager.attachTerminalOutput(scope, created.id, running.id, 'attach-1')).toBe(true);
         const replay = await manager.replayTerminal(scope, created.id, running.id, 80, 24);
         expect(Buffer.from(replay.data, 'base64').toString('utf8')).toContain('first');
-        expect(outputEvents.some((event) => event.terminalId === running.id)).toBe(true);
         expect(worker.messages.some((message) => message.type === 'tool-result')).toBe(false);
 
         await vi.waitFor(() => expect(
@@ -1253,6 +1262,10 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         expect(worker.messages.filter((message) => message.type === 'supervise-terminal')).toHaveLength(1);
 
         await manager.writeTerminal(scope, created.id, running.id, 'one\r');
+        // The attach is what turns mirror writes into IPC delivery.
+        await vi.waitFor(() => expect(
+          outputEvents.some((event) => event.terminalId === running.id),
+        ).toBe(true), { timeout: 5_000 });
         await vi.waitFor(() => expect(
           worker.messages.filter((message) => message.type === 'supervise-terminal'),
         ).toHaveLength(2), { timeout: 5_000 });
@@ -1299,6 +1312,219 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         await expect(
           manager.writeTerminal(scope, created.id, running.id, 'late\r'),
         ).rejects.toThrow('no longer running');
+      } finally {
+        await manager.shutdown();
+        await removeTempDataDir(userData);
+      }
+    },
+    15_000,
+  );
+  it(
+    'keeps an exited terminal replayable for the output dialog',
+    async () => {
+      const userData = await createTempDataDir('iris-agent-manager-retained-');
+      const scope: ProjectScope = { root: userData, generation: 1 };
+      const worker = new FakeWorker();
+      const manager = new IrisAgentSessionManager(userData, projectManager(), {
+        workerFactory: () => worker,
+        modelCatalogLoader: async () => catalog,
+        terminalFactory: (options) => new FakeInteractiveTerminal(options) as unknown as AgentCommandPty,
+        terminalDisplayThresholdMs: 20,
+      });
+      try {
+        await manager.listModels();
+        const created = await manager.createSession({
+          scope,
+          anchor: { kind: 'workspace', path: '.iris' },
+        });
+        await manager.send(scope, created.id, 'run a command');
+        const run = worker.last('run');
+        const provider = providerCorrelation(run, 'retained-terminal');
+        worker.emitMessage({
+          version: IRIS_AGENT_PROTOCOL_VERSION,
+          type: 'provider-attempt',
+          correlation: provider,
+          phase: 'started',
+          index: 1,
+        });
+        worker.emitMessage({
+          version: IRIS_AGENT_PROTOCOL_VERSION,
+          type: 'provider-message',
+          eventId: 'event-retained-terminal',
+          correlation: provider,
+          message: {
+            role: 'assistant',
+            content: [{
+              type: 'toolCall',
+              id: 'tool-retained',
+              name: 'terminal',
+              arguments: { command: 'interactive' },
+            }],
+            stopReason: 'toolUse',
+          },
+        });
+        await vi.waitFor(() => expect(worker.messages).toContainEqual(expect.objectContaining({
+          type: 'event-ack',
+          eventId: 'event-retained-terminal',
+          ok: true,
+        })));
+        worker.emitMessage({
+          version: IRIS_AGENT_PROTOCOL_VERSION,
+          type: 'tool-request',
+          correlation: {
+            ...run.correlation,
+            toolCallId: 'tool-retained',
+            operationId: 'operation-retained',
+          },
+          input: {
+            tool: 'terminal',
+            operation: 'exec',
+            command: 'interactive',
+            intent: 'operation',
+            timeout: 30,
+            cwd: userData,
+          },
+        });
+        await vi.waitFor(async () => {
+          expect((await manager.list(scope)).sessions[0]?.terminals[0]).toMatchObject({ state: 'running' });
+        }, { timeout: 5_000 });
+        const terminal = (await manager.list(scope)).sessions[0]!.terminals[0]!;
+        await manager.writeTerminal(scope, created.id, terminal.id, 'one\r');
+        await manager.writeTerminal(scope, created.id, terminal.id, 'two\r');
+        await vi.waitFor(async () => {
+          expect((await manager.list(scope)).sessions[0]?.terminals[0]?.state).toBe('exited');
+        }, { timeout: 5_000 });
+
+        const replay = await manager.replayTerminal(scope, created.id, terminal.id, 80, 24);
+        expect(Buffer.from(replay.data, 'base64').toString('utf8')).toContain('done:two');
+
+        await manager.closeSession(scope, created.id, { confirmBusy: true });
+        await expect(manager.replayTerminal(scope, created.id, terminal.id, 80, 24)).rejects.toThrow();
+      } finally {
+        await manager.shutdown();
+        await removeTempDataDir(userData);
+      }
+    },
+    15_000,
+  );
+
+  it(
+    'delivers terminal output only while a dialog is attached and acks its backlog',
+    async () => {
+      const userData = await createTempDataDir('iris-agent-manager-attach-');
+      const scope: ProjectScope = { root: userData, generation: 1 };
+      const worker = new FakeWorker();
+      const terminals: FakeInteractiveTerminal[] = [];
+      const payloads: Array<{ terminalId: string; seq: number; data: string }> = [];
+      const manager = new IrisAgentSessionManager(userData, projectManager(), {
+        workerFactory: () => worker,
+        modelCatalogLoader: async () => catalog,
+        terminalFactory: (options) => {
+          const terminal = new FakeInteractiveTerminal(options);
+          terminals.push(terminal);
+          return terminal as unknown as AgentCommandPty;
+        },
+        terminalDisplayThresholdMs: 20,
+      });
+      manager.on('terminalOutput', (event) => payloads.push(event));
+      try {
+        await manager.listModels();
+        const created = await manager.createSession({
+          scope,
+          anchor: { kind: 'workspace', path: '.iris' },
+        });
+        await manager.send(scope, created.id, 'run a command');
+        const run = worker.last('run');
+        const provider = providerCorrelation(run, 'attach-gate');
+        worker.emitMessage({
+          version: IRIS_AGENT_PROTOCOL_VERSION,
+          type: 'provider-attempt',
+          correlation: provider,
+          phase: 'started',
+          index: 1,
+        });
+        worker.emitMessage({
+          version: IRIS_AGENT_PROTOCOL_VERSION,
+          type: 'provider-message',
+          eventId: 'event-attach-gate',
+          correlation: provider,
+          message: {
+            role: 'assistant',
+            content: [{
+              type: 'toolCall',
+              id: 'tool-attach',
+              name: 'terminal',
+              arguments: { command: 'interactive' },
+            }],
+            stopReason: 'toolUse',
+          },
+        });
+        await vi.waitFor(() => expect(worker.messages).toContainEqual(expect.objectContaining({
+          type: 'event-ack',
+          eventId: 'event-attach-gate',
+          ok: true,
+        })));
+        worker.emitMessage({
+          version: IRIS_AGENT_PROTOCOL_VERSION,
+          type: 'tool-request',
+          correlation: {
+            ...run.correlation,
+            toolCallId: 'tool-attach',
+            operationId: 'operation-attach',
+          },
+          input: {
+            tool: 'terminal',
+            operation: 'exec',
+            command: 'interactive',
+            intent: 'operation',
+            timeout: 30,
+            cwd: userData,
+          },
+        });
+        await vi.waitFor(async () => {
+          expect((await manager.list(scope)).sessions[0]?.terminals[0]).toMatchObject({ state: 'running' });
+        }, { timeout: 5_000 });
+        const terminal = (await manager.list(scope)).sessions[0]!.terminals[0]!;
+        await vi.waitFor(() => expect(terminals).toHaveLength(1), { timeout: 5_000 });
+
+        // Detached: the command keeps running but nothing crosses the IPC gap.
+        await manager.writeTerminal(scope, created.id, terminal.id, 'one\r');
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        expect(payloads).toHaveLength(0);
+
+        // A stale terminal id cannot enable delivery.
+        expect(manager.attachTerminalOutput(scope, created.id, 'other-terminal', 'attach-2')).toBe(false);
+        expect(manager.attachTerminalOutput(scope, created.id, terminal.id, 'attach-1')).toBe(true);
+        const firstReplay = await manager.replayTerminal(scope, created.id, terminal.id, 80, 24);
+        expect(Buffer.from(firstReplay.data, 'base64').toString('utf8'))
+          .toContain('second:one');
+
+        await manager.writeTerminal(scope, created.id, terminal.id, 'one\r');
+        await vi.waitFor(() => expect(payloads.length).toBeGreaterThan(0), { timeout: 5_000 });
+        const first = payloads[0]!;
+        expect(first.terminalId).toBe(terminal.id);
+        expect(Buffer.from(first.data, 'base64').toString()).toContain('second:one');
+        // The ack of a sequence nobody emitted is ignored rather than releasing
+        // a backlog that was never delivered.
+        manager.acknowledgeTerminalOutput(scope, created.id, terminal.id, 'attach-2', first.seq + 10);
+        expect(terminals[0]!.flowBlocked).toEqual([]);
+        manager.acknowledgeTerminalOutput(scope, created.id, terminal.id, 'attach-1', first.seq);
+
+        manager.detachTerminalOutput(scope, created.id, terminal.id, 'attach-1');
+        const delivered = payloads.length;
+        await manager.writeTerminal(scope, created.id, terminal.id, 'one\r');
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        expect(payloads).toHaveLength(delivered);
+
+        // Reattaching replays the mirror, so nothing was lost while detached.
+        const replay = await manager.replayTerminal(scope, created.id, terminal.id, 80, 24);
+        expect(Buffer.from(replay.data, 'base64').toString('utf8').match(/second:one/gu))
+          .toHaveLength(3);
+
+        await manager.writeTerminal(scope, created.id, terminal.id, 'two\r');
+        await vi.waitFor(async () => {
+          expect((await manager.list(scope)).sessions[0]?.terminals[0]?.state).toBe('exited');
+        }, { timeout: 5_000 });
       } finally {
         await manager.shutdown();
         await removeTempDataDir(userData);
@@ -1650,6 +1876,36 @@ describe('IrisAgentSessionManager context compaction', () => {
     }
   });
 
+  it('drops the context reading as soon as a manual compaction lands', async () => {
+    const userData = await createTempDataDir('iris-agent-compact-usage-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const worker = new FakeWorker();
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => worker,
+      modelCatalogLoader: async () => catalog,
+      summarizeContext: summarizer('compacted history'),
+      compactionThresholds: { contextWindow: 100_000, reserveTokens: 1_000, keepRecentTokens: 1 },
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
+      await settleIntent(manager, worker, scope, created.id, 'first message', 'first answer '.repeat(60));
+      await settleIntent(manager, worker, scope, created.id, 'second message', 'second answer '.repeat(60));
+      await settleIntent(manager, worker, scope, created.id, 'third message', 'third answer '.repeat(60));
+      const before = (await manager.list(scope)).sessions[0]!;
+      const usedBefore = before.contextUsage!.usedTokens;
+      expect(before.contextBudget).toEqual({ windowTokens: 100_000, triggerTokens: 99_000 });
+
+      const compacted = await manager.compact(scope, created.id, { expectedRevision: before.revision });
+      expect(compacted.contextBudget).toEqual({ windowTokens: 100_000, triggerTokens: 99_000 });
+      expect(compacted.contextUsage).toMatchObject({ measurement: 'estimated' });
+      expect(compacted.contextUsage!.usedTokens).toBeLessThan(usedBefore);
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
   it('compacts and retries the same Intent once after a context overflow', async () => {
     const userData = await createTempDataDir('iris-agent-compact-overflow-');
     const scope: ProjectScope = { root: userData, generation: 1 };
@@ -1684,6 +1940,326 @@ describe('IrisAgentSessionManager context compaction', () => {
       expect(afterRetry.currentIntentId).toBe(intentId);
       expect(afterRetry.state).toBe('running');
       expect(summarize).toHaveBeenCalledWith(expect.objectContaining({ material: expect.any(String) }));
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+});
+
+describe('Iris Agent context usage indicator', () => {
+  /**
+   * Runs one Intent to completion. The indicator's lifecycle fixes are about
+   * quiescent Sessions, and a model cannot be switched mid-run, so these tests
+   * need a settled run rather than a bare `send`.
+   */
+  async function settleIntent(
+    manager: IrisAgentSessionManager,
+    worker: FakeWorker,
+    scope: ProjectScope,
+    sessionId: string,
+    message: string,
+  ): Promise<void> {
+    const before = (await manager.list(scope)).sessions.find((session) => session.id === sessionId)!;
+    await manager.send(scope, sessionId, message, { expectedRevision: before.revision });
+    const run = worker.last('run');
+    const correlation = providerCorrelation(run, message);
+    worker.emitMessage({
+      version: IRIS_AGENT_PROTOCOL_VERSION,
+      type: 'provider-attempt', correlation, phase: 'started', index: 1,
+    });
+    worker.emitMessage({
+      version: IRIS_AGENT_PROTOCOL_VERSION,
+      type: 'provider-message',
+      correlation,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'answer' }], stopReason: 'stop' },
+    });
+    worker.emitMessage({
+      version: IRIS_AGENT_PROTOCOL_VERSION,
+      type: 'provider-attempt', correlation, phase: 'completed', index: 1,
+    });
+    worker.emitMessage({
+      version: IRIS_AGENT_PROTOCOL_VERSION,
+      type: 'execution-settled', correlation: run.correlation,
+    });
+    await vi.waitFor(async () => {
+      const settled = (await manager.list(scope)).sessions.find((session) => session.id === sessionId)!;
+      expect(settled.pause?.message ?? settled.state).toBe('idle');
+    });
+  }
+
+  it('re-resolves the window on a model switch and drops the stale reading', async () => {
+    const userData = await createTempDataDir('iris-agent-usage-model-switch-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const worker = new FakeWorker();
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => worker,
+      modelCatalogLoader: async () => ({
+        models: [
+          {
+            provider: 'openai', modelId: 'gpt-test', name: 'GPT Test',
+            api: 'openai-responses', reasoning: true,
+            contextWindowTokens: 1_000_000,
+            contextPolicy: { reserveOutputTokens: 16_384, keepRecentTokens: 20_000, compactTrigger: 983_616 },
+          },
+          {
+            provider: 'openai', modelId: 'gpt-small', name: 'GPT Small',
+            api: 'openai-responses', reasoning: true,
+            contextWindowTokens: 128_000,
+            contextPolicy: { reserveOutputTokens: 16_384, keepRecentTokens: 20_000, compactTrigger: 111_616 },
+          },
+        ],
+      }),
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
+      await manager.setModel(scope, created.id, { provider: 'openai', modelId: 'gpt-test' });
+      await settleIntent(manager, worker, scope, created.id, 'measure me');
+      const sent = (await manager.list(scope)).sessions[0]!;
+      expect(sent.contextBudget).toEqual({ windowTokens: 1_000_000, triggerTokens: 983_616 });
+      expect(sent.contextUsage).toBeDefined();
+
+      const switched = await manager.setModel(
+        scope, created.id, { provider: 'openai', modelId: 'gpt-small' },
+      );
+      // The old reading was measured against the 1M window; showing it against
+      // the 128K window would be a wrong percentage, so it is dropped.
+      expect(switched.contextUsage).toBeUndefined();
+      expect(switched.contextBudget).toEqual({ windowTokens: 128_000, triggerTokens: 111_616 });
+
+      await settleIntent(manager, worker, scope, created.id, 'measure me again');
+      const resent = (await manager.list(scope)).sessions[0]!;
+      expect(resent.contextBudget).toEqual({ windowTokens: 128_000, triggerTokens: 111_616 });
+      expect(resent.contextUsage!.usedTokens).toBeLessThan(128_000);
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('resolves the window from the catalog even when nothing listed models yet', async () => {
+    const userData = await createTempDataDir('iris-agent-usage-cold-cache-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const worker = new FakeWorker();
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => worker,
+      modelCatalogLoader: async () => ({
+        models: [{
+          provider: 'openai', modelId: 'gpt-test', name: 'GPT Test',
+          api: 'openai-responses', reasoning: true,
+          contextWindowTokens: 1_000_000,
+          contextPolicy: { reserveOutputTokens: 16_384, keepRecentTokens: 20_000, compactTrigger: 983_616 },
+        }],
+      }),
+    });
+    try {
+      // No listModels() call first. Resolving the window straight from a cold
+      // cache is what used to record a 1M model as the 128K default.
+      const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
+      const selected = await manager.setModel(
+        scope, created.id, { provider: 'openai', modelId: 'gpt-test' },
+      );
+      expect(selected.contextBudget).toEqual({ windowTokens: 1_000_000, triggerTokens: 983_616 });
+
+      await settleIntent(manager, worker, scope, created.id, 'measure me');
+      const sent = (await manager.list(scope)).sessions[0]!;
+      // The reading is measured against the real window, not the default.
+      expect(sent.contextBudget).toEqual({ windowTokens: 1_000_000, triggerTokens: 983_616 });
+      expect(sent.contextUsage!.usedTokens).toBeLessThan(1_000_000);
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('publishes an estimated reading before the first provider reply', async () => {
+    const userData = await createTempDataDir('iris-agent-usage-estimate-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const worker = new FakeWorker();
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => worker,
+      modelCatalogLoader: async () => catalog,
+      compactionThresholds: { contextWindow: 100_000, reserveTokens: 1_000, keepRecentTokens: 20_000 },
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
+      const sent = await manager.send(scope, created.id, 'measure me');
+      expect(sent.contextBudget).toEqual({ windowTokens: 100_000, triggerTokens: 99_000 });
+      expect(sent.contextUsage).toMatchObject({ measurement: 'estimated' });
+      expect(sent.contextUsage!.usedTokens).toBeGreaterThan(0);
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('lets the provider counter replace the estimate and keeps the window budget', async () => {
+    const userData = await createTempDataDir('iris-agent-usage-reported-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const worker = new FakeWorker();
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => worker,
+      modelCatalogLoader: async () => catalog,
+      compactionThresholds: { contextWindow: 200_000, reserveTokens: 2_000, keepRecentTokens: 20_000 },
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
+      await manager.send(scope, created.id, 'measure me');
+      const run = worker.last('run');
+      const correlation = providerCorrelation(run, 'usage');
+      worker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'provider-attempt', correlation, phase: 'started', index: 1,
+      });
+      worker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'provider-message',
+        correlation,
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'answer' }],
+          stopReason: 'stop',
+          usage: { input: 1_000, output: 900, cacheRead: 500, cacheWrite: 100, totalTokens: 2_500 },
+        },
+      });
+      await vi.waitFor(async () => {
+        const current = (await manager.list(scope)).sessions[0]!;
+        expect(current.contextUsage).toMatchObject({
+          usedTokens: 1_600,
+          measurement: 'reported',
+        });
+        expect(current.contextBudget).toEqual({ windowTokens: 200_000, triggerTokens: 198_000 });
+      });
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('keeps a tool loop measured when the provider reports no usage at all', async () => {
+    const userData = await createTempDataDir('iris-agent-usage-missing-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const worker = new FakeWorker();
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => worker,
+      modelCatalogLoader: async () => catalog,
+      compactionThresholds: { contextWindow: 100_000, reserveTokens: 1_000, keepRecentTokens: 20_000 },
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
+      const sent = await manager.send(scope, created.id, 'measure me');
+      const estimate = sent.contextUsage!.usedTokens;
+      const run = worker.last('run');
+      const correlation = providerCorrelation(run, 'no-usage');
+      const reading = async () => (await manager.list(scope)).sessions[0]!.contextUsage!;
+
+      worker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'provider-attempt', correlation, phase: 'started', index: 1,
+      });
+      // A provider that reports zeros must not erase the reading, and the answer
+      // it just produced is now part of the history.
+      worker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'provider-message',
+        eventId: 'event-assistant-no-usage',
+        correlation,
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'Reading the file.' },
+            { type: 'toolCall', id: 'tool-loop', name: 'read', arguments: { path: 'README.md' } },
+          ],
+          stopReason: 'toolUse',
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+        },
+      });
+      await vi.waitFor(() => expect(worker.messages).toContainEqual(expect.objectContaining({
+        type: 'event-ack', eventId: 'event-assistant-no-usage', ok: true,
+      })));
+      const afterAssistant = await reading();
+      expect(afterAssistant.measurement).toBe('estimated');
+      // The method layers are still counted, so the reading never falls back by
+      // their size when a request is measured again.
+      expect(afterAssistant.usedTokens).toBeGreaterThan(estimate);
+
+      // The tool loop keeps appending history without a counter to follow it.
+      worker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'provider-message',
+        eventId: 'event-tool-loop-result',
+        correlation: { ...run.correlation, toolCallId: 'tool-loop', providerMessageId: 'message-tool-loop' },
+        message: {
+          role: 'toolResult',
+          toolCallId: 'tool-loop',
+          content: [{ type: 'text', text: 'contents '.repeat(500) }],
+          isError: false,
+        },
+      });
+      await vi.waitFor(() => expect(worker.messages).toContainEqual(expect.objectContaining({
+        type: 'event-ack', eventId: 'event-tool-loop-result', ok: true,
+      })));
+      const afterTool = await reading();
+      expect(afterTool.measurement).toBe('estimated');
+      // 500 latin words are at least 1K estimated tokens; the reading follows
+      // the growing history instead of freezing at the run's first number.
+      expect(afterTool.usedTokens).toBeGreaterThan(afterAssistant.usedTokens + 1_000);
+
+      worker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'provider-attempt', correlation, phase: 'completed', index: 1,
+      });
+      worker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION,
+        type: 'execution-settled',
+        correlation: run.correlation,
+      });
+      await vi.waitFor(async () => {
+        expect((await manager.list(scope)).sessions[0]?.state).toBe('idle');
+      });
+      expect((await reading()).usedTokens).toBeGreaterThanOrEqual(afterTool.usedTokens);
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('drops a reading that was measured against rewound history', async () => {
+    const userData = await createTempDataDir('iris-agent-usage-rewind-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const worker = new FakeWorker();
+    const manager = new IrisAgentSessionManager(userData, projectManager(), {
+      workerFactory: () => worker,
+      modelCatalogLoader: async () => catalog,
+      compactionThresholds: { contextWindow: 100_000, reserveTokens: 1_000, keepRecentTokens: 20_000 },
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({ scope, anchor: { kind: 'workspace', path: '.iris' } });
+      await settleIntent(manager, worker, scope, created.id, 'first question');
+      await settleIntent(manager, worker, scope, created.id, 'second question');
+      const measured = (await manager.list(scope)).sessions[0]!;
+      expect(measured.contextUsage?.usedTokens).toBeGreaterThan(0);
+
+      const rewound = await manager.rewind(scope, created.id, { expectedRevision: measured.revision });
+      // The reading described history that no longer exists; the window did not
+      // change with it, so only the reading goes away.
+      expect(rewound.contextUsage).toBeUndefined();
+      expect(rewound.contextBudget).toEqual({ windowTokens: 100_000, triggerTokens: 99_000 });
+
+      const empty = await manager.rewind(scope, created.id, { expectedRevision: rewound.revision });
+      expect(empty.contextUsage).toBeUndefined();
+      expect(empty.canRewindLatestIntent).toBe(false);
+
+      // The next request measures the new, shorter history and shows again.
+      await settleIntent(manager, worker, scope, created.id, 'third question');
+      const remeasured = (await manager.list(scope)).sessions[0]!;
+      expect(remeasured.contextUsage?.usedTokens).toBeGreaterThan(0);
+      expect(remeasured.contextBudget).toEqual({ windowTokens: 100_000, triggerTokens: 99_000 });
     } finally {
       await manager.shutdown();
       await removeTempDataDir(userData);

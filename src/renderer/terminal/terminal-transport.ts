@@ -104,6 +104,8 @@ export class ElectronTerminalTransport implements TerminalTransport {
 /** Agent-terminal transport adapted to the shared replay/runtime contract. */
 export class IrisAgentTerminalTransport implements TerminalTransport {
   readonly windowsBuild = window.api.windowsBuild;
+  /** One dialog mount per attachment, so a stale unmount cannot detach a newer view. */
+  private readonly attachmentId = crypto.randomUUID();
 
   constructor(
     private readonly sessionId: string,
@@ -111,15 +113,44 @@ export class IrisAgentTerminalTransport implements TerminalTransport {
     private readonly scope: ProjectScope,
   ) {}
 
-  async attach(): Promise<void> {}
-  async detach(): Promise<void> {}
+  /**
+   * Binds main's per-terminal output delivery. Until this succeeds the command's
+   * output only reaches the mirror and the log file, which is why closing a
+   * dialog costs nothing and reopening replays the whole thing.
+   */
+  async attach(): Promise<void> {
+    await window.api.invoke(CHANNELS.IRIS_AGENT_TERMINAL_ATTACH, this.attachment());
+  }
+
+  async detach(): Promise<void> {
+    await window.api.invoke(CHANNELS.IRIS_AGENT_TERMINAL_DETACH, this.attachment());
+  }
+
   dispose(): void {}
-  async acknowledge(_seq: number): Promise<void> {}
+
+  /** Releases main's in-flight budget so a paused PTY can resume. */
+  async acknowledge(seq: number): Promise<void> {
+    await window.api.invoke(CHANNELS.IRIS_AGENT_TERMINAL_ACK, { ...this.attachment(), seq });
+  }
+
+  private attachment(): {
+    sessionId: string;
+    terminalId: string;
+    attachmentId: string;
+    expectedScope: ProjectScope;
+  } {
+    return {
+      sessionId: this.sessionId,
+      terminalId: this.terminalId,
+      attachmentId: this.attachmentId,
+      expectedScope: this.scope,
+    };
+  }
 
   onOutput(listener: (payload: SessionOutputPayload) => void): () => void {
     return window.api.on<IrisAgentTerminalOutputPayload>(EVENTS.IRIS_AGENT_TERMINAL_OUTPUT, (payload) => {
       if (payload.sessionId !== this.sessionId || payload.terminalId !== this.terminalId) return;
-      listener({ scope: this.scope, sessionId: this.sessionId, data: payload.data, seq: payload.cursor });
+      listener({ scope: this.scope, sessionId: this.sessionId, data: payload.data, seq: payload.seq });
     });
   }
 
@@ -129,7 +160,7 @@ export class IrisAgentTerminalTransport implements TerminalTransport {
     }, IrisAgentTerminalReplay>(CHANNELS.IRIS_AGENT_TERMINAL_REPLAY, {
       sessionId: this.sessionId, terminalId: this.terminalId, cols, rows, expectedScope: this.scope,
     });
-    return { data: replay.data, lastSeq: replay.cursor, cols, rows };
+    return { data: replay.data, lastSeq: replay.seq, cols, rows };
   }
 
   sendInput(data: string): Promise<void> {

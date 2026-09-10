@@ -4,6 +4,7 @@ import { truncateIntentChain } from './session-domain';
 import {
   activeCompaction,
   agentCompactionTrigger,
+  agentContextBudget,
   completeAgentCompaction,
   estimateAgentContextTokens,
   estimateAgentRequestTokens,
@@ -13,6 +14,7 @@ import {
   planAgentCompaction,
   realignActiveCompaction,
   renderAgentCompactionSource,
+  reportedContextTokens,
   settleAgentCompaction,
   isAgentContextOverflowError,
 } from './compaction';
@@ -112,6 +114,33 @@ describe('Agent compaction', () => {
       reserveTokens: 20_000,
       triggerTokens: 70_000,
     })).toBe(70_000);
+  });
+
+  it('resolves the window and trigger the indicator displays', () => {
+    expect(agentContextBudget({ contextWindow: 1_000_000, reserveTokens: 16_384 }))
+      .toEqual({ windowTokens: 1_000_000, triggerTokens: 983_616 });
+    expect(agentContextBudget()).toEqual({ windowTokens: 128_000, triggerTokens: 111_616 });
+  });
+
+  it('lets a known method-layer size stand in for the assembled prompt', () => {
+    const history = { messages: [{ id: 'i', intentId: 'a', role: 'user' as const, content: 'hello 你好', createdAt: 1 }] };
+    const prompt = '<iris-software>\nmethod layers\n</iris-software>';
+    // A run measures its tool loop without re-assembling the method layers, so
+    // the size-only sum has to equal the fully assembled estimate.
+    expect(estimateAgentTokens(prompt) + estimateAgentRequestTokens('', history))
+      .toBe(estimateAgentRequestTokens(prompt, history));
+  });
+
+  it('measures occupancy from the prompt side of provider usage only', () => {
+    expect(reportedContextTokens({ input: 1_000, output: 900, cacheRead: 500, cacheWrite: 100, totalTokens: 2_500 }))
+      .toBe(1_600);
+    // Anthropic-style components alone still add up.
+    expect(reportedContextTokens({ input: 3, cacheRead: 4 })).toBe(7);
+    // No usable report must never erase an existing reading.
+    expect(reportedContextTokens({ input: 0, cacheRead: 0, cacheWrite: 0 })).toBeNull();
+    expect(reportedContextTokens({})).toBeNull();
+    expect(reportedContextTokens(undefined)).toBeNull();
+    expect(reportedContextTokens('nope')).toBeNull();
   });
 
   it('places the boundary between whole Intents and always retains a recent tail', () => {

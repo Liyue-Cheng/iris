@@ -244,6 +244,61 @@ button:focus-visible .iris-status-badge {
   animation: iris-agent-terminal-dot-pulse 1.35s ease-out infinite;
 }
 
+/* Context-window ring: the arc is the strict share of the window that is
+   occupied, the tick is the compaction trigger, and the number beside it is the
+   same unclamped percentage. Only presentation lives here — the reading itself
+   is owned by main. */
+.iris-agent-context-usage {
+  --iris-agent-context-accent: var(--rp-iris);
+
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.375rem;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  padding: 0.25rem 0.375rem;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--muted-foreground);
+}
+
+.iris-agent-context-usage[data-tone='warning'] {
+  --iris-agent-context-accent: var(--rp-gold);
+}
+
+.iris-agent-context-usage[data-tone='danger'] {
+  --iris-agent-context-accent: var(--destructive);
+
+  color: var(--destructive);
+}
+
+.iris-agent-context-ring {
+  display: block;
+  flex-shrink: 0;
+  overflow: visible;
+}
+
+.iris-agent-context-ring-track {
+  stroke: color-mix(in srgb, var(--muted-foreground) 22%, transparent);
+}
+
+.iris-agent-context-ring-fill {
+  stroke: var(--iris-agent-context-accent);
+  stroke-linecap: butt;
+  transition: stroke-dashoffset 160ms ease-out;
+}
+
+.iris-agent-context-ring-trigger {
+  stroke: color-mix(in srgb, var(--foreground) 55%, transparent);
+  stroke-width: 1;
+}
+
+.iris-agent-context-value {
+  min-width: 2.25rem;
+  text-align: right;
+}
+
 @keyframes iris-pixel-rain {
   from {
     transform: translate3d(-10px, -32px, 0);
@@ -918,6 +973,10 @@ button:focus-visible .iris-status-badge {
   .iris-agent-avatar,
   .iris-agent-avatar-orbit {
     animation: none !important;
+  }
+
+  .iris-agent-context-ring-fill {
+    transition: none !important;
   }
 
   .iris-pixel-scene *,

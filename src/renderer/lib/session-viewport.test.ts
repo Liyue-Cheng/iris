@@ -137,7 +137,7 @@ describe('SessionViewportController', () => {
     controller.dispose();
   });
 
-  it('restores a frozen position per SessionKey after a switch', () => {
+  it('resets to the bottom when re-entering after a switch', () => {
     const values: ViewportValues = { scrollHeight: 1000, clientHeight: 200, scrollTop: 0 };
     const element = viewport(values);
     makeResizeObserver();
@@ -150,8 +150,8 @@ describe('SessionViewportController', () => {
     const secondValues: ViewportValues = { scrollHeight: 1000, clientHeight: 200, scrollTop: 0 };
     const second = viewport(secondValues);
     new SessionViewportController('iris-agent:a', second).dispose();
-    expect(getSessionViewportState('iris-agent:a')?.mode).toBe('free');
-    expect(secondValues.scrollTop).toBe(400);
+    expect(getSessionViewportState('iris-agent:a')).toBeNull();
+    expect(secondValues.scrollTop).toBe(800);
   });
 
   it('invalidates late events after dispose — they never mutate memory', () => {

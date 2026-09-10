@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 import type { AgentHistorySnapshot } from '@shared/agent-protocol';
-import type { IrisAgentModelRef } from '@shared/types';
+import {
+  agentContextTriggerTokens,
+  DEFAULT_AGENT_CONTEXT_WINDOW_TOKENS,
+} from '@shared/agent-context-budget';
+import type { IrisAgentContextBudget, IrisAgentModelRef } from '@shared/types';
 import type { AgentCompaction, AgentSessionAggregate } from './session-model';
 import { cloneAgentSession } from './session-model';
 import { buildAgentContext, buildAgentTrace, type AgentTrace } from './trace-context';
@@ -12,9 +16,6 @@ export const AGENT_TOOL_SCHEMA_TOKEN_BUDGET = 2_048;
 
 /** Retained verbatim history target. Kept well inside typical windows. */
 const DEFAULT_KEEP_RECENT_TOKENS = 20_000;
-/** Output headroom reserved so a compacted request still has room to answer. */
-const DEFAULT_RESERVE_TOKENS = 16_384;
-const DEFAULT_CONTEXT_WINDOW = 128_000;
 
 export interface AgentCompactionPlan {
   /** Every Intent up to and including this one becomes summary material. */
@@ -66,7 +67,12 @@ export function estimateAgentContextTokens(
   return tokens;
 }
 
-/** Estimates the complete provider request, including method layers and tool schemas. */
+/**
+ * Estimates the complete provider request, including method layers and tool schemas.
+ * An empty prompt yields the history side plus the tool schemas, which is how a
+ * measurement taken while the method layers are already fixed for the run in
+ * flight reuses their previously measured size.
+ */
 export function estimateAgentRequestTokens(
   prompt: string,
   context: Pick<AgentHistorySnapshot, 'messages'>,
@@ -83,12 +89,43 @@ export function isAgentContextOverflowError(message: string): boolean {
 
 /** The point at which a request should be compacted before it is sent. */
 export function agentCompactionTrigger(thresholds: AgentCompactionThresholds = {}): number {
-  const contextWindow = thresholds.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
-  if (thresholds.triggerTokens !== undefined) {
-    return Math.max(1, Math.min(contextWindow - 1, thresholds.triggerTokens));
+  return agentContextTriggerTokens({
+    contextWindow: thresholds.contextWindow,
+    reserveTokens: thresholds.reserveTokens,
+    triggerTokens: thresholds.triggerTokens,
+  });
+}
+
+/** The resolved window and trigger a Session's indicator and preflight share. */
+export type AgentContextBudget = IrisAgentContextBudget;
+
+export function agentContextBudget(
+  thresholds: AgentCompactionThresholds = {},
+): AgentContextBudget {
+  const windowTokens = Math.max(
+    1,
+    Math.floor(thresholds.contextWindow ?? DEFAULT_AGENT_CONTEXT_WINDOW_TOKENS),
+  );
+  return {
+    windowTokens,
+    triggerTokens: agentCompactionTrigger({ ...thresholds, contextWindow: windowTokens }),
+  };
+}
+
+/**
+ * The provider-reported prompt side of the last request. `totalTokens` also
+ * counts the answer, so occupancy has to be the input components alone. A
+ * missing or zero report returns null so it never erases an existing reading.
+ */
+export function reportedContextTokens(usage: unknown): number | null {
+  if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return null;
+  const value = usage as Record<string, unknown>;
+  let tokens = 0;
+  for (const key of ['input', 'cacheRead', 'cacheWrite']) {
+    const part = value[key];
+    if (typeof part === 'number' && Number.isFinite(part)) tokens += Math.max(0, Math.floor(part));
   }
-  const reserve = Math.min(thresholds.reserveTokens ?? DEFAULT_RESERVE_TOKENS, contextWindow - 1);
-  return Math.max(1, contextWindow - reserve);
+  return tokens > 0 ? tokens : null;
 }
 
 /**

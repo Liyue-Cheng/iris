@@ -763,13 +763,19 @@ export interface IrisAgentTerminalView {
 export interface IrisAgentTerminalOutputPayload {
   sessionId: string;
   terminalId: string;
-  cursor: number;
+  /**
+   * Delivery sequence owned by main's per-terminal output batcher. It is NOT a
+   * byte offset: a consumer dedupes live payloads against the `seq` a replay
+   * snapshot reported.
+   */
+  seq: number;
   data: string;
 }
 
 export interface IrisAgentTerminalReplay {
   data: string;
-  cursor: number;
+  /** Last sequence already contained in `data`; live payloads above it follow. */
+  seq: number;
 }
 
 export type IrisAgentCardView =
@@ -830,6 +836,27 @@ export interface IrisAgentIntentView {
   canForkFromInput?: boolean;
 }
 
+/**
+ * The window this Session's context is measured against. Main resolves it from
+ * the same budget the compaction preflight uses, so the indicator never joins
+ * the model catalog to learn its denominator.
+ */
+export interface IrisAgentContextBudget {
+  windowTokens: number;
+  triggerTokens: number;
+}
+
+/**
+ * Occupancy of the context window. `reported` is the provider's own prompt-side
+ * counter; `estimated` is the same request projection the compaction trigger
+ * uses. The window itself lives in `IrisAgentContextBudget`.
+ */
+export interface IrisAgentContextUsage {
+  usedTokens: number;
+  measurement: 'reported' | 'estimated';
+  updatedAt: number;
+}
+
 export interface IrisAgentSessionInfo {
   id: string;
   kind: 'iris-agent';
@@ -857,6 +884,10 @@ export interface IrisAgentSessionInfo {
     evidence: string;
     createdAt: number;
   };
+  /** The window and compaction trigger this Session is measured against. */
+  contextBudget?: IrisAgentContextBudget;
+  /** Absent until the first request is assembled for this Session. */
+  contextUsage?: IrisAgentContextUsage;
   intents: IrisAgentIntentView[];
   tasks?: IrisAgentTaskView[];
   queuedIntentCount?: number;

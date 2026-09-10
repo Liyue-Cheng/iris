@@ -20,9 +20,12 @@ import {
   truncateIntentChain,
 } from './session-domain';
 import { IrisAgentToolHost, type IrisAgentToolHostResult } from './tool-host';
+import { TerminalOutputBatcher } from '../terminal/output-pump';
 import {
   AgentCommandPty,
   resolveAgentCommandShell,
+  AGENT_TERMINAL_HIGH_WATER_BYTES,
+  AGENT_TERMINAL_LOW_WATER_BYTES,
   type AgentCommandPtyEvent,
   type AgentCommandPtyOptions,
 } from './command-pty';
@@ -61,20 +64,24 @@ import type {
   AgentTaskSummary,
 } from './session-model';
 import { AgentTaskManager, type AgentTaskRecord } from './task-manager';
-import { diffAnchorText, renderAnchorMaterial } from './trace-context';
+import { diffAnchorText, renderAnchorMaterial, buildAgentContextFromSession } from './trace-context';
 import {
   AGENT_COMPACTION_INSTRUCTION,
   agentCompactionTrigger,
+  agentContextBudget,
   completeAgentCompaction,
   estimateAgentRequestTokens,
+  estimateAgentTokens,
   inheritAgentCompactionInto,
   openAgentCompaction,
   planAgentCompaction,
   realignActiveCompaction,
   renderAgentCompactionSource,
+  reportedContextTokens,
   settleAgentCompaction,
   isAgentContextOverflowError,
   type AgentCompactionThresholds,
+  type AgentContextBudget,
 } from './compaction';
 import {
   cloneAgentSession,
@@ -88,6 +95,17 @@ import { SOFTWARE_PROMPT_TEMPLATE } from '../iris-templates';
 import { AppError } from '@shared/app-error';
 
 export const DEFAULT_DOCUMENT_AGENT_MESSAGE = '请根据文档内容开始工作';
+
+/** Settled Agent terminals kept replayable per session before the oldest is dropped. */
+export const AGENT_TERMINAL_RETENTION = 6;
+
+/**
+ * IPC aggregation window for Agent terminal output, and the ack-driven
+ * backpressure budget. Same values as the project terminal: burst output drops
+ * from hundreds of IPC/s to tens, and a dialog that stops acknowledging pauses
+ * the PTY instead of growing an unbounded queue in the main process.
+ */
+const AGENT_TERMINAL_BATCH_MS = 8;
 
 interface LoadedStore {
   root: string;
@@ -163,7 +181,17 @@ export class IrisAgentSessionManager extends EventEmitter {
     cursor: number;
     plainText: string;
     running: boolean;
+    /** Set when the PTY settles; the mirror is kept for later replay. */
+    settledAt?: number;
     timer?: ReturnType<typeof setTimeout>;
+    /**
+     * Batches PTY output for the terminal dialog. Delivery stays disabled until
+     * a renderer attaches, so an unobserved command costs mirror + log writes
+     * and no IPC at all; the next attach replays the mirror snapshot.
+     */
+    output: TerminalOutputBatcher<IrisAgentTerminalOutputPayload>;
+    /** Set while a renderer dialog owns this terminal's live stream. */
+    attachmentId: string | null;
   }>();
   private readonly pendingSupervisions = new Map<string, {
     sessionId: string;
@@ -247,6 +275,8 @@ export class IrisAgentSessionManager extends EventEmitter {
     await this.verifyAnchor(input.anchor);
     const anchor = await this.readAnchorText(input.anchor);
     const preferred = this.options.settingsManager?.get().experimental.irisAgentDefaultModel ?? null;
+    // Creation deliberately never starts model discovery, so it can only pick
+    // from what a previous listing already cached.
     const selected = this.modelCatalogCache
       ? this.modelCatalogCache.models.find((candidate) => sameModel(preferred, candidate)) ??
         this.modelCatalogCache.models[0] ?? null
@@ -268,6 +298,11 @@ export class IrisAgentSessionManager extends EventEmitter {
       },
       now: Date.now(),
     });
+    // Resolve the window up front so the indicator can render before the first
+    // request, and so the manager never learns the denominator late. A Session
+    // without a model has no real window, so it keeps none rather than showing
+    // a guessed default.
+    if (aggregate.model) aggregate.contextBudget = await this.contextBudgetFor(aggregate);
     const saved = await store.commit(aggregate);
     this.emitChanged(input.scope, saved);
     return projectAgentSession(saved, input.scope.generation);
@@ -296,6 +331,12 @@ export class IrisAgentSessionManager extends EventEmitter {
       this.options.settingsManager?.update({ experimental: { irisAgentDefaultModel: { ...model } } });
       if (sameModel(session.model, model)) return projectAgentSession(session, scope.generation);
       session.model = { ...model };
+      // The window belongs to the model, and the old reading was measured
+      // against the old model's window. Both are re-resolved together so the
+      // percentage can never be shown against a denominator that no longer
+      // applies; it reappears on the next send, measured against this model.
+      session.contextBudget = await this.contextBudgetFor(session);
+      delete session.contextUsage;
       const saved = await store.commit(session);
       this.emitChanged(scope, saved);
       return projectAgentSession(saved, scope.generation);
@@ -441,6 +482,9 @@ export class IrisAgentSessionManager extends EventEmitter {
       }
       acceptedIntent.assembledInputAvailable = assembledInputAvailable;
       session.requestFacts.push(prepared.facts);
+      // The window is measured from the exact payload about to be sent, so the
+      // indicator never depends on a provider reply to show its first reading.
+      await this.applyContextMeasurement(session, prepared.prompt, store.history(sessionId));
       session.state = 'running';
       running = await store.commit(session);
       this.emitChanged(scope, running);
@@ -584,7 +628,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       if (!this.options.summarizeContext) {
         throw new Error('Context compaction is unavailable in this runtime.');
       }
-      const plan = planAgentCompaction(session, this.compactionThresholdsFor(session));
+      const plan = planAgentCompaction(session, await this.compactionThresholdsFor(session));
       if (!plan) throw new Error('There is not enough settled history to compact yet.');
       const compacted = await this.runCompaction(scope, store, session, plan, 'manual');
       return projectAgentSession(compacted, scope.generation);
@@ -607,7 +651,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       preparedPrompt ?? pendingMessage,
       store.history(session.id),
     );
-    const thresholds = this.compactionThresholdsFor(session);
+    const thresholds = await this.compactionThresholdsFor(session);
     if (projected < agentCompactionTrigger(thresholds)) return session;
     const plan = planAgentCompaction(session, thresholds);
     if (!plan) return session;
@@ -685,7 +729,12 @@ export class IrisAgentSessionManager extends EventEmitter {
       this.emitChanged(scope, settled);
       throw new Error('The Iris Agent session changed while its context was being compacted.');
     }
-    const completed = await store.commit(completeAgentCompaction(latest, compactionId, summary, Date.now()));
+    const compacted = completeAgentCompaction(latest, compactionId, summary, Date.now());
+    // Summarized history left the window, so the stale reading is replaced at
+    // once instead of waiting for the next request. The method layers are not
+    // re-assembled here, so the last measured size stands in for them.
+    await this.applyContextMeasurement(compacted, '', buildAgentContextFromSession(compacted));
+    const completed = await store.commit(compacted);
     this.emitChanged(scope, completed);
     return completed;
   }
@@ -764,6 +813,7 @@ export class IrisAgentSessionManager extends EventEmitter {
         }
         intent.assembledInputAvailable = assembledInputAvailable;
         session.requestFacts.push(prepared.facts);
+        await this.applyContextMeasurement(session, prepared.prompt, store.history(sessionId));
         const running = await store.commit(resumePausedAgentIntent(session));
         this.emitChanged(scope, running);
         try {
@@ -833,7 +883,12 @@ export class IrisAgentSessionManager extends EventEmitter {
       const latest = await this.requireSession(scope, sessionId);
       const rewound = truncateIntentChain(latest);
       // Truncating the Trace path may strip the boundary the active summary covers.
-      const saved = await store.commit(realignActiveCompaction(rewound));
+      const realigned = realignActiveCompaction(rewound);
+      // The reading was measured against history that no longer exists, so it is
+      // dropped instead of being shown against the shorter Trace. The window is
+      // untouched: the model did not change.
+      delete realigned.contextUsage;
+      const saved = await store.commit(realigned);
       this.emitChanged(scope, saved);
       return projectAgentSession(saved, scope.generation);
     });
@@ -865,11 +920,80 @@ export class IrisAgentSessionManager extends EventEmitter {
     const activity = terminalActivity(session, terminalId);
     if (!activity) throw new Error('Iris Agent terminal was not found.');
     const live = this.terminals.get(terminalId);
-    if (live?.sessionId === sessionId) {
-      live.terminal.resize(cols, rows);
-      return live.terminal.replay();
+    if (live?.sessionId !== sessionId) {
+      throw new Error('Iris Agent terminal output is no longer persisted after the terminal exits.');
     }
-    throw new Error('Iris Agent terminal output is no longer persisted after the terminal exits.');
+    // Freeze the delivery boundary BEFORE inserting the mirror fence, and in the
+    // same tick: every chunk the snapshot below can contain is then also below
+    // the boundary the renderer dedupes against, while later chunks keep a
+    // higher sequence and are delivered live. Without this, a chunk arriving
+    // during the fence wait would be dropped as stale although the snapshot
+    // never saw it.
+    live.output.flush();
+    const lastSeq = live.output.replayBoundarySeq;
+    live.terminal.resize(cols, rows);
+    const snapshot = await live.terminal.replay();
+    return { data: snapshot.data, seq: lastSeq };
+  }
+
+  /**
+   * Bind one renderer terminal dialog to this terminal's live stream. Delivery
+   * is per-terminal (not a window-wide single attachment): the dialog replays
+   * the mirror snapshot first, so anything skipped while detached is recovered
+   * rather than lost.
+   */
+  attachTerminalOutput(
+    scope: ProjectScope,
+    sessionId: string,
+    terminalId: string,
+    attachmentId: string,
+  ): boolean {
+    const live = this.liveTerminalInScope(scope, sessionId, terminalId);
+    if (!live) return false;
+    live.attachmentId = attachmentId;
+    live.output.setDeliveryEnabled(true);
+    return true;
+  }
+
+  detachTerminalOutput(
+    scope: ProjectScope,
+    sessionId: string,
+    terminalId: string,
+    attachmentId: string,
+  ): void {
+    const live = this.liveTerminalInScope(scope, sessionId, terminalId);
+    if (!live || live.attachmentId !== attachmentId) return;
+    live.attachmentId = null;
+    live.output.setDeliveryEnabled(false);
+  }
+
+  /** Consumer ack: releases in-flight bytes so a paused PTY can resume. */
+  acknowledgeTerminalOutput(
+    scope: ProjectScope,
+    sessionId: string,
+    terminalId: string,
+    attachmentId: string,
+    seq: number,
+  ): void {
+    const live = this.liveTerminalInScope(scope, sessionId, terminalId);
+    if (!live || live.attachmentId !== attachmentId) return;
+    live.output.acknowledge(seq);
+  }
+
+  /**
+   * Synchronous scope check for the streaming channels: those run outside the
+   * session mutation queue, so they must not await store loading.
+   */
+  private liveTerminalInScope(
+    scope: ProjectScope,
+    sessionId: string,
+    terminalId: string,
+  ): { attachmentId: string | null; output: TerminalOutputBatcher<IrisAgentTerminalOutputPayload> } | null {
+    const loaded = this.loaded;
+    if (!loaded || loaded.root !== scope.root) return null;
+    if (!loaded.store.get(sessionId)) return null;
+    const live = this.terminals.get(terminalId);
+    return live && live.sessionId === sessionId ? live : null;
   }
 
   async writeTerminal(
@@ -934,7 +1058,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
       assertIrisAgentCloseAllowed(session, precondition.confirmBusy === true);
       await this.shutdownHost(sessionId);
-      this.abortSessionTerminals(sessionId);
+      this.releaseSessionTerminals(sessionId);
       await store.delete(sessionId);
       this.emittedProjections.delete(sessionId);
       this.emit('sessionDestroyed', { scope, sessionId } satisfies IrisAgentSessionDestroyedPayload);
@@ -944,7 +1068,7 @@ export class IrisAgentSessionManager extends EventEmitter {
   async closeProject(scope: ProjectScope): Promise<void> {
     const store = await this.ensureStore(scope.root);
     await Promise.allSettled(store.list().map((session) => this.runSessionCommand(session.id, async () => {
-      this.abortSessionTerminals(session.id);
+      this.releaseSessionTerminals(session.id);
       await this.shutdownHost(session.id);
       const latest = store.get(session.id);
       if (!latest || !isAgentSessionBusy(latest)) return;
@@ -977,7 +1101,11 @@ export class IrisAgentSessionManager extends EventEmitter {
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
-    for (const terminal of this.terminals.values()) terminal.terminal.abort();
+    for (const terminal of this.terminals.values()) {
+      terminal.output.dispose({ flush: false });
+      if (terminal.running) terminal.terminal.abort();
+      else terminal.terminal.dispose();
+    }
     for (const pending of this.pendingSupervisions.values()) {
       pending.reject(new Error('Iris Agent manager shut down during terminal supervision.'));
     }
@@ -1218,7 +1346,7 @@ export class IrisAgentSessionManager extends EventEmitter {
     if (!intent || intent.state !== 'running' || (intent.contextOverflowRetries ?? 0) >= 1) {
       return false;
     }
-    const thresholds = this.compactionThresholdsFor(latest);
+    const thresholds = await this.compactionThresholdsFor(latest);
     const plan = planAgentCompaction(latest, thresholds);
     if (!plan) return false;
 
@@ -1238,6 +1366,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       currentIntent.assembledInputAvailable = false;
     }
     current.requestFacts.push(prepared.facts);
+    await this.applyContextMeasurement(current, prepared.prompt, store.history(source.id));
     const saved = await this.commitAndEmit(scope, store, current);
     const host = await this.hostFor(saved, store, scope);
     await host.ensureStarted();
@@ -1387,6 +1516,26 @@ export class IrisAgentSessionManager extends EventEmitter {
               cursor: 0,
               plainText: '',
               running: true,
+              // Delivery starts disabled: a command nobody is watching must not
+              // pay for IPC, base64 and renderer queueing. Attaching later is
+              // lossless because the mirror snapshot is the source of truth.
+              output: new TerminalOutputBatcher<IrisAgentTerminalOutputPayload>(
+                (seq, data) => ({
+                  sessionId: session.id,
+                  terminalId: context.terminalId,
+                  seq,
+                  data,
+                }),
+                (payload) => this.emit('terminalOutput', payload),
+                AGENT_TERMINAL_BATCH_MS,
+                {
+                  highBytes: AGENT_TERMINAL_HIGH_WATER_BYTES,
+                  lowBytes: AGENT_TERMINAL_LOW_WATER_BYTES,
+                  setBlocked: (blocked) => terminal.setOutputBlocked('renderer', blocked),
+                },
+                false,
+              ),
+              attachmentId: null,
             });
             void this.enqueueSessionMutation(session.id, () => this.recordTerminalStarted(
               scope,
@@ -1558,13 +1707,8 @@ export class IrisAgentSessionManager extends EventEmitter {
     event: AgentCommandPtyEvent,
     correlation: AgentCorrelation,
   ): void {
-    if (event.type === 'output' && event.cursor !== undefined && event.data) {
-      this.emit('terminalOutput', {
-        sessionId,
-        terminalId: event.terminalId,
-        cursor: event.cursor,
-        data: event.data,
-      } satisfies IrisAgentTerminalOutputPayload);
+    if (event.type === 'output' && event.bytes) {
+      this.terminals.get(event.terminalId)?.output.enqueue(event.bytes);
       return;
     }
     if (event.type === 'completed') {
@@ -1573,6 +1717,10 @@ export class IrisAgentSessionManager extends EventEmitter {
         terminal.running = false;
         if (terminal.timer) clearTimeout(terminal.timer);
         delete terminal.timer;
+        // Deliver the tail to a dialog that is still watching, then release the
+        // in-flight budget. A dialog that opens later gets everything from the
+        // mirror snapshot instead.
+        terminal.output.dispose({ flush: true });
       }
       return;
     }
@@ -1726,6 +1874,15 @@ export class IrisAgentSessionManager extends EventEmitter {
     const latest = store.get(session.id) ?? session;
     if (!matchesActiveAgentIntent(latest, correlation)) return;
     applyProviderMessage(latest, message, correlation);
+    // A provider may omit usage: a long tool loop only reports counters on some
+    // responses. Re-measure after every committed assistant or tool message so
+    // the reading follows the history growth instead of freezing at the number
+    // the run started with. The method layers are fixed for the whole run, so
+    // this reuses their measured size. The measurement reads the projection of
+    // the message just applied, not the store's pre-commit state.
+    if (latest.contextBudget && reportedContextTokens(message.usage) === null) {
+      await this.applyContextMeasurement(latest, '', buildAgentContextFromSession(latest));
+    }
     await this.commitAndEmit(scope, store, latest);
   }
 
@@ -1924,10 +2081,43 @@ export class IrisAgentSessionManager extends EventEmitter {
     if (anchor.kind === 'document') await this.projectManager.readDoc(anchor.path);
   }
 
-  private compactionThresholdsFor(session: AgentSessionAggregate): AgentCompactionThresholds {
-    const configured = session.model && this.modelCatalogCache?.models.find((model) =>
-      model.provider === session.model?.provider && model.modelId === session.model?.modelId);
+  /**
+   * Records one reading of a request's prompt side. Every reading covers the same
+   * object — tool schemas + method layers + history — so the number never moves
+   * backwards just because a later measurement could not re-assemble the method
+   * layers. The window is resolved only when the Session does not have one yet;
+   * a model switch resolves and clears both explicitly.
+   */
+  private async applyContextMeasurement(
+    session: AgentSessionAggregate,
+    /** The assembled method layers, or '' to reuse the last assembled size. */
+    prompt: string,
+    history: ReturnType<IrisAgentSessionStore['history']>,
+  ): Promise<void> {
+    if (prompt) session.contextPromptTokens = estimateAgentTokens(prompt);
+    session.contextBudget ??= await this.contextBudgetFor(session);
+    session.contextUsage = {
+      // `estimateAgentRequestTokens('', history)` is the tool schemas plus the
+      // history side; the method layers arrive as their measured size.
+      usedTokens: (session.contextPromptTokens ?? 0) +
+        estimateAgentRequestTokens('', history),
+      measurement: 'estimated',
+      updatedAt: Date.now(),
+    };
+  }
+
+  private async contextBudgetFor(session: AgentSessionAggregate): Promise<AgentContextBudget> {
+    return agentContextBudget(await this.compactionThresholdsFor(session));
+  }
+
+  private async compactionThresholdsFor(session: AgentSessionAggregate): Promise<AgentCompactionThresholds> {
     const defaults = this.options.compactionThresholds ?? {};
+    if (!session.model) return defaults;
+    // Resolve through the catalog loader instead of the cache, so a cold cache
+    // cannot record a 1M model as the 128K default.
+    const catalog = await this.loadModelCatalog();
+    const configured = catalog.models.find((model) =>
+      model.provider === session.model?.provider && model.modelId === session.model?.modelId);
     if (!configured) return defaults;
     return {
       ...defaults,
@@ -2013,12 +2203,45 @@ export class IrisAgentSessionManager extends EventEmitter {
     }
   }
 
+  /** Drop every terminal of a session, including retained exited mirrors. */
+  private releaseSessionTerminals(sessionId: string): void {
+    for (const [terminalId, terminal] of [...this.terminals.entries()]) {
+      if (terminal.sessionId !== sessionId) continue;
+      if (terminal.timer) clearTimeout(terminal.timer);
+      terminal.output.dispose({ flush: false });
+      if (terminal.running) {
+        terminal.running = false;
+        terminal.terminal.abort();
+      } else {
+        terminal.terminal.dispose();
+      }
+      this.terminals.delete(terminalId);
+    }
+  }
+
+  /**
+   * A settled terminal keeps its mirror so the terminal dialog can still replay
+   * a finished command. Retention is bounded per session; the oldest settled
+   * terminals are disposed once the cap is exceeded.
+   */
   private releaseTerminal(terminalId: string): void {
     const terminal = this.terminals.get(terminalId);
     if (!terminal || terminal.running) return;
     if (terminal.timer) clearTimeout(terminal.timer);
-    terminal.terminal.dispose();
-    this.terminals.delete(terminalId);
+    delete terminal.timer;
+    terminal.settledAt ??= Date.now();
+    const settled = [...this.terminals.entries()]
+      .filter(([, entry]) => entry.sessionId === terminal.sessionId && !entry.running)
+      .sort((left, right) => (left[1].settledAt ?? 0) - (right[1].settledAt ?? 0));
+    while (settled.length > AGENT_TERMINAL_RETENTION) {
+      const evicted = settled.shift();
+      if (!evicted) break;
+      const [evictedId, entry] = evicted;
+      if (evictedId === terminalId) continue;
+      entry.output.dispose({ flush: false });
+      entry.terminal.dispose();
+      this.terminals.delete(evictedId);
+    }
   }
 
   private runSessionCommand<T>(sessionId: string, command: () => Promise<T>): Promise<T> {
@@ -2248,6 +2471,19 @@ function applyProviderMessage(
   if (role === 'assistant') {
     const failed = stopReason === 'error';
     const aborted = stopReason === 'aborted';
+    // The provider's own counter is authoritative for the request it answered,
+    // so it replaces the pre-flight estimate as soon as it arrives. Without a
+    // budget there is no denominator, so the reading is left alone.
+    if (!failed && session.contextBudget) {
+      const reported = reportedContextTokens(message.usage);
+      if (reported !== null) {
+        session.contextUsage = {
+          usedTokens: reported,
+          measurement: 'reported',
+          updatedAt: Date.now(),
+        };
+      }
+    }
     const turn = correlation.invokeId
       ? session.turns.find((candidate) => candidate.invokeId === correlation.invokeId)
       : undefined;

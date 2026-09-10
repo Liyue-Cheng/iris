@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -229,6 +230,39 @@ describe('AgentCommandPty', () => {
     await expect(command.result).resolves.toMatchObject({ plainText: '你好' });
   });
 
+  it('forces non-interactive git defaults over inherited values in the spawned environment', async () => {
+    const fake = fakePty();
+    let spawnedEnv: Record<string, string | undefined> | undefined;
+    const command = new AgentCommandPty({
+      terminalId: 'terminal-env',
+      command: 'git log',
+      cwd: process.cwd(),
+      outputPath: 'output.bin',
+      env: {
+        PATH: 'C:\\bin',
+        GIT_PAGER: 'less',
+        PAGER: 'more',
+        GIT_TERMINAL_PROMPT: '1',
+        GIT_EDITOR: 'vi',
+      },
+      spawnFn: ((_file, _args, options) => {
+        spawnedEnv = options?.env;
+        return fake.pty;
+      }) as typeof import('node-pty').spawn,
+      outputStore: { append: async () => {} },
+    });
+    expect(spawnedEnv).toMatchObject({
+      GIT_PAGER: 'cat',
+      PAGER: 'cat',
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_EDITOR: 'false',
+      GIT_SEQUENCE_EDITOR: 'false',
+      GIT_MERGE_AUTOEDIT: 'no',
+    });
+    fake.exit(0);
+    await expect(command.result).resolves.toMatchObject({ exitCode: 0 });
+  });
+
   it('uses a one-shot non-interactive shell command', () => {
     expect(commandShell('echo ok', { SHELL: '/bin/zsh' }, 'linux')).toEqual({
       file: '/bin/zsh',
@@ -284,5 +318,30 @@ describe('AgentCommandPty', () => {
       }
     },
     10_000,
+  );
+
+  it.runIf(existsSync(join(process.cwd(), '.git')))(
+    'runs a real git log in a ConPTY without the pager stalling the command',
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'iris-agent-pty-git-'));
+      const outputPath = join(dir, 'terminal.bin');
+      try {
+        const command = new AgentCommandPty({
+          terminalId: 'terminal-git-log',
+          command: 'git log --oneline -50',
+          cwd: process.cwd(),
+          outputPath,
+          displayThresholdMs: 20,
+          timeoutMs: 10_000,
+        });
+        const result = await command.result;
+        expect(result.termination).toBeUndefined();
+        expect(result.exitCode).toBe(0);
+        expect(result.plainText).toMatch(/[0-9a-f]{7} /u);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+    20_000,
   );
 });

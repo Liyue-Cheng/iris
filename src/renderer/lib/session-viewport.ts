@@ -166,7 +166,10 @@ export class SessionViewportController {
     private readonly viewport: HTMLElement,
     content?: Element,
   ) {
-    this.state = memory.get(key) ?? {
+    // Viewport intent is scoped to one continuous mount. Every entry (including
+    // returning from another page or issue) starts at the live bottom; history
+    // position is never restored across unmounts.
+    this.state = {
       mode: 'follow-bottom',
       scrollTop: 0,
       ...metrics(viewport),
@@ -255,6 +258,8 @@ export class SessionViewportController {
     }
     this.observer?.disconnect();
     this.observer = null;
+    // Do not carry this browsing session into a later mount.
+    memory.delete(this.key);
   }
 }
 

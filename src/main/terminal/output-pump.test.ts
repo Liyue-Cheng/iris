@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SessionOutputPayload } from '@shared/types';
-import { TerminalOutputPump } from './output-pump';
+import { TerminalOutputBatcher, TerminalOutputPump } from './output-pump';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -74,5 +74,28 @@ describe('TerminalOutputPump', () => {
     expect(emit).not.toHaveBeenCalled();
     expect(pump.lastEmittedSeq).toBe(-1);
     expect(pump.replayBoundarySeq).toBe(0);
+  });
+
+  it('batches a custom payload shape and freezes its boundary for a snapshot replay', () => {
+    vi.useFakeTimers();
+    const emitted: Array<{ cursor: number; data: string }> = [];
+    const pump = new TerminalOutputBatcher(
+      (seq, data) => ({ cursor: seq, data }),
+      (payload) => emitted.push(payload),
+    );
+    pump.enqueue(Buffer.from('a'));
+    pump.enqueue(Buffer.from('b'));
+    expect(emitted).toEqual([]);
+    vi.advanceTimersByTime(8);
+
+    // One payload carries both chunks and the sequence of the last one, which is
+    // exactly the boundary a renderer dedupes a snapshot against.
+    expect(emitted).toEqual([{ cursor: 1, data: Buffer.from('ab').toString('base64') }]);
+    expect(pump.replayBoundarySeq).toBe(1);
+
+    // Output produced after the boundary stays above it, so it is delivered live.
+    pump.enqueue(Buffer.from('c'));
+    pump.flush();
+    expect(emitted.at(-1)).toEqual({ cursor: 2, data: Buffer.from('c').toString('base64') });
   });
 });
