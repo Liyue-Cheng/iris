@@ -24,10 +24,12 @@ import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import type {
   AgentCommandShell,
   AgentHistorySnapshot,
+  AgentPromptImage,
   AgentProviderProxy,
   AgentTerminalIntent,
 } from '@shared/agent-protocol';
 import type { AgentToolOperationResult } from '@shared/agent-protocol';
+import type { IrisAgentImageMimeType } from '@shared/types';
 import { AGENT_TERMINAL_MAX_TIMEOUT_SECONDS } from './command-pty';
 import type {
   IrisAgentConfiguredModel,
@@ -35,8 +37,11 @@ import type {
   IrisAgentModelOption,
   IrisAgentModelRef,
   IrisAgentProviderCatalog,
+  IrisAgentReasoningMode,
+  IrisAgentThinkingLevel,
 } from '@shared/types';
 import { IRIS_AGENT_PROMPT } from './prompt';
+import { renderReadImageSummary } from './tool-result-content';
 import type { TextEdit } from './edit-diff';
 import {
   IRIS_AGENT_PROVIDER_TEMPLATES,
@@ -83,10 +88,27 @@ export function irisPiAgentDir(): string {
   return configured ? configured.replace(/^~(?=$|[\\/])/u, homedir()) : join(homedir(), '.pi', 'agent');
 }
 
+/**
+ * One file read, already classified. A text read is a string; an image read
+ * carries the base64 the provider needs plus the metadata the model is told
+ * about, so the tool layer never has to guess from a byte blob.
+ */
+export type IrisReadFileResult =
+  | { kind: 'text'; text: string }
+  | {
+      kind: 'image';
+      mimeType: IrisAgentImageMimeType;
+      dataBase64: string;
+      bytes: number;
+      width?: number;
+      height?: number;
+    };
+
 export interface IrisToolHostOperations {
   read: {
     access: (absolutePath: string) => Promise<void>;
     readFile: (absolutePath: string, options?: { offset?: number; limit?: number }) => Promise<Buffer>;
+    readMediaFile: (absolutePath: string, options?: { offset?: number; limit?: number }) => Promise<IrisReadFileResult>;
   };
   edit: {
     access: (absolutePath: string) => Promise<void>;
@@ -253,10 +275,20 @@ export function createIrisPiToolDefinitions(
         ...(params.offset === undefined ? {} : { offset: params.offset }),
         ...(params.limit === undefined ? {} : { limit: params.limit }),
       };
-      const content = Object.keys(readOptions).length > 0
-        ? await operations.read.readFile(join(cwd, params.path), readOptions)
-        : await operations.read.readFile(join(cwd, params.path));
-      return { content: [{ type: 'text' as const, text: content.toString('utf8') }], details: {} };
+      const media = await operations.read.readMediaFile(
+        join(cwd, params.path),
+        Object.keys(readOptions).length > 0 ? readOptions : undefined,
+      );
+      if (media.kind === 'image') {
+        return {
+          content: [
+            { type: 'text' as const, text: renderReadImageSummary(params.path, media) },
+            { type: 'image' as const, data: media.dataBase64, mimeType: media.mimeType },
+          ],
+          details: {},
+        };
+      }
+      return { content: [{ type: 'text' as const, text: media.text }], details: {} };
     })),
     withIrisToolCallContext(fileTool('edit', Type.Object({
       path: Type.String(),
@@ -409,12 +441,29 @@ export async function loadIrisModelCatalog(
 
 export async function loadIrisProviderCatalog(
   profileRoot: string,
+  agentDir?: string,
 ): Promise<IrisAgentProviderCatalog> {
   try {
     const profiles = await loadProviderProfiles(profileRoot);
+    const modelCatalog = agentDir
+      ? await loadIrisModelCatalog(agentDir, profileRoot, false)
+      : { models: [] };
+    const capabilities = new Map(modelCatalog.models.map((model) => [modelKey(model.provider, model.modelId), model]));
     return {
       templates: [...IRIS_AGENT_PROVIDER_TEMPLATES],
-      profiles: profilesForRenderer(profiles),
+      profiles: profilesForRenderer(profiles).map((profile) => ({
+        ...profile,
+        models: (profile.models ?? []).map((model) => {
+          const capability = capabilities.get(modelKey(runtimeProviderId(profile.id), model.modelId));
+          return {
+            ...model,
+            reasoningLevel: model.reasoningLevel ?? 'off',
+            supportedReasoningLevels: capability?.supportedReasoningLevels ?? ['off'],
+            ...(capability?.reasoningMode ? { reasoningMode: capability.reasoningMode } : {}),
+          };
+        }),
+      })),
+      ...(modelCatalog.error ? { error: modelCatalog.error } : {}),
     };
   } catch (error) {
     const profiles = await loadProviderProfiles(profileRoot).catch(() => []);
@@ -426,6 +475,29 @@ export async function loadIrisProviderCatalog(
   }
 }
 
+/**
+ * The provider-facing content of the request being sent.
+ *
+ * The request is one turn, so its images belong on the same user message as the
+ * assembled prompt rather than on a second message the provider would have to
+ * correlate. A text-only request keeps the plain string form, which is what
+ * every existing provider path already expects.
+ */
+export function renderPromptContent(
+  prompt: string,
+  images?: readonly AgentPromptImage[],
+): string | Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> {
+  if (!images?.length) return prompt;
+  return [
+    { type: 'text', text: prompt },
+    ...images.map((image) => ({
+      type: 'image' as const,
+      data: image.dataBase64,
+      mimeType: image.attachment.mimeType,
+    })),
+  ];
+}
+
 export async function createIrisPiSession(options: {
     cwd: string;
     agentDir: string;
@@ -435,6 +507,7 @@ export async function createIrisPiSession(options: {
     model: IrisAgentModelRef;
     commandShell: AgentCommandShell;
     providerProxy: AgentProviderProxy;
+    reasoning?: IrisAgentThinkingLevel;
     systemPrompt?: string;
     executeToolCall?: (toolCall: ToolCall) => Promise<ToolResultMessage>;
     onProviderPayload?: (
@@ -459,7 +532,7 @@ export async function createIrisPiSession(options: {
   }
   const transport = createProviderTransport(providerProxy);
   const streamRuntime = instrumentProviderPayloads(modelRuntime, onProviderPayload, onProviderFailure, transport.fetch);
-  const messages = options.history.messages.map(toPiHistoryMessage);
+  const messages = options.history.messages.map((item) => toPiHistoryMessage(item, model));
   const listeners = new Set<(event: unknown) => void | Promise<void>>();
   let aborted = false;
   let activeAbortController: AbortController | null = null;
@@ -469,15 +542,26 @@ export async function createIrisPiSession(options: {
   };
   const tools = createIrisPiToolDefinitions(options.cwd, options.operations, options.commandShell)
     .map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters })) as Tool[];
-  const execute = async (input?: string) => {
-    if (input !== undefined) state.messages.push({ role: 'user', content: input, timestamp: Date.now() });
+  const execute = async (input?: string, images?: readonly AgentPromptImage[]) => {
+    if (input !== undefined) {
+      state.messages.push({
+        role: 'user',
+        content: renderPromptContent(input, images),
+        timestamp: Date.now(),
+      });
+    }
     while (!aborted) {
       activeAbortController = new AbortController();
       const context: Context = { systemPrompt: options.systemPrompt ?? IRIS_AGENT_PROMPT, messages: state.messages, tools };
-      const stream = streamRuntime.streamSimple(model, context, { signal: activeAbortController.signal });
+      const stream = streamRuntime.streamSimple(model, context, {
+        signal: activeAbortController.signal,
+        ...(options.reasoning ? { reasoning: options.reasoning } : {}),
+      });
       let final: AssistantMessage | undefined;
       for await (const event of stream) {
-        if (event.type === 'text_delta' || event.type === 'thinking_delta' || event.type === 'toolcall_delta') {
+        if (event.type === 'text_start' || event.type === 'text_delta' ||
+          event.type === 'thinking_start' || event.type === 'thinking_delta' ||
+          event.type === 'toolcall_start' || event.type === 'toolcall_delta') {
           await emit({ type: 'message_update', assistantMessageEvent: event, message: event.partial });
         }
         if (event.type === 'done') final = event.message;
@@ -505,7 +589,7 @@ export async function createIrisPiSession(options: {
     session: {
       agent: { state, continue: () => execute() },
       subscribe(listener: (event: unknown) => void | Promise<void>) { listeners.add(listener); return () => listeners.delete(listener); },
-      prompt: (input: string) => execute(input),
+      prompt: (input: string, images?: readonly AgentPromptImage[]) => execute(input, images),
       continue: () => execute(),
       abort: async () => { aborted = true; activeAbortController?.abort(); },
       dispose: () => { aborted = true; listeners.clear(); },
@@ -751,21 +835,41 @@ async function fetchIrisProviderModelIds(
   return modelIds;
 }
 
-function toIrisModelOption(model: {
+export function toIrisModelOption(model: {
   provider: string;
   id: string;
   name: string;
   api: string;
   reasoning: boolean;
+  input?: readonly string[];
   contextWindow?: number;
   maxTokens?: number;
+  thinkingLevelMap?: Partial<Record<'off' | IrisAgentThinkingLevel, string | null>>;
+  compat?: unknown;
 }, providerName?: string, configured?: IrisAgentConfiguredModel): IrisAgentModelOption {
+  const supportedReasoningLevels = supportedReasoningLevelsFor(model);
+  const forceAdaptiveThinking = !!model.compat && typeof model.compat === 'object' &&
+    !Array.isArray(model.compat) &&
+    (model.compat as { forceAdaptiveThinking?: unknown }).forceAdaptiveThinking === true;
+  const reasoningMode: IrisAgentReasoningMode | undefined = model.reasoning
+    ? model.api === 'anthropic-messages' && !forceAdaptiveThinking
+      ? 'budget'
+      : 'effort'
+    : undefined;
   return {
     provider: model.provider,
     modelId: model.id,
     name: model.name,
     api: model.api,
     reasoning: model.reasoning,
+    reasoningLevel: configured?.reasoningLevel ?? 'off',
+    supportedReasoningLevels,
+    ...(reasoningMode ? { reasoningMode } : {}),
+    // The composer gates its attach control on this. A catalog that does not
+    // declare image input is treated as text-only rather than assumed capable.
+    capabilities: {
+      input: model.input?.includes('image') ? ['text', 'image'] : ['text'],
+    },
     ...(model.contextWindow ? { contextWindowTokens: model.contextWindow } : {}),
     ...(model.maxTokens ? { maxOutputTokens: model.maxTokens } : {}),
     ...(providerName ? { providerName } : {}),
@@ -781,6 +885,22 @@ function toIrisModelOption(model: {
         }
       : {}),
   };
+}
+
+function supportedReasoningLevelsFor(model: {
+  reasoning: boolean;
+  thinkingLevelMap?: Partial<Record<'off' | IrisAgentThinkingLevel, string | null>>;
+}): IrisAgentModelOption['supportedReasoningLevels'] {
+  if (!model.reasoning) return ['off'];
+  const map = model.thinkingLevelMap;
+  const levels: IrisAgentModelOption['supportedReasoningLevels'] = ['off'];
+  for (const level of ['minimal', 'low', 'medium', 'high'] as const) {
+    if (map?.[level] !== null) levels.push(level);
+  }
+  for (const level of ['xhigh', 'max'] as const) {
+    if (map && Object.hasOwn(map, level) && map[level] !== null) levels.push(level);
+  }
+  return levels;
 }
 
 function modelKey(provider: string, modelId: string): string {
@@ -1041,10 +1161,20 @@ export function normalizeIrisInterruptedAssistantMessage(
 
 function toPiHistoryMessage(
   item: AgentHistorySnapshot['messages'][number],
+  currentModel?: Model<Api>,
 ): Message {
   if (item.role === 'assistant') {
+    if (item.providerReplay && currentModel &&
+      item.providerReplay.api === currentModel.api &&
+      item.providerReplay.provider === currentModel.provider &&
+      item.providerReplay.model === currentModel.id) {
+      const replay = structuredClone(item.providerReplay.message) as unknown as AssistantMessage;
+      if (isPiMessage(replay) && replay.role === 'assistant') return replay;
+    }
     const content = [
-      ...(item.content ? [{ type: 'text' as const, text: item.content }] : []),
+      ...(typeof item.content === 'string' && item.content
+        ? [{ type: 'text' as const, text: item.content }]
+        : []),
       ...(item.toolCalls ?? []).map((call) => ({
         type: 'toolCall' as const,
         id: call.id,
@@ -1075,16 +1205,30 @@ function toPiHistoryMessage(
       role: 'toolResult',
       toolCallId: item.toolCallId,
       toolName: item.tool,
-      content: [{ type: 'text', text: item.content }],
+      content: toPiContent(item.content),
       isError: item.isError ?? false,
       timestamp: item.createdAt,
     } as ToolResultMessage;
   }
   return {
     role: 'user',
-    content: item.content,
+    content: toPiContent(item.content),
     timestamp: item.createdAt,
   };
+}
+
+/**
+ * History content already carries hydrated image bytes for a tool result, so a
+ * resumed Session sends the same pictures the original request did instead of
+ * a text placeholder.
+ */
+function toPiContent(
+  content: AgentHistorySnapshot['messages'][number]['content'],
+): string | Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> {
+  if (typeof content === 'string') return content;
+  return content.map((part) => part.type === 'text'
+    ? { type: 'text' as const, text: part.text }
+    : { type: 'image' as const, data: part.dataBase64, mimeType: part.attachment.mimeType });
 }
 
 function isPiMessage(value: unknown): value is Record<string, unknown> {

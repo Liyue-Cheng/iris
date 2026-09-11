@@ -207,4 +207,52 @@ describe('AgentTaskManager', () => {
       await removeTempDataDir(projectRoot);
     }
   });
+
+  it('cancels and waits for every active task owned by one Session', async () => {
+    const userDataPath = await createTempDataDir('iris-agent-task-close-');
+    const projectRoot = await createTempDataDir('iris-agent-task-close-project-');
+    const ptys: ReturnType<typeof fakePty>[] = [];
+    try {
+      const manager = new AgentTaskManager({
+        userDataPath,
+        commandShell,
+        terminalFactory: () => {
+          const pty = fakePty();
+          ptys.push(pty);
+          return pty as unknown as AgentCommandPty;
+        },
+      });
+      const first = await manager.start({
+        projectRoot, sessionId: 'session-1', intentId: 'intent-1', toolCallId: 'call-1',
+        command: 'watch one', title: 'One', cwd: projectRoot,
+      });
+      const second = await manager.start({
+        projectRoot, sessionId: 'session-1', intentId: 'intent-1', toolCallId: 'call-2',
+        command: 'watch two', title: 'Two', cwd: projectRoot,
+      });
+      await manager.start({
+        projectRoot, sessionId: 'session-2', intentId: 'intent-2', toolCallId: 'call-3',
+        command: 'watch other', title: 'Other', cwd: projectRoot,
+      });
+      if (first.kind !== 'task' || second.kind !== 'task' || !first.logRef || !second.logRef) {
+        throw new Error('tasks did not start');
+      }
+
+      const closing = manager.cancelSession(projectRoot, 'session-1');
+      await vi.waitFor(() => {
+        expect(ptys[0]!.abort).toHaveBeenCalledOnce();
+        expect(ptys[1]!.abort).toHaveBeenCalledOnce();
+      });
+      expect(ptys[2]!.abort).not.toHaveBeenCalled();
+      ptys[0]!.complete(130, first.logRef, 'aborted');
+      ptys[1]!.complete(130, second.logRef, 'aborted');
+      await closing;
+
+      const records = await manager.recordsForSession(projectRoot, 'session-1');
+      expect(records.map((task) => task.status)).toEqual(['canceled', 'canceled']);
+    } finally {
+      await removeTempDataDir(userDataPath);
+      await removeTempDataDir(projectRoot);
+    }
+  });
 });

@@ -1,14 +1,42 @@
 import type {
   IrisAgentAnchor,
+  IrisAgentAttachment,
+  IrisAgentImageMimeType,
   IrisAgentModelRef,
   IrisAgentProviderContextCall,
+  IrisAgentReasoningLevel,
+  IrisAgentThinkingLevel,
+  IrisAgentLivePhase,
+  IrisJsonValue,
 } from './types';
+import { IRIS_AGENT_IMAGE_MIME_TYPES } from './types';
 export interface AgentTextEdit {
   oldText: string;
   newText: string;
 }
 
-export const IRIS_AGENT_PROTOCOL_VERSION = 15 as const;
+export const IRIS_AGENT_PROTOCOL_VERSION = 17 as const;
+
+/**
+ * Largest single image the Agent will send to a provider, whether it was read
+ * from the project or attached by the user. One number for both directions:
+ * the limit is about context cost, and a provider does not care who chose the
+ * picture.
+ */
+export const AGENT_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+
+/** Images one user request may carry. */
+export const AGENT_ATTACHMENT_MAX_COUNT = 5;
+
+/** Decoded bytes one user request may carry across all its images. */
+export const AGENT_ATTACHMENT_MAX_TOTAL_BYTES = 12 * 1024 * 1024;
+
+/**
+ * Long-edge ceiling the composer downscales to before uploading. Chosen so a
+ * 4K screenshot lands inside a typical vision model's tile budget instead of
+ * consuming a disproportionate part of the window on every subsequent request.
+ */
+export const AGENT_ATTACHMENT_MAX_EDGE = 1568;
 
 export type AgentToolName =
   | 'read' | 'edit' | 'write' | 'terminal'
@@ -55,28 +83,75 @@ export interface AgentTerminalSupervisionResult {
   usageTokens?: number;
 }
 
+/**
+ * One piece of a message sent to the provider. Text stays a plain string on the
+ * aggregate and on the wire; an image part is the only shape that carries bytes,
+ * and it always carries the attachment identity alongside them so history can
+ * be re-projected without re-reading the original file.
+ */
+export type AgentContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; attachment: IrisAgentAttachment; dataBase64: string };
+
+/** A message's provider-facing content: text only, or text plus images. */
+export type AgentMessageContent = string | AgentContentPart[];
+
+/**
+ * One image part of the request being sent right now. The current user request
+ * travels as an assembled prompt string rather than as a projected history
+ * message, so its images are handed over with it.
+ */
+export type AgentPromptImage = Extract<AgentContentPart, { type: 'image' }>;
+
+/** Exact completed provider message, retained only for same-runtime replay. */
+export interface AgentProviderReplay {
+  api: string;
+  provider: string;
+  model: string;
+  message: Record<string, IrisJsonValue>;
+}
+
+export interface AgentHistoryMessage {
+  id: string;
+  intentId: string;
+  turnId?: string;
+  role: 'user' | 'assistant' | 'tool';
+  content: AgentMessageContent;
+  createdAt: number;
+  /**
+   * Images this message contributed to the request. Kept beside `content`
+   * because a tool result's readable text and its image bytes are persisted by
+   * different mechanisms: the text is already in the Trace, the bytes are
+   * content-addressed files the store hydrates on projection.
+   */
+  attachments?: IrisAgentAttachment[];
+  toolCalls?: Array<{ id: string; tool: AgentToolName; input: unknown }>;
+  toolCallId?: string;
+  tool?: AgentToolName;
+  isError?: boolean;
+  providerReplay?: AgentProviderReplay;
+}
+
 export interface AgentHistorySnapshot {
   revision: number;
   anchor: IrisAgentAnchor;
-  messages: Array<{
-    id: string;
-    intentId: string;
-    turnId?: string;
-    role: 'user' | 'assistant' | 'tool';
-    content: string;
-    createdAt: number;
-    toolCalls?: Array<{ id: string; tool: AgentToolName; input: unknown }>;
-    toolCallId?: string;
-    tool?: AgentToolName;
-    isError?: boolean;
-  }>;
+  messages: AgentHistoryMessage[];
 }
 
+/**
+ * The digest compares runtime identity between main and the Worker, so image
+ * bytes are replaced by their content-addressed id. Attachments are immutable
+ * and named by the sha256 of their bytes, so the id decides the bytes and the
+ * digest stays both exact and cheap to compute.
+ */
 export function agentHistoryDigest(history: AgentHistorySnapshot): string {
   const text = JSON.stringify({
     revision: history.revision,
     anchor: history.anchor,
-    messages: history.messages,
+    messages: history.messages.map((message) => ({
+      ...message,
+      content: digestContent(message.content),
+    })),
   });
   let hash = 0x811c9dc5;
   for (let index = 0; index < text.length; index += 1) {
@@ -84,6 +159,13 @@ export function agentHistoryDigest(history: AgentHistorySnapshot): string {
     hash = Math.imul(hash, 0x01000193);
   }
   return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function digestContent(content: AgentMessageContent): string | unknown[] {
+  if (typeof content === 'string') return content;
+  return content.map((part) => part.type === 'text'
+    ? { type: 'text', text: part.text }
+    : { type: 'image', id: part.attachment.id });
 }
 
 export interface AgentWorkerInitRuntime {
@@ -96,6 +178,11 @@ export interface AgentWorkerInitRuntime {
 export interface AgentWorkerExecutionRuntime {
   model: IrisAgentModelRef;
   providerProxy: AgentProviderProxy;
+  reasoning?: {
+    configured: IrisAgentReasoningLevel;
+    effective: IrisAgentReasoningLevel;
+    downgradeReason?: string;
+  };
 }
 
 export type AgentProviderProxy =
@@ -133,6 +220,14 @@ export type AgentToolOperationResult =
   | { kind: 'void'; message?: string }
   | { kind: 'file'; contentBase64: string }
   | {
+      kind: 'image';
+      mimeType: IrisAgentImageMimeType;
+      contentBase64: string;
+      bytes: number;
+      width?: number;
+      height?: number;
+    }
+  | {
       kind: 'terminal';
       exitCode: number | null;
       success: boolean;
@@ -164,6 +259,12 @@ export type AgentWorkerRequest = AgentProtocolEnvelope &
     | {
         type: 'run';
         prompt: string;
+        /**
+         * Images the request being sent carries. The intent that owns them is
+         * still running and therefore absent from `history`, so these are the
+         * only place they can arrive.
+         */
+        attachments?: AgentPromptImage[];
         history: AgentHistorySnapshot;
         runtime: AgentWorkerExecutionRuntime;
       }
@@ -202,6 +303,7 @@ export type AgentWorkerEvent = AgentProtocolEnvelope &
         };
       }
     | { type: 'state'; state: AgentSessionRuntimeState }
+    | { type: 'assistant-phase'; phase: IrisAgentLivePhase; startedAt: number }
     | { type: 'assistant-text-delta'; delta: string }
     | { type: 'provider-message'; message: Record<string, unknown> }
     | { type: 'provider-context'; call: IrisAgentProviderContextCall }
@@ -235,7 +337,9 @@ export function isAgentWorkerRequest(value: unknown): value is AgentWorkerReques
       return isHistorySnapshot(value.history) && isInitRuntime(value.runtime);
     case 'run':
       return typeof value.prompt === 'string' && isHistorySnapshot(value.history) &&
-        isExecutionRuntime(value.runtime);
+        isExecutionRuntime(value.runtime) &&
+        (value.attachments === undefined ||
+          (Array.isArray(value.attachments) && value.attachments.every(isPromptImage)));
     case 'resume':
       return typeof value.invokeOffset === 'number' &&
         Number.isSafeInteger(value.invokeOffset) && value.invokeOffset >= 0 &&
@@ -299,8 +403,11 @@ function isHistorySnapshot(value: unknown): value is AgentHistorySnapshot {
       typeof message.intentId !== 'string' ||
       (message.turnId !== undefined && typeof message.turnId !== 'string') ||
       (message.role !== 'user' && message.role !== 'assistant' && message.role !== 'tool') ||
-      typeof message.content !== 'string' || typeof message.createdAt !== 'number') return false;
+      !isMessageContent(message.content) || typeof message.createdAt !== 'number') return false;
+    if (message.attachments !== undefined &&
+      (!Array.isArray(message.attachments) || !message.attachments.every(isAttachment))) return false;
     if (message.role === 'assistant') {
+      if (message.providerReplay !== undefined && !isProviderReplay(message.providerReplay)) return false;
       return message.toolCalls === undefined || (
         Array.isArray(message.toolCalls) && message.toolCalls.every((call) =>
           isRecord(call) && typeof call.id === 'string' && isToolName(call.tool) && 'input' in call)
@@ -313,6 +420,38 @@ function isHistorySnapshot(value: unknown): value is AgentHistorySnapshot {
     }
     return true;
   });
+}
+
+function isMessageContent(value: unknown): value is AgentMessageContent {
+  if (typeof value === 'string') return true;
+  if (!Array.isArray(value)) return false;
+  return value.every(isContentPart);
+}
+
+function isContentPart(value: unknown): value is AgentContentPart {
+  if (!isRecord(value)) return false;
+  if (value.type === 'text') return typeof value.text === 'string';
+  return isPromptImage(value);
+}
+
+function isPromptImage(value: unknown): value is AgentPromptImage {
+  return isRecord(value) && value.type === 'image' &&
+    isAttachment(value.attachment) && typeof value.dataBase64 === 'string';
+}
+
+function isAttachment(value: unknown): value is IrisAgentAttachment {
+  if (!isRecord(value)) return false;
+  return typeof value.id === 'string' && /^[0-9a-f]{64}$/u.test(value.id) &&
+    typeof value.name === 'string' &&
+    isImageMimeType(value.mimeType) &&
+    typeof value.bytes === 'number' && Number.isSafeInteger(value.bytes) && value.bytes > 0 &&
+    (value.width === undefined || (typeof value.width === 'number' && Number.isSafeInteger(value.width))) &&
+    (value.height === undefined || (typeof value.height === 'number' && Number.isSafeInteger(value.height)));
+}
+
+function isImageMimeType(value: unknown): value is IrisAgentImageMimeType {
+  return typeof value === 'string' &&
+    (IRIS_AGENT_IMAGE_MIME_TYPES as readonly string[]).includes(value);
 }
 
 function isAnchor(value: unknown): value is IrisAgentAnchor {
@@ -338,7 +477,34 @@ function isInitRuntime(value: unknown): value is AgentWorkerInitRuntime {
 }
 
 function isExecutionRuntime(value: unknown): value is AgentWorkerExecutionRuntime {
-  return isRecord(value) && isModelRef(value.model) && isProviderProxy(value.providerProxy);
+  return isRecord(value) && isModelRef(value.model) && isProviderProxy(value.providerProxy) &&
+    (value.reasoning === undefined || isReasoningDecision(value.reasoning));
+}
+
+function isReasoningDecision(value: unknown): value is AgentWorkerExecutionRuntime['reasoning'] {
+  return isRecord(value) && isReasoningLevel(value.configured) && isReasoningLevel(value.effective) &&
+    (value.downgradeReason === undefined || typeof value.downgradeReason === 'string');
+}
+
+function isReasoningLevel(value: unknown): value is IrisAgentReasoningLevel {
+  return value === 'off' || isThinkingLevel(value);
+}
+
+function isThinkingLevel(value: unknown): value is IrisAgentThinkingLevel {
+  return value === 'minimal' || value === 'low' || value === 'medium' || value === 'high' ||
+    value === 'xhigh' || value === 'max';
+}
+
+function isProviderReplay(value: unknown): value is AgentProviderReplay {
+  return isRecord(value) && typeof value.api === 'string' && typeof value.provider === 'string' &&
+    typeof value.model === 'string' && isRecord(value.message) && isJsonValue(value.message);
+}
+
+function isJsonValue(value: unknown): value is IrisJsonValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  return isRecord(value) && Object.values(value).every(isJsonValue);
 }
 
 function isProviderProxy(value: unknown): value is AgentProviderProxy {
@@ -374,6 +540,13 @@ function isToolOperationResult(value: unknown): value is AgentToolOperationResul
   if (!isRecord(value) || typeof value.kind !== 'string') return false;
   if (value.kind === 'void') return true;
   if (value.kind === 'file') return typeof value.contentBase64 === 'string';
+  if (value.kind === 'image') {
+    return typeof value.contentBase64 === 'string' &&
+      isImageMimeType(value.mimeType) &&
+      typeof value.bytes === 'number' && Number.isSafeInteger(value.bytes) && value.bytes > 0 &&
+      (value.width === undefined || typeof value.width === 'number') &&
+      (value.height === undefined || typeof value.height === 'number');
+  }
   if (value.kind === 'task') {
     return typeof value.outputText === 'string' &&
       (value.taskId === undefined || typeof value.taskId === 'string') &&

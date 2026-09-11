@@ -25,6 +25,7 @@ import {
   unwrapProviderErrorMessage,
   type IrisToolHostOperations,
 } from './agent/pi-adapter';
+import { renderToolResultContent } from './agent/tool-result-content';
 import { AGENT_TERMINAL_MAX_TIMEOUT_SECONDS } from './agent/command-pty';
 import { collectKnownSecrets, sanitizeProviderPayload } from './agent/context-artifact';
 import { loadStoredIrisAgentProviderProfiles } from './agent/provider-profiles';
@@ -66,6 +67,7 @@ let currentInvokeId: string | null = null;
 let currentAttemptId: string | null = null;
 let currentAttemptIndex = 0;
 let currentProviderMessageId: string | null = null;
+let currentAssistantPhase: 'requesting' | 'thinking' | 'generating' | null = null;
 let terminalProviderFailure: string | null = null;
 let userAbortRequested = false;
 let pendingAssistantDelta: { correlation: AgentCorrelation; text: string } | null = null;
@@ -158,12 +160,13 @@ async function handleMessage(message: unknown): Promise<void> {
     currentAttemptId = null;
     currentAttemptIndex = 0;
     currentProviderMessageId = null;
+    currentAssistantPhase = null;
     userAbortRequested = false;
     providerEventChain = Promise.resolve();
     flushAssistantDelta();
     try {
       await runExecution(message.correlation, async () => {
-        await runtime!.session.prompt(message.prompt);
+        await runtime!.session.prompt(message.prompt, message.attachments);
       });
     } finally {
       await disposeRuntime();
@@ -178,6 +181,7 @@ async function handleMessage(message: unknown): Promise<void> {
     currentAttemptId = null;
     currentAttemptIndex = message.attemptOffset ?? 0;
     currentProviderMessageId = null;
+    currentAssistantPhase = null;
     userAbortRequested = false;
     providerEventChain = Promise.resolve();
     flushAssistantDelta();
@@ -281,6 +285,9 @@ async function prepareExecution(
     model: execution.model,
     commandShell: baseRuntime.commandShell,
     providerProxy: execution.providerProxy,
+    ...(execution.reasoning?.effective && execution.reasoning.effective !== 'off'
+      ? { reasoning: execution.reasoning.effective }
+      : {}),
     executeToolCall: async (toolCall) => {
       const input = providerToolCallInput(toolCall.name, toolCall.arguments, baseRuntime.cwd);
       let result: AgentToolOperationResult;
@@ -302,18 +309,11 @@ async function prepareExecution(
           timestamp: Date.now(),
         };
       }
-      const text = result.kind === 'file'
-        ? Buffer.from(result.contentBase64, 'base64').toString('utf8')
-        : result.kind === 'terminal'
-          ? result.outputText
-          : result.kind === 'task'
-            ? result.outputText
-          : result.message ?? '';
       return {
         role: 'toolResult' as const,
         toolCallId: toolCall.id,
         toolName: toolCall.name,
-        content: [{ type: 'text' as const, text }],
+        content: renderToolResultContent(toolCall.name, toolCall.arguments, result),
         isError: result.kind === 'terminal' && !result.success,
         timestamp: Date.now(),
       };
@@ -329,6 +329,7 @@ async function prepareExecution(
       }
       currentAttemptId = randomUUID();
       currentProviderMessageId = randomUUID();
+      currentAssistantPhase = null;
       currentAttemptIndex += 1;
       await postDurable({
         type: 'provider-attempt',
@@ -349,9 +350,11 @@ async function prepareExecution(
           provider: model.provider,
           model: model.id,
           api: model.api,
+          ...(execution.reasoning ? { reasoning: { ...execution.reasoning } } : {}),
           payload: sanitizeProviderPayload(payload, payloadSecrets),
         },
       });
+      emitAssistantPhase('requesting');
     },
     onProviderFailure: (failure, model) => {
       if (failure === null) {
@@ -491,15 +494,40 @@ function providerSecretEnvironment(): Record<string, string> {
 }
 
 function createWorkerOperations(): IrisToolHostOperations {
+  const readMediaFile: IrisToolHostOperations['read']['readMediaFile'] = async (
+    absolutePath,
+    options,
+  ) => {
+    const result = await requestTool({
+      tool: 'read', operation: 'readFile', absolutePath, ...options,
+    });
+    if (result.kind === 'image') {
+      return {
+        kind: 'image' as const,
+        mimeType: result.mimeType,
+        dataBase64: result.contentBase64,
+        bytes: result.bytes,
+        ...(result.width === undefined ? {} : { width: result.width }),
+        ...(result.height === undefined ? {} : { height: result.height }),
+      };
+    }
+    if (result.kind !== 'file') throw new Error('Iris Agent readFile returned a non-file result');
+    return { kind: 'text' as const, text: Buffer.from(result.contentBase64, 'base64').toString('utf8') };
+  };
   return {
     read: {
       access: async (absolutePath) => {
         await requestTool({ tool: 'read', operation: 'access', absolutePath });
       },
+      readMediaFile,
       readFile: async (absolutePath, options) => {
-        const result = await requestTool({ tool: 'read', operation: 'readFile', absolutePath, ...options });
-        if (result.kind !== 'file') throw new Error('Iris Agent readFile returned a non-file result');
-        return Buffer.from(result.contentBase64, 'base64');
+        const media = await readMediaFile(absolutePath, options);
+        // Callers that need text (the edit tool's read-before-write) must not
+        // silently receive base64 of a binary file as if it were the content.
+        if (media.kind === 'image') {
+          throw new Error('Iris Agent readFile returned an image where text was required.');
+        }
+        return Buffer.from(media.text, 'utf8');
       },
     },
     edit: {
@@ -644,6 +672,8 @@ function postDurable(event: AgentWorkerEventPayload): Promise<void> {
 async function handleProviderEvent(event: unknown): Promise<void> {
   const projected = projectProviderFailure(event, providerFailure);
   if (projected.consumedFailure) providerFailure = null;
+  const phase = assistantPhase(projected.event);
+  if (phase) emitAssistantPhase(phase);
   const delta = assistantTextDelta(projected.event);
   if (delta) {
     queueAssistantDelta(delta, correlationForProviderMessage(projected.event));
@@ -664,6 +694,7 @@ async function handleProviderEvent(event: unknown): Promise<void> {
         });
       }
       currentAttemptId = null;
+      currentAssistantPhase = null;
       return;
     }
     if (assistantStopReason(projected.event) === 'aborted') {
@@ -687,6 +718,7 @@ async function handleProviderEvent(event: unknown): Promise<void> {
       }
       terminalProviderFailure = null;
       currentAttemptId = null;
+      currentAssistantPhase = null;
       return;
     }
     const message = messageFromEvent(projected.event);
@@ -708,6 +740,7 @@ async function handleProviderEvent(event: unknown): Promise<void> {
     currentAttemptId = null;
     currentAttemptIndex = 0;
     currentProviderMessageId = null;
+    currentAssistantPhase = null;
     return;
   }
   if (isEventType(projected.event, 'auto_retry_start')) {
@@ -803,6 +836,7 @@ async function failCurrentProviderAttempt(error: string): Promise<void> {
   });
   currentAttemptId = null;
   currentProviderMessageId = null;
+  currentAssistantPhase = null;
 }
 
 function abortCurrentProviderAttempt(): void {
@@ -815,6 +849,7 @@ function abortCurrentProviderAttempt(): void {
   });
   currentAttemptId = null;
   currentProviderMessageId = null;
+  currentAssistantPhase = null;
 }
 
 function isEventType(event: unknown, type: string): boolean {
@@ -831,6 +866,27 @@ function assistantTextDelta(event: unknown): string | null {
   return event.assistantMessageEvent.type === 'text_delta' && typeof event.assistantMessageEvent.delta === 'string'
     ? event.assistantMessageEvent.delta
     : null;
+}
+
+function assistantPhase(event: unknown): 'thinking' | 'generating' | null {
+  if (!isRecord(event) || event.type !== 'message_update' || !isRecord(event.assistantMessageEvent)) return null;
+  const type = event.assistantMessageEvent.type;
+  if (type === 'thinking_start' || type === 'thinking_delta') return 'thinking';
+  if (type === 'text_start' || type === 'text_delta' || type === 'toolcall_start' || type === 'toolcall_delta') {
+    return 'generating';
+  }
+  return null;
+}
+
+function emitAssistantPhase(phase: 'requesting' | 'thinking' | 'generating'): void {
+  if (!currentCorrelation.intentId || !currentProviderMessageId || currentAssistantPhase === phase) return;
+  currentAssistantPhase = phase;
+  post({
+    type: 'assistant-phase',
+    correlation: correlationForProviderMessage({}),
+    phase,
+    startedAt: Date.now(),
+  });
 }
 
 function messageFromEvent(event: unknown): Record<string, unknown> | null {

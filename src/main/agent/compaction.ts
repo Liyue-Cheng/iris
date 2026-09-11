@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
-import type { AgentHistorySnapshot } from '@shared/agent-protocol';
+import type { AgentContentPart, AgentHistorySnapshot } from '@shared/agent-protocol';
 import {
   agentContextTriggerTokens,
   DEFAULT_AGENT_CONTEXT_WINDOW_TOKENS,
 } from '@shared/agent-context-budget';
-import type { IrisAgentContextBudget, IrisAgentModelRef } from '@shared/types';
+import type { IrisAgentAttachment, IrisAgentContextBudget, IrisAgentModelRef } from '@shared/types';
 import type { AgentCompaction, AgentSessionAggregate } from './session-model';
 import { cloneAgentSession } from './session-model';
 import { buildAgentContext, buildAgentTrace, type AgentTrace } from './trace-context';
@@ -59,10 +59,77 @@ export function estimateAgentContextTokens(
   let tokens = 0;
   for (const message of context.messages) {
     // Role, identifiers and tool envelopes all cost tokens on the wire.
-    tokens += 8 + estimateAgentTokens(message.content);
+    tokens += 8;
+    // An image costs the same whether it arrived as a hydrated content part or
+    // as an attachment reference the store has not expanded yet, so both
+    // sources are counted and deduplicated by content hash.
+    const counted = new Set<string>();
+    if (typeof message.content === 'string') {
+      tokens += estimateAgentTokens(message.content);
+    } else {
+      for (const part of message.content) {
+        if (part.type === 'text') {
+          tokens += estimateAgentTokens(part.text);
+          continue;
+        }
+        counted.add(part.attachment.id);
+        tokens += estimateAgentImageTokens(part.attachment);
+      }
+    }
+    for (const attachment of message.attachments ?? []) {
+      if (counted.has(attachment.id)) continue;
+      counted.add(attachment.id);
+      tokens += estimateAgentImageTokens(attachment);
+    }
     for (const call of message.toolCalls ?? []) {
       tokens += 8 + estimateAgentTokens(call.tool) + estimateAgentTokens(JSON.stringify(call.input));
     }
+  }
+  return tokens;
+}
+
+/** Token cost of one message's content, counting images by their pixels. */
+export function estimateAgentContentTokens(content: string | readonly AgentContentPart[]): number {
+  if (typeof content === 'string') return estimateAgentTokens(content);
+  let tokens = 0;
+  for (const part of content) {
+    tokens += part.type === 'text'
+      ? estimateAgentTokens(part.text)
+      : estimateAgentImageTokens(part.attachment);
+  }
+  return tokens;
+}
+
+/**
+ * Provider image pricing is tile based: roughly one token per 750 pixels plus a
+ * fixed per-image overhead. A well-known dimension therefore costs a close
+ * estimate; an image whose header could not be read gets a conservative flat
+ * cost instead of a byte-length guess that would understate a screenshot.
+ */
+export function estimateAgentImageTokens(attachment: { width?: number; height?: number }): number {
+  if (attachment.width && attachment.height) {
+    return Math.ceil((attachment.width * attachment.height) / 750) + 85;
+  }
+  return AGENT_UNKNOWN_IMAGE_TOKEN_COST;
+}
+
+/** Conservative stand-in for one image of unknown size. */
+export const AGENT_UNKNOWN_IMAGE_TOKEN_COST = 1_600;
+
+/**
+ * Token cost of a set of images that are about to be sent but are not part of
+ * the projected history yet. Deduplicated by content hash so the same picture
+ * referenced twice is not charged twice.
+ */
+export function estimateAgentAttachmentTokens(
+  attachments: readonly Pick<IrisAgentAttachment, 'id' | 'width' | 'height'>[],
+): number {
+  const counted = new Set<string>();
+  let tokens = 0;
+  for (const attachment of attachments) {
+    if (counted.has(attachment.id)) continue;
+    counted.add(attachment.id);
+    tokens += estimateAgentImageTokens(attachment);
   }
   return tokens;
 }
@@ -191,9 +258,12 @@ export function renderAgentCompactionSource(
         if (turn.assistant) lines.push(`<reply>\n${turn.assistant.content}\n</reply>`);
         for (const call of turn.assistant?.toolCalls ?? []) {
           const result = turn.toolResults.find((candidate) => candidate.toolCallId === call.id);
+          const omitted = result?.attachments?.length
+            ? `\n[${String(result.attachments.length)} attached image(s) omitted from this summary request]`
+            : '';
           lines.push(
             `<tool name="${call.tool}"${result?.isError ? ' error="true"' : ''}>\n` +
-            `${result ? result.content : '(no result was committed)'}\n</tool>`,
+            `${result ? result.content : '(no result was committed)'}${omitted}\n</tool>`,
           );
         }
       }
@@ -378,7 +448,10 @@ function estimateIntentTokens(intent: AgentTrace['intents'][number]): number {
     for (const call of turn.assistant?.toolCalls ?? []) {
       tokens += 8 + estimateAgentTokens(call.tool) + estimateAgentTokens(JSON.stringify(call.input));
     }
-    for (const result of turn.toolResults) tokens += 8 + estimateAgentTokens(result.content);
+    for (const result of turn.toolResults) {
+      tokens += 8 + estimateAgentTokens(result.content);
+      for (const attachment of result.attachments ?? []) tokens += estimateAgentImageTokens(attachment);
+    }
   }
   return tokens;
 }

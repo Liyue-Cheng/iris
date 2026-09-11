@@ -274,4 +274,22 @@ describe('window project switching', () => {
     expect(h.ctx.projectRoot).toBe(rootB);
     expect(h.ctx.projectSwitching).toBe(false);
   });
+
+  it('finishes forward when an Agent project drain fails after the destructive boundary', async () => {
+    const rootA = normalize(resolve('project-a'));
+    const rootB = normalize(resolve('project-b'));
+    const scopeA = { root: rootA, generation: 3 };
+    const h = harness(scopeA, [session(scopeA)]);
+    h.closeAgentProject.mockRejectedValue(new Error('archive unavailable'));
+
+    const result = await enqueueProjectSwitch(
+      h.ctx,
+      { root: rootB, expectedScope: scopeA },
+      vi.fn(),
+      h.readProjectSettings,
+    );
+
+    expect(result.scope).toEqual({ root: rootB, generation: 4 });
+    expect(h.ctx.projectScope).toEqual(result.scope);
+  });
 });

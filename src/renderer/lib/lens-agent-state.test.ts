@@ -15,6 +15,7 @@ function agent(state: IrisAgentSessionInfo['state'], path = '.iris/issue/task.md
     createdAt: 1,
     updatedAt: 1,
     revision: 1,
+    workerEpoch: 0,
     currentIntentId: null,
     intents: [],
     terminals: [],

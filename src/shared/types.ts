@@ -630,12 +630,34 @@ export interface IrisAgentModelRef {
   modelId: string;
 }
 
+export const IRIS_AGENT_THINKING_LEVELS = [
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const;
+
+export type IrisAgentThinkingLevel = typeof IRIS_AGENT_THINKING_LEVELS[number];
+export type IrisAgentReasoningLevel = 'off' | IrisAgentThinkingLevel;
+export type IrisAgentReasoningMode = 'effort' | 'budget';
+
+/** Which content kinds a model accepts on the request side. */
+export type IrisAgentModelInput = 'text' | 'image';
+
 export interface IrisAgentModelOption extends IrisAgentModelRef {
   name: string;
   api: string;
   reasoning: boolean;
+  reasoningLevel: IrisAgentReasoningLevel;
+  supportedReasoningLevels: IrisAgentReasoningLevel[];
+  reasoningMode?: IrisAgentReasoningMode;
   contextWindowTokens?: number;
   maxOutputTokens?: number;
+  capabilities?: {
+    input: IrisAgentModelInput[];
+  };
   contextPolicy?: {
     reserveOutputTokens: number;
     keepRecentTokens: number;
@@ -667,6 +689,12 @@ export interface IrisAgentConfiguredModel {
   reserveOutputTokens: number;
   keepRecentTokens: number;
   compactTrigger: number;
+  /** User preference. Missing values from older profile files normalize to off. */
+  reasoningLevel?: IrisAgentReasoningLevel;
+  /** Renderer-only capability projection; never authoritative when profiles are saved. */
+  supportedReasoningLevels?: IrisAgentReasoningLevel[];
+  /** Renderer-only explanation of how the provider interprets a level. */
+  reasoningMode?: IrisAgentReasoningMode;
   enabled: boolean;
   source: 'discovered' | 'manual';
   lastVerifiedAt?: number;
@@ -749,12 +777,45 @@ export interface IrisAgentTaskLog {
   truncated: boolean;
 }
 
+/**
+ * Image MIME types Iris stores as Agent attachments. Mirrors the document
+ * asset allow-list: SVG is deliberately absent because its active content
+ * surface is much larger than a raster bitmap's.
+ */
+export const IRIS_AGENT_IMAGE_MIME_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+] as const;
+
+export type IrisAgentImageMimeType = typeof IRIS_AGENT_IMAGE_MIME_TYPES[number];
+
+/**
+ * One immutable image held by a Session. The bytes live in the Session's own
+ * artifact directory keyed by `id`; nothing else carries them, so the journal
+ * stays small and a re-read of a changed file can never rewrite history.
+ */
+export interface IrisAgentAttachment {
+  /** Content-addressed identity: the sha256 of the stored bytes. */
+  id: string;
+  /** Original file name, for display only; never used to build a path. */
+  name: string;
+  mimeType: IrisAgentImageMimeType;
+  bytes: number;
+  width?: number;
+  height?: number;
+}
+
 export interface IrisAgentUserView {
   id: string;
   content: string;
   createdAt: number;
   contextAvailable: boolean;
   contextTitle?: string;
+  /** Images this request carried, in order. Bytes are resolved by attachment id. */
+  attachments?: IrisAgentAttachment[];
 }
 
 export interface IrisAgentLocalRetrievalItemView {
@@ -767,6 +828,8 @@ export interface IrisAgentLocalRetrievalItemView {
   error?: string;
   errorDetail?: string;
   terminalId?: string;
+  /** Present when this retrieval returned image bytes instead of text. */
+  image?: IrisAgentAttachment;
 }
 
 export interface IrisAgentTerminalView {
@@ -895,8 +958,16 @@ export interface IrisAgentSessionInfo {
   state: IrisAgentRuntimeState;
   createdAt: number;
   updatedAt: number;
+  /**
+   * Set once this instance is closed. A closed Session keeps its whole Trace and
+   * history but is no longer projected as a live session; it is reachable from
+   * the anchor's history list until it is reopened.
+   */
+  closedAt?: number;
   /** Strictly monotonic canonical state revision. */
   revision: number;
+  /** Identifies the currently active Worker incarnation for ephemeral events. */
+  workerEpoch: number;
   currentIntentId: string | null;
   pause?: {
     reason: IrisAgentPauseReason;
@@ -933,6 +1004,11 @@ export interface IrisAgentProviderContextCall {
   provider: string;
   model: string;
   api: string;
+  reasoning?: {
+    configured: IrisAgentReasoningLevel;
+    effective: IrisAgentReasoningLevel;
+    downgradeReason?: string;
+  };
   payload: IrisJsonValue;
 }
 
@@ -968,6 +1044,27 @@ export interface IrisAgentListSnapshot {
   sessions: IrisAgentSessionInfo[];
 }
 
+/**
+ * One row of an anchor's Agent history. Both live and closed Sessions appear;
+ * `closed` distinguishes "switch back into it" from "already open". The entry
+ * is deliberately metadata-only, so listing history never has to load a whole
+ * archived Session.
+ */
+export interface IrisAgentHistoryEntry {
+  id: string;
+  anchor: IrisAgentAnchor;
+  displayName: string;
+  state: IrisAgentRuntimeState;
+  closed: boolean;
+  createdAt: number;
+  updatedAt: number;
+  /** Intents on the Session's active Trace, i.e. what a restore would inherit. */
+  intentCount: number;
+  /** Preview of the most recent user input; empty for a Session with none. */
+  lastUserMessage: string;
+  parentSessionId?: string;
+}
+
 export type IrisAgentSessionHeaderView = Omit<IrisAgentSessionInfo, 'revision' | 'intents'>;
 export type IrisAgentIntentHeaderView = Omit<IrisAgentIntentView, 'cards'>;
 
@@ -1000,6 +1097,19 @@ export interface IrisAgentSessionChangedPayload {
   update: IrisAgentSessionProjectionUpdate;
 }
 
+export type IrisAgentLivePhase = 'requesting' | 'thinking' | 'generating';
+
+/** Ephemeral provider progress. It is never part of the canonical Session revision. */
+export interface IrisAgentPhaseChangedPayload {
+  scope: ProjectScope;
+  sessionId: string;
+  intentId: string;
+  workerEpoch: number;
+  providerMessageId?: string;
+  phase: IrisAgentLivePhase | null;
+  startedAt: number;
+}
+
 export interface IrisAgentSessionDestroyedPayload {
   scope: ProjectScope;
   sessionId: string;
@@ -1027,6 +1137,27 @@ export interface FsIrisChangedEvent {
 export interface DocImageResult {
   dataUrl: string | null;
   error: 'invalid-path' | 'unsupported-type' | 'too-large' | 'read-failed' | null;
+}
+
+/**
+ * One image the user attached to a request, exactly as the renderer sends it.
+ * Only the display name and the bytes cross the boundary: main sniffs the real
+ * MIME type and pixel size from the bytes, so a renderer cannot mislabel an
+ * upload or claim dimensions it does not have.
+ */
+export interface IrisAgentAttachmentUpload {
+  name: string;
+  dataBase64: string;
+}
+
+/**
+ * One stored Agent image projected for the renderer. Main resolves the bytes
+ * from its own attachment index, so the renderer only ever supplies ids and
+ * never a path or a MIME type it could lie about.
+ */
+export interface IrisAgentAttachmentData {
+  dataUrl: string | null;
+  error: 'not-found' | 'read-failed' | null;
 }
 
 // ──────────────────────────────────────────────────────────────────

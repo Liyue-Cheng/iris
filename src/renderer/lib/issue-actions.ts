@@ -14,6 +14,7 @@ import { pipeline } from '@renderer/cpu';
 import { confirmDialog } from '@renderer/components/ui/confirm-dialog';
 import { editorStore, readDocFromDisk } from '@renderer/stores/editor-store';
 import { sessionStore } from '@renderer/stores/session-store';
+import { archiveIrisAgentDocuments, countIrisAgentDocuments } from './iris-agent-actions';
 import {
   planDocumentStatusTransition,
   type StatusDocumentType,
@@ -96,8 +97,9 @@ async function setDocStatusField(
 
 /**
  * Move one or more documents to a status. Closing states first settle every
- * terminal anchored to those documents, so a hidden issue/report never keeps
- * inaccessible sessions alive. One bulk action produces one confirmation.
+ * session anchored to those documents — terminals and Iris Agent instances
+ * alike — so a hidden issue/report never keeps inaccessible sessions alive.
+ * One bulk action produces one confirmation.
  */
 export async function setDocsStatus(paths: readonly string[], status: string): Promise<void> {
   const uniquePaths = [...new Set(paths)];
@@ -114,9 +116,12 @@ export async function setDocsStatus(paths: readonly string[], status: string): P
   const anchored = sessionStore
     .get()
     .sessions.filter((session) => session.docPath !== null && closingPaths.has(session.docPath));
+  const anchoredAgentCount = await countIrisAgentDocuments([...closingPaths]);
 
-  if (anchored.length > 0) {
-    const documentCount = new Set(anchored.map((session) => session.docPath)).size;
+  if (anchored.length > 0 || anchoredAgentCount > 0) {
+    const documentCount = anchoredAgentCount > 0
+      ? closingPaths.size
+      : new Set(anchored.map((session) => session.docPath)).size;
     const subject = documentCount === 1
       ? translate('collection.oneDocument')
       : translate('collection.manyDocuments', { count: documentCount });
@@ -125,6 +130,7 @@ export async function setDocsStatus(paths: readonly string[], status: string): P
       message: translate('collection.closeLinkedMessage', {
         documents: subject,
         sessions: anchored.length,
+        agents: anchoredAgentCount,
         status,
       }),
       confirmText: translate('collection.closeAndChange'),
@@ -132,16 +138,20 @@ export async function setDocsStatus(paths: readonly string[], status: string): P
     });
     if (!confirmed) return;
 
+  }
+
+  if (closingPaths.size > 0) {
     // Re-read after the dialog: sessions may have been opened or closed while
-    // the confirmation was visible, and "all" must describe current reality.
+    // it was visible. Main also re-enumerates Agent anchors authoritatively.
     const currentAnchored = sessionStore
       .get()
       .sessions.filter((session) => session.docPath !== null && closingPaths.has(session.docPath));
-    await Promise.all(
-      currentAnchored.map((session) =>
+    await Promise.all([
+      ...currentAnchored.map((session) =>
         pipeline.dispatch('session.close', { sessionId: session.id }),
       ),
-    );
+      archiveIrisAgentDocuments([...closingPaths]),
+    ]);
   }
 
   await Promise.all(

@@ -12,10 +12,11 @@ describe('Iris Agent canonical prompt', () => {
     expect(IRIS_AGENT_PROMPT).toContain('operating inside Iris Agent');
     expect(IRIS_AGENT_PROMPT).toContain('- terminal: Execute a visible command');
     expect(IRIS_AGENT_PROMPT).toContain('edits[].oldText is matched against the original file');
+    expect(IRIS_AGENT_PROMPT).toContain('An image file is returned as the image itself');
     expect(IRIS_AGENT_PROMPT).not.toMatch(/Pi documentation|PI_|custom tools|extensions|skills|TUI/);
     expect(IRIS_AGENT_PROMPT_METADATA.upstreamVersion).toBe('0.84.1');
     expect(IRIS_AGENT_PROMPT_METADATA.adaptedBasePromptSha256).toBe(
-      '753fa5050a8724fc1ae769e1e5607150787e5921fb0a66eabaf41a7b262ad174',
+      '7e38a7254d86c32292370f1f90c5a9077b71423b99cd725ce98c278167768f37',
     );
     expect(IRIS_AGENT_PROMPT_METADATA.finalPromptSha256).toBe(
       effectivePiPromptFingerprint(IRIS_AGENT_PROMPT, IRIS_AGENT_PROMPT_METADATA.finalPromptCwd),

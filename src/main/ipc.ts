@@ -35,8 +35,13 @@ import type {
   GitChangedEvent,
   GitSnapshot,
   IrisAgentListSnapshot,
+  IrisAgentAnchor,
+  IrisAgentHistoryEntry,
+  IrisAgentAttachmentData,
+  IrisAgentAttachmentUpload,
   IrisAgentModelCatalog,
   IrisAgentProviderCatalog,
+  IrisAgentPhaseChangedPayload,
   IrisAgentSessionChangedPayload,
   IrisAgentSessionDestroyedPayload,
   IrisAgentSessionInfo,
@@ -215,6 +220,29 @@ function requireSessionInScope(
     throw new Error(`[${channel}] session is outside the active project scope`);
   }
   return session;
+}
+
+/**
+ * Normalizes the attachment part of an Agent send payload. This is the trust
+ * boundary: anything malformed is rejected here rather than carried deeper,
+ * and the shape is reduced to exactly what the manager accepts, so a renderer
+ * cannot smuggle extra fields past the manager's own validation.
+ */
+function readAttachmentUploads(value: unknown): IrisAgentAttachmentUpload[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`[${CHANNELS.IRIS_AGENT_SEND}] attachments must be an array`);
+  }
+  return value.map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`[${CHANNELS.IRIS_AGENT_SEND}] attachment ${String(index)} is invalid`);
+    }
+    const record = entry as Record<string, unknown>;
+    if (typeof record.name !== 'string' || typeof record.dataBase64 !== 'string') {
+      throw new Error(`[${CHANNELS.IRIS_AGENT_SEND}] attachment ${String(index)} is invalid`);
+    }
+    return { name: record.name, dataBase64: record.dataBase64 };
+  });
 }
 
 export function registerIpcHandlers(settingsManager: SettingsManager): void {
@@ -1006,18 +1034,30 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       payload: {
         sessionId: string;
         message: string;
+        /**
+         * Images the request carries, as `{ name, dataBase64 }` only. Main
+         * sniffs the MIME type and size from the bytes, so nothing the
+         * renderer claims about an upload is trusted.
+         */
+        attachments?: unknown;
         commandId?: string;
         expectedRevision?: number;
       } & ProjectScopedPayload,
     ): Promise<IrisAgentSessionInfo> => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_SEND);
-      return ctx.agentSessionManager.send(scope, payload.sessionId, payload.message, {
-        ...(payload.commandId ? { commandId: payload.commandId } : {}),
-        ...(payload.expectedRevision === undefined
-          ? {}
-          : { expectedRevision: payload.expectedRevision }),
-      });
+      return ctx.agentSessionManager.send(
+        scope,
+        payload.sessionId,
+        payload.message,
+        {
+          ...(payload.commandId ? { commandId: payload.commandId } : {}),
+          ...(payload.expectedRevision === undefined
+            ? {}
+            : { expectedRevision: payload.expectedRevision }),
+        },
+        readAttachmentUploads(payload.attachments),
+      );
     },
   );
 
@@ -1177,7 +1217,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
 
   ipcMain.handle(
     CHANNELS.IRIS_AGENT_PROVIDERS,
-    (): Promise<IrisAgentProviderCatalog> => loadIrisProviderCatalog(appDataDir()),
+    (): Promise<IrisAgentProviderCatalog> => loadIrisProviderCatalog(appDataDir(), irisPiAgentDir()),
   );
 
   ipcMain.handle(
@@ -1189,7 +1229,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       prepareProviderConfigurationChange();
       await addIrisAgentProviderProfile(payload, appDataDir());
       await finishProviderConfigurationChange();
-      return loadIrisProviderCatalog(appDataDir());
+      return loadIrisProviderCatalog(appDataDir(), irisPiAgentDir());
     },
   );
 
@@ -1202,7 +1242,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       prepareProviderConfigurationChange();
       await removeIrisAgentProviderProfile(payload.profileId, appDataDir());
       await finishProviderConfigurationChange();
-      return loadIrisProviderCatalog(appDataDir());
+      return loadIrisProviderCatalog(appDataDir(), irisPiAgentDir());
     },
   );
 
@@ -1215,7 +1255,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       prepareProviderConfigurationChange();
       await updateIrisAgentProviderProfileApiKey(payload.profileId, payload.apiKey, appDataDir());
       await finishProviderConfigurationChange();
-      return loadIrisProviderCatalog(appDataDir());
+      return loadIrisProviderCatalog(appDataDir(), irisPiAgentDir());
     },
   );
 
@@ -1228,7 +1268,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       prepareProviderConfigurationChange();
       await updateIrisAgentProviderModels(payload.profileId, payload.models, appDataDir());
       await finishProviderConfigurationChange();
-      return loadIrisProviderCatalog(appDataDir());
+      return loadIrisProviderCatalog(appDataDir(), irisPiAgentDir());
     },
   );
 
@@ -1236,7 +1276,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     CHANNELS.IRIS_AGENT_PROVIDER_PROFILE_DISCOVER,
     async (_event, payload: { profileId: string }): Promise<IrisAgentProviderCatalog> => {
       prepareProviderConfigurationChange();
-      const profileCatalog = await loadIrisProviderCatalog(appDataDir());
+      const profileCatalog = await loadIrisProviderCatalog(appDataDir(), irisPiAgentDir());
       const profile = profileCatalog.profiles.find((item) => item.id === payload.profileId);
       if (!profile) throw new Error('Provider profile was not found.');
       const discovered = await loadIrisModelCatalog(irisPiAgentDir(), appDataDir(), true);
@@ -1259,6 +1299,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
             reserveOutputTokens,
             keepRecentTokens: 20_000,
             compactTrigger: Math.max(1, contextWindowTokens - reserveOutputTokens),
+            reasoningLevel: 'off' as const,
             enabled: true,
             source: 'discovered' as const,
           };
@@ -1268,7 +1309,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       if (models.length === 0) throw new Error(discovered.error ?? '供应商目录没有返回模型。');
       await updateIrisAgentProviderModels(payload.profileId, models, appDataDir());
       await finishProviderConfigurationChange();
-      return loadIrisProviderCatalog(appDataDir());
+      return loadIrisProviderCatalog(appDataDir(), irisPiAgentDir());
     },
   );
 
@@ -1287,6 +1328,22 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       );
       const error = await shell.openPath(target);
       if (error) throw new Error(`[${CHANNELS.IRIS_AGENT_OPEN_CONTEXT}] ${error}`);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_ATTACHMENT_READ,
+    (
+      event,
+      payload: { sessionId: string; attachmentId: string } & ProjectScopedPayload,
+    ): Promise<IrisAgentAttachmentData> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_ATTACHMENT_READ);
+      return ctx.agentSessionManager.readAttachmentData(
+        scope,
+        payload.sessionId,
+        payload.attachmentId,
+      );
     },
   );
 
@@ -1392,6 +1449,30 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
   );
 
   ipcMain.handle(
+    CHANNELS.IRIS_AGENT_COUNT_DOCUMENTS,
+    (
+      event,
+      payload: { documentPaths: string[] } & ProjectScopedPayload,
+    ): Promise<number> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_COUNT_DOCUMENTS);
+      return ctx.agentSessionManager.countDocumentSessions(scope, payload.documentPaths);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_ARCHIVE_DOCUMENTS,
+    (
+      event,
+      payload: { documentPaths: string[] } & ProjectScopedPayload,
+    ): Promise<number> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_ARCHIVE_DOCUMENTS);
+      return ctx.agentSessionManager.archiveDocumentSessions(scope, payload.documentPaths);
+    },
+  );
+
+  ipcMain.handle(
     CHANNELS.IRIS_AGENT_CLOSE,
     (
       event,
@@ -1415,6 +1496,42 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_LIST);
       return ctx.agentSessionManager.list(scope);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_HISTORY,
+    (
+      event,
+      payload: { anchor: IrisAgentAnchor } & ProjectScopedPayload,
+    ): Promise<IrisAgentHistoryEntry[]> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_HISTORY);
+      return ctx.agentSessionManager.history(scope, payload.anchor);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_REOPEN,
+    (
+      event,
+      payload: { sessionId: string } & ProjectScopedPayload,
+    ): Promise<IrisAgentSessionInfo> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_REOPEN);
+      return ctx.agentSessionManager.reopen(scope, payload.sessionId);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.IRIS_AGENT_RESTORE,
+    (
+      event,
+      payload: { sessionId: string } & ProjectScopedPayload,
+    ): Promise<IrisAgentSessionInfo> => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_RESTORE);
+      return ctx.agentSessionManager.restore(scope, payload.sessionId);
     },
   );
 
@@ -1567,6 +1684,8 @@ export function wireBroadcasts(
   const onDestroyed = (e: SessionDestroyedPayload): void => send(EVENTS.SESSION_DESTROYED, e);
   const onAgentChanged = (e: IrisAgentSessionChangedPayload): void =>
     send(EVENTS.IRIS_AGENT_SESSION_CHANGED, e);
+  const onAgentPhaseChanged = (e: IrisAgentPhaseChangedPayload): void =>
+    send(EVENTS.IRIS_AGENT_PHASE_CHANGED, e);
   const onAgentDestroyed = (e: IrisAgentSessionDestroyedPayload): void =>
     send(EVENTS.IRIS_AGENT_SESSION_DESTROYED, e);
   const onAgentTerminalOutput = (e: IrisAgentTerminalOutputPayload): void =>
@@ -1587,6 +1706,7 @@ export function wireBroadcasts(
   terminalSessionManager.on('sessionExited', onExited);
   terminalSessionManager.on('sessionDestroyed', onDestroyed);
   agentSessionManager.on('sessionChanged', onAgentChanged);
+  agentSessionManager.on('phaseChanged', onAgentPhaseChanged);
   agentSessionManager.on('sessionDestroyed', onAgentDestroyed);
   agentSessionManager.on('terminalOutput', onAgentTerminalOutput);
   return () => {
@@ -1603,6 +1723,7 @@ export function wireBroadcasts(
     terminalSessionManager.off('sessionExited', onExited);
     terminalSessionManager.off('sessionDestroyed', onDestroyed);
     agentSessionManager.off('sessionChanged', onAgentChanged);
+    agentSessionManager.off('phaseChanged', onAgentPhaseChanged);
     agentSessionManager.off('sessionDestroyed', onAgentDestroyed);
     agentSessionManager.off('terminalOutput', onAgentTerminalOutput);
   };

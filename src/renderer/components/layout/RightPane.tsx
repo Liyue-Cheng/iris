@@ -18,12 +18,13 @@ import {
   FileText,
   FileWarning,
   FolderRoot,
+  History,
   Plus,
   SquareTerminal,
   X,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AgentConfig } from '@shared/types';
+import type { AgentConfig, IrisAgentAnchor } from '@shared/types';
 import {
   workspaceAnchorKey,
 } from '@renderer/stores/session-store';
@@ -40,6 +41,7 @@ import { openIrisAgent } from '@renderer/lib/iris-agent-actions';
 import { closeProjectedSession } from '@renderer/lib/session-projection-actions';
 import { docDisplayTitle, findDocByPath } from '@renderer/lib/doc-utils';
 import { ProjectedSessionView } from '@renderer/components/layout/ProjectedSessionView';
+import { AgentHistoryDialog } from '@renderer/components/agent/AgentHistoryDialog';
 import { Button } from '@renderer/components/ui/button';
 import { Input } from '@renderer/components/ui/input';
 import { SessionDot } from '@renderer/components/ui/session-dot';
@@ -116,6 +118,7 @@ export function RightPane(): JSX.Element {
   const agents = settings?.agents ?? [];
   const irisAgentEnabled = settings?.experimental.irisAgent ?? false;
   const [launcherQuery, setLauncherQuery] = useState('');
+  const [historyOpen, setHistoryOpen] = useState(false);
   const visibleLaunchers = matchingLaunchers(agents, launcherQuery);
   const projectReady = phase === 'ready';
 
@@ -143,6 +146,14 @@ export function RightPane(): JSX.Element {
         : (selectedPath.split('/').pop()?.replace(/\.md$/i, '') ?? selectedPath)
       : t('layout.projectRoot');
   const AnchorIcon = isHub ? FolderRoot : FileText;
+  // The history dialog is anchor-scoped, exactly like the session list itself:
+  // a document shows its own instances, a hub shows its workspace instances.
+  const historyAnchor: IrisAgentAnchor | null = isHub
+    ? { kind: 'workspace', path: hubWorkspacePath }
+    : selectedPath
+      ? { kind: 'document', path: selectedPath }
+      : null;
+  const canShowHistory = irisAgentEnabled && projectReady && historyAnchor !== null;
 
   const spawn = (agentId: string): void => {
     if (isHub) void openWorkspaceSession(hubWorkspacePath, agentId);
@@ -328,6 +339,18 @@ export function RightPane(): JSX.Element {
           </span>
         )}
 
+        {canShowHistory && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            aria-label={t('layout.agentHistory')}
+            onClick={() => setHistoryOpen(true)}
+          >
+            <History className="!size-4" />
+          </Button>
+        )}
+
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -409,6 +432,16 @@ export function RightPane(): JSX.Element {
                   {t('layout.openWith', { agent: t('settings.irisAgent') })}
                 </Button>
               )}
+              {canShowHistory && (
+                <Button
+                  variant="secondary"
+                  className="h-9 justify-start gap-2 px-4"
+                  onClick={() => setHistoryOpen(true)}
+                >
+                  <History className="!size-4 text-muted-foreground" />
+                  {t('layout.agentHistory')}
+                </Button>
+              )}
               {agents.length > LAUNCHER_SEARCH_THRESHOLD && (
                 <Input
                   value={launcherQuery}
@@ -444,6 +477,13 @@ export function RightPane(): JSX.Element {
             </div>
           ))}
       </div>
+
+      <AgentHistoryDialog
+        anchor={historyAnchor}
+        anchorName={anchorName}
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+      />
     </div>
   );
 }

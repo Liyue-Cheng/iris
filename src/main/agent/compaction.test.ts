@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { createEmptyAgentSession, type AgentSessionAggregate } from './session-model';
 import { truncateIntentChain } from './session-domain';
 import {
+  AGENT_UNKNOWN_IMAGE_TOKEN_COST,
   activeCompaction,
   agentCompactionTrigger,
   agentContextBudget,
   completeAgentCompaction,
   estimateAgentContextTokens,
+  estimateAgentImageTokens,
   estimateAgentRequestTokens,
   estimateAgentTokens,
   inheritAgentCompactionInto,
@@ -347,5 +349,52 @@ describe('Agent compaction', () => {
     expect(isAgentContextOverflowError('context_length_exceeded')).toBe(true);
     expect(isAgentContextOverflowError('request failed: token limit exceeded')).toBe(true);
     expect(isAgentContextOverflowError('network timeout while contacting provider')).toBe(false);
+  });
+
+  it('prices an image by its pixels instead of its base64 length', () => {
+    const attachment = {
+      id: 'd'.repeat(64), name: 'shot.png', mimeType: 'image/png' as const, bytes: 4_000_000,
+      width: 1568, height: 882,
+    };
+    // A 1568x882 screenshot is well over a thousand tokens even though its
+    // text projection is one short line.
+    expect(estimateAgentImageTokens(attachment)).toBe(Math.ceil((1568 * 882) / 750) + 85);
+    expect(estimateAgentImageTokens(attachment)).toBeGreaterThan(1_000);
+    // Without readable dimensions the cost falls back to a conservative flat
+    // figure rather than a byte-based guess that would understate it.
+    expect(estimateAgentImageTokens({})).toBe(AGENT_UNKNOWN_IMAGE_TOKEN_COST);
+
+    const withImage = { messages: [{
+      id: 'm1', intentId: 'i1', role: 'tool' as const, content: 'shot.png: image', createdAt: 1,
+      attachments: [attachment],
+    }] };
+    const withoutImage = { messages: [{
+      id: 'm1', intentId: 'i1', role: 'tool' as const, content: 'shot.png: image', createdAt: 1,
+    }] };
+    expect(estimateAgentContextTokens(withImage))
+      .toBeGreaterThan(estimateAgentContextTokens(withoutImage) + 1_000);
+  });
+
+  it('tells the summarizer that images were omitted instead of re-sending them', () => {
+    const session = sessionWithCompletedIntents(4);
+    const attachment = {
+      id: 'e'.repeat(64), name: 'shot.png', mimeType: 'image/png' as const, bytes: 16,
+      width: 8, height: 6,
+    };
+    session.turns[0]!.assistant = {
+      content: 'answer 1',
+      toolCalls: [{ id: 'tool-1', tool: 'read', input: { path: 'shot.png' } }],
+      createdAt: 2,
+    };
+    session.turns[0]!.toolResults = [{
+      toolCallId: 'tool-1', tool: 'read', content: 'shot.png: image image/png 8x6 (16 B).',
+      attachments: [attachment], isError: false, createdAt: 3,
+    }];
+    const plan = planAgentCompaction(session, { keepRecentTokens: 1 });
+    expect(plan).not.toBeNull();
+    const material = renderAgentCompactionSource(session, plan!);
+    expect(material).toContain('1 attached image(s) omitted from this summary request');
+    // The summary request is text: no base64 ever enters it.
+    expect(material).not.toContain(attachment.id);
   });
 });

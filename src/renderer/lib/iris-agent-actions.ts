@@ -1,6 +1,9 @@
 import { CHANNELS } from '@shared/protocol';
 import type {
   IrisAgentAnchor,
+  IrisAgentAttachmentData,
+  IrisAgentAttachmentUpload,
+  IrisAgentHistoryEntry,
   IrisAgentModelCatalog,
   IrisAgentModelRef,
   IrisAgentSessionInfo,
@@ -13,7 +16,7 @@ import { projectStore } from '@renderer/stores/project-store';
 import { irisAgentAnchorKey, irisAgentStore } from '@renderer/stores/iris-agent-store';
 import { sessionViewStore } from '@renderer/stores/session-view-store';
 import { irisAgentSessionKey } from './session-projection';
-import { attemptAction, runUserAction } from './action-runtime';
+import { attemptAction, runUserAction, type ActionOutcome } from './action-runtime';
 import { notify } from '@renderer/stores/notification-store';
 import { confirmDialog } from '@renderer/components/ui/confirm-dialog';
 import { sessionCloseOutcome, type SessionCloseOutcome } from './session-close-outcome';
@@ -86,24 +89,29 @@ export async function openIrisAgent(anchor: IrisAgentAnchor): Promise<IrisAgentS
   return null;
 }
 
-export async function sendIrisAgentMessage(sessionId: string, message: string): Promise<void> {
+export async function sendIrisAgentMessage(
+  sessionId: string,
+  message: string,
+  attachments: readonly IrisAgentAttachmentUpload[] = [],
+): Promise<boolean> {
   const trimmed = message.trim();
   const session = irisAgentStore.get().sessions.find((candidate) => candidate.id === sessionId);
   const canStartFromDocument = session?.anchor.kind === 'document' && session.intents.length === 0;
-  if (!trimmed && !canStartFromDocument) return;
-  await runUserAction(
+  if (!trimmed && !canStartFromDocument) return false;
+  const outcome = await runUserAction(
     {
       title: 'Iris Agent 发送失败',
       dedupeKey: 'iris-agent:send:' + sessionId,
     },
     async () => {
-      if (!(await editorStore.flushBeforeSwitch('before-external-action'))) return;
+      if (!(await editorStore.flushBeforeSwitch('before-external-action'))) return false;
       const scope = scopeOrThrow();
       const precondition = commandPrecondition(sessionId);
       const session = await window.api.invoke<
         {
           sessionId: string;
           message: string;
+          attachments?: IrisAgentAttachmentUpload[];
           commandId: string;
           expectedRevision: number;
           expectedScope: ProjectScope;
@@ -112,11 +120,14 @@ export async function sendIrisAgentMessage(sessionId: string, message: string): 
       >(CHANNELS.IRIS_AGENT_SEND, projectScoped(scope, {
         sessionId,
         message: trimmed,
+        ...(attachments.length ? { attachments: [...attachments] } : {}),
         ...precondition,
       }));
       irisAgentStore.handleChanged(session);
+      return true;
     },
   );
+  return outcome.status === 'ok' && outcome.value;
 }
 
 export async function stopIrisAgent(sessionId: string): Promise<void> {
@@ -308,6 +319,133 @@ export async function setIrisAgentModel(
   );
 }
 
+/** The anchor's Agent history: live and closed instances, metadata only. */
+export async function listIrisAgentHistory(
+  anchor: IrisAgentAnchor,
+): Promise<IrisAgentHistoryEntry[]> {
+  const scope = scopeOrThrow();
+  return window.api.invoke<
+    { anchor: IrisAgentAnchor; expectedScope: ProjectScope },
+    IrisAgentHistoryEntry[]
+  >(CHANNELS.IRIS_AGENT_HISTORY, projectScoped(scope, { anchor }));
+}
+
+/**
+ * Switch back into a history Session. A closed instance is reopened under the
+ * same identity — nothing is forked — and selected so the pane follows the
+ * user's click.
+ */
+export async function reopenIrisAgent(sessionId: string): Promise<IrisAgentSessionInfo | null> {
+  return selectAfter(await attemptAction(async () => {
+    const scope = scopeOrThrow();
+    const session = await window.api.invoke<
+      { sessionId: string; expectedScope: ProjectScope },
+      IrisAgentSessionInfo
+    >(CHANNELS.IRIS_AGENT_REOPEN, projectScoped(scope, { sessionId }));
+    irisAgentStore.handleChanged(session);
+    sessionViewStore.select(scope, irisAgentAnchorKey(session.anchor), irisAgentSessionKey(session.id));
+    return session;
+  }), 'iris-agent:reopen:' + sessionId, 'Iris Agent 历史会话恢复失败');
+}
+
+/**
+ * Open a new live instance that inherits the selected history Session's Trace.
+ * The source Session is untouched; the new one anchors to the same document.
+ */
+export async function restoreIrisAgent(sessionId: string): Promise<IrisAgentSessionInfo | null> {
+  return selectAfter(await attemptAction(async () => {
+    const scope = scopeOrThrow();
+    const session = await window.api.invoke<
+      { sessionId: string; expectedScope: ProjectScope },
+      IrisAgentSessionInfo
+    >(CHANNELS.IRIS_AGENT_RESTORE, projectScoped(scope, { sessionId }));
+    irisAgentStore.handleChanged(session);
+    sessionViewStore.select(scope, irisAgentAnchorKey(session.anchor), irisAgentSessionKey(session.id));
+    return session;
+  }), 'iris-agent:restore:' + sessionId, 'Iris Agent 新实例创建失败');
+}
+
+/** Main-authoritative count used by the single bulk status confirmation. */
+export async function countIrisAgentDocuments(documentPaths: readonly string[]): Promise<number> {
+  if (documentPaths.length === 0) return 0;
+  const scope = scopeOrThrow();
+  return window.api.invoke<
+    { documentPaths: string[]; expectedScope: ProjectScope },
+    number
+  >(
+    CHANNELS.IRIS_AGENT_COUNT_DOCUMENTS,
+    projectScoped(scope, { documentPaths: [...new Set(documentPaths)] }),
+  );
+}
+
+/**
+ * Main-authoritative archival used by document status transitions. Main
+ * re-enumerates the latest Sessions for these anchors, so a stale renderer
+ * revision cannot let Done silently leave an Agent instance open.
+ */
+export async function archiveIrisAgentDocuments(documentPaths: readonly string[]): Promise<number> {
+  if (documentPaths.length === 0) return 0;
+  const scope = scopeOrThrow();
+  const archived = await window.api.invoke<
+    { documentPaths: string[]; expectedScope: ProjectScope },
+    number
+  >(
+    CHANNELS.IRIS_AGENT_ARCHIVE_DOCUMENTS,
+    projectScoped(scope, { documentPaths: [...new Set(documentPaths)] }),
+  );
+  return archived;
+}
+
+/**
+ * Close one live instance without a per-instance dialog. The bulk status change
+ * already asked once, so re-prompting here would be a second, redundant modal.
+ * Never throws: one failed instance must not abort the whole status change.
+ */
+export async function closeIrisAgentInstance(sessionId: string): Promise<void> {
+  const session = irisAgentStore.get().sessions.find((candidate) => candidate.id === sessionId);
+  if (!session) return;
+  const scope = projectStore.get().scope;
+  if (!scope) return;
+  try {
+    await window.api.invoke<
+      {
+        sessionId: string;
+        commandId: string;
+        expectedRevision: number;
+        confirmBusy?: boolean;
+        expectedScope: ProjectScope;
+      },
+      void
+    >(CHANNELS.IRIS_AGENT_CLOSE, projectScoped(scope, {
+      sessionId,
+      commandId: crypto.randomUUID(),
+      expectedRevision: session.revision,
+      confirmBusy: true,
+    }));
+    irisAgentStore.handleDestroyed(sessionId);
+  } catch (err) {
+    console.warn('[iris-agent] closing a document Agent instance failed', err);
+  }
+}
+
+async function selectAfter(
+  outcome: ActionOutcome<IrisAgentSessionInfo>,
+  dedupeKey: string,
+  title: string,
+): Promise<IrisAgentSessionInfo | null> {
+  if (outcome.status === 'ok') return outcome.value;
+  if (outcome.status === 'failed') {
+    notify({
+      dedupeKey,
+      title,
+      message: outcome.error.message,
+      domain: outcome.error.domain,
+      ...(outcome.error.incidentId ? { incidentId: outcome.error.incidentId } : {}),
+    });
+  }
+  return null;
+}
+
 export async function listIrisAgentModels(forceRefresh = false): Promise<IrisAgentModelCatalog> {
   const scope = scopeOrThrow();
   return window.api.invoke<{ expectedScope: ProjectScope; forceRefresh?: boolean }, IrisAgentModelCatalog>(
@@ -333,6 +471,26 @@ export async function openIrisAgentContext(sessionId: string, intentId: string):
       );
     },
   );
+}
+
+/**
+ * Loads one stored Agent image for display. A missing or unreadable attachment
+ * resolves to null rather than throwing: a thumbnail that cannot load must not
+ * turn a completed read into a visible failure.
+ */
+export async function readIrisAgentAttachment(
+  sessionId: string,
+  attachmentId: string,
+): Promise<string | null> {
+  const scope = scopeOrThrow();
+  const result = await window.api.invoke<
+    { sessionId: string; attachmentId: string; expectedScope: ProjectScope },
+    IrisAgentAttachmentData
+  >(
+    CHANNELS.IRIS_AGENT_ATTACHMENT_READ,
+    projectScoped(scope, { sessionId, attachmentId }),
+  );
+  return result.dataUrl;
 }
 
 export async function replayIrisAgentTerminal(
@@ -419,7 +577,7 @@ export async function closeIrisAgent(sessionId: string): Promise<SessionCloseOut
       if (running) {
         const confirmed = await confirmDialog({
           title: '关闭正在运行的 Iris Agent？',
-          message: 'Agent 仍在工作。关闭会话将停止当前任务并移除该会话。',
+          message: 'Agent 仍在工作。关闭会停止当前任务并结束该实例，对话记录会保留在历史中，可随时重新打开。',
           confirmText: '停止并关闭',
           tone: 'destructive',
         });

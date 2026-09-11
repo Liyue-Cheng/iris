@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { createHash, randomUUID } from 'node:crypto';
+import { basename } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { ProjectManager } from '../project-manager';
 import type { SettingsManager } from '../settings-manager';
@@ -13,9 +14,11 @@ import {
   assertIrisAgentCloseAllowed,
   assertQuiescentIrisAgentSession,
   assertRewindableAgentIntent,
+  closeAgentSession,
   completeActiveAgentIntent,
   matchesActiveAgentIntent,
   pauseActiveAgentIntent,
+  reopenAgentSession,
   resumePausedAgentIntent,
   truncateIntentChain,
 } from './session-domain';
@@ -31,6 +34,8 @@ import {
 } from './command-pty';
 import { AgentSupervisionLog } from './supervision';
 import type {
+  AgentPromptImage,
+  AgentProviderReplay,
   AgentProviderProxy,
   AgentCorrelation,
   AgentSessionRuntimeState,
@@ -41,13 +46,27 @@ import type {
   AgentTerminalSupervisionInput,
   AgentTerminalSupervisionResult,
 } from '@shared/agent-protocol';
+import {
+  AGENT_ATTACHMENT_MAX_COUNT,
+  AGENT_ATTACHMENT_MAX_EDGE,
+  AGENT_ATTACHMENT_MAX_TOTAL_BYTES,
+  AGENT_IMAGE_MAX_BYTES,
+} from '@shared/agent-protocol';
+import { detectImageBytes, readImageSize } from '@shared/image-signature';
+import type { AgentStoredToolResult } from './session-model';
 import type { AgentWorkerPort } from './worker-host';
 import type {
   IrisAgentAnchor,
+  IrisAgentAttachment,
+  IrisAgentAttachmentData,
+  IrisAgentAttachmentUpload,
+  IrisAgentHistoryEntry,
   IrisAgentListSnapshot,
   IrisAgentModelCatalog,
   IrisAgentModelRef,
   IrisAgentPauseReason,
+  IrisAgentPhaseChangedPayload,
+  IrisAgentReasoningLevel,
   IrisAgentSessionChangedPayload,
   IrisAgentSessionDestroyedPayload,
   IrisAgentSessionInfo,
@@ -71,6 +90,7 @@ import {
   agentContextBudget,
   completeAgentCompaction,
   estimateAgentRequestTokens,
+  estimateAgentAttachmentTokens,
   estimateAgentTokens,
   inheritAgentCompactionInto,
   openAgentCompaction,
@@ -89,10 +109,12 @@ import {
   currentAgentIntent,
   diffAgentSessionProjection,
   isAgentSessionBusy,
+  isAgentSessionClosed,
   projectAgentSession,
 } from './session-model';
 import { SOFTWARE_PROMPT_TEMPLATE } from '../iris-templates';
 import { AppError } from '@shared/app-error';
+import { logger } from '../logger';
 
 export const DEFAULT_DOCUMENT_AGENT_MESSAGE = '请根据文档内容开始工作';
 
@@ -168,6 +190,7 @@ export class IrisAgentSessionManager extends EventEmitter {
   private loaded: LoadedStore | null = null;
   private readonly hosts = new Map<string, AgentWorkerHost>();
   private readonly emittedProjections = new Map<string, IrisAgentSessionInfo>();
+  private readonly livePhases = new Map<string, IrisAgentPhaseChangedPayload>();
   private currentScope: ProjectScope | null = null;
   private readonly sessionMutationChains = new Map<string, Promise<void>>();
   private modelCatalogCache: IrisAgentModelCatalog | null = null;
@@ -204,6 +227,8 @@ export class IrisAgentSessionManager extends EventEmitter {
   private readonly dispatchingMailbox = new Set<string>();
   /** In-flight summary requests, so Stop and shutdown can cancel them. */
   private readonly compactionAborts = new Map<string, AbortController>();
+  /** Runtime callbacks are ignored while an instance is being archived. */
+  private readonly archivingSessions = new Set<string>();
   private shuttingDown = false;
 
   constructor(
@@ -289,8 +314,20 @@ export class IrisAgentSessionManager extends EventEmitter {
   async createSession(input: CreateIrisAgentSessionInput): Promise<IrisAgentSessionInfo> {
     this.currentScope = input.scope;
     const store = await this.ensureStore(input.scope.root);
-    await this.verifyAnchor(input.anchor);
-    const anchor = await this.readAnchorText(input.anchor);
+    const aggregate = await this.buildEmptySession(input.anchor, input.scope.root);
+    const saved = await store.commit(aggregate);
+    this.emitChanged(input.scope, saved);
+    return projectAgentSession(saved, input.scope.generation);
+  }
+
+  /**
+   * The one place an empty Session aggregate is built: anchor verification,
+   * baseline capture and default-model selection all happen here, so a normal
+   * open and a history restore cannot drift apart.
+   */
+  private async buildEmptySession(anchor: IrisAgentAnchor, projectRoot: string): Promise<AgentSessionAggregate> {
+    await this.verifyAnchor(anchor);
+    const anchorText = await this.readAnchorText(anchor);
     const preferred = this.options.settingsManager?.get().experimental.irisAgentDefaultModel ?? null;
     // Creation deliberately never starts model discovery, so it can only pick
     // from what a previous listing already cached.
@@ -300,16 +337,16 @@ export class IrisAgentSessionManager extends EventEmitter {
       : preferred;
     const aggregate = createEmptyAgentSession({
       id: randomUUID(),
-      anchor: input.anchor,
+      anchor,
       model: selected ? { provider: selected.provider, modelId: selected.modelId } : null,
-      projectRoot: input.scope.root,
+      projectRoot,
       displayName: 'Iris Agent',
       injection: {
         methods: { agent: 'current', software: 'current', project: 'current' },
         anchor: {
-          path: 'path' in anchor ? anchor.path : anchor.workspacePath,
-          baselineText: anchor.text,
-          baselineSha256: sha256(anchor.text),
+          path: 'path' in anchorText ? anchorText.path : anchorText.workspacePath,
+          baselineText: anchorText.text,
+          baselineSha256: sha256(anchorText.text),
           capturedAt: Date.now(),
         },
       },
@@ -320,9 +357,86 @@ export class IrisAgentSessionManager extends EventEmitter {
     // without a model has no real window, so it keeps none rather than showing
     // a guessed default.
     if (aggregate.model) aggregate.contextBudget = await this.contextBudgetFor(aggregate);
-    const saved = await store.commit(aggregate);
-    this.emitChanged(input.scope, saved);
-    return projectAgentSession(saved, input.scope.generation);
+    return aggregate;
+  }
+
+  /**
+   * The anchor's Agent history: every Session that was ever opened against it,
+   * live and closed alike. The read model is metadata-only, so listing does not
+   * resurrect a closed instance or replay its journal.
+   */
+  async history(scope: ProjectScope, anchor: IrisAgentAnchor): Promise<IrisAgentHistoryEntry[]> {
+    this.currentScope = scope;
+    const store = await this.ensureStore(scope.root);
+    return store.historyEntries(anchor).map((meta) => ({
+      id: meta.id,
+      anchor: { ...meta.anchor },
+      displayName: meta.displayName,
+      state: meta.state,
+      closed: meta.closed,
+      createdAt: meta.createdAt,
+      updatedAt: meta.updatedAt,
+      intentCount: meta.intentCount,
+      lastUserMessage: meta.lastUserMessage,
+      ...(meta.parentSessionId ? { parentSessionId: meta.parentSessionId } : {}),
+    }));
+  }
+
+  /**
+   * Switch back into a closed history Session. Nothing is forked: the same
+   * Session becomes live again with its whole conversation, and its worker
+   * starts on the next request.
+   */
+  async reopen(scope: ProjectScope, sessionId: string): Promise<IrisAgentSessionInfo> {
+    return this.runSessionCommand(sessionId, async () => {
+      this.currentScope = scope;
+      const store = await this.ensureStore(scope.root);
+      // A closed Session is not in memory; this validates and replays its
+      // journal exactly once, on the way back in.
+      await store.ensureLoaded(sessionId);
+      const session = await this.requireSession(scope, sessionId);
+      if (session.closedAt === undefined) return projectAgentSession(session, scope.generation);
+      const saved = await this.commitAndEmit(scope, store, reopenAgentSession(session));
+      return projectAgentSession(saved, scope.generation);
+    });
+  }
+
+  /**
+   * The history "+": open a new live Session that inherits the selected
+   * Session's Trace, without changing the source. The fork boundary is the
+   * source's current Trace head, so the new instance continues the same
+   * conversation under its own identity.
+   */
+  async restore(scope: ProjectScope, sourceSessionId: string): Promise<IrisAgentSessionInfo> {
+    return this.runSessionCommand(sourceSessionId, async () => {
+      this.currentScope = scope;
+      const store = await this.ensureStore(scope.root);
+      await store.ensureLoaded(sourceSessionId);
+      const source = await this.requireSession(scope, sourceSessionId);
+      const branchNumber = store.historyEntries(source.anchor)
+        .filter((session) => session.parentSessionId === source.id).length + 1;
+      const name = `${source.displayName} Branch ${branchNumber}`;
+      const headId = source.activeIntentIds.at(-1);
+      const head = headId ? source.intents.find((intent) => intent.id === headId) : undefined;
+      if (!head) {
+        // Nothing to inherit from an empty Session; a fresh live instance on
+        // the same anchor is the honest result, with lineage recorded.
+        const created = await this.buildEmptySession(source.anchor, scope.root);
+        created.parentSessionId = source.id;
+        const saved = await store.commit(created);
+        this.emitChanged(scope, saved);
+        return projectAgentSession(saved, scope.generation);
+      }
+      if (head.state === 'running') {
+        throw new Error('Stop the Iris Agent Session before opening a new instance from it.');
+      }
+      const branch = head.state === 'completed'
+        ? createIrisAgentBranch(source, head.id, randomUUID(), name, Date.now())
+        : createIrisAgentInputBranch(source, head.id, randomUUID(), name, Date.now());
+      const saved = await store.commitBranch(source.id, branch);
+      this.emitChanged(scope, saved);
+      return projectAgentSession(saved, scope.generation);
+    });
   }
 
   async listModels(forceRefresh = false): Promise<IrisAgentModelCatalog> {
@@ -371,7 +485,8 @@ export class IrisAgentSessionManager extends EventEmitter {
       const store = await this.ensureStore(scope.root);
       const source = await this.requireSession(scope, sessionId);
       assertIrisAgentExpectedRevision(source, precondition.expectedRevision);
-      const branchNumber = store.list().filter((session) => session.parentSessionId === source.id).length + 1;
+      const branchNumber = store.historyEntries(source.anchor)
+        .filter((session) => session.parentSessionId === source.id).length + 1;
       const branch = createIrisAgentBranch(
         source,
         throughIntentId,
@@ -397,7 +512,8 @@ export class IrisAgentSessionManager extends EventEmitter {
       const source = await this.requireSession(scope, sessionId);
       assertIrisAgentExpectedRevision(source, precondition.expectedRevision);
       assertQuiescentIrisAgentSession(source);
-      const branchNumber = store.list().filter((candidate) => candidate.parentSessionId === source.id).length + 1;
+      const branchNumber = store.historyEntries(source.anchor)
+        .filter((candidate) => candidate.parentSessionId === source.id).length + 1;
       const branch = createIrisAgentInputBranch(
         source, throughIntentId, randomUUID(), `${source.displayName} Branch ${branchNumber}`, Date.now(),
       );
@@ -412,8 +528,131 @@ export class IrisAgentSessionManager extends EventEmitter {
     sessionId: string,
     message: string,
     precondition: IrisAgentCommandPrecondition = {},
+    uploads: readonly IrisAgentAttachmentUpload[] = [],
   ): Promise<IrisAgentSessionInfo> {
-    return this.runSessionCommand(sessionId, () => this.sendSession(scope, sessionId, message, precondition));
+    return this.runSessionCommand(sessionId, async () => {
+      this.currentScope = scope;
+      const store = await this.ensureStore(scope.root);
+      const session = await this.requireSession(scope, sessionId);
+      // Attachments are validated and stored before anything is queued, so a
+      // rejected image fails the whole send instead of reaching the mailbox.
+      assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
+      await this.assertModelSupportsAttachments(session, uploads.length > 0);
+      const attachments = await this.persistUserAttachments(store, sessionId, uploads);
+      try {
+        return await this.sendSession(scope, sessionId, message, precondition, attachments);
+      } catch (error) {
+        await store.removeAttachmentsIfUnreferenced(sessionId, attachments).catch(() => undefined);
+        throw error;
+      }
+    });
+  }
+
+  /** Re-dispatch of an already-stored mailbox entry; no attachment is re-uploaded. */
+  private async sendStored(
+    scope: ProjectScope,
+    sessionId: string,
+    message: string,
+    attachments: readonly IrisAgentAttachment[],
+  ): Promise<IrisAgentSessionInfo> {
+    return this.runSessionCommand(sessionId, () =>
+      this.sendSession(scope, sessionId, message, {}, [...attachments]));
+  }
+
+  /**
+   * Validates and stores the images one request carries.
+   *
+   * The renderer's claims are ignored: the MIME type and the pixel size are
+   * sniffed from the decoded bytes, so a mislabelled upload cannot be stored as
+   * something it is not. Every limit is enforced here rather than in the
+   * composer, because the composer is not a trust boundary.
+   */
+  private async persistUserAttachments(
+    store: IrisAgentSessionStore,
+    sessionId: string,
+    uploads: readonly IrisAgentAttachmentUpload[],
+  ): Promise<IrisAgentAttachment[]> {
+    if (uploads.length === 0) return [];
+    if (uploads.length > AGENT_ATTACHMENT_MAX_COUNT) {
+      throw new Error(`一次最多只能附带 ${String(AGENT_ATTACHMENT_MAX_COUNT)} 张图片。`);
+    }
+    const maxBase64Chars = Math.ceil((AGENT_IMAGE_MAX_BYTES * 4) / 3) + 4;
+    const prepared: Array<{
+      name: string;
+      mimeType: IrisAgentAttachment['mimeType'];
+      bytes: Buffer;
+      width?: number;
+      height?: number;
+    }> = [];
+    let totalBytes = 0;
+    for (const upload of uploads) {
+      const name = typeof upload.name === 'string' ? upload.name.trim() : '';
+      const encoded = typeof upload.dataBase64 === 'string' ? upload.dataBase64 : '';
+      // Check the encoded length first: decoding is what allocates.
+      if (encoded.length === 0 || encoded.length > maxBase64Chars) {
+        throw new Error('图片数据无效或超过 5 MiB 上限。');
+      }
+      const bytes = Buffer.from(encoded, 'base64');
+      if (bytes.byteLength === 0) throw new Error('图片数据为空。');
+      if (bytes.byteLength > AGENT_IMAGE_MAX_BYTES) {
+        throw new Error('图片超过 5 MiB 上限。');
+      }
+      const detected = detectImageBytes(bytes);
+      if (!detected) {
+        throw new Error(
+          `${name || '该文件'} 不是受支持的图片格式（仅支持 PNG、JPEG、GIF、WebP、AVIF）。`,
+        );
+      }
+      totalBytes += bytes.byteLength;
+      if (totalBytes > AGENT_ATTACHMENT_MAX_TOTAL_BYTES) {
+        throw new Error('附带图片的总大小超过 12 MiB 上限。');
+      }
+      const size = readImageSize(bytes, detected.mimeType);
+      if (!size) throw new Error(`${name || '该图片'} 的像素尺寸无法读取。`);
+      if (Math.max(size.width, size.height) > AGENT_ATTACHMENT_MAX_EDGE) {
+        throw new Error(`图片长边超过 ${String(AGENT_ATTACHMENT_MAX_EDGE)}px 上限。`);
+      }
+      prepared.push({
+        name: name || 'image',
+        mimeType: detected.mimeType,
+        bytes,
+        ...size,
+      });
+    }
+    const saved: IrisAgentAttachment[] = [];
+    try {
+      for (const image of prepared) {
+        saved.push(await store.saveAttachment(sessionId, image));
+      }
+    } catch (error) {
+      await store.removeAttachmentsIfUnreferenced(sessionId, saved).catch(() => undefined);
+      throw error;
+    }
+    return saved;
+  }
+
+  /**
+   * The wire form of one intent's images. A missing file is an error rather
+   * than a silently dropped picture: the user chose it for this request.
+   */
+  private async promptImagesFor(
+    store: IrisAgentSessionStore,
+    sessionId: string,
+    attachments: readonly IrisAgentAttachment[] | undefined,
+  ): Promise<AgentPromptImage[]> {
+    const images: AgentPromptImage[] = [];
+    for (const attachment of attachments ?? []) {
+      const bytes = await store.readAttachment(sessionId, attachment).catch(() => null);
+      if (!bytes) {
+        throw new Error(`图片 ${attachment.name} 已不可读取，请重新附加。`);
+      }
+      images.push({
+        type: 'image',
+        attachment: { ...attachment },
+        dataBase64: bytes.toString('base64'),
+      });
+    }
+    return images;
   }
 
   private async sendSession(
@@ -421,13 +660,14 @@ export class IrisAgentSessionManager extends EventEmitter {
     sessionId: string,
     message: string,
     precondition: IrisAgentCommandPrecondition,
+    attachments: IrisAgentAttachment[] = [],
   ): Promise<IrisAgentSessionInfo> {
     this.currentScope = scope;
     const store = await this.ensureStore(scope.root);
     let session = await this.requireSession(scope, sessionId);
     assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
     const effectiveMessage = await this.resolveUserMessage(session, message);
-    this.assertUsableModel(session);
+    await this.assertModelSupportsAttachments(session, attachments.length > 0);
     if (session.mailboxPaused) {
       const reopened = cloneAgentSession(session);
       reopened.mailboxPaused = false;
@@ -443,6 +683,7 @@ export class IrisAgentSessionManager extends EventEmitter {
         sequence: nextMailboxSequence(queued),
         source: 'user',
         content: effectiveMessage,
+        ...(attachments.length ? { attachments: structuredClone(attachments) } : {}),
         createdAt: Date.now(),
         state: 'queued',
       });
@@ -461,7 +702,7 @@ export class IrisAgentSessionManager extends EventEmitter {
     // assembled again after compaction so its request facts match the send.
     const budgetPrompt = await this.preparePrompt(session, effectiveMessage);
     session = await this.compactForThreshold(
-      scope, store, session, effectiveMessage, budgetPrompt.prompt,
+      scope, store, session, effectiveMessage, budgetPrompt.prompt, attachments,
     );
     if (session.state === 'paused') {
       session = supersedeOpenAgentIntent(session);
@@ -471,6 +712,7 @@ export class IrisAgentSessionManager extends EventEmitter {
     session.intents.push({
       id: intentId,
       content: effectiveMessage,
+      ...(attachments.length ? { attachments: structuredClone(attachments) } : {}),
       turnIds: [],
       state: 'running',
       assembledInputAvailable: false,
@@ -499,9 +741,12 @@ export class IrisAgentSessionManager extends EventEmitter {
       }
       acceptedIntent.assembledInputAvailable = assembledInputAvailable;
       session.requestFacts.push(prepared.facts);
+      const promptImages = await this.promptImagesFor(store, sessionId, attachments);
       // The window is measured from the exact payload about to be sent, so the
       // indicator never depends on a provider reply to show its first reading.
-      await this.applyContextMeasurement(session, prepared.prompt, store.history(sessionId));
+      await this.applyContextMeasurement(
+        session, prepared.prompt, await store.history(sessionId), attachments,
+      );
       session.state = 'running';
       running = await store.commit(session);
       this.emitChanged(scope, running);
@@ -510,7 +755,8 @@ export class IrisAgentSessionManager extends EventEmitter {
         type: 'run',
         correlation,
         prompt: prepared.prompt,
-        history: store.history(sessionId),
+        ...(promptImages.length ? { attachments: promptImages } : {}),
+        history: await store.history(sessionId),
         runtime: await this.executionRuntimeFor(running),
       });
       return projectAgentSession(store.get(sessionId) ?? running, scope.generation);
@@ -537,13 +783,13 @@ export class IrisAgentSessionManager extends EventEmitter {
   }
 
   private async onTaskChanged(task: AgentTaskRecord): Promise<void> {
-    if (this.shuttingDown) return;
+    if (this.shuttingDown || this.archivingSessions.has(task.sessionId)) return;
     const scope = this.currentScope;
     if (!scope || scope.root !== task.projectRoot) return;
     await this.enqueueSessionMutation(task.sessionId, async () => {
       const store = await this.ensureStore(task.projectRoot);
       const session = store.get(task.sessionId);
-      if (!session) return;
+      if (!session || isAgentSessionClosed(session) || this.archivingSessions.has(task.sessionId)) return;
       const next = cloneAgentSession(session);
       const summary = rendererTaskView(task);
       const previous = next.tasks.find((candidate) => candidate.taskId === task.taskId);
@@ -607,7 +853,7 @@ export class IrisAgentSessionManager extends EventEmitter {
     if (!entry) return;
     this.dispatchingMailbox.add(sessionId);
     try {
-      await this.send(scope, sessionId, entry.content);
+      await this.sendStored(scope, sessionId, entry.content, entry.attachments ?? []);
       await this.runSessionCommand(sessionId, async () => {
         const store = await this.ensureStore(scope.root);
         const session = await this.requireSession(scope, sessionId);
@@ -662,12 +908,13 @@ export class IrisAgentSessionManager extends EventEmitter {
     session: AgentSessionAggregate,
     pendingMessage: string,
     preparedPrompt?: string,
+    attachments: readonly IrisAgentAttachment[] = [],
   ): Promise<AgentSessionAggregate> {
     if (!this.options.summarizeContext) return session;
     const projected = estimateAgentRequestTokens(
       preparedPrompt ?? pendingMessage,
-      store.history(session.id),
-    );
+      await store.history(session.id),
+    ) + estimateAgentAttachmentTokens(attachments);
     const thresholds = await this.compactionThresholdsFor(session);
     if (projected < agentCompactionTrigger(thresholds)) return session;
     const plan = planAgentCompaction(session, thresholds);
@@ -830,7 +1077,12 @@ export class IrisAgentSessionManager extends EventEmitter {
         }
         intent.assembledInputAvailable = assembledInputAvailable;
         session.requestFacts.push(prepared.facts);
-        await this.applyContextMeasurement(session, prepared.prompt, store.history(sessionId));
+        // A retry before the first Turn re-sends the whole request, so its
+        // images have to travel again exactly as they did the first time.
+        const promptImages = await this.promptImagesFor(store, sessionId, intent.attachments);
+        await this.applyContextMeasurement(
+          session, prepared.prompt, await store.history(sessionId), intent.attachments,
+        );
         const running = await store.commit(resumePausedAgentIntent(session));
         this.emitChanged(scope, running);
         try {
@@ -845,7 +1097,8 @@ export class IrisAgentSessionManager extends EventEmitter {
             type: 'run',
             correlation: activeIntentCorrelation(latest, host.workerEpoch),
             prompt: prepared.prompt,
-            history: store.history(sessionId),
+            ...(promptImages.length ? { attachments: promptImages } : {}),
+            history: await store.history(sessionId),
             runtime: await this.executionRuntimeFor(latest),
           });
           return projectAgentSession(store.get(sessionId) ?? latest, scope.generation);
@@ -874,7 +1127,7 @@ export class IrisAgentSessionManager extends EventEmitter {
           invokeOffset: running.invokes.filter((invoke) => invoke.intentId === intent.id).length,
           ...(heldInvoke ? { invokeId: heldInvoke.id } : {}),
           ...(heldInvoke ? { attemptOffset: heldInvoke.attemptIds.length } : {}),
-          history: store.history(sessionId),
+          history: await store.history(sessionId),
           runtime: await this.executionRuntimeFor(running),
         });
       } catch (error) {
@@ -1064,40 +1317,76 @@ export class IrisAgentSessionManager extends EventEmitter {
     });
   }
 
+  /**
+   * Close one Agent instance.
+   *
+   * Closing is archival, not deletion: the worker and every terminal of the
+   * Session are torn down and the active Intent is settled to `paused`, but the
+   * recorded Trace stays on disk. The Session leaves the live projection
+   * (`sessionDestroyed`) and becomes a row in its anchor's history list, from
+   * where it can be reopened or forked into a new instance.
+   */
   async closeSession(
     scope: ProjectScope,
     sessionId: string,
     precondition: IrisAgentCommandPrecondition = {},
   ): Promise<void> {
     await this.runSessionCommand(sessionId, async () => {
+      this.currentScope = scope;
       const store = await this.ensureStore(scope.root);
       const session = await this.requireSession(scope, sessionId);
       assertIrisAgentExpectedRevision(session, precondition.expectedRevision);
       assertIrisAgentCloseAllowed(session, precondition.confirmBusy === true);
-      await this.shutdownHost(sessionId);
-      this.releaseSessionTerminals(sessionId);
-      await store.delete(sessionId);
-      this.emittedProjections.delete(sessionId);
-      this.emit('sessionDestroyed', { scope, sessionId } satisfies IrisAgentSessionDestroyedPayload);
+      await this.archiveSessionNow(
+        scope,
+        store,
+        sessionId,
+        'user',
+        'Paused because the Iris Agent instance was closed.',
+      );
     });
+  }
+
+  /**
+   * Authoritative bulk close for a Done/On Hold transition. The renderer sends
+   * document paths, while main re-enumerates the latest live projection and
+   * serializes each archival against that Session's mutation queue.
+   */
+  async countDocumentSessions(scope: ProjectScope, documentPaths: readonly string[]): Promise<number> {
+    this.currentScope = scope;
+    const store = await this.ensureStore(scope.root);
+    const paths = new Set(documentPaths);
+    return store.list().filter((session) =>
+      session.anchor.kind === 'document' && paths.has(session.anchor.path)).length;
+  }
+
+  async archiveDocumentSessions(scope: ProjectScope, documentPaths: readonly string[]): Promise<number> {
+    this.currentScope = scope;
+    const store = await this.ensureStore(scope.root);
+    const paths = new Set(documentPaths);
+    const ids = store.list().flatMap((session) =>
+      session.anchor.kind === 'document' && paths.has(session.anchor.path) ? [session.id] : []);
+    const archived = await Promise.all(ids.map((sessionId) => this.runSessionCommand(sessionId, () =>
+      this.archiveSessionNow(
+        scope,
+        store,
+        sessionId,
+        'user',
+        'Paused because the linked document left the active lens.',
+      ))));
+    return archived.filter(Boolean).length;
   }
 
   async closeProject(scope: ProjectScope): Promise<void> {
     const store = await this.ensureStore(scope.root);
-    await Promise.allSettled(store.list().map((session) => this.runSessionCommand(session.id, async () => {
-      this.releaseSessionTerminals(session.id);
-      await this.shutdownHost(session.id);
-      const latest = store.get(session.id);
-      if (!latest || !isAgentSessionBusy(latest)) return;
-      await this.pauseIntent(
+    await Promise.all(store.list().map((session) => this.runSessionCommand(session.id, () =>
+      this.archiveSessionNow(
         scope,
         store,
-        latest,
-        activeIntentCorrelation(latest, latest.workerEpoch),
+        session.id,
         'runtime',
         'Project closed before the Agent run settled.',
-      );
-    })));
+      ))));
   }
 
   assertProviderConfigurationChangeAllowed(): void {
@@ -1110,6 +1399,11 @@ export class IrisAgentSessionManager extends EventEmitter {
     return this.loaded?.store.list().filter(isAgentSessionBusy).length ?? 0;
   }
 
+  /** Instances still open, running or not — the scope of a quit confirmation. */
+  countOpenSessions(): number {
+    return this.loaded?.store.list().length ?? 0;
+  }
+
   async reloadProviderConfiguration(): Promise<void> {
     this.invalidateModelCatalog();
     const ids = [...this.hosts.keys()];
@@ -1118,6 +1412,7 @@ export class IrisAgentSessionManager extends EventEmitter {
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    this.clearAllPhases();
     for (const terminal of this.terminals.values()) {
       terminal.output.dispose({ flush: false });
       if (terminal.running) terminal.terminal.abort();
@@ -1130,13 +1425,108 @@ export class IrisAgentSessionManager extends EventEmitter {
     await this.taskManager.shutdown();
     await Promise.allSettled([...this.hosts.values()].map((host) => host.shutdown('shutdown')));
     await Promise.allSettled([...this.sessionMutationChains.values()]);
+    // Archive every still-live instance before the store goes away. Without
+    // this, the next start would load the sessions that were open at quit as
+    // live instances again — the "everything loads on second launch" symptom.
+    let archiveError: unknown;
+    try {
+      await this.archiveLiveSessions();
+    } catch (error) {
+      archiveError = error;
+    }
     this.hosts.clear();
     this.terminals.clear();
     this.sessionMutationChains.clear();
+    this.archivingSessions.clear();
     this.emittedProjections.clear();
     await this.loaded?.store.flush();
     this.loaded?.store.destroy();
     this.loaded = null;
+    if (archiveError) throw archiveError;
+  }
+
+  /**
+   * Settles and archives every live instance. Runs on the shutdown path, where
+   * the mutation queues are already drained and the workers are already down, so
+   * it commits straight to the store instead of going through
+   * `runSessionCommand` (which refuses work once `shuttingDown` is set).
+   */
+  private async archiveLiveSessions(): Promise<void> {
+    const loaded = this.loaded;
+    if (!loaded) return;
+    const failures: unknown[] = [];
+    for (const session of loaded.store.list()) {
+      try {
+        const tasks = await this.taskManager.recordsForSession(session.projectRoot, session.id);
+        await loaded.store.commit(this.prepareSessionForArchive(
+          session,
+          'restart',
+          'Iris closed before the Agent intent settled.',
+          tasks,
+        ));
+      } catch (error) {
+        logger.warn('agent', `failed to archive Iris Agent session ${session.id} on shutdown`, error);
+        failures.push(error);
+      }
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'One or more Iris Agent Sessions could not be archived.');
+    }
+  }
+
+  /** Must be called from the target Session's mutation queue. */
+  private async archiveSessionNow(
+    scope: ProjectScope,
+    store: IrisAgentSessionStore,
+    sessionId: string,
+    pauseReason: IrisAgentPauseReason,
+    pauseMessage: string,
+  ): Promise<boolean> {
+    const initial = store.get(sessionId);
+    if (!initial || isAgentSessionClosed(initial)) return false;
+    this.archivingSessions.add(sessionId);
+    try {
+      // No runtime callback may enqueue fresh work after this point. Task
+      // notifications are deliberately ignored while archival is in progress;
+      // their final durable summaries are copied below before the close commit.
+      this.compactionAborts.get(sessionId)?.abort();
+      this.abortSessionTerminals(sessionId);
+      await this.shutdownHost(sessionId);
+      this.releaseSessionTerminals(sessionId);
+      await this.taskManager.cancelSession(scope.root, sessionId);
+      const tasks = await this.taskManager.recordsForSession(scope.root, sessionId);
+      const latest = store.get(sessionId) ?? initial;
+      await store.commit(this.prepareSessionForArchive(latest, pauseReason, pauseMessage, tasks));
+      this.emittedProjections.delete(sessionId);
+      this.emit('sessionDestroyed', { scope, sessionId } satisfies IrisAgentSessionDestroyedPayload);
+      return true;
+    } finally {
+      this.archivingSessions.delete(sessionId);
+    }
+  }
+
+  private prepareSessionForArchive(
+    source: AgentSessionAggregate,
+    pauseReason: IrisAgentPauseReason,
+    pauseMessage: string,
+    tasks: readonly AgentTaskRecord[],
+  ): AgentSessionAggregate {
+    const active = currentAgentIntent(source);
+    const settled = active?.state === 'running'
+      ? pauseActiveAgentIntent(
+          source,
+          activeIntentCorrelation(source, source.workerEpoch),
+          pauseReason,
+          pauseMessage,
+        )
+      : cloneAgentSession(source);
+    // Closing an instance must never turn its old queue into surprise work on
+    // the next send. The audit entries stay, but they are no longer runnable.
+    for (const entry of settled.mailbox) {
+      if (entry.state === 'queued' || entry.state === 'running') entry.state = 'superseded';
+    }
+    settled.tasks = tasks.map(rendererTaskView);
+    return closeAgentSession(settled);
   }
 
   private async preparePrompt(
@@ -1199,7 +1589,31 @@ export class IrisAgentSessionManager extends EventEmitter {
           await resolveIrisModelBaseUrl(providerProfileRoot, session.model),
         ))
       : { mode: 'direct' as const };
-    return { model: { ...session.model }, providerProxy };
+    const catalog = await this.loadModelCatalog(false);
+    const selected = catalog.models.find((candidate) =>
+      candidate.provider === session.model!.provider && candidate.modelId === session.model!.modelId);
+    const configured: IrisAgentReasoningLevel = selected?.reasoningLevel ?? 'off';
+    let effective: IrisAgentReasoningLevel = configured;
+    let downgradeReason: string | undefined;
+    if (!selected) {
+      effective = 'off';
+      if (configured !== 'off') downgradeReason = 'The selected model is absent from the current model catalog.';
+    } else if (!selected.reasoning) {
+      effective = 'off';
+      if (configured !== 'off') downgradeReason = 'The selected model does not declare reasoning support.';
+    } else if (!(selected.supportedReasoningLevels ?? ['off']).includes(configured)) {
+      effective = 'off';
+      downgradeReason = `Reasoning level ${configured} is not supported by the selected model.`;
+    }
+    return {
+      model: { ...session.model },
+      providerProxy,
+      reasoning: {
+        configured,
+        effective,
+        ...(downgradeReason ? { downgradeReason } : {}),
+      },
+    };
   }
 
   private async hostFor(
@@ -1307,6 +1721,9 @@ export class IrisAgentSessionManager extends EventEmitter {
       case 'assistant-text-delta':
         await this.applyAssistantTextDelta(scope, store, session, event.delta, event.correlation);
         return;
+      case 'assistant-phase':
+        this.applyAssistantPhase(scope, session, event);
+        return;
       case 'provider-message':
         await this.applyProviderMessageEvent(scope, store, session, event.message, event.correlation);
         return;
@@ -1383,7 +1800,13 @@ export class IrisAgentSessionManager extends EventEmitter {
       currentIntent.assembledInputAvailable = false;
     }
     current.requestFacts.push(prepared.facts);
-    await this.applyContextMeasurement(current, prepared.prompt, store.history(source.id));
+    const promptImages = await this.promptImagesFor(store, source.id, currentIntent.attachments);
+    await this.applyContextMeasurement(
+      current,
+      prepared.prompt,
+      await store.history(source.id),
+      currentIntent.attachments,
+    );
     const saved = await this.commitAndEmit(scope, store, current);
     const host = await this.hostFor(saved, store, scope);
     await host.ensureStarted();
@@ -1394,7 +1817,8 @@ export class IrisAgentSessionManager extends EventEmitter {
       type: 'run',
       correlation: activeIntentCorrelation(running, host.workerEpoch),
       prompt: prepared.prompt,
-      history: store.history(source.id),
+      ...(promptImages.length ? { attachments: promptImages } : {}),
+      history: await store.history(source.id),
       runtime: await this.executionRuntimeFor(running),
     });
     return true;
@@ -1447,9 +1871,15 @@ export class IrisAgentSessionManager extends EventEmitter {
       (operation) => operation.id === correlation.operationId,
     );
     if (previousOperation?.state === 'completed' && previousOperation.result) {
-      await this.hosts.get(session.id)?.post({
-        type: 'tool-result', correlation, ok: true, result: previousOperation.result,
-      });
+      const replay = await this.rehydrateToolResult(store, current.id, previousOperation.result);
+      await this.hosts.get(session.id)?.post(replay
+        ? { type: 'tool-result', correlation, ok: true, result: replay }
+        : {
+            type: 'tool-result',
+            correlation,
+            ok: false,
+            error: 'The stored image for this read is no longer available.',
+          });
       return;
     }
     if (previousOperation?.state === 'failed') {
@@ -1664,15 +2094,28 @@ export class IrisAgentSessionManager extends EventEmitter {
       return;
     }
     const terminalResult = terminalExecution !== null;
+    // An image read is snapshotted before the result is acknowledged, so the
+    // Trace can always name a file that exists even if the project file it came
+    // from is edited or deleted right after. The Activity has not been updated
+    // with this call's fields yet, so the name comes from the update itself.
+    const imageAttachment = executed.result.kind === 'image'
+      ? await this.persistToolImage(
+          store,
+          sessionId,
+          executed.result,
+          executed.update.path ?? target.path,
+        )
+      : null;
     operation.state = executed.update.state === 'failed' && !terminalResult ? 'failed' : 'completed';
     operation.completedAt = executed.update.completedAt;
     if (operation.state === 'failed') {
       operation.error = executed.update.error ?? 'Iris Agent tool failed';
     }
-    else operation.result = structuredClone(executed.result);
+    else operation.result = storedToolResult(executed.result, imageAttachment);
     const { state: _state, completedAt: _completedAt, ...activityUpdate } = executed.update;
     if (target.state === 'running') {
       Object.assign(target, activityUpdate);
+      if (imageAttachment) target.imageAttachment = imageAttachment;
       if (executed.update.state === 'failed') {
         target.state = 'failed';
         target.completedAt = executed.update.completedAt;
@@ -1695,6 +2138,89 @@ export class IrisAgentSessionManager extends EventEmitter {
           }
         : { type: 'tool-result', correlation, ok: true, result: executed.result },
     );
+  }
+
+  /**
+   * Rebuilds the wire form of a stored tool result. Only an image needs work:
+   * its bytes are read back from the attachment store, and a file that is gone
+   * produces no result at all rather than a fabricated one.
+   */
+  private async rehydrateToolResult(
+    store: IrisAgentSessionStore,
+    sessionId: string,
+    result: AgentStoredToolResult,
+  ): Promise<AgentToolOperationResult | null> {
+    if (result.kind !== 'image') return structuredClone(result);
+    const bytes = await store
+      .readAttachmentById(sessionId, result.attachmentId, result.mimeType)
+      .catch(() => null);
+    if (!bytes) return null;
+    return {
+      kind: 'image',
+      mimeType: result.mimeType,
+      contentBase64: bytes.toString('base64'),
+      bytes: result.bytes,
+      ...(result.width === undefined ? {} : { width: result.width }),
+      ...(result.height === undefined ? {} : { height: result.height }),
+    };
+  }
+
+  /**
+   * Snapshots one image read into the Session's attachment store. Failure here
+   * must not fail the read: the text half of the result is still a truthful
+   * answer, and a missing image is reported as missing rather than faked.
+   */
+  private async persistToolImage(
+    store: IrisAgentSessionStore,
+    sessionId: string,
+    image: Extract<AgentToolOperationResult, { kind: 'image' }>,
+    relativePath: string | undefined,
+  ): Promise<IrisAgentAttachment | null> {
+    try {
+      return await store.saveAttachment(sessionId, {
+        name: relativePath ? basename(relativePath) : 'image',
+        mimeType: image.mimeType,
+        bytes: Buffer.from(image.contentBase64, 'base64'),
+        ...(image.width === undefined ? {} : { width: image.width }),
+        ...(image.height === undefined ? {} : { height: image.height }),
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Resolves one stored image for display. The renderer supplies ids only; the
+   * MIME type and the path are derived from this Session's own record, so a
+   * crafted request cannot read an arbitrary file or mislabel its contents.
+   */
+  async readAttachmentData(
+    scope: ProjectScope,
+    sessionId: string,
+    attachmentId: string,
+  ): Promise<IrisAgentAttachmentData> {
+    const store = await this.ensureStore(scope.root);
+    const session = await this.requireSession(scope, sessionId);
+    const attachment = session.timeline
+      .flatMap((activity) =>
+        activity.kind === 'tool' && activity.imageAttachment ? [activity.imageAttachment] : [])
+      .concat(session.turns.flatMap((turn) =>
+        turn.toolResults.flatMap((result) => result.attachments ?? [])))
+      // A request's own images are only resolvable through the Intent until its
+      // first Turn commits, so the composer's thumbnails work immediately.
+      .concat(session.intents.flatMap((intent) => intent.attachments ?? []))
+      .concat(session.mailbox.flatMap((entry) => entry.attachments ?? []))
+      .find((candidate) => candidate.id === attachmentId);
+    if (!attachment) return { dataUrl: null, error: 'not-found' };
+    try {
+      const bytes = await store.readAttachment(sessionId, attachment);
+      return {
+        dataUrl: `data:${attachment.mimeType};base64,${bytes.toString('base64')}`,
+        error: null,
+      };
+    } catch {
+      return { dataUrl: null, error: 'read-failed' };
+    }
   }
 
   private async recordTerminalStarted(
@@ -1879,6 +2405,27 @@ export class IrisAgentSessionManager extends EventEmitter {
     if (!reply || reply.state !== 'streaming') return;
     reply.content += delta;
     await this.commitAndEmit(scope, store, latest);
+  }
+
+  private applyAssistantPhase(
+    scope: ProjectScope,
+    session: AgentSessionAggregate,
+    event: Extract<AgentWorkerEvent, { type: 'assistant-phase' }>,
+  ): void {
+    const { intentId, workerEpoch, providerMessageId } = event.correlation;
+    if (!intentId || workerEpoch === undefined || !matchesActiveAgentIntent(session, event.correlation)) return;
+    if (session.state !== 'running') return;
+    const payload: IrisAgentPhaseChangedPayload = {
+      scope,
+      sessionId: session.id,
+      intentId,
+      workerEpoch,
+      ...(providerMessageId ? { providerMessageId } : {}),
+      phase: event.phase,
+      startedAt: event.startedAt,
+    };
+    this.livePhases.set(session.id, payload);
+    this.emit('phaseChanged', payload);
   }
 
   private async applyProviderMessageEvent(
@@ -2094,6 +2641,20 @@ export class IrisAgentSessionManager extends EventEmitter {
     if (!session.model) throw new Error('Select an available provider/model before using Iris Agent.');
   }
 
+  /** Main-process enforcement for image input; renderer capability gates are UX only. */
+  private async assertModelSupportsAttachments(
+    session: AgentSessionAggregate,
+    hasAttachments: boolean,
+  ): Promise<void> {
+    this.assertUsableModel(session);
+    if (!hasAttachments) return;
+    const catalog = await this.loadModelCatalog();
+    const selected = catalog.models.find((model) => sameModel(session.model, model));
+    if (!selected?.capabilities?.input.includes('image')) {
+      throw new Error('当前模型不支持图片输入，请切换到支持视觉的模型。');
+    }
+  }
+
   private async verifyAnchor(anchor: IrisAgentAnchor): Promise<void> {
     if (anchor.kind === 'document') await this.projectManager.readDoc(anchor.path);
   }
@@ -2109,7 +2670,12 @@ export class IrisAgentSessionManager extends EventEmitter {
     session: AgentSessionAggregate,
     /** The assembled method layers, or '' to reuse the last assembled size. */
     prompt: string,
-    history: ReturnType<IrisAgentSessionStore['history']>,
+    history: Awaited<ReturnType<IrisAgentSessionStore['history']>>,
+    /**
+     * Images the request being measured carries. They are not in `history` yet:
+     * the running Intent that owns them is projected only after its first Turn.
+     */
+    attachments: readonly IrisAgentAttachment[] = [],
   ): Promise<void> {
     if (prompt) session.contextPromptTokens = estimateAgentTokens(prompt);
     session.contextBudget ??= await this.contextBudgetFor(session);
@@ -2117,7 +2683,8 @@ export class IrisAgentSessionManager extends EventEmitter {
       // `estimateAgentRequestTokens('', history)` is the tool schemas plus the
       // history side; the method layers arrive as their measured size.
       usedTokens: (session.contextPromptTokens ?? 0) +
-        estimateAgentRequestTokens('', history),
+        estimateAgentRequestTokens('', history) +
+        estimateAgentAttachmentTokens(attachments),
       measurement: 'estimated',
       updatedAt: Date.now(),
     };
@@ -2179,6 +2746,7 @@ export class IrisAgentSessionManager extends EventEmitter {
 
   private async ensureStore(projectRoot: string): Promise<IrisAgentSessionStore> {
     if (this.loaded?.root === projectRoot) return this.loaded.store;
+    this.clearAllPhases();
     await this.loaded?.store.flush();
     this.loaded?.store.destroy();
     const store = await IrisAgentSessionStore.load({ userDataPath: this.userDataPath, projectRoot });
@@ -2187,6 +2755,7 @@ export class IrisAgentSessionManager extends EventEmitter {
   }
 
   private async shutdownHost(sessionId: string): Promise<void> {
+    this.clearPhase(sessionId);
     const host = this.hosts.get(sessionId);
     if (host) this.hosts.delete(sessionId);
     if (host) {
@@ -2280,6 +2849,7 @@ export class IrisAgentSessionManager extends EventEmitter {
   }
 
   private emitChanged(scope: ProjectScope, session: AgentSessionAggregate): void {
+    if (session.state !== 'running') this.clearPhase(session.id);
     const projected = projectAgentSession(session, scope.generation);
     const previous = this.emittedProjections.get(session.id) ?? null;
     const update = diffAgentSessionProjection(previous, projected);
@@ -2288,6 +2858,21 @@ export class IrisAgentSessionManager extends EventEmitter {
       scope,
       update,
     } satisfies IrisAgentSessionChangedPayload);
+  }
+
+  private clearPhase(sessionId: string): void {
+    const previous = this.livePhases.get(sessionId);
+    if (!previous) return;
+    this.livePhases.delete(sessionId);
+    this.emit('phaseChanged', {
+      ...previous,
+      phase: null,
+      startedAt: Date.now(),
+    } satisfies IrisAgentPhaseChangedPayload);
+  }
+
+  private clearAllPhases(): void {
+    for (const sessionId of [...this.livePhases.keys()]) this.clearPhase(sessionId);
   }
 }
 
@@ -2505,9 +3090,11 @@ function applyProviderMessage(
       ? session.turns.find((candidate) => candidate.invokeId === correlation.invokeId)
       : undefined;
     if (!failed && !aborted && turn) {
+      const providerReplay = providerReplayFromCompletedMessage(message);
       turn.assistant = {
         content,
         toolCalls: providerToolCalls(message),
+        ...(providerReplay ? { providerReplay } : {}),
         createdAt: typeof message.timestamp === 'number' ? message.timestamp : Date.now(),
       };
     }
@@ -2527,11 +3114,18 @@ function applyProviderMessage(
   const turn = session.turns.find((candidate) =>
     candidate.intentId === intentId && candidate.assistant?.toolCalls.some((call) => call.id === toolCallId));
   const tool = turn?.assistant?.toolCalls.find((call) => call.id === toolCallId)?.tool;
+  // The Activity was already committed with the image it stored, so the Turn
+  // records the reference instead of copying bytes into the journal.
+  const activity = session.timeline.find(
+    (candidate): candidate is AgentToolActivity => candidate.kind === 'tool' && candidate.toolCallId === toolCallId,
+  );
+  const attachment = activity?.imageAttachment;
   if (turn && tool && !turn.toolResults.some((result) => result.toolCallId === toolCallId)) {
     turn.toolResults.push({
       toolCallId,
       tool,
       content,
+      ...(attachment ? { attachments: [{ ...attachment }] } : {}),
       isError: message.isError === true,
       createdAt: typeof message.timestamp === 'number' ? message.timestamp : Date.now(),
     });
@@ -2540,14 +3134,35 @@ function applyProviderMessage(
       turn.settledAt = Date.now();
     }
   }
-  const activity = session.timeline.find(
-    (candidate): candidate is AgentToolActivity => candidate.kind === 'tool' && candidate.toolCallId === toolCallId,
-  );
   if (activity && activity.state === 'running') {
     activity.state = message.isError === true ? 'failed' : 'completed';
     activity.completedAt = typeof message.timestamp === 'number' ? message.timestamp : Date.now();
     if (message.isError === true && content) activity.error = content;
   }
+}
+
+const PROVIDER_REPLAY_MAX_BYTES = 4 * 1024 * 1024;
+
+function providerReplayFromCompletedMessage(message: Record<string, unknown>): AgentProviderReplay | null {
+  if (typeof message.api !== 'string' || typeof message.provider !== 'string' || typeof message.model !== 'string') {
+    return null;
+  }
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(message);
+  } catch (error) {
+    throw new Error(`Completed provider message cannot be persisted for continuation: ${errorMessage(error)}`);
+  }
+  if (Buffer.byteLength(serialized, 'utf8') > PROVIDER_REPLAY_MAX_BYTES) {
+    throw new Error('Completed provider message is too large to persist safely for continuation.');
+  }
+  const replayed = JSON.parse(serialized) as Record<string, import('@shared/types').IrisJsonValue>;
+  return {
+    api: message.api,
+    provider: message.provider,
+    model: message.model,
+    message: replayed,
+  };
 }
 
 function providerCallForToolCall(session: AgentSessionAggregate, toolCallId: string): string | null {
@@ -2607,6 +3222,30 @@ function sameModel(left: IrisAgentModelRef | null, right: IrisAgentModelRef): bo
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The journaled form of a tool result. An image keeps its attachment identity
+ * and metadata; its bytes are already owned by the attachment store.
+ */
+function storedToolResult(
+  result: AgentToolOperationResult,
+  attachment: IrisAgentAttachment | null,
+): AgentStoredToolResult {
+  if (result.kind !== 'image') return structuredClone(result);
+  if (!attachment) {
+    // The read succeeded for the run in flight, but nothing was stored to
+    // replay, so the record says so instead of naming a file that is not there.
+    return { kind: 'void', message: 'The image was returned to the model but could not be stored for replay.' };
+  }
+  return {
+    kind: 'image',
+    attachmentId: attachment.id,
+    mimeType: attachment.mimeType,
+    bytes: attachment.bytes,
+    ...(attachment.width === undefined ? {} : { width: attachment.width }),
+    ...(attachment.height === undefined ? {} : { height: attachment.height }),
+  };
 }
 
 function terminalActivity(

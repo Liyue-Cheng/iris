@@ -1,9 +1,11 @@
 import type {
   IrisAgentAnchor,
+  IrisAgentAttachment,
   IrisAgentCardState,
   IrisAgentCardView,
   IrisAgentContextBudget,
   IrisAgentContextUsage,
+  IrisAgentImageMimeType,
   IrisAgentTaskStatus,
   IrisAgentTaskView,
   IrisAgentModelRef,
@@ -15,7 +17,7 @@ import type {
   IrisAgentIntentView,
 } from '@shared/types';
 import { isDeepStrictEqual } from 'node:util';
-import type { AgentToolOperationInput, AgentToolOperationResult } from '@shared/agent-protocol';
+import type { AgentProviderReplay, AgentToolOperationInput, AgentToolOperationResult } from '@shared/agent-protocol';
 
 export interface AgentSessionAggregate {
   id: string;
@@ -64,12 +66,19 @@ export interface AgentSessionAggregate {
   injection: AgentInjection;
   createdAt: number;
   updatedAt: number;
+  /**
+   * Set when the instance is closed. A closed Session keeps its Trace, history
+   * and storage; it is simply no longer live. Absent means the Session is open.
+   */
+  closedAt?: number;
   selfHostingEligible: false;
 }
 
 export interface AgentIntent {
   id: string;
   content: string;
+  /** Images this request carried, in order. Bytes live in the attachment store. */
+  attachments?: IrisAgentAttachment[];
   turnIds: string[];
   state: 'running' | 'paused' | 'completed' | 'superseded';
   pauseReason?: IrisAgentPauseReason;
@@ -86,6 +95,12 @@ export interface AgentMailboxEntry {
   sequence: number;
   source: 'user' | 'task-terminal';
   content: string;
+  /**
+   * Attachments already persisted when this entry was queued. They are stored
+   * rather than re-uploaded so a queued request keeps exactly the images the
+   * user chose, even if the composer was reused in the meantime.
+   */
+  attachments?: IrisAgentAttachment[];
   createdAt: number;
   dedupeKey?: string;
   taskId?: string;
@@ -105,12 +120,15 @@ export interface AgentTurn {
   assistant: {
     content: string;
     toolCalls: Array<{ id: string; tool: AgentToolActivity['tool']; input: unknown }>;
+    providerReplay?: AgentProviderReplay;
     createdAt: number;
   } | null;
   toolResults: Array<{
     toolCallId: string;
     tool: AgentToolActivity['tool'];
     content: string;
+    /** Images this result contributed; bytes live in the Session's artifacts. */
+    attachments?: IrisAgentAttachment[];
     isError: boolean;
     createdAt: number;
   }>;
@@ -135,11 +153,29 @@ export interface AgentToolOperation {
   turnId: string;
   input: AgentToolOperationInput;
   state: 'running' | 'completed' | 'failed';
-  result?: AgentToolOperationResult;
+  /**
+   * Persisted in the reduced `AgentStoredToolResult` form. An image read keeps
+   * only its attachment identity here: the bytes live once in the Session's
+   * attachment store, and journalling them per commit would both duplicate them
+   * and grow the append-only journal without bound.
+   */
+  result?: AgentStoredToolResult;
   error?: string;
   createdAt: number;
   completedAt?: number;
 }
+
+/** An image tool result as it is stored: identity and metadata, never bytes. */
+export type AgentStoredToolResult =
+  | Exclude<AgentToolOperationResult, { kind: 'image' }>
+  | {
+      kind: 'image';
+      attachmentId: string;
+      mimeType: IrisAgentImageMimeType;
+      bytes: number;
+      width?: number;
+      height?: number;
+    };
 
 export interface AgentRequestFacts {
   id: string;
@@ -234,6 +270,12 @@ export interface AgentToolActivity extends AgentActivityBase {
   terminalOutputBytes?: number;
   terminalOutputPreview?: string;
   terminalUserInput?: boolean;
+  /**
+   * Set when this tool returned image bytes. The Activity is the durable index
+   * from a tool call to its stored image, which is how a display request is
+   * resolved back to a file the store already owns.
+   */
+  imageAttachment?: IrisAgentAttachment;
   completedAt?: number;
 }
 
@@ -381,6 +423,11 @@ export function isAgentSessionBusy(session: AgentSessionAggregate): boolean {
     session.state === 'waiting-tool' || session.state === 'retry-wait' || session.state === 'stopping';
 }
 
+/** A closed Session is history: still stored, but no longer a live instance. */
+export function isAgentSessionClosed(session: AgentSessionAggregate): boolean {
+  return session.closedAt !== undefined;
+}
+
 export function isAgentSessionQuiescent(session: AgentSessionAggregate): boolean {
   return !isAgentSessionBusy(session);
 }
@@ -409,7 +456,9 @@ export function projectAgentSession(
     state: session.state,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
+    ...(session.closedAt === undefined ? {} : { closedAt: session.closedAt }),
     revision: session.revision,
+    workerEpoch: session.workerEpoch,
     currentIntentId: session.currentIntentId,
     ...(session.contextBudget ? { contextBudget: { ...session.contextBudget } } : {}),
     ...(session.contextUsage ? { contextUsage: { ...session.contextUsage } } : {}),
@@ -537,6 +586,9 @@ function projectIntent(
       contextTitle: invokeCount > 0
         ? `Open provider context (${invokeCount} calls)`
         : 'Open assembled input',
+      ...(intent.attachments?.length
+        ? { attachments: structuredClone(intent.attachments) }
+        : {}),
     },
     cards,
     canFork: intent.state === 'completed' && isAgentSessionQuiescent(session),
@@ -649,6 +701,7 @@ function localRetrievalItem(activity: AgentToolActivity) {
       kind: 'file' as const,
       label: activity.path ?? pathFromInputSummary(activity.inputSummary),
       state: activity.state,
+      ...(activity.imageAttachment ? { image: { ...activity.imageAttachment } } : {}),
       ...(activity.error ? { error: activity.error } : {}),
       ...(activity.terminalOutputPreview ? { errorDetail: activity.terminalOutputPreview } : {}),
       ...(activity.terminalId ? { terminalId: activity.terminalId } : {}),

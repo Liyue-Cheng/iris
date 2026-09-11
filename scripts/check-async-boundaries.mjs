@@ -15,6 +15,7 @@ const checker = program.getTypeChecker();
 const SAFE_VOID_CALLEES = new Map([
   ['alertDialog', 'FIFO dialog service always resolves'],
   ['addEntry', 'settings panel catches and renders inline errors'],
+  ['addImageFiles', 'composer records every rejection as an inline attachment error'],
   ['adoptLegacy', 'asset panel catches and renders inline errors'],
   ['addAssociated', 'asset panel catches and renders inline errors'],
   ['applyLocale', 'locale store owns fallback behavior'],

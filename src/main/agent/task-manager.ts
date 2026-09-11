@@ -283,6 +283,24 @@ export class AgentTaskManager {
       .map((task) => structuredClone(task));
   }
 
+  /**
+   * Stops every background process owned by one Agent Session and waits for the
+   * PTY completion handlers to persist their terminal state. Session archival
+   * uses this before writing `closedAt`, so no task process can outlive the
+   * instance that created it.
+   */
+  async cancelSession(projectRoot: string, sessionId: string): Promise<void> {
+    const active = (await this.loadProject(projectRoot)).filter(
+      (task) => task.sessionId === sessionId &&
+        (task.status === 'queued' || task.status === 'starting' || task.status === 'running'),
+    );
+    await Promise.all(active.map((task) => this.cancel(task.taskId, projectRoot)));
+    await Promise.all(active.flatMap((task) => {
+      const completion = this.completions.get(task.taskId);
+      return completion ? [completion] : [];
+    }));
+  }
+
   async shutdown(): Promise<void> {
     const active = [...this.runtimes.values()];
     for (const { task } of active) {

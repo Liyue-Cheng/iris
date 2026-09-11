@@ -2,7 +2,18 @@ import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createTempDataDir, removeTempDataDir } from '../persistence';
-import { IrisAgentToolHost } from './tool-host';
+import { AGENT_READ_IMAGE_MAX_BYTES, IrisAgentToolHost } from './tool-host';
+
+/** A PNG header plus padding, so the byte count is stable and predictable. */
+function pngFixture(width: number, height: number): Buffer {
+  const header = Buffer.alloc(24);
+  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(header, 0);
+  header.writeUInt32BE(13, 8);
+  header.write('IHDR', 12, 'ascii');
+  header.writeUInt32BE(width, 16);
+  header.writeUInt32BE(height, 20);
+  return Buffer.concat([header, Buffer.alloc(777)]);
+}
 
 const commandShell = {
   kind: 'powershell' as const,
@@ -82,6 +93,84 @@ describe('IrisAgentToolHost', () => {
       expect(write.update.diff).toContain('-before');
       expect(write.update.diff).toContain('+after');
 
+    } finally {
+      await removeTempDataDir(projectRoot);
+    }
+  });
+
+  it('returns image bytes for an image read instead of decoding them as text', async () => {
+    const projectRoot = await createTempDataDir('iris-agent-read-image-');
+    try {
+      const target = join(projectRoot, 'shot.png');
+      const bytes = pngFixture(1280, 720);
+      await fs.writeFile(target, bytes);
+      const host = new IrisAgentToolHost({ projectRoot, commandShell });
+      const result = await host.execute(
+        { tool: 'read', operation: 'readFile', absolutePath: target },
+        correlation,
+      );
+      expect(result.result).toEqual({
+        kind: 'image',
+        mimeType: 'image/png',
+        contentBase64: bytes.toString('base64'),
+        bytes: bytes.byteLength,
+        width: 1280,
+        height: 720,
+      });
+      expect(result.update.state).toBe('completed');
+      expect(result.update.resultSummary).toBe('image/png 1280x720 801 B');
+      // Text paging parameters are text-only; the image still arrives whole.
+      const paged = await host.execute(
+        { tool: 'read', operation: 'readFile', absolutePath: target, offset: 2, limit: 2 },
+        correlation,
+      );
+      expect(paged.result).toMatchObject({ kind: 'image', width: 1280, height: 720 });
+    } finally {
+      await removeTempDataDir(projectRoot);
+    }
+  });
+
+  it('keeps the text path for an unsupported or oversized image', async () => {
+    const projectRoot = await createTempDataDir('iris-agent-read-image-guard-');
+    try {
+      const svg = join(projectRoot, 'vector.svg');
+      await fs.writeFile(svg, '<svg xmlns="http://www.w3.org/2000/svg"></svg>', 'utf8');
+      const oversized = join(projectRoot, 'huge.png');
+      await fs.writeFile(oversized, Buffer.concat([
+        pngFixture(1, 1),
+        Buffer.alloc(AGENT_READ_IMAGE_MAX_BYTES + 1),
+      ]));
+      const host = new IrisAgentToolHost({ projectRoot, commandShell });
+
+      const vector = await host.execute(
+        { tool: 'read', operation: 'readFile', absolutePath: svg },
+        correlation,
+      );
+      expect(vector.result.kind).toBe('file');
+
+      // Over the ceiling the read still succeeds, it just stops pretending the
+      // bytes are an image the model should pay context for.
+      const tooLarge = await host.execute(
+        { tool: 'read', operation: 'readFile', absolutePath: oversized },
+        correlation,
+      );
+      expect(tooLarge.result.kind).toBe('file');
+    } finally {
+      await removeTempDataDir(projectRoot);
+    }
+  });
+
+  it('never hands an image to the edit tool, which needs text semantics', async () => {
+    const projectRoot = await createTempDataDir('iris-agent-edit-image-');
+    try {
+      const target = join(projectRoot, 'shot.png');
+      await fs.writeFile(target, pngFixture(8, 8));
+      const host = new IrisAgentToolHost({ projectRoot, commandShell });
+      const result = await host.execute(
+        { tool: 'edit', operation: 'readFile', absolutePath: target },
+        correlation,
+      );
+      expect(result.result.kind).toBe('file');
     } finally {
       await removeTempDataDir(projectRoot);
     }

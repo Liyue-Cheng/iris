@@ -10,11 +10,13 @@ import {
   loadIrisModelCatalog,
   loadIrisProviderCatalog,
   normalizeIrisProviderContext,
+  renderPromptContent,
   resolveIrisModelBaseUrl,
   renderRawError,
   renderRawHttpFailure,
   restoreIrisPiHistory,
   storedPiCredentialSecrets,
+  toIrisModelOption,
   unwrapProviderErrorMessage,
   IrisHistoryManager,
 } from './pi-adapter';
@@ -63,10 +65,11 @@ describe('Iris Pi adapter', () => {
     const operations = {
       read: {
         access: vi.fn(async () => {}),
-        readFile: vi.fn(async () => {
+        readMediaFile: vi.fn(async () => {
           expect(currentIrisProviderToolCallId()).toBe('call-1');
-          return Buffer.from('hello');
+          return { kind: 'text' as const, text: 'hello' };
         }),
+        readFile: vi.fn(async () => Buffer.from('hello')),
       },
       edit: {
         access: vi.fn(async () => {}),
@@ -99,7 +102,7 @@ describe('Iris Pi adapter', () => {
       undefined,
       {} as never,
     );
-    expect(operations.read.readFile).toHaveBeenCalledWith(join(root, 'README.md'));
+    expect(operations.read.readMediaFile).toHaveBeenCalledWith(join(root, 'README.md'), undefined);
     expect(result.content).toEqual([{ type: 'text', text: 'hello' }]);
     await read.execute(
       'call-1',
@@ -108,7 +111,7 @@ describe('Iris Pi adapter', () => {
       undefined,
       {} as never,
     );
-    expect(operations.read.readFile).toHaveBeenLastCalledWith(
+    expect(operations.read.readMediaFile).toHaveBeenLastCalledWith(
       join(root, 'README.md'),
       { offset: 3, limit: 5 },
     );
@@ -159,7 +162,11 @@ describe('Iris Pi adapter', () => {
 
   it('exposes background task tools without an intent classifier', async () => {
     const operations: IrisToolHostOperations = {
-      read: { access: vi.fn(async () => {}), readFile: vi.fn(async () => Buffer.from('')) },
+      read: {
+        access: vi.fn(async () => {}),
+        readMediaFile: vi.fn(async () => ({ kind: 'text' as const, text: '' })),
+        readFile: vi.fn(async () => Buffer.from('')),
+      },
       edit: { access: vi.fn(async () => {}), readFile: vi.fn(async () => Buffer.from('')), writeFile: vi.fn(async () => {}) },
       write: { mkdir: vi.fn(async () => {}), writeFile: vi.fn(async () => {}) },
       terminal: { exec: vi.fn(async () => ({ exitCode: 0 })) },
@@ -222,6 +229,126 @@ describe('Iris Pi adapter', () => {
       ],
     });
     expect(messages[2]).toMatchObject({ toolCallId: 'call-1' });
+  });
+
+  it('returns an image block next to the text for an image read', async () => {
+    const root = process.cwd();
+    const operations: IrisToolHostOperations = {
+      read: {
+        access: vi.fn(async () => {}),
+        readMediaFile: vi.fn(async () => ({
+          kind: 'image' as const,
+          mimeType: 'image/png' as const,
+          dataBase64: 'AAAA',
+          bytes: 3,
+          width: 8,
+          height: 6,
+        })),
+        readFile: vi.fn(async () => Buffer.from('')),
+      },
+      edit: {
+        access: vi.fn(async () => {}),
+        readFile: vi.fn(async () => Buffer.from('')),
+        writeFile: vi.fn(async () => {}),
+      },
+      write: { mkdir: vi.fn(async () => {}), writeFile: vi.fn(async () => {}) },
+      terminal: { exec: vi.fn(async () => ({ exitCode: 0 })) },
+    };
+    const tools = createIrisPiToolDefinitions(root, operations, {
+      kind: 'powershell', executable: 'pwsh.exe', displayName: 'PowerShell 7',
+    });
+    const result = await tools[0]!.execute(
+      'call-1',
+      { path: 'shot.png' },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    expect(result.content).toEqual([
+      { type: 'text', text: 'shot.png: image image/png 8x6 (3 B).' },
+      { type: 'image', data: 'AAAA', mimeType: 'image/png' },
+    ]);
+  });
+
+  it('attaches the request images to the same user message as the prompt', () => {
+    const attachment = {
+      id: 'd'.repeat(64), name: 'shot.png', mimeType: 'image/png' as const, bytes: 3, width: 8, height: 6,
+    };
+    // The request is one turn: its picture rides on the same user message as the
+    // assembled prompt, not on a second message the provider would correlate.
+    expect(renderPromptContent('看看这张图', [
+      { type: 'image', attachment, dataBase64: 'AAAA' },
+    ])).toEqual([
+      { type: 'text', text: '看看这张图' },
+      { type: 'image', data: 'AAAA', mimeType: 'image/png' },
+    ]);
+    // A request without images keeps the plain string form, so every existing
+    // provider path is untouched.
+    expect(renderPromptContent('只发文字')).toBe('只发文字');
+    expect(renderPromptContent('只发文字', [])).toBe('只发文字');
+  });
+
+  it('does not claim image input for a model that does not declare it', () => {
+    const withImages = toIrisModelOption({
+      provider: 'openai', id: 'vision', name: 'Vision', api: 'openai-responses',
+      reasoning: false, input: ['text', 'image'],
+    });
+    expect(withImages.capabilities).toEqual({ input: ['text', 'image'] });
+    const textOnly = toIrisModelOption({
+      provider: 'openai', id: 'text', name: 'Text', api: 'openai-responses',
+      reasoning: false, input: ['text'],
+    });
+    expect(textOnly.capabilities).toEqual({ input: ['text'] });
+    // A catalog that says nothing is treated as text-only, never as capable.
+    expect(toIrisModelOption({
+      provider: 'openai', id: 'unknown', name: 'Unknown', api: 'openai-responses', reasoning: false,
+    }).capabilities).toEqual({ input: ['text'] });
+  });
+
+  it('replays a stored image into the provider context with its bytes', () => {
+    const attachment = {
+      id: 'c'.repeat(64), name: 'shot.png', mimeType: 'image/png' as const, bytes: 3, width: 8, height: 6,
+    };
+    const manager = new IrisHistoryManager();
+    restoreIrisPiHistory(manager, {
+      revision: 2,
+      anchor: { kind: 'workspace', path: '.iris' },
+      messages: [
+        {
+          id: 'a1',
+          intentId: 'intent-1',
+          turnId: 'turn-1',
+          role: 'assistant',
+          content: '',
+          createdAt: 1,
+          toolCalls: [{ id: 'call-1', tool: 'read', input: { path: 'shot.png' } }],
+        },
+        {
+          id: 't1',
+          intentId: 'intent-1',
+          turnId: 'turn-1',
+          role: 'tool',
+          content: [
+            { type: 'text', text: 'shot.png: image image/png 8x6 (3 B).' },
+            { type: 'image', attachment, dataBase64: 'AAAA' },
+          ],
+          attachments: [attachment],
+          createdAt: 2,
+          toolCallId: 'call-1',
+          tool: 'read',
+          isError: false,
+        },
+      ],
+    });
+    const messages = manager.buildSessionContext().messages;
+    expect(messages[1]).toMatchObject({
+      role: 'toolResult',
+      toolCallId: 'call-1',
+      content: [
+        { type: 'text', text: 'shot.png: image image/png 8x6 (3 B).' },
+        { type: 'image', data: 'AAAA', mimeType: 'image/png' },
+      ],
+    });
   });
 
   it('keeps stopped text and drops unrelated orphaned results at the real provider boundary', async () => {

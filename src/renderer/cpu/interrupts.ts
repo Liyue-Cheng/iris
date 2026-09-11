@@ -13,6 +13,7 @@
 import { EVENTS } from '@shared/protocol';
 import type {
   FsIrisChangedEvent,
+  IrisAgentPhaseChangedPayload,
   IrisAgentSessionChangedPayload,
   IrisAgentSessionDestroyedPayload,
   SessionDestroyedPayload,
@@ -64,6 +65,10 @@ export function wireInterrupts(): void {
   window.api.on<IrisAgentSessionChangedPayload>(EVENTS.IRIS_AGENT_SESSION_CHANGED, (event) => {
     if (!sameProjectScope(event.scope, projectScopeState.get())) return;
     if (irisAgentStore.handleProjectionUpdate(event.update) === 'gap') void hydrateIrisAgentSessions();
+  });
+  window.api.on<IrisAgentPhaseChangedPayload>(EVENTS.IRIS_AGENT_PHASE_CHANGED, (event) => {
+    if (!sameProjectScope(event.scope, projectScopeState.get())) return;
+    irisAgentStore.handlePhaseChanged(event);
   });
   window.api.on<IrisAgentSessionDestroyedPayload>(EVENTS.IRIS_AGENT_SESSION_DESTROYED, (event) => {
     if (!sameProjectScope(event.scope, projectScopeState.get())) return;

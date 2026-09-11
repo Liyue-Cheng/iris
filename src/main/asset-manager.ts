@@ -18,6 +18,7 @@ import type {
 } from '@shared/types';
 import { mainT } from './i18n';
 import { writeFileAtomic } from './atomic-write';
+import { detectImageBytes } from '@shared/image-signature';
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -582,26 +583,8 @@ function detectImportedFile(name: string, declaredMime: string, bytes: Buffer): 
 }
 
 function detectImage(bytes: Buffer): DetectedFile | null {
-  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
-    return { kind: 'image', mimeType: 'image/png', extension: '.png' };
-  }
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
-    return { kind: 'image', mimeType: 'image/jpeg', extension: '.jpg' };
-  }
-  const ascii = bytes.subarray(0, 16).toString('ascii');
-  if (ascii.startsWith('GIF87a') || ascii.startsWith('GIF89a')) {
-    return { kind: 'image', mimeType: 'image/gif', extension: '.gif' };
-  }
-  if (ascii.startsWith('RIFF') && bytes.subarray(8, 12).toString('ascii') === 'WEBP') {
-    return { kind: 'image', mimeType: 'image/webp', extension: '.webp' };
-  }
-  if (bytes.length >= 12 && bytes.subarray(4, 8).toString('ascii') === 'ftyp') {
-    const brand = bytes.subarray(8, 12).toString('ascii');
-    if (brand === 'avif' || brand === 'avis') {
-      return { kind: 'image', mimeType: 'image/avif', extension: '.avif' };
-    }
-  }
-  return null;
+  const detected = detectImageBytes(bytes);
+  return detected ? { kind: 'image', ...detected } : null;
 }
 
 function detectStoredFile(name: string): DetectedFile {

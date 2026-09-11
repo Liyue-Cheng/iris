@@ -3,6 +3,7 @@ import { CHANNELS } from '@shared/protocol';
 import type {
   IrisAgentAnchor,
   IrisAgentListSnapshot,
+  IrisAgentPhaseChangedPayload,
   IrisAgentSessionProjectionUpdate,
   IrisAgentSessionInfo,
   ProjectScope,
@@ -13,11 +14,13 @@ import { healthStore } from './health-store';
 export interface IrisAgentStoreState {
   scope: ProjectScope | null;
   sessions: IrisAgentSessionInfo[];
+  phases: Record<string, IrisAgentPhaseChangedPayload>;
 }
 
 let state: IrisAgentStoreState = {
   scope: null,
   sessions: [],
+  phases: {},
 };
 const subscribers = new Set<() => void>();
 
@@ -47,7 +50,12 @@ export const irisAgentStore = {
     const existing = state.sessions.find((item) => item.id === session.id);
     if (existing && existing.revision > session.revision) return;
     const sessions = [...state.sessions.filter((item) => item.id !== session.id), session];
-    setState({ scope, sessions });
+    const phase = state.phases[session.id];
+    const phases = phase && (session.state !== 'running' || session.currentIntentId !== phase.intentId ||
+      session.workerEpoch !== phase.workerEpoch)
+      ? withoutKey(state.phases, session.id)
+      : state.phases;
+    setState({ scope, sessions, phases });
   },
 
   handleProjectionUpdate(update: IrisAgentSessionProjectionUpdate): 'applied' | 'stale' | 'gap' {
@@ -96,7 +104,19 @@ export const irisAgentStore = {
 
   handleDestroyed(sessionId: string): void {
     const sessions = state.sessions.filter((session) => session.id !== sessionId);
-    setState({ sessions });
+    setState({ sessions, phases: withoutKey(state.phases, sessionId) });
+  },
+
+  handlePhaseChanged(event: IrisAgentPhaseChangedPayload): void {
+    const scope = projectScopeState.get();
+    if (!scope || !sameProjectScope(event.scope, scope) || !sameProjectScope(state.scope, scope)) return;
+    const session = state.sessions.find((candidate) => candidate.id === event.sessionId);
+    if (!session || session.currentIntentId !== event.intentId || session.workerEpoch !== event.workerEpoch) return;
+    if (event.phase === null || session.state !== 'running') {
+      setState({ phases: withoutKey(state.phases, event.sessionId) });
+      return;
+    }
+    setState({ phases: { ...state.phases, [event.sessionId]: event } });
   },
 
   reset(
@@ -110,13 +130,20 @@ export const irisAgentStore = {
             session.projectGeneration === scope.generation,
         )
       : [];
-    setState({ scope, sessions: filtered });
+    setState({ scope, sessions: filtered, phases: {} });
   },
 
   has(sessionId: string): boolean {
     return state.sessions.some((session) => session.id === sessionId);
   },
 };
+
+function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  if (!Object.hasOwn(record, key)) return record;
+  const next = { ...record };
+  delete next[key];
+  return next;
+}
 
 function upsertAt<T>(items: T[], index: number, value: T): T[] {
   const next = [...items];
@@ -169,6 +196,7 @@ export function useIrisAgentSessions(): IrisAgentStoreState {
         subscribers.delete(onStoreChange);
       };
     },
+    () => state,
     () => state,
   );
 }

@@ -17,7 +17,7 @@ const terminal = (overrides: Partial<TerminalSessionInfo> = {}): TerminalSession
 const agent = (overrides: Partial<IrisAgentSessionInfo> = {}): IrisAgentSessionInfo => ({
   id: 'a1', kind: 'iris-agent', anchor: { kind: 'document', path: 'issue/a.md' },
   model: null, projectRoot: 'C:/p', projectGeneration: 1, displayName: 'Iris Agent',
-  state: 'ready', createdAt: 2, updatedAt: 3, revision: 1, currentIntentId: null,
+  state: 'ready', createdAt: 2, updatedAt: 3, revision: 1, workerEpoch: 0, currentIntentId: null,
   intents: [], terminals: [], canRewindLatestIntent: false, selfHostingEligible: false, ...overrides,
 });
 

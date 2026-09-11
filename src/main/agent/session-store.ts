@@ -14,12 +14,18 @@ import {
 } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { writeFileAtomic } from '../atomic-write';
-import type { AgentHistorySnapshot } from '@shared/agent-protocol';
+import type { AgentHistorySnapshot, AgentContentPart } from '@shared/agent-protocol';
 import type {
+  IrisAgentAnchor,
+  IrisAgentAttachment,
+  IrisAgentImageMimeType,
   IrisAgentProviderContextBundle,
   IrisAgentProviderContextCall,
+  IrisAgentRuntimeState,
   ProjectScope,
 } from '@shared/types';
+import { IRIS_AGENT_IMAGE_MIME_TYPES } from '@shared/types';
+import { imageExtensionFor } from '@shared/image-signature';
 import type {
   AgentIntent,
   AgentInvoke,
@@ -30,6 +36,7 @@ import type {
 } from './session-model';
 import {
   cloneAgentSession,
+  isAgentSessionClosed,
   isAgentSessionQuiescent,
   normalizeAgentSessionAggregate,
 } from './session-model';
@@ -59,6 +66,27 @@ interface ProjectIndex {
   version: typeof IRIS_AGENT_SESSION_STORE_VERSION;
   projectRoot: string;
   sessionIds: string[];
+}
+
+/**
+ * Metadata for a closed Session that was NOT loaded into memory. Reading the
+ * snapshot alone is what keeps startup independent of how much history a
+ * project accumulated: the journal is only replayed when the Session is
+ * actually reopened (see `ensureLoaded`).
+ */
+export interface ArchivedAgentSessionMeta {
+  id: string;
+  anchor: IrisAgentAnchor;
+  displayName: string;
+  state: IrisAgentRuntimeState;
+  createdAt: number;
+  updatedAt: number;
+  revision: number;
+  journalHash: string;
+  closed: boolean;
+  intentCount: number;
+  lastUserMessage: string;
+  parentSessionId?: string;
 }
 
 interface SessionSnapshot {
@@ -153,6 +181,8 @@ export async function resetLegacyIrisAgentData(userDataPath: string): Promise<vo
 export class IrisAgentSessionStore {
   private readonly sessions = new Map<string, AgentSessionAggregate>();
   private readonly journalHashes = new Map<string, string>();
+  /** Closed Sessions kept on disk but deliberately not loaded into memory. */
+  private readonly archived = new Map<string, ArchivedAgentSessionMeta>();
   private index: ProjectIndex;
 
   private constructor(
@@ -187,6 +217,15 @@ export class IrisAgentSessionStore {
       if (discoveredId && (!snapshot || snapshot.session.projectRoot === options.projectRoot)) ids.add(discoveredId);
     }
     for (const id of ids) {
+      // A closed Session loads from its snapshot alone. The snapshot is written
+      // at the moment it was archived, so the journal has nothing newer to add;
+      // replaying it would only cost the hash-chain validation of the whole
+      // history. `ensureLoaded` performs that validation if it is reopened.
+      const archived = await store.readArchivedMeta(id);
+      if (archived) {
+        store.archived.set(id, archived);
+        continue;
+      }
       const loaded = await store.loadSession(id);
       if (!loaded) continue;
       store.sessions.set(id, loaded.session);
@@ -198,7 +237,7 @@ export class IrisAgentSessionStore {
     store.index = {
       version: IRIS_AGENT_SESSION_STORE_VERSION,
       projectRoot: options.projectRoot,
-      sessionIds: [...store.sessions.keys()],
+      sessionIds: [...new Set([...store.sessions.keys(), ...store.archived.keys()])],
     };
     await store.writeIndex();
     for (const session of [...store.sessions.values()]) {
@@ -210,12 +249,54 @@ export class IrisAgentSessionStore {
   }
 
   list(_scope?: ProjectScope): AgentSessionAggregate[] {
-    return [...this.sessions.values()].map(cloneAgentSession);
+    // Closed Sessions are history, not live instances. They stay on disk and
+    // remain reachable through `historyEntries`, but they never project into
+    // the right pane or the activity dots again until reopened.
+    return [...this.sessions.values()]
+      .filter((session) => !isAgentSessionClosed(session))
+      .map(cloneAgentSession);
   }
 
   get(sessionId: string): AgentSessionAggregate | null {
     const session = this.sessions.get(sessionId);
     return session ? cloneAgentSession(session) : null;
+  }
+
+  /**
+   * Loads one closed Session on demand, validating its journal exactly like a
+   * normal load. Reopening is the only moment an archived Session's full
+   * journal is read, which is what keeps the startup path cheap.
+   */
+  async ensureLoaded(sessionId: string): Promise<AgentSessionAggregate | null> {
+    const existing = this.sessions.get(sessionId);
+    if (existing) return cloneAgentSession(existing);
+    if (!this.archived.has(sessionId)) return null;
+    const loaded = await this.loadSession(sessionId);
+    if (!loaded) return null;
+    this.sessions.set(sessionId, loaded.session);
+    this.journalHashes.set(sessionId, loaded.journalHash);
+    this.archived.delete(sessionId);
+    for (const intent of loaded.session.intents) {
+      await this.migrateLegacyIntentArtifactDirectory(sessionId, intent.id);
+    }
+    return cloneAgentSession(loaded.session);
+  }
+
+  /**
+   * Every Session of one anchor — live and closed alike — as metadata only.
+   * Loaded Sessions are read from memory (freshest), the rest from their
+   * snapshots. This is the read model behind the document's history list.
+   */
+  historyEntries(anchor: IrisAgentAnchor): ArchivedAgentSessionMeta[] {
+    const byId = new Map<string, ArchivedAgentSessionMeta>();
+    for (const [id, meta] of this.archived) {
+      if (sameAnchor(meta.anchor, anchor)) byId.set(id, { ...meta });
+    }
+    for (const session of this.sessions.values()) {
+      if (!sameAnchor(session.anchor, anchor)) continue;
+      byId.set(session.id, metaOfAggregate(session, this.journalHashes.get(session.id) ?? ''));
+    }
+    return [...byId.values()].sort((left, right) => right.updatedAt - left.updatedAt);
   }
 
   async commit(source: AgentSessionAggregate): Promise<AgentSessionAggregate> {
@@ -312,6 +393,7 @@ export class IrisAgentSessionStore {
     assertInside(this.projectDir, directory);
     await rm(directory, { recursive: true, force: true });
     this.sessions.delete(sessionId);
+    this.archived.delete(sessionId);
     this.journalHashes.delete(sessionId);
     this.index = {
       ...this.index,
@@ -396,10 +478,161 @@ export class IrisAgentSessionStore {
     );
   }
 
-  history(sessionId: string): AgentHistorySnapshot {
+  history(sessionId: string): Promise<AgentHistorySnapshot> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error('[IrisAgentSessionStore] unknown session ' + sessionId);
-    return buildAgentContextFromSession(session);
+    return this.hydrateHistory(sessionId, buildAgentContextFromSession(session));
+  }
+
+  /**
+   * Stores one immutable image and returns its content-addressed identity. The
+   * path is derived from the hash and the MIME type alone, never from the
+   * supplied name, so a hostile file name cannot reach outside the directory.
+   * Identical bytes are one file, which is what makes repeated reads of the
+   * same screenshot free.
+   */
+  async saveAttachment(
+    sessionId: string,
+    input: {
+      name: string;
+      mimeType: IrisAgentImageMimeType;
+      bytes: Buffer;
+      width?: number;
+      height?: number;
+    },
+  ): Promise<IrisAgentAttachment> {
+    if (!this.sessions.has(sessionId)) {
+      throw new Error('[IrisAgentSessionStore] unknown session ' + sessionId);
+    }
+    if (!IRIS_AGENT_IMAGE_MIME_TYPES.includes(input.mimeType)) {
+      throw new Error('Iris Agent attachment MIME type is unsupported: ' + input.mimeType);
+    }
+    if (input.bytes.byteLength === 0) throw new Error('Iris Agent attachment is empty.');
+    const id = createHash('sha256').update(input.bytes).digest('hex');
+    const attachment: IrisAgentAttachment = {
+      id,
+      // Display metadata only; it is never part of a path.
+      name: input.name.slice(0, 200),
+      mimeType: input.mimeType,
+      bytes: input.bytes.byteLength,
+      ...(input.width === undefined ? {} : { width: input.width }),
+      ...(input.height === undefined ? {} : { height: input.height }),
+    };
+    const path = this.attachmentPath(sessionId, attachment);
+    const exists = await lstat(path).then(() => true, (error: unknown) => {
+      if (isMissing(error)) return false;
+      throw error;
+    });
+    if (!exists) {
+      await mkdir(dirname(path), { recursive: true });
+      await writeFileAtomic(path, input.bytes);
+    }
+    return attachment;
+  }
+
+  async readAttachment(sessionId: string, attachment: IrisAgentAttachment): Promise<Buffer> {
+    return this.readAttachmentById(sessionId, attachment.id, attachment.mimeType);
+  }
+
+  /**
+   * Removes files created for a failed send, but only when the current Session
+   * has not committed a reference to them. Content-addressed files may already
+   * belong to an older Intent, so cleanup must never be an unconditional rm.
+   */
+  async removeAttachmentsIfUnreferenced(
+    sessionId: string,
+    attachments: readonly IrisAgentAttachment[],
+  ): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error('[IrisAgentSessionStore] unknown session ' + sessionId);
+    const referenced = referencedAttachmentKeys(session);
+    const removed = new Set<string>();
+    for (const attachment of attachments) {
+      const key = attachmentKey(attachment);
+      if (referenced.has(key) || removed.has(key)) continue;
+      removed.add(key);
+      await rm(this.attachmentPath(sessionId, attachment), { force: true });
+    }
+  }
+
+  /**
+   * Reads raw attachment bytes from identity plus MIME type alone. Both are
+   * validated, so a caller that only holds a persisted reference — a tool
+   * operation result, for instance — cannot name a file outside the store.
+   */
+  async readAttachmentById(
+    sessionId: string,
+    attachmentId: string,
+    mimeType: IrisAgentImageMimeType,
+  ): Promise<Buffer> {
+    if (!this.sessions.has(sessionId)) {
+      throw new Error('[IrisAgentSessionStore] unknown session ' + sessionId);
+    }
+    return readFile(this.attachmentPath(sessionId, { id: attachmentId, mimeType }));
+  }
+
+  /**
+   * The provider-facing projection. Attachment bytes are loaded here rather
+   * than stored on the aggregate, so the journal stays small while a resumed
+   * Session still reconstructs exactly the images it originally sent — even if
+   * the file the Agent read has since changed on disk.
+   */
+  private async hydrateHistory(
+    sessionId: string,
+    snapshot: AgentHistorySnapshot,
+  ): Promise<AgentHistorySnapshot> {
+    const loaded = new Map<string, string>();
+    const messages = await Promise.all(snapshot.messages.map(async (message) => {
+      if (!message.attachments?.length) return message;
+      const parts: AgentContentPart[] = [];
+      let addedImage = false;
+      if (typeof message.content === 'string') {
+        if (message.content) parts.push({ type: 'text', text: message.content });
+      } else {
+        parts.push(...structuredClone(message.content));
+      }
+      for (const attachment of message.attachments) {
+        let dataBase64 = loaded.get(attachment.id);
+        if (dataBase64 === undefined) {
+          dataBase64 = await this.readAttachment(sessionId, attachment)
+            .then((bytes) => bytes.toString('base64'))
+            .catch(() => '');
+          loaded.set(attachment.id, dataBase64);
+        }
+        // A missing file must never become a fabricated image: the message
+        // keeps its text so the model still sees that something was there.
+        if (!dataBase64) continue;
+        parts.push({ type: 'image', attachment: { ...attachment }, dataBase64 });
+        addedImage = true;
+      }
+      // A message with no readable image keeps its original shape, so history
+      // for every text-only turn is exactly what it always was.
+      return addedImage ? { ...message, content: parts } : message;
+    }));
+    return { ...snapshot, messages };
+  }
+
+  private attachmentPath(
+    sessionId: string,
+    attachment: { id: string; mimeType: IrisAgentImageMimeType },
+  ): string {
+    // `id` is the sha256 of the bytes, so the file name is content-addressed.
+    // Rejecting anything else keeps a forged descriptor from selecting an
+    // arbitrary file inside the attachment directory.
+    if (!/^[0-9a-f]{64}$/u.test(attachment.id)) {
+      throw new Error('Iris Agent attachment identity is invalid.');
+    }
+    if (!IRIS_AGENT_IMAGE_MIME_TYPES.includes(attachment.mimeType)) {
+      throw new Error('Iris Agent attachment MIME type is unsupported: ' + attachment.mimeType);
+    }
+    return join(
+      this.attachmentsDir(sessionId),
+      attachment.id + imageExtensionFor(attachment.mimeType),
+    );
+  }
+
+  private attachmentsDir(sessionId: string): string {
+    return join(this.artifactRoot(sessionId), 'attachments');
   }
 
   async flush(): Promise<void> {}
@@ -521,6 +754,30 @@ export class IrisAgentSessionStore {
     return join(this.projectDir, 'sessions', sha256(sessionId).slice(0, 32));
   }
 
+  /**
+   * Reads only the snapshot of a closed Session. Returns null for anything that
+   * is not a closed, quiescent Session of this project, which sends the caller
+   * down the full journal-replay path instead.
+   */
+  private async readArchivedMeta(sessionId: string): Promise<ArchivedAgentSessionMeta | null> {
+    const directory = this.sessionDir(sessionId);
+    const snapshot = await readSnapshot(join(directory, 'snapshot.json'));
+    const session = snapshot?.session;
+    if (!snapshot || !session || session.id !== sessionId) return null;
+    if (session.projectRoot !== this.projectRoot) return null;
+    if (!isAgentSessionClosed(session) || !isAgentSessionQuiescent(session)) return null;
+    // A snapshot is a cache, not the journal authority. A crash or failed
+    // atomic write can leave an older closed snapshot beside a newer valid
+    // reopen record. Reading only the last complete journal record keeps this
+    // check independent of history length while preventing that stale snapshot
+    // from hiding a live Session.
+    const tail = await readLastCompleteJournalRecord(join(directory, 'journal.ndjson'));
+    if (tail && (tail.revision !== snapshot.revision || tail.journalHash !== snapshot.journalHash)) {
+      return null;
+    }
+    return { ...metaOfAggregate(session, snapshot.journalHash), revision: snapshot.revision };
+  }
+
   private intentArtifactDir(sessionId: string, intentId: string): string {
     return join(this.sessionDir(sessionId), 'artifacts', 'intents', sha256(intentId).slice(0, 32));
   }
@@ -533,6 +790,12 @@ export class IrisAgentSessionStore {
     source: AgentSessionAggregate,
     branch: AgentSessionAggregate,
   ): Promise<void> {
+    // Attachments belong to the Session, not to one Intent: a branch re-sends
+    // the same images, so it needs its own copy of the bytes they reference.
+    await copyImmutableArtifactTreeIfPresent(
+      this.attachmentsDir(source.id),
+      this.attachmentsDir(branch.id),
+    );
     const sourceIntentIds = new Set(source.intents.map((intent) => intent.id));
     for (const intent of branch.intents) {
       if (!sourceIntentIds.has(intent.id)) {
@@ -741,6 +1004,58 @@ async function readSnapshot(path: string): Promise<SessionSnapshot | null> {
   }
 }
 
+/**
+ * Reads the final complete journal record without scanning or parsing the
+ * history before it. An incomplete crash tail is ignored. A complete but
+ * malformed tail returns null so an otherwise valid archived snapshot remains
+ * listable; full replay still reports that corruption when the user reopens it.
+ */
+async function readLastCompleteJournalRecord(
+  path: string,
+): Promise<Pick<StoredJournalRecord, 'revision' | 'journalHash'> | null> {
+  let journal: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    journal = await open(path, 'r');
+    const { size } = await journal.stat();
+    if (size === 0) return null;
+    let bytesToRead = Math.min(size, 64 * 1024);
+    while (true) {
+      const start = size - bytesToRead;
+      const buffer = Buffer.allocUnsafe(bytesToRead);
+      const { bytesRead } = await journal.read(buffer, 0, bytesToRead, start);
+      const data = buffer.subarray(0, bytesRead);
+      let lineEnd = data.length;
+      if (data[lineEnd - 1] === 0x0a) {
+        lineEnd -= 1;
+      } else {
+        lineEnd = data.lastIndexOf(0x0a, lineEnd - 1);
+        if (lineEnd < 0) {
+          if (start === 0) return null;
+          bytesToRead = Math.min(size, bytesToRead * 2);
+          continue;
+        }
+      }
+      if (lineEnd > 0 && data[lineEnd - 1] === 0x0d) lineEnd -= 1;
+      const previousNewline = data.lastIndexOf(0x0a, lineEnd - 1);
+      if (previousNewline < 0 && start > 0) {
+        bytesToRead = Math.min(size, bytesToRead * 2);
+        continue;
+      }
+      const line = data.subarray(previousNewline + 1, lineEnd).toString('utf8').trim();
+      if (!line) return null;
+      const value: unknown = JSON.parse(line);
+      return isJournalRecord(value)
+        ? { revision: value.revision, journalHash: value.journalHash }
+        : null;
+    }
+  } catch (error) {
+    if (isMissing(error) || error instanceof SyntaxError) return null;
+    throw error;
+  } finally {
+    await journal?.close();
+  }
+}
+
 async function discoverSessionId(journalPath: string): Promise<string | null> {
   try {
     const firstLine = (await readFile(journalPath, 'utf8')).split(/\r?\n/u).find(Boolean);
@@ -940,6 +1255,9 @@ export function migrateLegacyAgentSession(legacy: Record<string, unknown>): Agen
           content: providerMessageText(providerMessage) ??
             (typeof assistantFrame.content === 'string' ? assistantFrame.content : ''),
           toolCalls: legacyProviderToolCalls(providerMessage),
+          ...(providerReplayFromLegacyMessage(providerMessage) ? {
+            providerReplay: providerReplayFromLegacyMessage(providerMessage)!,
+          } : {}),
           createdAt: numberValue(assistantFrame.createdAt, invoke.createdAt),
         }
       : null;
@@ -1076,6 +1394,17 @@ export function migrateLegacyAgentSession(legacy: Record<string, unknown>): Agen
     updatedAt: numberValue(legacy.updatedAt),
     selfHostingEligible: false,
   };
+}
+
+function providerReplayFromLegacyMessage(message: Record<string, unknown> | null) {
+  if (!message || typeof message.api !== 'string' || typeof message.provider !== 'string' || typeof message.model !== 'string') return null;
+  try {
+    const copy = JSON.parse(JSON.stringify(message));
+    if (!copy || typeof copy !== 'object' || Array.isArray(copy)) return null;
+    return { api: message.api, provider: message.provider, model: message.model, message: copy };
+  } catch {
+    return null;
+  }
 }
 
 function records(value: unknown): Array<Record<string, unknown>> {
@@ -1235,6 +1564,15 @@ function assertExactChild(parent: string, target: string, expectedName: string):
   }
 }
 
+async function copyImmutableArtifactTreeIfPresent(source: string, target: string): Promise<void> {
+  const exists = await lstat(source).then(() => true, (error: unknown) => {
+    if (isMissing(error)) return false;
+    throw error;
+  });
+  if (!exists) return;
+  await copyImmutableArtifactTree(source, target);
+}
+
 async function copyImmutableArtifactTree(source: string, target: string): Promise<void> {
   const metadata = await lstat(source);
   if (metadata.isSymbolicLink()) {
@@ -1286,8 +1624,61 @@ function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function sameAnchor(left: IrisAgentAnchor, right: IrisAgentAnchor): boolean {
+  return left.kind === right.kind && left.path === right.path;
+}
+
+function metaOfAggregate(
+  session: AgentSessionAggregate,
+  journalHash: string,
+): ArchivedAgentSessionMeta {
+  const byId = new Map(session.intents.map((intent) => [intent.id, intent]));
+  const traceIntents = session.activeIntentIds.flatMap((id) => {
+    const intent = byId.get(id);
+    return intent ? [intent] : [];
+  });
+  const lastUserMessage = [...traceIntents]
+    .reverse()
+    .find((intent) => intent.content.trim())
+    ?.content.trim() ?? '';
+  return {
+    id: session.id,
+    anchor: { ...session.anchor },
+    displayName: session.displayName,
+    state: session.state,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    revision: session.revision,
+    journalHash,
+    closed: isAgentSessionClosed(session),
+    intentCount: traceIntents.length,
+    lastUserMessage: lastUserMessage.slice(0, 160),
+    ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
+  };
+}
+
 function isMissing(error: unknown): boolean {
   return isRecord(error) && error.code === 'ENOENT';
+}
+
+function attachmentKey(
+  attachment: Pick<IrisAgentAttachment, 'id' | 'mimeType'>,
+): string {
+  return `${attachment.id}:${attachment.mimeType}`;
+}
+
+/** Every persisted descriptor that currently owns attachment bytes. */
+function referencedAttachmentKeys(session: AgentSessionAggregate): Set<string> {
+  const references: Array<Pick<IrisAgentAttachment, 'id' | 'mimeType'>> = [];
+  for (const intent of session.intents) references.push(...(intent.attachments ?? []));
+  for (const entry of session.mailbox) references.push(...(entry.attachments ?? []));
+  for (const turn of session.turns) {
+    for (const result of turn.toolResults) references.push(...(result.attachments ?? []));
+  }
+  for (const activity of session.timeline) {
+    if (activity.kind === 'tool' && activity.imageAttachment) references.push(activity.imageAttachment);
+  }
+  return new Set(references.map(attachmentKey));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

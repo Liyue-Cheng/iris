@@ -154,9 +154,20 @@ button:focus-visible .iris-status-badge {
   }
 }
 
-.iris-agent-avatar[data-running='true'] {
+.iris-agent-avatar[data-phase] {
   position: relative;
+}
+
+.iris-agent-avatar[data-phase='requesting'] {
   animation: iris-agent-avatar-breathe 1.8s ease-in-out infinite;
+}
+
+.iris-agent-avatar[data-phase='thinking'] {
+  animation: iris-agent-avatar-breathe 2.6s ease-in-out infinite;
+}
+
+.iris-agent-avatar[data-phase='generating'] {
+  animation: iris-agent-avatar-breathe 1.15s ease-in-out infinite;
 }
 
 .iris-agent-avatar-orbit {
@@ -164,7 +175,11 @@ button:focus-visible .iris-status-badge {
   inset: -0.1875rem;
   border: 1px solid color-mix(in srgb, var(--primary) 24%, transparent);
   border-radius: 0.5rem;
-  animation: iris-agent-avatar-orbit 1.7s linear infinite;
+  animation: iris-agent-avatar-orbit 1.2s linear infinite;
+}
+
+.iris-agent-avatar[data-phase='thinking'] .iris-agent-avatar-orbit {
+  animation-duration: 2.4s;
 }
 
 .iris-agent-avatar-orbit > span {

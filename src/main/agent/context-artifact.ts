@@ -40,6 +40,15 @@ export function sanitizeProviderContextCall(
     provider: redact(call.provider, knownSecrets),
     model: redact(call.model, knownSecrets),
     api: redact(call.api, knownSecrets),
+    ...(call.reasoning ? {
+      reasoning: {
+        configured: call.reasoning.configured,
+        effective: call.reasoning.effective,
+        ...(call.reasoning.downgradeReason
+          ? { downgradeReason: redact(call.reasoning.downgradeReason, knownSecrets) }
+          : {}),
+      },
+    } : {}),
     payload: sanitizeProviderPayload(call.payload, knownSecrets),
   };
 }
@@ -95,6 +104,15 @@ export function collectKnownSecrets(value: unknown): string[] {
   return [...secrets].filter((secret) => secret.length >= 6);
 }
 
+/**
+ * A payload can carry image bytes in several provider shapes: Pi's own
+ * `{type:'image', data}` block, Anthropic's `{type:'image', source:{data}}`,
+ * and OpenAI's `data:` URL inside `image_url`. Every one of them is replaced by
+ * a short placeholder; an audit artifact must record that an image was sent
+ * without becoming a second copy of it.
+ */
+const DATA_IMAGE_URL = /^data:image\/[a-z\d.+-]+;base64,/iu;
+
 function sanitizeValue(
   value: unknown,
   knownSecrets: readonly string[],
@@ -102,13 +120,18 @@ function sanitizeValue(
 ): IrisJsonValue | undefined {
   if (value === null || typeof value === 'boolean') return value;
   if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
-  if (typeof value === 'string') return redact(value, knownSecrets);
+  if (typeof value === 'string') {
+    if (DATA_IMAGE_URL.test(value)) return imagePlaceholder(value.length);
+    return redact(value, knownSecrets);
+  }
   if (Array.isArray(value)) {
     return value
       .map((item) => sanitizeValue(item, knownSecrets, true))
       .filter((item): item is IrisJsonValue => item !== undefined);
   }
   if (!isRecord(value) || !allowObjectKeys) return undefined;
+  const imageBytes = embeddedImageBytes(value);
+  if (imageBytes !== null) return imagePlaceholder(imageBytes);
   const sanitized: Record<string, IrisJsonValue> = {};
   for (const [key, child] of Object.entries(value)) {
     if (SECRET_FIELD.test(key)) continue;
@@ -116,6 +139,22 @@ function sanitizeValue(
     if (next !== undefined) sanitized[key] = next;
   }
   return sanitized;
+}
+
+/** Detect an image content block and report its base64 length, or null. */
+function embeddedImageBytes(value: Record<string, unknown>): number | null {
+  if (value.type !== 'image' && value.type !== 'input_image' && value.type !== 'image_url') return null;
+  for (const candidate of [value.data, value.image_url, (isRecord(value.source) ? value.source.data : undefined)]) {
+    if (typeof candidate === 'string') return candidate.length;
+  }
+  return 0;
+}
+
+function imagePlaceholder(encodedChars: number): string {
+  // base64 is 4 characters for every 3 bytes, so this reports real size
+  // without keeping the payload.
+  const bytes = Math.floor((encodedChars * 3) / 4);
+  return `[image attachment, ${String(bytes)} bytes, not stored in this artifact]`;
 }
 
 function redact(value: string, knownSecrets: readonly string[]): string {

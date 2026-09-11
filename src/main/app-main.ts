@@ -157,7 +157,7 @@ function createWindowContext(win: BrowserWindow, initialRoot: string | null): Wi
     },
     {
       name: 'iris-agent sessions',
-      busyCount: () => agentSessionManager.countBusySessions(),
+      busyCount: () => agentSessionManager.countOpenSessions(),
       shutdown: () => agentSessionManager.shutdown(),
     },
   ];
@@ -208,7 +208,7 @@ function sessionParticipantsFor(ctx: WindowContext): readonly SessionLifecyclePa
     },
     {
       name: 'iris-agent sessions',
-      busyCount: () => ctx.agentSessionManager.countBusySessions(),
+      busyCount: () => ctx.agentSessionManager.countOpenSessions(),
       shutdown: () => ctx.agentSessionManager.shutdown(),
     },
   ];

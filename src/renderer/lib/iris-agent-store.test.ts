@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { IrisAgentView } from '@renderer/components/agent/IrisAgentView';
+import { TooltipProvider } from '@renderer/components/ui/tooltip';
 import {
   irisAgentAnchorKey,
   irisAgentStore,
@@ -10,6 +11,19 @@ import { sessionViewStore } from '@renderer/stores/session-view-store';
 import { irisAgentSessionKey } from '@renderer/lib/session-projection';
 import { projectScopeState } from '@renderer/stores/project-scope-state';
 import type { IrisAgentSessionInfo, ProjectScope } from '@shared/types';
+
+/**
+ * The view assumes the app-level tooltip provider, exactly as `App.tsx` mounts
+ * it, so a static render has to supply it too.
+ */
+function renderView(session: IrisAgentSessionInfo): string {
+  return renderToStaticMarkup(
+    createElement(
+      TooltipProvider,
+      { delayDuration: 400, children: createElement(IrisAgentView, { session }) },
+    ),
+  );
+}
 
 // The view tree reaches the shell-action boundary, whose CPU pipeline publishes
 // a dev console handle on `window` while its module loads. A static render never
@@ -57,6 +71,7 @@ function session(id: string, path: string): IrisAgentSessionInfo {
     createdAt: id === 'a' ? 1 : 2,
     updatedAt: id === 'a' ? 1 : 2,
     revision: id === 'a' ? 1 : 2,
+    workerEpoch: 0,
     currentIntentId: null,
     intents: [],
     terminals: [],
@@ -116,7 +131,7 @@ describe('irisAgentStore Intent projection', () => {
       canFork: true,
     }];
     projected.canRewindLatestIntent = true;
-    const html = renderToStaticMarkup(createElement(IrisAgentView, { session: projected }));
+    const html = renderView(projected);
     expect(html.indexOf('src/a.ts')).toBeLessThan(html.indexOf('partial A'));
     expect(html.indexOf('partial A')).toBeLessThan(html.indexOf('answer B'));
     expect(html).toContain('未进入上下文');
@@ -155,7 +170,7 @@ describe('irisAgentStore Intent projection', () => {
       canFork: false,
     }];
 
-    const html = renderToStaticMarkup(createElement(IrisAgentView, { session: projected }));
+    const html = renderView(projected);
 
     // The card is an entry point, not a log viewer: the dialog owns the bytes.
     expect(html).toContain('打开任务');
@@ -170,7 +185,7 @@ describe('irisAgentStore Intent projection', () => {
     paused.state = 'paused';
     paused.currentIntentId = 'intent-1';
     paused.pause = { reason: 'provider', message: 'rate limited' };
-    const html = renderToStaticMarkup(createElement(IrisAgentView, { session: paused }));
+    const html = renderView(paused);
     expect((html.match(/继续/gu) ?? [])).toHaveLength(1);
     expect(html).toContain('rate limited');
   });

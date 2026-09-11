@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createTempDataDir, removeTempDataDir } from '../persistence';
 import { createEmptyAgentSession } from './session-model';
+import { closeAgentSession, reopenAgentSession } from './session-domain';
 import {
   IrisAgentSessionStore,
   agentSessionStorePath,
@@ -162,8 +163,147 @@ describe('IrisAgentSessionStore', () => {
       session.turns[0]!.assistant = { content: 'committed answer', toolCalls: [], createdAt: 3 };
       session.turns[0]!.toolResults = [];
       await store.commit(session);
-      expect(store.history('session-1').messages.map((message) => message.content))
+      expect((await store.history('session-1')).messages.map((message) => message.content))
         .toEqual(['write it', 'committed answer']);
+    } finally {
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('stores an Agent image once and re-projects it into history with its bytes', async () => {
+    const userData = await createTempDataDir('iris-agent-attachment-');
+    const projectRoot = join(userData, 'project');
+    try {
+      const store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
+      const session = aggregate(projectRoot);
+      addExecution(session);
+      session.turns[0]!.assistant = {
+        content: '', toolCalls: [{ id: 'tool-1', tool: 'read', input: { path: 'shot.png' } }], createdAt: 2,
+      };
+      session.turns[0]!.toolResults = [];
+      await store.commit(session);
+
+      const bytes = Buffer.from('fake png bytes');
+      const attachment = await store.saveAttachment('session-1', {
+        name: 'shot.png', mimeType: 'image/png', bytes, width: 4, height: 4,
+      });
+      expect(attachment.id).toBe(digest('fake png bytes'));
+      expect(attachment).toMatchObject({
+        name: 'shot.png', bytes: bytes.byteLength, width: 4, height: 4,
+      });
+
+      // Identical bytes are one file, which is what makes a repeated read free.
+      const duplicate = await store.saveAttachment('session-1', {
+        name: 'copy.png', mimeType: 'image/png', bytes,
+      });
+      expect(duplicate.id).toBe(attachment.id);
+      const attachmentDir = join(
+        dirname(agentSessionStorePath(userData, projectRoot)),
+        'sessions',
+        digest('session-1').slice(0, 32),
+        'artifacts',
+        'attachments',
+      );
+      expect(await readdir(attachmentDir)).toEqual([`${attachment.id}.png`]);
+
+      // Failed-send cleanup removes only unreachable bytes. A duplicate upload
+      // of an image already owned by history must keep the shared file.
+      const latestWithReference = store.get('session-1')!;
+      latestWithReference.intents[0]!.attachments = [attachment];
+      await store.commit(latestWithReference);
+      await store.removeAttachmentsIfUnreferenced('session-1', [duplicate]);
+      await expect(store.readAttachment('session-1', attachment)).resolves.toEqual(bytes);
+      delete latestWithReference.intents[0]!.attachments;
+      await store.commit(latestWithReference);
+
+      const orphanBytes = Buffer.from('other fake png bytes');
+      const orphan = await store.saveAttachment('session-1', {
+        name: 'orphan.png', mimeType: 'image/png', bytes: orphanBytes,
+      });
+      await store.removeAttachmentsIfUnreferenced('session-1', [orphan]);
+      await expect(store.readAttachment('session-1', orphan)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      const latest = store.get('session-1')!;
+      latest.turns[0]!.assistant = {
+        content: 'I looked at the screenshot.',
+        toolCalls: [{ id: 'tool-1', tool: 'read', input: { path: 'shot.png' } }],
+        createdAt: 3,
+      };
+      latest.turns[0]!.toolResults = [{
+        toolCallId: 'tool-1', tool: 'read', content: 'shot.png: image image/png 4x4.',
+        attachments: [attachment], isError: false, createdAt: 3,
+      }];
+      await store.commit(latest);
+
+      const history = await store.history('session-1');
+      const toolMessage = history.messages.find((message) => message.role === 'tool')!;
+      expect(toolMessage.attachments).toEqual([attachment]);
+      expect(toolMessage.content).toEqual([
+        { type: 'text', text: 'shot.png: image image/png 4x4.' },
+        {
+          type: 'image',
+          attachment,
+          dataBase64: bytes.toString('base64'),
+        },
+      ]);
+      // A text-only projection stays a string, so nothing else changes shape.
+      expect(history.messages.find((message) => message.role === 'user')?.content).toBe('write it');
+    } finally {
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('keeps the text of a tool result whose attachment file is gone', async () => {
+    const userData = await createTempDataDir('iris-agent-attachment-missing-');
+    const projectRoot = join(userData, 'project');
+    try {
+      const store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
+      const session = aggregate(projectRoot);
+      addExecution(session);
+      await store.commit(session);
+      const attachment = await store.saveAttachment('session-1', {
+        name: 'shot.png', mimeType: 'image/png', bytes: Buffer.from('png'),
+      });
+      const attachmentDir = join(
+        dirname(agentSessionStorePath(userData, projectRoot)),
+        'sessions',
+        digest('session-1').slice(0, 32),
+        'artifacts',
+        'attachments',
+      );
+      await rm(join(attachmentDir, `${attachment.id}.png`));
+
+      const latest = store.get('session-1')!;
+      latest.turns[0]!.assistant = {
+        content: '', toolCalls: [{ id: 'tool-1', tool: 'read', input: { path: 'shot.png' } }], createdAt: 2,
+      };
+      latest.turns[0]!.toolResults = [{
+        toolCallId: 'tool-1', tool: 'read', content: 'image was here',
+        attachments: [attachment], isError: false, createdAt: 3,
+      }];
+      await store.commit(latest);
+
+      const toolMessage = (await store.history('session-1')).messages
+        .find((message) => message.role === 'tool')!;
+      // A missing file must never become a fabricated image block.
+      expect(toolMessage.content).toBe('image was here');
+    } finally {
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('refuses an attachment descriptor that is not content-addressed', async () => {
+    const userData = await createTempDataDir('iris-agent-attachment-guard-');
+    const projectRoot = join(userData, 'project');
+    try {
+      const store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
+      await store.commit(aggregate(projectRoot));
+      await expect(store.saveAttachment('session-1', {
+        name: 'x.png', mimeType: 'image/png', bytes: Buffer.alloc(0),
+      })).rejects.toThrow(/empty/);
+      await expect(store.readAttachment('session-1', {
+        id: '../../etc/passwd', name: 'x', mimeType: 'image/png', bytes: 1,
+      })).rejects.toThrow(/identity is invalid/);
     } finally {
       await removeTempDataDir(userData);
     }
@@ -213,6 +353,95 @@ describe('IrisAgentSessionStore', () => {
       session.nextOrdinal = 2;
       await store.commit(session);
       expect(await readFile(target, 'utf8')).toBe('user change');
+    } finally {
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('keeps a closed Session out of the live list and lists it as history metadata', async () => {
+    const userData = await createTempDataDir('iris-agent-archived-');
+    const projectRoot = join(userData, 'project');
+    try {
+      let store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
+      const session = aggregate(projectRoot);
+      addExecution(session);
+      await store.commit(session);
+      await store.commit(closeAgentSession(store.get('session-1')!));
+
+      store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
+
+      // The closed instance is no longer live...
+      expect(store.list()).toHaveLength(0);
+      expect(store.get('session-1')).toBeNull();
+      // ...but it is still listed, with metadata, for its anchor.
+      const history = store.historyEntries({ kind: 'workspace', path: '.iris' });
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({
+        id: 'session-1', closed: true, intentCount: 1, lastUserMessage: 'write it',
+      });
+      expect(store.historyEntries({ kind: 'document', path: 'doc.md' })).toHaveLength(0);
+
+      // Switching back in validates and replays the journal exactly once.
+      const restored = await store.ensureLoaded('session-1');
+      expect(restored).toMatchObject({ id: 'session-1', closedAt: expect.any(Number) });
+      expect((await store.ensureLoaded('session-1'))?.id).toBe('session-1');
+    } finally {
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('does not replay a closed Session journal at startup', async () => {
+    const userData = await createTempDataDir('iris-agent-archived-corrupt-');
+    const projectRoot = join(userData, 'project');
+    try {
+      let store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
+      const session = aggregate(projectRoot);
+      addExecution(session);
+      await store.commit(session);
+      await store.commit(closeAgentSession(store.get('session-1')!));
+      const sessionsDir = join(dirname(agentSessionStorePath(userData, projectRoot)), 'sessions');
+      const [sessionDir] = await readdir(sessionsDir);
+      // A malformed record before the tail would fail a normal load. The
+      // snapshot is authoritative for a closed Session, so startup stays
+      // intact; the damage only surfaces when the Session is reopened.
+      await appendFile(join(sessionsDir, sessionDir!, 'journal.ndjson'), '{"broken":true}\n');
+
+      store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
+      expect(store.list()).toHaveLength(0);
+      expect(store.historyEntries({ kind: 'workspace', path: '.iris' })[0]?.closed).toBe(true);
+      await expect(store.ensureLoaded('session-1')).rejects.toThrow(
+        /hash chain is broken|revision sequence is broken|invalid record/,
+      );
+    } finally {
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it('rejects a stale closed snapshot when the journal tail reopened the Session', async () => {
+    const userData = await createTempDataDir('iris-agent-archived-stale-');
+    const projectRoot = join(userData, 'project');
+    try {
+      let store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
+      const session = aggregate(projectRoot);
+      addExecution(session);
+      await store.commit(session);
+      await store.commit(closeAgentSession(store.get('session-1')!));
+      const sessionsDir = join(dirname(agentSessionStorePath(userData, projectRoot)), 'sessions');
+      const [sessionDir] = await readdir(sessionsDir);
+      const snapshotPath = join(sessionsDir, sessionDir!, 'snapshot.json');
+      const staleClosedSnapshot = await readFile(snapshotPath, 'utf8');
+
+      await store.ensureLoaded('session-1');
+      await store.commit(reopenAgentSession(store.get('session-1')!));
+      // Simulate a crash/failed atomic replacement after the reopen journal was
+      // synced but before its new snapshot became durable.
+      await writeFile(snapshotPath, staleClosedSnapshot);
+
+      store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
+      expect(store.list()).toHaveLength(1);
+      expect(store.get('session-1')?.id).toBe('session-1');
+      expect(store.get('session-1')?.closedAt).toBeUndefined();
+      expect(store.historyEntries({ kind: 'workspace', path: '.iris' })[0]?.closed).toBe(false);
     } finally {
       await removeTempDataDir(userData);
     }

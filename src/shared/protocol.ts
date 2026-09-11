@@ -159,6 +159,12 @@ export const CHANNELS = {
   IRIS_AGENT_PROVIDER_PROFILE_MODELS: 'iris-agent:provider-profile-models',
   IRIS_AGENT_PROVIDER_PROFILE_DISCOVER: 'iris-agent:provider-profile-discover',
   IRIS_AGENT_OPEN_CONTEXT: 'iris-agent:open-context',
+  /**
+   * Query: read one stored Agent image for display. The renderer supplies a
+   * session and attachment id only; main resolves the file and MIME type from
+   * its own record, so this cannot be used to read an arbitrary path.
+   */
+  IRIS_AGENT_ATTACHMENT_READ: 'iris-agent:attachment-read',
   IRIS_AGENT_TERMINAL_REPLAY: 'iris-agent:terminal-replay',
   /**
    * Agent terminal streaming I/O — like SESSION_* streaming, deliberately not a
@@ -171,6 +177,16 @@ export const CHANNELS = {
   IRIS_AGENT_TERMINAL_INPUT: 'iris-agent:terminal-input',
   IRIS_AGENT_TERMINAL_RESIZE: 'iris-agent:terminal-resize',
   IRIS_AGENT_SUPERVISION_CONTINUE: 'iris-agent:supervision-continue',
+  /** Anchor-scoped history of this document's Agent Sessions (live + closed). */
+  IRIS_AGENT_HISTORY: 'iris-agent:history',
+  /** Switch back into a closed history Session (clears its `closedAt`). */
+  IRIS_AGENT_REOPEN: 'iris-agent:reopen',
+  /** Open a new live Session inheriting the selected history Session's Trace. */
+  IRIS_AGENT_RESTORE: 'iris-agent:restore',
+  /** Count live Agent Sessions anchored to the supplied documents. */
+  IRIS_AGENT_COUNT_DOCUMENTS: 'iris-agent:count-documents',
+  /** Archive every live Agent Session anchored to the supplied documents. */
+  IRIS_AGENT_ARCHIVE_DOCUMENTS: 'iris-agent:archive-documents',
   IRIS_AGENT_CLOSE: 'iris-agent:close',
   IRIS_AGENT_LIST: 'iris-agent:list',
   IRIS_AGENT_TASK_GET: 'iris-agent:task-get',
@@ -202,6 +218,7 @@ export const EVENTS = {
   SESSION_EXITED: 'evt:session:exited',
   SESSION_DESTROYED: 'evt:session:destroyed',
   IRIS_AGENT_SESSION_CHANGED: 'evt:iris-agent:session-changed',
+  IRIS_AGENT_PHASE_CHANGED: 'evt:iris-agent:phase-changed',
   IRIS_AGENT_SESSION_DESTROYED: 'evt:iris-agent:session-destroyed',
   IRIS_AGENT_PROVIDERS_CHANGED: 'evt:iris-agent:providers-changed',
   IRIS_AGENT_TERMINAL_OUTPUT: 'evt:iris-agent:terminal-output',

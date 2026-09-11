@@ -76,10 +76,19 @@ export function enqueueProjectSwitch(
       // Point of no return. A killed process cannot be rolled back; after the
       // complete preflight above, finish forward under the main-side gate.
       if (current) {
-        await Promise.all([
+        const drains = await Promise.allSettled([
           ctx.terminalSessionManager.closeProject(current),
           ctx.agentSessionManager.closeProject(current),
         ]);
+        drains.forEach((result, index) => {
+          if (result.status === 'rejected') {
+            logger.warn(
+              'project',
+              `${index === 0 ? 'terminal' : 'Iris Agent'} project drain failed for ${current.root}`,
+              result.reason,
+            );
+          }
+        });
       }
       const scan = await ctx.projectManager.activatePrepared(prepared);
       try {

@@ -10,6 +10,7 @@ import {
   FileText,
   FolderSearch,
   GitBranch,
+  ImagePlus,
   LoaderCircle,
   Play,
   RotateCcw,
@@ -23,9 +24,11 @@ import {
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type {
+  IrisAgentAttachment,
   IrisAgentCardState,
   IrisAgentCardView,
   IrisAgentModelOption,
+  IrisAgentLivePhase,
   IrisAgentSessionInfo,
   IrisAgentUserView,
   IrisAgentTaskView,
@@ -45,6 +48,7 @@ import {
   resumeIrisAgent,
   rewindIrisAgent,
   openIrisAgentContext,
+  readIrisAgentAttachment,
   sendIrisAgentMessage,
   setIrisAgentModel,
   stopIrisAgent,
@@ -53,6 +57,14 @@ import {
 } from '@renderer/lib/iris-agent-actions';
 import { AgentTerminalDialog } from '@renderer/components/agent/AgentTerminalDialog';
 import { AgentTaskDialog } from '@renderer/components/agent/AgentTaskDialog';
+import {
+  assertAttachmentCapacity,
+  assertAttachmentTotalBytes,
+  imageFilesFrom,
+  readAgentImageFile,
+  toAttachmentUploads,
+  type PendingAgentImage,
+} from '@renderer/lib/agent-image-attachments';
 import {
   isActiveTaskStatus,
   statusDotClass,
@@ -80,8 +92,72 @@ import {
   formatTokenCount,
 } from '@renderer/lib/agent-context-usage';
 import { SessionViewportController } from '@renderer/lib/session-viewport';
+import { useIrisAgentSessions } from '@renderer/stores/iris-agent-store';
 
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+const attachmentLoads = new Map<string, Promise<string | null>>();
+
+/** Shares only in-flight reads; resolved base64 strings are not retained globally. */
+function loadAttachmentOnce(sessionId: string, attachmentId: string): Promise<string | null> {
+  const key = `${sessionId}:${attachmentId}`;
+  const existing = attachmentLoads.get(key);
+  if (existing) return existing;
+  const pending = readIrisAgentAttachment(sessionId, attachmentId);
+  attachmentLoads.set(key, pending);
+  pending.then(
+    () => { if (attachmentLoads.get(key) === pending) attachmentLoads.delete(key); },
+    () => { if (attachmentLoads.get(key) === pending) attachmentLoads.delete(key); },
+  ).catch(() => undefined);
+  return pending;
+}
+
+function useLazyAttachment(
+  sessionId: string,
+  attachmentId: string,
+): {
+    containerRef: React.RefObject<HTMLDivElement>;
+    dataUrl: string | null;
+    failed: boolean;
+  } {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    const target = containerRef.current;
+    if (!target || typeof IntersectionObserver === 'undefined') {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      setVisible(true);
+      observer.disconnect();
+    }, { rootMargin: '160px' });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [sessionId, attachmentId]);
+
+  useEffect(() => {
+    if (!visible) return;
+    let active = true;
+    setDataUrl(null);
+    setFailed(false);
+    loadAttachmentOnce(sessionId, attachmentId)
+      .then((url) => {
+        if (!active) return;
+        if (url) setDataUrl(url);
+        else setFailed(true);
+      })
+      .catch(() => {
+        if (active) setFailed(true);
+      });
+    return () => { active = false; };
+  }, [visible, sessionId, attachmentId]);
+
+  return { containerRef, dataUrl, failed };
+}
 
 export function IrisAgentView({
   session,
@@ -91,6 +167,10 @@ export function IrisAgentView({
   onForked?: (session: IrisAgentSessionInfo) => void;
 }): JSX.Element {
   const [draft, setDraft] = useState('');
+  const [pendingImages, setPendingImages] = useState<PendingAgentImage[]>([]);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [sending, setSending] = useState(false);
   const [models, setModels] = useState<IrisAgentModelOption[]>([]);
   const [modelError, setModelError] = useState<string | null>(null);
   const [modelsLoading, setModelsLoading] = useState(true);
@@ -99,11 +179,24 @@ export function IrisAgentView({
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
+  const filePickerRef = useRef<HTMLInputElement | null>(null);
+  // Object URLs are owned by this component; the ref mirrors the state so the
+  // unmount cleanup can revoke whatever is still live without re-subscribing.
+  const pendingImagesRef = useRef<PendingAgentImage[]>([]);
+  const imageAddQueueRef = useRef<Promise<void>>(Promise.resolve());
   const messagesContentRef = useRef<HTMLDivElement | null>(null);
   const modelRequest = useRef(0);
   const autoSelectingModel = useRef<string | null>(null);
   const running = isSessionRunning(session);
-  const statusText = statusLabel(session.state);
+  const livePhase = useIrisAgentSessions().phases[session.id];
+  const activePhase: IrisAgentLivePhase | null = session.state === 'running'
+    ? livePhase?.phase ?? 'requesting'
+    : null;
+  const thinkingElapsed = useThinkingElapsed(
+    livePhase?.startedAt ?? null,
+    activePhase === 'thinking',
+  );
+  const statusText = statusLabel(session.state, activePhase, thinkingElapsed);
   // Only terminals that crossed the display threshold get a workspace entry;
   // short commands stay reachable from their card's output button.
   const terminalWorkspaces = session.terminals.filter((terminal) => terminal.revealed);
@@ -161,6 +254,21 @@ export function IrisAgentView({
           model.provider === session.model?.provider && model.modelId === session.model.modelId,
       )
     : false;
+  // An unknown or text-only model must not accept an attachment: silently
+  // dropping the picture would be worse than refusing it.
+  const selectedModel = session.model
+    ? models.find(
+        (model) =>
+          model.provider === session.model?.provider && model.modelId === session.model.modelId,
+      ) ?? null
+    : null;
+  const modelAcceptsImages = selectedModel?.capabilities?.input.includes('image') ?? false;
+  const canAttachImages = modelAcceptsImages && !running && !sending;
+  const attachLabel = modelAcceptsImages
+    ? '添加图片（也可直接粘贴或拖入）'
+    : selectedModelAvailable
+      ? '当前模型不支持图片输入'
+      : '先选择可用模型';
 
   useEffect(() => {
     if (session.model && selectedModelAvailable) {
@@ -187,17 +295,105 @@ export function IrisAgentView({
     openIrisAgentContext(session.id, intentId).catch(() => undefined);
   };
 
+  const removePendingImage = (id: string): void => {
+    const current = pendingImagesRef.current;
+    const target = current.find((image) => image.id === id);
+    if (target) URL.revokeObjectURL(target.previewUrl);
+    const next = current.filter((image) => image.id !== id);
+    pendingImagesRef.current = next;
+    setPendingImages(next);
+  };
+
+  const addImageFiles = useCallback((files: readonly File[]): Promise<void> => {
+    const task = imageAddQueueRef.current.then(async () => {
+      if (files.length === 0) return;
+      // Serialized additions make count and byte limits exact even when paste
+      // and drop events arrive before React has committed the prior state.
+      const current = pendingImagesRef.current;
+      try {
+        assertAttachmentCapacity(current.length, files.length);
+      } catch (error) {
+        setImageError(error instanceof Error ? error.message : String(error));
+        return;
+      }
+      const added: PendingAgentImage[] = [];
+      let totalBytes = current.reduce((sum, image) => sum + image.bytes, 0);
+      let failure: string | null = null;
+      for (const file of files) {
+        try {
+          const image = await readAgentImageFile(file);
+          try {
+            assertAttachmentTotalBytes(totalBytes, image.bytes);
+          } catch (error) {
+            URL.revokeObjectURL(image.previewUrl);
+            throw error;
+          }
+          totalBytes += image.bytes;
+          added.push(image);
+        } catch (error) {
+          failure ??= error instanceof Error ? error.message : String(error);
+        }
+      }
+      if (added.length > 0) {
+        const next = [...current, ...added];
+        pendingImagesRef.current = next;
+        setPendingImages(next);
+      }
+      setImageError(failure);
+    });
+    // async-boundary: handled — every queued task catches file errors inline.
+    imageAddQueueRef.current = task.catch(() => undefined);
+    return task;
+  }, []);
+
+  useEffect(() => {
+    pendingImagesRef.current = pendingImages;
+  }, [pendingImages]);
+
+  // Leaving the view must not leak the thumbnails it created.
+  useEffect(() => () => {
+    for (const image of pendingImagesRef.current) URL.revokeObjectURL(image.previewUrl);
+    pendingImagesRef.current = [];
+  }, []);
+
+  useEffect(() => {
+    // Keyed on the model's capability alone: a run in flight also blocks
+    // attaching, but that is temporary and must not discard the user's images.
+    if (sending || modelAcceptsImages || pendingImagesRef.current.length === 0) return;
+    // A model switch can remove image input; the attachments cannot be sent
+    // any more, so they are dropped with an explanation instead of silently
+    // travelling to a model that would ignore them.
+    for (const image of pendingImagesRef.current) URL.revokeObjectURL(image.previewUrl);
+    pendingImagesRef.current = [];
+    setPendingImages([]);
+    setImageError('当前模型不支持图片输入，已移除待发送的图片。');
+  }, [modelAcceptsImages, sending]);
+
   const submitDraft = (): void => {
     if (running) {
       void stopIrisAgent(session.id);
       return;
     }
+    if (sending) return;
     const canStartFromDocument = session.anchor.kind === 'document' && session.intents.length === 0;
     if (draft.trim() === '' && !canStartFromDocument) return;
     if (!selectedModelAvailable) return;
     const text = draft;
-    setDraft('');
-    void sendIrisAgentMessage(session.id, text);
+    const attachments = toAttachmentUploads(pendingImages);
+    const submittedImages = [...pendingImages];
+    setSending(true);
+    void sendIrisAgentMessage(session.id, text, attachments)
+      .then((sent) => {
+        if (!sent) return;
+        setDraft((current) => current === text ? '' : current);
+        const submittedIds = new Set(submittedImages.map((image) => image.id));
+        for (const image of submittedImages) URL.revokeObjectURL(image.previewUrl);
+        const remaining = pendingImagesRef.current.filter((image) => !submittedIds.has(image.id));
+        pendingImagesRef.current = remaining;
+        setPendingImages(remaining);
+        setImageError(null);
+      })
+      .finally(() => setSending(false));
   };
 
   return (
@@ -249,16 +445,18 @@ export function IrisAgentView({
       <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-card/60 px-3">
         <span
           className="iris-agent-avatar flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary"
-          data-running={running || undefined}
+          data-phase={activePhase ?? undefined}
         >
           <Bot className="h-4 w-4" />
-          {running && <span className="iris-agent-avatar-orbit" aria-hidden="true"><span /></span>}
+          {(activePhase === 'thinking' || activePhase === 'generating') && (
+            <span className="iris-agent-avatar-orbit" aria-hidden="true"><span /></span>
+          )}
         </span>
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13px] font-semibold">Iris Agent</div>
           <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
             <span className="truncate">{statusText}</span>
-            {running && (
+            {activePhase === 'generating' && (
               <span className="iris-agent-working-dots iris-agent-working-dots-compact shrink-0" aria-hidden="true">
                 <span />
                 <span />
@@ -447,6 +645,7 @@ export function IrisAgentView({
                 return (
                   <div key={intent.id} className="space-y-2">
                   <UserMessage
+                    sessionId={session.id}
                     message={intent.user}
                     onOpenPrompt={intent.user.contextAvailable ? () => openContext(intent.id) : undefined}
                     artifactTitle={intent.user.contextTitle}
@@ -483,26 +682,119 @@ export function IrisAgentView({
       </div>
 
       <form
-        className="shrink-0 border-t p-2"
+        className={`shrink-0 border-t p-2${dragging ? ' bg-primary/5' : ''}`}
         onSubmit={(event) => {
           event.preventDefault();
           submitDraft();
         }}
+        onDragOver={(event) => {
+          // Only claim the drop when an image is actually being dragged, so a
+          // text or file drag keeps its normal browser behaviour.
+          if (!canAttachImages || ![...event.dataTransfer.items].some((item) => item.kind === 'file')) return;
+          event.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={(event) => {
+          if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+          setDragging(false);
+        }}
+        onDrop={(event) => {
+          setDragging(false);
+          if (!canAttachImages) return;
+          const files = imageFilesFrom(event.dataTransfer);
+          if (files.length === 0) return;
+          event.preventDefault();
+          void addImageFiles(files);
+        }}
       >
+        {pendingImages.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {pendingImages.map((image) => (
+              <div
+                key={image.id}
+                className="group relative overflow-hidden rounded-md border border-border bg-muted/30"
+              >
+                <img
+                  src={image.previewUrl}
+                  alt={image.name}
+                  className="h-16 w-auto max-w-[8rem] object-contain"
+                />
+                <button
+                  type="button"
+                  className="absolute right-0.5 top-0.5 rounded-sm bg-background/85 p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus:opacity-100 group-hover:opacity-100"
+                  aria-label={`移除图片 ${image.name}`}
+                  onClick={() => removePendingImage(image.id)}
+                >
+                  <X className="!size-3" />
+                </button>
+                <div className="max-w-[8rem] truncate px-1 py-0.5 text-[10px] text-muted-foreground">
+                  {formatAttachmentSize(image.bytes)}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {imageError && (
+          <div className="mb-2 flex items-start gap-1.5 text-[11px] text-destructive">
+            <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+            <span className="min-w-0 break-words">{imageError}</span>
+          </div>
+        )}
         <div className="flex gap-2">
-          <TextEditContextMenu targetRef={draftRef} disabled={running}>
+          <input
+            ref={filePickerRef}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp,image/avif"
+            multiple
+            className="hidden"
+            onChange={(event) => {
+              const files = [...(event.target.files ?? [])];
+              // Reset first so choosing the same file twice still fires.
+              event.target.value = '';
+              void addImageFiles(files);
+            }}
+          />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-10 w-9 shrink-0 text-muted-foreground"
+                disabled={!canAttachImages}
+                aria-label={attachLabel}
+                onClick={() => filePickerRef.current?.click()}
+              >
+                <ImagePlus className="!size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">{attachLabel}</TooltipContent>
+          </Tooltip>
+          <TextEditContextMenu targetRef={draftRef} disabled={running || sending}>
             <textarea
               ref={draftRef}
               value={draft}
-              disabled={running}
+              disabled={running || sending}
               rows={2}
               className="min-h-10 flex-1 resize-none rounded-md border bg-background px-2 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
               placeholder={running
                 ? 'Iris Agent 正在工作…'
-                : selectedModelAvailable
-                  ? '输入给 Iris Agent 的任务'
-                  : '先选择可用模型'}
+                : !selectedModelAvailable
+                  ? '先选择可用模型'
+                  : pendingImages.length > 0 && draft.trim() === ''
+                    ? `已附加 ${String(pendingImages.length)} 张图片，请输入要做什么`
+                    : modelAcceptsImages
+                      ? '输入给 Iris Agent 的任务（可粘贴或拖入图片）'
+                      : '输入给 Iris Agent 的任务'}
               onChange={(event) => setDraft(event.target.value)}
+              onPaste={(event) => {
+                if (!canAttachImages) return;
+                const files = imageFilesFrom(event.clipboardData);
+                if (files.length === 0) return;
+                // Do not prevent the default: a clipboard payload may contain
+                // both text and image data, and the textarea must keep the text.
+                void addImageFiles(files);
+              }}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
                   event.preventDefault();
@@ -514,10 +806,10 @@ export function IrisAgentView({
           <Button
             type="submit"
             size="icon"
-            disabled={running ? false : !selectedModelAvailable || (
+            disabled={sending || (running ? false : !selectedModelAvailable || (
               draft.trim() === '' && !(session.anchor.kind === 'document' && session.intents.length === 0)
-            )}
-            aria-label={running ? '停止' : draft.trim() === '' ? '开始' : '发送'}
+            ))}
+            aria-label={sending ? '发送中' : running ? '停止' : draft.trim() === '' ? '开始' : '发送'}
           >
             {running ? <Square className="!size-4" /> : draft.trim() === '' && session.anchor.kind === 'document' && session.intents.length === 0
               ? <Play className="!size-4" />
@@ -697,7 +989,7 @@ function AgentActivityCard({
 }): JSX.Element {
   switch (card.kind) {
     case 'local-retrieval':
-      return <LocalRetrievalCard card={card} onOpenTerminal={onOpenTerminal} />;
+      return <LocalRetrievalCard card={card} sessionId={sessionId} onOpenTerminal={onOpenTerminal} />;
     case 'file-change':
       return <FileChangeGroupCard cards={[card]} />;
     case 'terminal-operation':
@@ -716,9 +1008,11 @@ function AgentActivityCard({
 
 function LocalRetrievalCard({
   card,
+  sessionId,
   onOpenTerminal,
 }: {
   card: Extract<IrisAgentCardView, { kind: 'local-retrieval' }>;
+  sessionId: string;
   onOpenTerminal: (terminalId: string) => void;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
@@ -758,25 +1052,65 @@ function LocalRetrievalCard({
           </div>
         )}
         {visibleItems.map((item) => (
-          <div key={item.id} className="flex min-h-7 min-w-0 items-center gap-2.5 px-4 py-1 text-xs">
-            {item.kind === 'file'
-              ? <FileText className="h-3.5 w-3.5 shrink-0 text-[var(--iris-card-retrievals)]" />
-              : <SquareTerminal className="h-3.5 w-3.5 shrink-0 text-[var(--iris-card-retrievals)]" />}
-            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground" aria-label={item.label}>
-              {item.label}
-            </span>
-            <CompactRowStateIcon
-              state={item.state}
-              accent="var(--iris-card-retrievals)"
-              detail={[item.error, item.errorDetail].filter(Boolean).join('\n\n') || undefined}
-              onClick={item.state === 'failed' && item.terminalId
-                ? () => onOpenTerminal(item.terminalId!)
-                : undefined}
-            />
+          <div key={item.id} className="min-w-0">
+            <div className="flex min-h-7 min-w-0 items-center gap-2.5 px-4 py-1 text-xs">
+              {item.kind === 'file'
+                ? <FileText className="h-3.5 w-3.5 shrink-0 text-[var(--iris-card-retrievals)]" />
+                : <SquareTerminal className="h-3.5 w-3.5 shrink-0 text-[var(--iris-card-retrievals)]" />}
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground" aria-label={item.label}>
+                {item.label}
+              </span>
+              <CompactRowStateIcon
+                state={item.state}
+                accent="var(--iris-card-retrievals)"
+                detail={[item.error, item.errorDetail].filter(Boolean).join('\n\n') || undefined}
+                onClick={item.state === 'failed' && item.terminalId
+                  ? () => onOpenTerminal(item.terminalId!)
+                  : undefined}
+              />
+            </div>
+            {item.image && <RetrievalImage sessionId={sessionId} attachment={item.image} />}
           </div>
         ))}
       </div>
     </CardFrame>
+  );
+}
+
+/**
+ * One image the Agent read, loaded on demand from main. The card shows a
+ * bounded thumbnail rather than the model's full-resolution payload so a long
+ * conversation cannot be pushed out of shape by its own attachments.
+ */
+function RetrievalImage({
+  sessionId,
+  attachment,
+}: {
+  sessionId: string;
+  attachment: IrisAgentAttachment;
+}): JSX.Element {
+  const { containerRef, dataUrl, failed } = useLazyAttachment(sessionId, attachment.id);
+
+  if (failed) {
+    return (
+      <div ref={containerRef} className="px-4 pb-2 pl-10 text-[11px] text-muted-foreground">
+        图片已不可读取（{attachment.name}）
+      </div>
+    );
+  }
+  return (
+    <div ref={containerRef} className="px-4 pb-2 pl-10">
+      {dataUrl ? (
+        <img
+          src={dataUrl}
+          alt={attachment.name}
+          loading="lazy"
+          className="max-h-40 rounded-md border border-border/70 bg-muted/30 object-contain"
+        />
+      ) : (
+        <div className="h-16 w-24 animate-pulse rounded-md border border-border/60 bg-muted/30" aria-hidden="true" />
+      )}
+    </div>
   );
 }
 
@@ -1213,11 +1547,13 @@ function cardStateLabel(state: IrisAgentCardState): string {
 }
 
 function UserMessage({
+  sessionId,
   message,
   onOpenPrompt,
   artifactTitle,
   onFork,
 }: {
+  sessionId: string;
   message: IrisAgentUserView;
   onOpenPrompt: (() => void) | undefined;
   artifactTitle: string | undefined;
@@ -1266,8 +1602,62 @@ function UserMessage({
       <div className="whitespace-pre-wrap break-words px-4 py-3 text-sm leading-relaxed">
         {message.content}
       </div>
+      {message.attachments && message.attachments.length > 0 && (
+        <div className="flex flex-wrap gap-2 px-4 pb-3">
+          {message.attachments.map((attachment) => (
+            <SentAttachmentImage
+              key={attachment.id}
+              sessionId={sessionId}
+              attachment={attachment}
+            />
+          ))}
+        </div>
+      )}
     </section>
   );
+}
+
+/**
+ * One image the user attached. The bytes are resolved by id through main, so
+ * the renderer never needs — or gets — a path to the stored file.
+ */
+function SentAttachmentImage({
+  sessionId,
+  attachment,
+}: {
+  sessionId: string;
+  attachment: IrisAgentAttachment;
+}): JSX.Element {
+  const { containerRef, dataUrl, failed } = useLazyAttachment(sessionId, attachment.id);
+
+  if (failed) {
+    return (
+      <div ref={containerRef} className="flex h-16 items-center rounded-md border border-border/70 bg-muted/30 px-2 text-[11px] text-muted-foreground">
+        {attachment.name} 已不可读取
+      </div>
+    );
+  }
+  return (
+    <div ref={containerRef}>
+      {dataUrl ? (
+        <img
+          src={dataUrl}
+          alt={attachment.name}
+          loading="lazy"
+          className="h-16 w-auto max-w-[10rem] rounded-md border border-border/70 object-contain"
+        />
+      ) : (
+        <div className="h-16 w-24 animate-pulse rounded-md border border-border/60 bg-muted/30" aria-hidden="true" />
+      )}
+    </div>
+  );
+}
+
+/** Compact size label for a pending attachment chip. */
+function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${String(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function isSessionRunning(session: IrisAgentSessionInfo): boolean {
@@ -1282,14 +1672,20 @@ function modelValue(provider: string, modelId: string): string {
   return `${provider}\u0000${modelId}`;
 }
 
-function statusLabel(state: IrisAgentSessionInfo['state']): string {
+function statusLabel(
+  state: IrisAgentSessionInfo['state'],
+  phase: IrisAgentLivePhase | null,
+  thinkingElapsed: number,
+): string {
   switch (state) {
     case 'starting':
       return '启动中';
     case 'ready':
       return '就绪';
     case 'running':
-      return '生成中';
+      if (phase === 'thinking') return `思考中 · ${thinkingElapsed.toFixed(1)}s`;
+      if (phase === 'generating') return '生成中';
+      return '请求中';
     case 'waiting-tool':
       return '工具执行中';
     case 'retry-wait':
@@ -1301,4 +1697,19 @@ function statusLabel(state: IrisAgentSessionInfo['state']): string {
     case 'idle':
       return '空闲';
   }
+}
+
+function useThinkingElapsed(startedAt: number | null, active: boolean): number {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!active || startedAt === null) {
+      setElapsed(0);
+      return;
+    }
+    const update = (): void => setElapsed(Math.max(0, Date.now() - startedAt) / 1000);
+    update();
+    const timer = window.setInterval(update, 100);
+    return () => window.clearInterval(timer);
+  }, [active, startedAt]);
+  return elapsed;
 }

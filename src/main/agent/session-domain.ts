@@ -40,6 +40,42 @@ export function assertRewindableAgentIntent(session: AgentSessionAggregate): voi
   assertQuiescentIrisAgentSession(session);
 }
 
+/**
+ * Closes (archives) a Session: the instance ends, the history stays.
+ *
+ * The caller must pause an active Intent first (`pauseActiveAgentIntent`), so
+ * the archived aggregate is quiescent and therefore snapshot-writable — that
+ * snapshot is what lets the next start load this Session without replaying its
+ * journal. Nothing is deleted: the whole Trace remains readable through the
+ * anchor's history list, and `reopenAgentSession` clears the flag again.
+ */
+export function closeAgentSession(
+  source: AgentSessionAggregate,
+  now = Date.now(),
+): AgentSessionAggregate {
+  const session = cloneAgentSession(source);
+  session.state = session.currentIntentId ? 'paused' : 'idle';
+  session.closedAt = now;
+  session.mailboxPaused = true;
+  delete session.stopRequestedIntentId;
+  delete session.terminalSupervisionAlert;
+  return session;
+}
+
+/**
+ * Switches back into a closed Session. The worker is not started here — the
+ * instance becomes live again and starts on the next request, exactly like a
+ * Session that was paused by Stop.
+ */
+export function reopenAgentSession(
+  source: AgentSessionAggregate,
+): AgentSessionAggregate {
+  const session = cloneAgentSession(source);
+  delete session.closedAt;
+  session.state = session.currentIntentId ? 'paused' : 'idle';
+  return session;
+}
+
 export function truncateIntentChain(
   source: AgentSessionAggregate,
 ): AgentSessionAggregate {

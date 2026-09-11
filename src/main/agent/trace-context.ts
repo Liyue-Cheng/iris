@@ -1,9 +1,11 @@
 import type { AgentHistorySnapshot } from '@shared/agent-protocol';
+import type { IrisAgentAttachment } from '@shared/types';
 import type { AgentSessionAggregate, AgentTurn } from './session-model';
 
 export interface AgentTraceIntent {
   id: string;
   content: string;
+  attachments?: IrisAgentAttachment[];
   state: AgentSessionAggregate['intents'][number]['state'];
   createdAt: number;
   turns: AgentTurn[];
@@ -52,6 +54,7 @@ export function buildAgentTrace(session: AgentSessionAggregate): AgentTrace {
       return [{
         id: intent.id,
         content: intent.content,
+        ...(intent.attachments?.length ? { attachments: structuredClone(intent.attachments) } : {}),
         state: intent.state,
         createdAt: intent.createdAt,
         turns: session.turns.filter((turn) => turn.intentId === intent.id).map((turn) => structuredClone(turn)),
@@ -82,11 +85,17 @@ export function buildAgentContext(
   }
   for (const intent of retained.slice(retained.length - count)) {
     if (intent.state === 'running' && intent.turns.length === 0) continue;
+    // The images the user attached ride along as references; the store swaps
+    // those for bytes when it projects history for the provider.
+    const intentAttachments = intent.attachments?.length
+      ? structuredClone(intent.attachments)
+      : null;
     messages.push({
       id: `intent:${intent.id}`,
       intentId: intent.id,
       role: 'user',
       content: intent.content,
+      ...(intentAttachments ? { attachments: intentAttachments } : {}),
       createdAt: intent.createdAt,
     });
     for (const turn of intent.turns) appendTurnContext(messages, intent, turn);
@@ -155,17 +164,24 @@ function appendTurnContext(
     role: 'assistant',
     content: turn.assistant.content,
     toolCalls: structuredClone(turn.assistant.toolCalls),
+    ...(turn.assistant.providerReplay
+      ? { providerReplay: structuredClone(turn.assistant.providerReplay) }
+      : {}),
     createdAt: turn.assistant.createdAt,
   });
   const results = new Map(turn.toolResults.map((result) => [result.toolCallId, result]));
   for (const call of turn.assistant.toolCalls) {
     const result = results.get(call.id);
+    // The text stays `content` and the images ride along as attachment
+    // references; the store swaps those for bytes when it projects history.
+    const attachments = result?.attachments?.length ? structuredClone(result.attachments) : null;
     messages.push(result ? {
       id: `tool:${turn.id}:${call.id}`,
       intentId: intent.id,
       turnId: turn.id,
       role: 'tool',
       content: result.content,
+      ...(attachments ? { attachments } : {}),
       toolCallId: call.id,
       tool: call.tool,
       isError: result.isError,

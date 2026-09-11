@@ -64,6 +64,7 @@ import {
   type InjectionState,
   type IrisAgentProviderCatalog,
   type IrisAgentConfiguredModel,
+  type IrisAgentReasoningLevel,
   type ProjectPromptStateUi,
   type ProjectCommandTerminal,
   type ProjectToolbarAction,
@@ -1012,6 +1013,7 @@ function IrisAgentSettingsPanel({
         reserveOutputTokens: 16_384,
         keepRecentTokens: 20_000,
         compactTrigger: 112_000,
+        reasoningLevel: 'off',
         enabled: true,
         source: 'manual',
       }],
@@ -1244,10 +1246,12 @@ function IrisAgentSettingsPanel({
                 </div>
 
                 {/* labeled table */}
-                <div className="grid grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_minmax(12rem,18rem)_2.5rem] items-center gap-x-4 gap-y-1 border-y border-subtle py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                <div className="grid grid-cols-[minmax(0,1fr)_minmax(12rem,18rem)_minmax(8rem,11rem)_minmax(8rem,11rem)_minmax(10rem,14rem)_2.5rem] items-center gap-x-4 gap-y-1 border-y border-subtle py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                   <div>{t('settings.modelName')}</div>
                   <div>{t('settings.contextWindow')}</div>
+                  <div>{t('settings.maxOutput')}</div>
                   <div>{t('settings.outputReserve')}</div>
+                  <div>{t('settings.reasoningLevel')}</div>
                   <div />
                 </div>
 
@@ -1258,7 +1262,7 @@ function IrisAgentSettingsPanel({
                 ) : (
                   <div className="divide-y divide-subtle">
                     {models.map((model, index) => (
-                      <div key={`${model.modelId}-${index}`} className="grid grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_minmax(12rem,18rem)_2.5rem] items-center gap-x-4 gap-y-1 py-3">
+                      <div key={`${model.modelId}-${index}`} className="grid grid-cols-[minmax(0,1fr)_minmax(12rem,18rem)_minmax(8rem,11rem)_minmax(8rem,11rem)_minmax(10rem,14rem)_2.5rem] items-center gap-x-4 gap-y-1 py-3">
                         <div className="min-w-0">
                           <div className="truncate text-[13px] text-foreground">{model.displayName || model.modelId}</div>
                           <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">{model.modelId}</div>
@@ -1299,6 +1303,19 @@ function IrisAgentSettingsPanel({
                         <Input
                           type="number"
                           min={1}
+                          value={model.maxOutputTokens}
+                          className="min-w-0"
+                          aria-label={t('settings.maxOutput')}
+                          onChange={(event) => setEditingModels((current) => ({
+                            ...current,
+                            [profile.id]: models.map((item, itemIndex) => itemIndex === index
+                              ? { ...item, maxOutputTokens: Math.max(1, Number(event.target.value) || 1) }
+                              : item),
+                          }))}
+                        />
+                        <Input
+                          type="number"
+                          min={1}
                           value={model.reserveOutputTokens}
                           className="min-w-0"
                           aria-label={t('settings.outputReserve')}
@@ -1309,6 +1326,34 @@ function IrisAgentSettingsPanel({
                               : item),
                           }))}
                         />
+                        <div className="min-w-0">
+                          <select
+                            value={model.reasoningLevel ?? 'off'}
+                            aria-label={t('settings.reasoningLevel')}
+                            className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs"
+                            onChange={(event) => setEditingModels((current) => ({
+                              ...current,
+                              [profile.id]: models.map((item, itemIndex) => itemIndex === index
+                                ? { ...item, reasoningLevel: event.target.value as IrisAgentReasoningLevel }
+                                : item),
+                            }))}
+                          >
+                            {(model.supportedReasoningLevels ?? ['off']).map((level) => (
+                              <option
+                                key={level}
+                                value={level}
+                                disabled={level !== (model.reasoningLevel ?? 'off') && reasoningLeavesMinimalHeadroom(model, level)}
+                              >
+                                {t(`settings.reasoning_${level}`)}
+                              </option>
+                            ))}
+                          </select>
+                          {model.reasoningMode === 'budget' && (model.reasoningLevel ?? 'off') !== 'off' && (
+                            <div className={`mt-1 text-[10px] ${reasoningLeavesMinimalHeadroom(model, model.reasoningLevel ?? 'off') ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}`}>
+                              {t('settings.reasoningHeadroom', { count: reasoningAnswerHeadroom(model) })}
+                            </div>
+                          )}
+                        </div>
                         <Button
                           type="button"
                           variant="ghost"
@@ -1345,6 +1390,29 @@ function IrisAgentSettingsPanel({
       </SettingGroup>
     </section>
   );
+}
+
+const REASONING_BUDGET_TOKENS: Record<Exclude<IrisAgentReasoningLevel, 'off'>, number> = {
+  minimal: 1_024,
+  low: 2_048,
+  medium: 8_192,
+  high: 16_384,
+  xhigh: 16_384,
+  max: 16_384,
+};
+
+function reasoningAnswerHeadroom(model: IrisAgentConfiguredModel): number {
+  const level = model.reasoningLevel ?? 'off';
+  if (model.reasoningMode !== 'budget' || level === 'off') return model.maxOutputTokens;
+  return Math.max(1_024, model.maxOutputTokens - REASONING_BUDGET_TOKENS[level]);
+}
+
+function reasoningLeavesMinimalHeadroom(
+  model: IrisAgentConfiguredModel,
+  level: IrisAgentReasoningLevel,
+): boolean {
+  if (model.reasoningMode !== 'budget' || level === 'off') return false;
+  return model.maxOutputTokens - REASONING_BUDGET_TOKENS[level] <= 1_024;
 }
 
 function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JSX.Element {

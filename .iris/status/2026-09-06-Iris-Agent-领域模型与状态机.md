@@ -303,4 +303,59 @@ Intent identity 和 Operation identity 拒绝迟到或重复事件。
 * Invoke 的目标语义是 `running` / `holding` / `completed` / `aborted`。历史数据中的 `failed` Invoke
   在迁移时归并为 `holding`；当前运行不会再产生 Invoke 级 `failed`。
 
-验证结果：Agent 目录 12 个测试文件、119 项测试全部通过；TypeScript 类型检查和异步边界检查通过。
+* 工具结果可以携带图片：`read` 遇到魔数识别为受支持位图且不超 5 MiB 的文件时，返回
+  `{ kind: 'image', mimeType, contentBase64, bytes, width?, height? }`，Worker 把它翻译成
+  “文字说明 + 图块”（`src/main/agent/tool-result-content.ts` 是唯一的翻译点）。
+
+* 图片字节不住在领域状态里。Trace 与 journal 只保存内容寻址的附件引用
+  （`IrisAgentAttachment.id` = 字节的 sha256），字节落在
+  `<userData>/iris-agent-v3/projects/<key>/sessions/<hash>/artifacts/attachments/`。
+  因此 `AgentToolOperation` 的 `result` 是缩减形式（图片只存 `attachmentId` + 元信息），
+  而 `session-store.history()` 是 async 的：它在投影时把字节水合回内容块。
+
+* 附件是**不可变**的：以内容哈希命名，重复读取同字节是同一文件；旧文件不原地覆盖。
+  字节丢失时重放返回 NACK，而不是编造一张图。
+
+* 协议版本为 16；会话存储版本仍为 3（附件字段全部可选），旧会话不需清理即可读取。
+
+* 用户也可以自己发图片：渲染端只上传 `{ name, dataBase64 }`，**主进程重新做魔数嗅探、
+  尺寸解析和全部限额校验**（单图 5 MiB、每轮 5 张、单次总 12 MiB），声称的 MIME 类型一律不信。
+  附件落在同一内容寻址存储，Intent 只存引用。
+
+* 当前请求的图片随请求本身发送（`run.attachments`），因为还没 Turn 的 running Intent
+  不在 history 投影里；`renderPromptContent` 把它们拼到同一条 user 消息上。邮箱重放走
+  `sendStored`，不再向渲染端索取字节。
+
+* 图片可以单独阅读、不能单独发送：一条请求必须有文字（或命中文档锚点的默认指令）。
+
+验证结果（2026-09-10）：`npm run typecheck`（含异步边界检查）通过；`npx vitest run`
+95 个文件、610 项测试全部通过。`npm run agent:worker-check` 未在未重新构建的树上执行
+（`out/` 仍为协议 v15 的旧产物）。
+
+## 十一、实例生命周期：打开与归档
+
+Session 聚合新增一个持久化标量 `closedAt`，把“实例存活”与“会话记录留存”分开：
+
+* `closedAt === undefined` — 打开（live）。参与 Session projection、右栏与会话状态点。
+* `closedAt` 有值 — 归档（history）。**不删除任何 Trace 事实**，只是不再作为活跃实例投影；
+  它仍然出现在所属锚点的历史列表里，可以被重新打开或 Fork 成新实例。
+
+关闭（`closeSession`）的语义是“结束实例、保留历史”：先停 Worker 与该 Session 的全部终端，
+再把运行中的 Intent 收束为 `paused`（复用 `pauseActiveAgentIntent`），最后置 `closedAt`
+并提交一次。归档后的 Session 必然静止，因此这次提交会写出 snapshot；下次启动只读 snapshot
+就能列出它，不必重放 journal。`reopen` 才 `ensureLoaded()`：完整重放 journal、校验 hash 链，
+再清掉 `closedAt` 让同一个 Session identity 回到 live。
+
+生命周期边界：
+
+* `list()` 只返回打开实例；`history(anchor)` 返回锚点下全部实例的元数据（打开与归档）。
+* 应用退出（`shutdown`）在销毁 store 之前归档每一个打开实例，所以下次启动不会把上次的
+  实例自动恢复为活跃状态，也不会重放它们的历史。
+* 文档切到 `Done` 等关闭状态时，渲染端把锚定到该文档的 Iris Agent 实例一并关闭（与终端同一入口、
+  同一次确认）。
+* `restore` 是历史列表的“加号”：以所选 Session 为源走既有 Fork（尾 Intent 为 `completed` 走
+  Reply Fork，否则走 Input Fork），源 Session 不变，新实例挂在同一锚点下。
+
+验证结果（2026-09-10，本轮）：`npm run typecheck` 通过；`src/main/agent` 下 store / manager
+测试通过；全量 `npx vitest run` 新增 5 项生命周期测试，其余失败项为 git 与 session-viewport 的
+环境性偶发（单独运行均通过）。

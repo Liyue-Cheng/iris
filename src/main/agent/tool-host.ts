@@ -19,6 +19,15 @@ import type {
 import type { AgentToolActivity } from './session-model';
 import { applyTextEdits, type TextEdit } from './edit-diff';
 import { defaultProcessTreeKiller } from '../terminal/process-tree';
+import { detectImageBytes, readImageSize } from '@shared/image-signature';
+import { AGENT_IMAGE_MAX_BYTES } from '@shared/agent-protocol';
+
+/**
+ * Largest image the Agent will hand to a provider. Deliberately below the
+ * document asset ceiling: an image read here is re-sent on every request that
+ * still carries it, so the limit is about context cost, not disk.
+ */
+export const AGENT_READ_IMAGE_MAX_BYTES = AGENT_IMAGE_MAX_BYTES;
 
 export interface IrisAgentToolHostResult {
   result: AgentToolOperationResult;
@@ -122,6 +131,20 @@ export class IrisAgentToolHost {
     }
     if (input.operation === 'readFile') {
       const bytes = await fs.readFile(target);
+      // An image needs no paging: `offset`/`limit` describe text lines, and the
+      // model is better served by the pixels than by a base64 slice of them.
+      if (input.tool === 'read') {
+        const image = readAgentImage(bytes);
+        if (image) {
+          return {
+            result: image,
+            update: {
+              path: relPath,
+              resultSummary: describeImageResult(image),
+            },
+          };
+        }
+      }
       const output = input.tool === 'read'
         ? truncateReadBuffer(bytes, input.offset, input.limit)
         : { bytes, truncated: false };
@@ -263,6 +286,39 @@ export class IrisAgentToolHost {
   private resolveUnrestrictedPath(path: string): string {
     return normalize(resolve(this.options.projectRoot, path));
   }
+}
+
+/**
+ * Recognize an image the Agent may send to a provider. Anything unrecognized,
+ * unsupported (SVG) or oversized returns null so the caller keeps its text
+ * path and the model receives the honest bytes-as-text result instead of a
+ * silently truncated image.
+ */
+function readAgentImage(bytes: Buffer): Extract<AgentToolOperationResult, { kind: 'image' }> | null {
+  const detected = detectImageBytes(bytes);
+  if (!detected || bytes.byteLength > AGENT_READ_IMAGE_MAX_BYTES) return null;
+  const size = readImageSize(bytes, detected.mimeType);
+  return {
+    kind: 'image',
+    mimeType: detected.mimeType,
+    contentBase64: bytes.toString('base64'),
+    bytes: bytes.byteLength,
+    ...(size ?? {}),
+  };
+}
+
+/** The text half of an image read; the model sees this next to the pixels. */
+export function describeImageResult(
+  image: Extract<AgentToolOperationResult, { kind: 'image' }>,
+): string {
+  const dimensions = image.width && image.height ? ` ${String(image.width)}x${String(image.height)}` : '';
+  return `${image.mimeType}${dimensions} ${formatByteCount(image.bytes)}`;
+}
+
+function formatByteCount(bytes: number): string {
+  if (bytes < 1024) return `${String(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function generateUnifiedPatch(path: string, before: string, after: string): string {

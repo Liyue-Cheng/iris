@@ -16,7 +16,7 @@ Iris 是一个以持久项目记忆为核心的本地优先人机协同开发工
 
 项目状态以普通 Markdown 文件保存在 `.iris/` 下。外部 Agent 在项目根目录的真实 PTY 中运行，Git 仍然是协作与交付层。Iris 不需要账户或云端数据库，也不使用专有项目格式。
 
-> 当前版本：`0.1.0-beta.17`。实验性的 Iris Agent 仍处于非常早期阶段、默认关闭；现有的外部 Agent CLI 工作流不受影响。Iris 以 Windows 为优先平台，目前提供 Windows x64 版本。
+> 当前版本：`0.1.0-beta.20`。实验性的 Iris Agent 仍处于非常早期阶段、默认关闭；现有的外部 Agent CLI 工作流不受影响。Iris 以 Windows 为优先平台，目前提供 Windows x64 版本。
 
 ![Iris 工作区](docs/images/readme-overview.png)
 

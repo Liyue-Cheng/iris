@@ -16,6 +16,7 @@ import { workspaceAnchorKey } from '@renderer/stores/session-store';
 let projectStore: typeof import('@renderer/stores/project-store').projectStore;
 let editorStore: typeof import('@renderer/stores/editor-store').editorStore;
 let openIrisAgent: typeof import('@renderer/lib/iris-agent-actions').openIrisAgent;
+let sendIrisAgentMessage: typeof import('@renderer/lib/iris-agent-actions').sendIrisAgentMessage;
 
 const invoke = vi.fn();
 let generation = 100;
@@ -28,7 +29,7 @@ beforeAll(async () => {
   });
   ({ editorStore } = await import('@renderer/stores/editor-store'));
   ({ projectStore } = await import('@renderer/stores/project-store'));
-  ({ openIrisAgent } = await import('@renderer/lib/iris-agent-actions'));
+  ({ openIrisAgent, sendIrisAgentMessage } = await import('@renderer/lib/iris-agent-actions'));
 });
 
 function openProjectState(): ProjectScope {
@@ -63,6 +64,7 @@ function agentSession(scope: ProjectScope, id: string): IrisAgentSessionInfo {
     createdAt: 1,
     updatedAt: 1,
     revision: 1,
+    workerEpoch: 0,
     currentIntentId: null,
     intents: [],
     terminals: [],
@@ -115,5 +117,33 @@ describe('openIrisAgent anchor navigation', () => {
     expect(projectStore.get().view).toEqual({ kind: 'doc', path: null });
     expect(invoke).not.toHaveBeenCalled();
     expect(irisAgentStore.get().sessions).toEqual([]);
+  });
+});
+
+describe('sendIrisAgentMessage outcome', () => {
+  it('returns false on IPC failure so the composer can retain its draft', async () => {
+    const scope = openProjectState();
+    const session = agentSession(scope, 'agent-send-failed');
+    session.model = { provider: 'openai', modelId: 'gpt-test' };
+    irisAgentStore.reset([session], scope);
+    vi.spyOn(editorStore, 'flushBeforeSwitch').mockResolvedValue(true);
+    invoke.mockRejectedValue(new Error('send failed'));
+
+    await expect(sendIrisAgentMessage(session.id, 'keep me', [{
+      name: 'shot.png', dataBase64: 'AAAA',
+    }])).resolves.toBe(false);
+  });
+
+  it('returns true only after main accepts the request', async () => {
+    const scope = openProjectState();
+    const session = agentSession(scope, 'agent-send-ok');
+    session.model = { provider: 'openai', modelId: 'gpt-test' };
+    irisAgentStore.reset([session], scope);
+    vi.spyOn(editorStore, 'flushBeforeSwitch').mockResolvedValue(true);
+    invoke.mockResolvedValue({ ...session, revision: session.revision + 1, state: 'starting' });
+
+    const sent = await sendIrisAgentMessage(session.id, 'send me');
+    expect(invoke).toHaveBeenCalledWith(CHANNELS.IRIS_AGENT_SEND, expect.any(Object));
+    expect(sent).toBe(true);
   });
 });

@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   editorGet: vi.fn(),
   readDoc: vi.fn(),
   sessionGet: vi.fn(),
+  countDocuments: vi.fn(),
+  archiveDocuments: vi.fn(),
   getSettings: vi.fn(),
 }));
 
@@ -24,6 +26,10 @@ vi.mock('@renderer/stores/editor-store', () => ({
 }));
 vi.mock('@renderer/stores/session-store', () => ({
   sessionStore: { get: mocks.sessionGet },
+}));
+vi.mock('./iris-agent-actions', () => ({
+  countIrisAgentDocuments: mocks.countDocuments,
+  archiveIrisAgentDocuments: mocks.archiveDocuments,
 }));
 vi.mock('@renderer/i18n', () => ({ translate: (key: string) => key }));
 vi.mock('@renderer/stores/settings-store', () => ({ getSettings: mocks.getSettings }));
@@ -52,6 +58,8 @@ beforeEach(() => {
   mocks.sessionGet.mockReturnValue({
     sessions: [{ id: 'linked', docPath: ISSUE_PATH }, { id: 'other', docPath: '.iris/issue/other.md' }],
   });
+  mocks.countDocuments.mockResolvedValue(0);
+  mocks.archiveDocuments.mockResolvedValue(0);
   mocks.getSettings.mockReturnValue({ behavior: { autoCheckTodosOnDone: true } });
 });
 
@@ -60,6 +68,7 @@ describe('issue status actions', () => {
     await setDocsStatus([ISSUE_PATH], 'On Hold');
 
     expect(mocks.confirm).toHaveBeenCalledOnce();
+    expect(mocks.archiveDocuments).toHaveBeenCalledWith([ISSUE_PATH]);
     expect(mocks.dispatch).toHaveBeenNthCalledWith(1, 'session.close', { sessionId: 'linked' });
     expect(mocks.dispatch).toHaveBeenNthCalledWith(
       2,
@@ -89,5 +98,18 @@ describe('issue status actions', () => {
     await setDocsStatus([ISSUE_PATH], 'On Hold');
 
     expect(mocks.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('does not write Done when authoritative Agent archival fails', async () => {
+    mocks.sessionGet.mockReturnValue({ sessions: [] });
+    mocks.countDocuments.mockResolvedValue(1);
+    mocks.archiveDocuments.mockRejectedValue(new Error('archive failed'));
+
+    await expect(setDocsStatus([ISSUE_PATH], 'Done')).rejects.toThrow('archive failed');
+
+    expect(mocks.dispatch).not.toHaveBeenCalledWith(
+      'doc.save',
+      expect.objectContaining({ path: ISSUE_PATH }),
+    );
   });
 });

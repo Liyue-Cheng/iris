@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { copyFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Api, Model } from '@earendil-works/pi-ai/compat';
-import type { IrisAgentConfiguredModel, IrisAgentProviderProfileInfo, IrisAgentProviderTemplate } from '@shared/types';
+import type {
+  IrisAgentConfiguredModel,
+  IrisAgentProviderProfileInfo,
+  IrisAgentProviderTemplate,
+  IrisAgentReasoningLevel,
+} from '@shared/types';
 import { writeFileAtomic } from '../atomic-write';
 
 export const IRIS_AGENT_PROVIDER_TEMPLATES: readonly IrisAgentProviderTemplate[] = [
@@ -188,11 +193,19 @@ function normalizeConfiguredModel(model: IrisAgentConfiguredModel): IrisAgentCon
     reserveOutputTokens,
     keepRecentTokens,
     compactTrigger: Math.max(1, Math.min(contextWindowTokens - 1, Math.floor(model.compactTrigger || contextWindowTokens - reserveOutputTokens))),
+    reasoningLevel: normalizeReasoningLevel(model.reasoningLevel),
     enabled: model.enabled !== false,
     source: model.source === 'manual' ? 'manual' : 'discovered',
     ...(model.lastVerifiedAt ? { lastVerifiedAt: model.lastVerifiedAt } : {}),
     ...(model.verificationError ? { verificationError: model.verificationError } : {}),
   };
+}
+
+function normalizeReasoningLevel(value: unknown): IrisAgentReasoningLevel {
+  return value === 'minimal' || value === 'low' || value === 'medium' || value === 'high' ||
+    value === 'xhigh' || value === 'max'
+    ? value
+    : 'off';
 }
 
 export function profileModelsConfig(
