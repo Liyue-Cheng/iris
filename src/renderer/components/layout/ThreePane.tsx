@@ -115,9 +115,9 @@ function DocumentCollectionShell(): JSX.Element {
     <ResizablePanelGroup
       direction="horizontal"
       autoSaveId="iris-document-collection"
-      className="min-w-0 overflow-hidden"
+      className="min-w-0 overflow-hidden bg-card"
     >
-      <ResizablePanel id="collection-list" order={1} defaultSize={40} minSize={28} maxSize={58}>
+      <ResizablePanel id="collection-list" order={1} defaultSize={40} minSize={28} maxSize={58} className="overflow-hidden rounded-xl bg-background shadow-sm">
         <PaneViewport className="relative pr-1">
           <MiddlePane />
           <Tooltip>
@@ -138,7 +138,7 @@ function DocumentCollectionShell(): JSX.Element {
         </PaneViewport>
       </ResizablePanel>
       <ResizableHandle />
-      <ResizablePanel id="collection-document" order={2} defaultSize={60} minSize={38}>
+      <ResizablePanel id="collection-document" order={2} defaultSize={60} minSize={38} className="overflow-hidden rounded-xl bg-background shadow-sm">
         <PaneViewport>
           <DocView />
         </PaneViewport>
@@ -154,14 +154,42 @@ export function ThreePane(): JSX.Element {
     return <DocumentCollectionShell />;
   }
 
+  if (view.kind === 'doc') {
+    return (
+      <ResizablePanelGroup direction="horizontal" autoSaveId="iris-shell" className="bg-card">
+        <ResizablePanel defaultSize={25} minSize={12} maxSize={40} className="p-0">
+          <div className="h-full overflow-hidden rounded-xl bg-background shadow-sm">
+            <LeftPane />
+          </div>
+        </ResizablePanel>
+        <ResizableHandle />
+        <ResizablePanel id="doc-editor" order={2} defaultSize={48} minSize={24} className="p-0">
+          <div className="h-full overflow-hidden rounded-xl bg-background shadow-sm">
+            <MiddlePane />
+          </div>
+        </ResizablePanel>
+        <ResizableHandle />
+        <ResizablePanel id="doc-terminal" order={3} defaultSize={27} minSize={18} className="p-0">
+          <div className="h-full overflow-hidden rounded-xl bg-background shadow-sm">
+            <RightPane />
+          </div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
+    );
+  }
+
   return (
-    <ResizablePanelGroup direction="horizontal" autoSaveId="iris-shell">
-      <ResizablePanel defaultSize={25} minSize={12} maxSize={40}>
+    <ResizablePanelGroup direction="horizontal" autoSaveId="iris-shell" className="bg-card">
+      <ResizablePanel defaultSize={25} minSize={12} maxSize={40} className="p-0">
+        <div className="h-full overflow-hidden rounded-xl bg-background shadow-sm">
         <LeftPane />
+        </div>
       </ResizablePanel>
       <ResizableHandle />
-      <ResizablePanel defaultSize={75} minSize={30}>
-        <RightArea view={view} />
+      <ResizablePanel defaultSize={75} minSize={30} className="p-0">
+        <div className="h-full overflow-hidden rounded-xl bg-background shadow-sm">
+          <RightArea view={view} />
+        </div>
       </ResizablePanel>
     </ResizablePanelGroup>
   );

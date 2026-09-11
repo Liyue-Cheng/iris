@@ -189,7 +189,7 @@ export function RightPane(): JSX.Element {
   };
 
   return (
-    <div className="flex h-full flex-col bg-card/50">
+    <div className="flex h-full flex-col bg-background">
       {/* Terminal banner — aligned (h-11) with the other panes' first rows. */}
       <div className="flex h-11 shrink-0 items-center gap-1 px-2">
         {shownItem ? (
