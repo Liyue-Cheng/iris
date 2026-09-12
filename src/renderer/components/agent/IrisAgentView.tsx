@@ -2,23 +2,23 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProp
 import {
   AlertTriangle,
   Bot,
-  BotMessageSquare,
   Check,
   ChevronDown,
   ChevronRight,
   FileDiff,
   FileText,
   FolderSearch,
-  GitBranch,
   ImagePlus,
   LoaderCircle,
+  Pencil,
   Play,
+  Plus,
   RotateCcw,
   Send,
   Square,
   SquareTerminal,
+  Trash2,
   Undo2,
-  UserRound,
   X,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -43,11 +43,9 @@ import {
   DialogTitle,
 } from '@renderer/components/ui/dialog';
 import {
-  branchIrisAgent,
   listIrisAgentModels,
   resumeIrisAgent,
   rewindIrisAgent,
-  openIrisAgentContext,
   readIrisAgentAttachment,
   sendIrisAgentMessage,
   setIrisAgentModel,
@@ -161,7 +159,7 @@ function useLazyAttachment(
 
 export function IrisAgentView({
   session,
-  onForked,
+  onForked: _onForked,
 }: {
   session: IrisAgentSessionInfo;
   onForked?: (session: IrisAgentSessionInfo) => void;
@@ -291,9 +289,6 @@ export function IrisAgentView({
       setModelError(error instanceof Error ? error.message : String(error));
     });
   }, [models, modelsLoading, selectedModelAvailable, session.id, session.model, session.intents.length]);
-  const openContext = (intentId: string): void => {
-    openIrisAgentContext(session.id, intentId).catch(() => undefined);
-  };
 
   const removePendingImage = (id: string): void => {
     const current = pendingImagesRef.current;
@@ -647,16 +642,9 @@ export function IrisAgentView({
                   <UserMessage
                     sessionId={session.id}
                     message={intent.user}
-                    onOpenPrompt={intent.user.contextAvailable ? () => openContext(intent.id) : undefined}
-                    artifactTitle={intent.user.contextTitle}
-                    {...(intent.canForkFromInput ? { onFork: () => {
-                      branchIrisAgent(session.id, intent.id, true).then((forked) => {
-                        if (forked) onForked?.(forked);
-                      }).catch(() => undefined);
-                    } } : {})}
                   />
-                  {groupAgentCards(intent.cards).map((group) => group.kind === 'file-group' ? (
-                    <FileChangeGroupCard key={group.cards[0]!.id} cards={group.cards} />
+                  {groupAgentCards(intent.cards).map((group) => group.kind === 'activity-group' ? (
+                    <CombinedActivityGroup key={group.cards[0]!.id} cards={group.cards} onOpenTerminal={(terminalId) => setOpenTerminalId(terminalId)} />
                   ) : (
                     <AgentActivityCard
                       key={group.card.id}
@@ -664,11 +652,6 @@ export function IrisAgentView({
                       card={group.card}
                       canRetry={false}
                       onRetry={() => undefined}
-                      {...(group.card.kind === 'agent-reply' && intent.canFork ? { onFork: () => {
-                        branchIrisAgent(session.id, intent.id).then((forked) => {
-                          if (forked) onForked?.(forked);
-                        }).catch(() => undefined);
-                      } } : {})}
                       onOpenTerminal={(terminalId) => setOpenTerminalId(terminalId)}
                       onOpenTask={(taskId) => setOpenTaskId(taskId)}
                     />
@@ -977,7 +960,6 @@ function AgentActivityCard({
   onRetry,
   onOpenTerminal,
   onOpenTask,
-  onFork,
 }: {
   sessionId: string;
   card: IrisAgentCardView;
@@ -985,7 +967,6 @@ function AgentActivityCard({
   onRetry: () => void;
   onOpenTerminal: (terminalId: string) => void;
   onOpenTask: (taskId: string) => void;
-  onFork?: () => void;
 }): JSX.Element {
   switch (card.kind) {
     case 'local-retrieval':
@@ -1001,7 +982,6 @@ function AgentActivityCard({
         card={card}
         canRetry={canRetry}
         onRetry={onRetry}
-        {...(onFork ? { onFork } : {})}
       />;
   }
 }
@@ -1138,7 +1118,7 @@ function FileChangeGroupCard({
           const action = card.action === 'created' ? '创建' : card.action === 'updated' ? '修改' : card.action === 'unchanged' ? '未改变' : '写入失败';
           return (
             <div key={card.id} className="flex min-h-7 items-center gap-2.5 px-4 py-1 text-xs">
-              <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <FileActionIcon action={card.action} />
               <span className="min-w-0 flex-1 truncate font-mono text-[11px]" aria-label={card.path}>{card.path}</span>
               {(stats.additions || stats.deletions) ? (
                 <span className="shrink-0 font-mono text-[11px] font-semibold">
@@ -1162,16 +1142,39 @@ function FileChangeGroupCard({
   );
 }
 
+function CombinedActivityGroup({ cards, onOpenTerminal }: { cards: Array<Extract<IrisAgentCardView, { kind: 'local-retrieval' | 'file-change' }>>; onOpenTerminal: (id: string) => void }): JSX.Element {
+  type Row = { id: string; icon: ReactNode; label: string; state: IrisAgentCardState | 'canceled'; error: string | undefined; terminalId: string | undefined };
+  const rows: Row[] = cards.flatMap((card): Row[] => card.kind === 'file-change'
+    ? [{ id: card.id, icon: <FileActionIcon action={card.action} />, label: card.path, state: card.state, error: card.error, terminalId: undefined }]
+    : card.items.map((item) => ({ id: `${card.id}-${item.id}`, icon: item.kind === 'file' ? <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : <SquareTerminal className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />, label: item.label, state: item.state, error: item.error, terminalId: item.terminalId })));
+  const files = rows.filter((row) => 'terminalId' in row === false).length;
+  const info = cards.filter((card) => card.kind === 'local-retrieval').reduce((n, card) => n + card.items.length, 0);
+  const edits = cards.filter((card) => card.kind === 'file-change').length;
+  const failed = rows.filter((row) => row.state === 'failed').length;
+  const summary = [`${files}读取`, `${info}信息`, `${edits}编辑`, `${failed}错误`].join(' · ');
+  return <div className="space-y-0.5 py-1" aria-label={summary}>
+    {rows.length > 5 && <div className="px-2 pb-1 text-[10px] text-muted-foreground">{summary}</div>}
+    {rows.slice(0, 5).map((row) => <div key={row.id} className="flex min-h-7 min-w-0 items-center gap-2.5 px-2 py-1 text-xs">{row.icon}<span className="min-w-0 flex-1 truncate font-mono text-[11px]">{row.label}</span><CompactRowStateIcon state={row.state} accent="var(--primary)" detail={row.error} onClick={'terminalId' in row && row.terminalId ? () => onOpenTerminal(row.terminalId!) : undefined} /></div>)}
+  </div>;
+}
+
+function FileActionIcon({ action }: { action: FileChangeCardView['action'] }): JSX.Element {
+  if (action === 'created') return <Plus className="h-3.5 w-3.5 shrink-0 text-emerald-500" aria-label="新增" />;
+  if (action === 'updated') return <Pencil className="h-3.5 w-3.5 shrink-0 text-sky-500" aria-label="编辑" />;
+  if (action === 'attempted') return <Trash2 className="h-3.5 w-3.5 shrink-0 text-rose-500" aria-label="删除" />;
+  return <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label="文件" />;
+}
+
 function groupAgentCards(cards: IrisAgentCardView[]): Array<
-  | { kind: 'file-group'; cards: FileChangeCardView[] }
+  | { kind: 'activity-group'; cards: Array<Extract<IrisAgentCardView, { kind: 'local-retrieval' | 'file-change' }>> }
   | { kind: 'single'; card: Exclude<IrisAgentCardView, FileChangeCardView> }
 > {
-  const groups: Array<{ kind: 'file-group'; cards: FileChangeCardView[] } | { kind: 'single'; card: Exclude<IrisAgentCardView, FileChangeCardView> }> = [];
+  const groups: Array<{ kind: 'activity-group'; cards: Array<Extract<IrisAgentCardView, { kind: 'local-retrieval' | 'file-change' }>> } | { kind: 'single'; card: Exclude<IrisAgentCardView, FileChangeCardView> }> = [];
   for (const card of cards) {
-    if (card.kind === 'file-change') {
+    if (card.kind === 'file-change' || card.kind === 'local-retrieval') {
       const previous = groups.at(-1);
-      if (previous?.kind === 'file-group') previous.cards.push(card);
-      else groups.push({ kind: 'file-group', cards: [card] });
+      if (previous?.kind === 'activity-group') previous.cards.push(card);
+      else groups.push({ kind: 'activity-group', cards: [card] });
     } else {
       groups.push({ kind: 'single', card });
     }
@@ -1339,41 +1342,15 @@ function AgentReplyCard({
   card,
   canRetry,
   onRetry,
-  onFork,
 }: {
   card: Extract<IrisAgentCardView, { kind: 'agent-reply' }>;
   canRetry: boolean;
   onRetry: () => void;
-  onFork?: () => void;
 }): JSX.Element {
   const placeholder = card.state === 'stopped' ? '本项意图已暂停。' : '正在回复…';
   return (
-    <CardFrame
-      cardType="message"
-      icon={<BotMessageSquare className="h-4 w-4" />}
-      title="AI 回复"
-      summary={card.state === 'running'
-        ? '正在回复'
-        : card.state === 'stopped'
-          ? card.excludedFromContext ? '已暂停 · 未进入上下文' : '已暂停'
-          : card.excludedFromContext
-            ? '未进入上下文'
-            : '已回复'}
-      state={card.state}
-      action={onFork ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6 text-muted-foreground"
-          aria-label="从此回复创建对话分支"
-          onClick={onFork}
-        >
-          <GitBranch className="!size-3.5" />
-        </Button>
-      ) : undefined}
-    >
-      <div className="markdown-body min-w-0 px-4 py-3 text-[13px] leading-relaxed">
+    <div className="min-w-0 max-w-[760px] text-left">
+      <div className="markdown-body min-w-0 px-1 py-2 text-[13px] leading-relaxed">
         {card.content
           ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{card.content}</ReactMarkdown>
           : <span className="text-muted-foreground">{placeholder}</span>}
@@ -1400,7 +1377,7 @@ function AgentReplyCard({
           )}
         </div>
       )}
-    </CardFrame>
+    </div>
   );
 }
 
@@ -1427,12 +1404,12 @@ function CardFrame({
 
   return (
     <section
-      className="iris-agent-card overflow-hidden rounded-lg border border-border/80 bg-card/40"
+      className={`iris-agent-card overflow-hidden ${cardType === 'files' || cardType === 'retrievals' ? '' : 'rounded-lg border border-border/80 bg-card/40'}`}
       data-state={state}
       style={{ '--iris-agent-card-accent': accent } as CSSProperties}
       aria-label={title}
     >
-      <div className="flex min-h-10 items-center gap-2.5 px-4 py-2">
+      {cardType !== 'files' && cardType !== 'retrievals' && <div className="flex min-h-10 items-center gap-2.5 px-4 py-2">
         <span className="iris-agent-card-icon shrink-0" aria-hidden="true">{icon}</span>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-baseline gap-2">
@@ -1448,8 +1425,8 @@ function CardFrame({
         <span className="flex w-5 shrink-0 items-center justify-center">
           <CardStateIcon state={state} />
         </span>
-      </div>
-      <div className="iris-agent-card-line" aria-hidden="true" />
+      </div>}
+      {cardType !== 'files' && cardType !== 'retrievals' && <div className="iris-agent-card-line" aria-hidden="true" />}
       {children}
     </section>
   );
@@ -1549,74 +1526,25 @@ function cardStateLabel(state: IrisAgentCardState): string {
 function UserMessage({
   sessionId,
   message,
-  onOpenPrompt,
-  artifactTitle,
-  onFork,
 }: {
   sessionId: string;
   message: IrisAgentUserView;
-  onOpenPrompt: (() => void) | undefined;
-  artifactTitle: string | undefined;
-  onFork?: (() => void) | undefined;
 }): JSX.Element {
   return (
-    <section
-      className="iris-agent-card overflow-hidden rounded-lg border border-border/80 bg-card/40"
-      style={{ '--iris-agent-card-accent': 'var(--primary)' } as CSSProperties}
-      aria-label="你的指令"
-    >
-      <div className="flex min-h-10 items-center gap-2.5 px-4 py-2">
-        <span className="iris-agent-card-icon shrink-0" aria-hidden="true">
-          <UserRound />
-        </span>
-        <h3 className="min-w-0 flex-1 text-[13px] font-semibold text-foreground">你的指令</h3>
-        <div className="flex items-center gap-1">
-          {onOpenPrompt && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="h-6 w-6 shrink-0 text-muted-foreground"
-              aria-label={artifactTitle}
-              onClick={onOpenPrompt}
-            >
-              <FileText className="!size-3.5" />
-            </Button>
-          )}
-          {onFork && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="h-6 w-6 shrink-0 text-muted-foreground"
-              aria-label="从此输入重新开始"
-              onClick={onFork}
-            >
-              <GitBranch className="!size-3.5" />
-            </Button>
-          )}
-        </div>
-        <span className="w-5 shrink-0" aria-hidden="true" />
+    <section className="flex justify-end" aria-label="你的指令">
+      <div className="max-w-[70%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-primary-foreground shadow-sm">
+        <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">{message.content}</div>
+        {message.attachments && message.attachments.length > 0 && (
+          <div className="flex flex-wrap gap-2 pt-2">
+            {message.attachments.map((attachment) => (
+              <SentAttachmentImage key={attachment.id} sessionId={sessionId} attachment={attachment} />
+            ))}
+          </div>
+        )}
       </div>
-      <div className="iris-agent-card-line" aria-hidden="true" />
-      <div className="whitespace-pre-wrap break-words px-4 py-3 text-sm leading-relaxed">
-        {message.content}
-      </div>
-      {message.attachments && message.attachments.length > 0 && (
-        <div className="flex flex-wrap gap-2 px-4 pb-3">
-          {message.attachments.map((attachment) => (
-            <SentAttachmentImage
-              key={attachment.id}
-              sessionId={sessionId}
-              attachment={attachment}
-            />
-          ))}
-        </div>
-      )}
     </section>
   );
 }
-
 /**
  * One image the user attached. The bytes are resolved by id through main, so
  * the renderer never needs — or gets — a path to the stored file.

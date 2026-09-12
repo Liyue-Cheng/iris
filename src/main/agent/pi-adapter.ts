@@ -37,7 +37,6 @@ import type {
   IrisAgentModelOption,
   IrisAgentModelRef,
   IrisAgentProviderCatalog,
-  IrisAgentReasoningMode,
   IrisAgentThinkingLevel,
 } from '@shared/types';
 import { IRIS_AGENT_PROMPT } from './prompt';
@@ -448,18 +447,14 @@ export async function loadIrisProviderCatalog(
     const modelCatalog = agentDir
       ? await loadIrisModelCatalog(agentDir, profileRoot, false)
       : { models: [] };
-    const capabilities = new Map(modelCatalog.models.map((model) => [modelKey(model.provider, model.modelId), model]));
     return {
       templates: [...IRIS_AGENT_PROVIDER_TEMPLATES],
       profiles: profilesForRenderer(profiles).map((profile) => ({
         ...profile,
         models: (profile.models ?? []).map((model) => {
-          const capability = capabilities.get(modelKey(runtimeProviderId(profile.id), model.modelId));
           return {
             ...model,
-            reasoningLevel: model.reasoningLevel ?? 'off',
-            supportedReasoningLevels: capability?.supportedReasoningLevels ?? ['off'],
-            ...(capability?.reasoningMode ? { reasoningMode: capability.reasoningMode } : {}),
+            ...(model.customParameters ? { customParameters: model.customParameters } : {}),
           };
         }),
       })),
@@ -507,7 +502,7 @@ export async function createIrisPiSession(options: {
     model: IrisAgentModelRef;
     commandShell: AgentCommandShell;
     providerProxy: AgentProviderProxy;
-    reasoning?: IrisAgentThinkingLevel;
+    customParameters?: Record<string, unknown>;
     systemPrompt?: string;
     executeToolCall?: (toolCall: ToolCall) => Promise<ToolResultMessage>;
     onProviderPayload?: (
@@ -555,7 +550,12 @@ export async function createIrisPiSession(options: {
       const context: Context = { systemPrompt: options.systemPrompt ?? IRIS_AGENT_PROMPT, messages: state.messages, tools };
       const stream = streamRuntime.streamSimple(model, context, {
         signal: activeAbortController.signal,
-        ...(options.reasoning ? { reasoning: options.reasoning } : {}),
+        ...(options.customParameters ? {
+          onPayload: (payload: unknown) => {
+            if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+            return { ...(payload as Record<string, unknown>), ...options.customParameters };
+          },
+        } : {}),
       });
       let final: AssistantMessage | undefined;
       for await (const event of stream) {
@@ -847,24 +847,13 @@ export function toIrisModelOption(model: {
   thinkingLevelMap?: Partial<Record<'off' | IrisAgentThinkingLevel, string | null>>;
   compat?: unknown;
 }, providerName?: string, configured?: IrisAgentConfiguredModel): IrisAgentModelOption {
-  const supportedReasoningLevels = supportedReasoningLevelsFor(model);
-  const forceAdaptiveThinking = !!model.compat && typeof model.compat === 'object' &&
-    !Array.isArray(model.compat) &&
-    (model.compat as { forceAdaptiveThinking?: unknown }).forceAdaptiveThinking === true;
-  const reasoningMode: IrisAgentReasoningMode | undefined = model.reasoning
-    ? model.api === 'anthropic-messages' && !forceAdaptiveThinking
-      ? 'budget'
-      : 'effort'
-    : undefined;
   return {
     provider: model.provider,
     modelId: model.id,
     name: model.name,
     api: model.api,
     reasoning: model.reasoning,
-    reasoningLevel: configured?.reasoningLevel ?? 'off',
-    supportedReasoningLevels,
-    ...(reasoningMode ? { reasoningMode } : {}),
+    ...(configured?.customParameters ? { customParameters: configured.customParameters } : {}),
     // The composer gates its attach control on this. A catalog that does not
     // declare image input is treated as text-only rather than assumed capable.
     capabilities: {
@@ -885,22 +874,6 @@ export function toIrisModelOption(model: {
         }
       : {}),
   };
-}
-
-function supportedReasoningLevelsFor(model: {
-  reasoning: boolean;
-  thinkingLevelMap?: Partial<Record<'off' | IrisAgentThinkingLevel, string | null>>;
-}): IrisAgentModelOption['supportedReasoningLevels'] {
-  if (!model.reasoning) return ['off'];
-  const map = model.thinkingLevelMap;
-  const levels: IrisAgentModelOption['supportedReasoningLevels'] = ['off'];
-  for (const level of ['minimal', 'low', 'medium', 'high'] as const) {
-    if (map?.[level] !== null) levels.push(level);
-  }
-  for (const level of ['xhigh', 'max'] as const) {
-    if (map && Object.hasOwn(map, level) && map[level] !== null) levels.push(level);
-  }
-  return levels;
 }
 
 function modelKey(provider: string, modelId: string): string {

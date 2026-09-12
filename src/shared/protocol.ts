@@ -110,8 +110,6 @@ export const CHANNELS = {
    *  import/trash are human editing gestures routed through the CPU. */
   ASSET_LIST: 'asset:list',
   ASSET_IMPORT: 'asset:import',
-  ASSET_ADOPT: 'asset:adopt',
-  ASSET_TRASH: 'asset:trash',
   ASSET_LINK_ADD: 'asset:link-add',
   ASSET_LINK_REMOVE: 'asset:link-remove',
   ASSET_LINK_OPEN: 'asset:link-open',

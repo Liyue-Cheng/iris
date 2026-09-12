@@ -222,7 +222,7 @@ A document may own a sibling companion directory:
 2026-08-08-auth-review.assets/
 ```
 
-Imports use content hashes for stable, portable names. The asset panel derives four health states from Markdown references and disk contents: referenced, orphan, missing, and unmanaged. It can adopt legacy local images or data URLs, copy Markdown links, reveal files, and move unreferenced managed assets to the system trash.
+Imports use the sanitized original filename, adding a numeric suffix on collisions. The asset panel distinguishes only internal files referenced from the companion directory and external file/directory associations recorded in `links.txt`.
 
 Iris does not automatically download remote assets or delete orphans. Deleting a document moves the Markdown file and its companion directory to the system trash as one aggregate.
 

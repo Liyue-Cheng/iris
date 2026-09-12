@@ -64,7 +64,6 @@ import {
   type InjectionState,
   type IrisAgentProviderCatalog,
   type IrisAgentConfiguredModel,
-  type IrisAgentReasoningLevel,
   type ProjectPromptStateUi,
   type ProjectCommandTerminal,
   type ProjectToolbarAction,
@@ -859,6 +858,7 @@ function IrisAgentSettingsPanel({
   const [modelDrafts, setModelDrafts] = useState<Record<string, string>>({});
   const [credentialDrafts, setCredentialDrafts] = useState<Record<string, string>>({});
   const [showCredentialDrafts, setShowCredentialDrafts] = useState<Record<string, boolean>>({});
+  const [customParameterDrafts, setCustomParameterDrafts] = useState<Record<string, string>>({});
 
   const refresh = async (): Promise<void> => {
     try {
@@ -1013,7 +1013,7 @@ function IrisAgentSettingsPanel({
         reserveOutputTokens: 16_384,
         keepRecentTokens: 20_000,
         compactTrigger: 112_000,
-        reasoningLevel: 'off',
+        customParameters: {},
         enabled: true,
         source: 'manual',
       }],
@@ -1251,7 +1251,7 @@ function IrisAgentSettingsPanel({
                   <div>{t('settings.contextWindow')}</div>
                   <div>{t('settings.maxOutput')}</div>
                   <div>{t('settings.outputReserve')}</div>
-                  <div>{t('settings.reasoningLevel')}</div>
+                  <div>Custom parameters</div>
                   <div />
                 </div>
 
@@ -1326,34 +1326,30 @@ function IrisAgentSettingsPanel({
                               : item),
                           }))}
                         />
-                        <div className="min-w-0">
-                          <select
-                            value={model.reasoningLevel ?? 'off'}
-                            aria-label={t('settings.reasoningLevel')}
-                            className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs"
-                            onChange={(event) => setEditingModels((current) => ({
-                              ...current,
-                              [profile.id]: models.map((item, itemIndex) => itemIndex === index
-                                ? { ...item, reasoningLevel: event.target.value as IrisAgentReasoningLevel }
-                                : item),
-                            }))}
-                          >
-                            {(model.supportedReasoningLevels ?? ['off']).map((level) => (
-                              <option
-                                key={level}
-                                value={level}
-                                disabled={level !== (model.reasoningLevel ?? 'off') && reasoningLeavesMinimalHeadroom(model, level)}
-                              >
-                                {t(`settings.reasoning_${level}`)}
-                              </option>
-                            ))}
-                          </select>
-                          {model.reasoningMode === 'budget' && (model.reasoningLevel ?? 'off') !== 'off' && (
-                            <div className={`mt-1 text-[10px] ${reasoningLeavesMinimalHeadroom(model, model.reasoningLevel ?? 'off') ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}`}>
-                              {t('settings.reasoningHeadroom', { count: reasoningAnswerHeadroom(model) })}
-                            </div>
-                          )}
-                        </div>
+                        <textarea
+                          value={customParameterDrafts[`${profile.id}:${index}`] ?? JSON.stringify(model.customParameters ?? {}, null, 2)}
+                          aria-label="Custom parameters JSON"
+                          className="min-h-20 w-full rounded-md border border-input bg-background px-2 py-1 font-mono text-[11px]"
+                          onChange={(event) => {
+                            setCustomParameterDrafts((current) => ({ ...current, [`${profile.id}:${index}`]: event.target.value }));
+                            try {
+                              const value = JSON.parse(event.target.value);
+                              if (value && typeof value === 'object' && !Array.isArray(value)) {
+                                setEditingModels((current) => ({
+                                  ...current,
+                                  [profile.id]: models.map((item, itemIndex) => itemIndex === index
+                                    ? { ...item, customParameters: value }
+                                    : item),
+                                }));
+                              }
+                            } catch { /* preserve current model until JSON is valid */ }
+                          }}
+                          onBlur={() => setCustomParameterDrafts((current) => {
+                            const next = { ...current };
+                            delete next[`${profile.id}:${index}`];
+                            return next;
+                          })}
+                        />
                         <Button
                           type="button"
                           variant="ghost"
@@ -1390,29 +1386,6 @@ function IrisAgentSettingsPanel({
       </SettingGroup>
     </section>
   );
-}
-
-const REASONING_BUDGET_TOKENS: Record<Exclude<IrisAgentReasoningLevel, 'off'>, number> = {
-  minimal: 1_024,
-  low: 2_048,
-  medium: 8_192,
-  high: 16_384,
-  xhigh: 16_384,
-  max: 16_384,
-};
-
-function reasoningAnswerHeadroom(model: IrisAgentConfiguredModel): number {
-  const level = model.reasoningLevel ?? 'off';
-  if (model.reasoningMode !== 'budget' || level === 'off') return model.maxOutputTokens;
-  return Math.max(1_024, model.maxOutputTokens - REASONING_BUDGET_TOKENS[level]);
-}
-
-function reasoningLeavesMinimalHeadroom(
-  model: IrisAgentConfiguredModel,
-  level: IrisAgentReasoningLevel,
-): boolean {
-  if (model.reasoningMode !== 'budget' || level === 'off') return false;
-  return model.maxOutputTokens - REASONING_BUDGET_TOKENS[level] <= 1_024;
 }
 
 function AgentsPanel({ setError }: { setError: (m: string | null) => void }): JSX.Element {

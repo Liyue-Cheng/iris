@@ -650,8 +650,8 @@ export interface IrisAgentModelOption extends IrisAgentModelRef {
   name: string;
   api: string;
   reasoning: boolean;
-  reasoningLevel: IrisAgentReasoningLevel;
-  supportedReasoningLevels: IrisAgentReasoningLevel[];
+  reasoningLevel?: IrisAgentReasoningLevel;
+  supportedReasoningLevels?: IrisAgentReasoningLevel[];
   reasoningMode?: IrisAgentReasoningMode;
   contextWindowTokens?: number;
   maxOutputTokens?: number;
@@ -689,11 +689,11 @@ export interface IrisAgentConfiguredModel {
   reserveOutputTokens: number;
   keepRecentTokens: number;
   compactTrigger: number;
-  /** User preference. Missing values from older profile files normalize to off. */
+  /** Provider-native request parameters, passed through to pi as-is. */
+  customParameters?: Record<string, unknown>;
+  /** @deprecated retained for profile migration only. */
   reasoningLevel?: IrisAgentReasoningLevel;
-  /** Renderer-only capability projection; never authoritative when profiles are saved. */
   supportedReasoningLevels?: IrisAgentReasoningLevel[];
-  /** Renderer-only explanation of how the provider interprets a level. */
   reasoningMode?: IrisAgentReasoningMode;
   enabled: boolean;
   source: 'discovered' | 'manual';
@@ -1164,7 +1164,6 @@ export interface IrisAgentAttachmentData {
 // Document companion assets
 // ──────────────────────────────────────────────────────────────────
 
-export type AssetHealth = 'referenced' | 'orphan' | 'missing' | 'unmanaged';
 export type AssetKind = 'image' | 'attachment';
 
 export type AssociatedPathKind = 'file' | 'directory';
@@ -1179,16 +1178,16 @@ export interface AssociatedPathEntry {
 }
 
 export interface AssetEntry {
-  /** Project-relative disk path, or the resolved target for a missing item. */
+  /** Project-relative path inside the document companion directory. */
   path: string;
-  /** Literal Markdown URL when referenced; generated managed URL otherwise. */
+  /** Markdown URL for the internal companion file. */
   markdownUrl: string;
   name: string;
   kind: AssetKind;
   mimeType: string;
   size: number | null;
   referenceCount: number;
-  health: AssetHealth;
+  exists: boolean;
 }
 
 export interface AssetInventory {
@@ -1196,7 +1195,6 @@ export interface AssetInventory {
   /** Project-relative companion directory, whether or not it exists yet. */
   directoryPath: string;
   assets: AssetEntry[];
-  counts: Record<AssetHealth, number>;
   associated: AssociatedPathEntry[];
 }
 
@@ -1214,7 +1212,6 @@ export interface AssetImportResult {
   kind: AssetKind;
   mimeType: string;
   size: number;
-  reused: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────────

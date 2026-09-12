@@ -390,6 +390,21 @@ describe('IrisAgentSessionStore', () => {
     }
   });
 
+  it('does not list a closed Session with no intents in history', async () => {
+    const userData = await createTempDataDir('iris-agent-archived-empty-');
+    const projectRoot = join(userData, 'project');
+    try {
+      let store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
+      const session = aggregate(projectRoot);
+      await store.commit(closeAgentSession(session));
+
+      store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot });
+      expect(store.historyEntries({ kind: 'workspace', path: '.iris' })).toHaveLength(0);
+    } finally {
+      await removeTempDataDir(userData);
+    }
+  });
+
   it('does not replay a closed Session journal at startup', async () => {
     const userData = await createTempDataDir('iris-agent-archived-corrupt-');
     const projectRoot = join(userData, 'project');

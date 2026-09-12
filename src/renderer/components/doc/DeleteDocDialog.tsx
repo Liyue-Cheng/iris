@@ -61,7 +61,7 @@ export function DeleteDocDialog(): JSX.Element | null {
     setAssetCount(null);
     void listAssets(t.docPath)
       .then((inventory) => {
-        if (current) setAssetCount(inventory.counts.referenced + inventory.counts.orphan);
+        if (current) setAssetCount(inventory.assets.filter((asset) => asset.path !== '').length);
       })
       .catch((err) => {
         if (current) setError(err instanceof Error ? err.message : String(err));

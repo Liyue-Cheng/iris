@@ -7,6 +7,7 @@ import type { SettingsManager } from '../settings-manager';
 import { assembleAgentPrompt } from './prompt';
 import { AgentWorkerHost } from './worker-host';
 import { irisPiAgentDir, loadIrisModelCatalog, resolveIrisModelBaseUrl } from './pi-adapter';
+import { loadStoredIrisAgentProviderProfiles } from './provider-profiles';
 import { IrisAgentSessionStore } from './session-store';
 import {
   supersedeOpenAgentIntent,
@@ -66,7 +67,6 @@ import type {
   IrisAgentModelRef,
   IrisAgentPauseReason,
   IrisAgentPhaseChangedPayload,
-  IrisAgentReasoningLevel,
   IrisAgentSessionChangedPayload,
   IrisAgentSessionDestroyedPayload,
   IrisAgentSessionInfo,
@@ -1357,7 +1357,7 @@ export class IrisAgentSessionManager extends EventEmitter {
     const store = await this.ensureStore(scope.root);
     const paths = new Set(documentPaths);
     return store.list().filter((session) =>
-      session.anchor.kind === 'document' && paths.has(session.anchor.path)).length;
+      session.anchor.kind === 'document' && paths.has(session.anchor.path) && session.intents.length > 0).length;
   }
 
   async archiveDocumentSessions(scope: ProjectScope, documentPaths: readonly string[]): Promise<number> {
@@ -1589,30 +1589,13 @@ export class IrisAgentSessionManager extends EventEmitter {
           await resolveIrisModelBaseUrl(providerProfileRoot, session.model),
         ))
       : { mode: 'direct' as const };
-    const catalog = await this.loadModelCatalog(false);
-    const selected = catalog.models.find((candidate) =>
-      candidate.provider === session.model!.provider && candidate.modelId === session.model!.modelId);
-    const configured: IrisAgentReasoningLevel = selected?.reasoningLevel ?? 'off';
-    let effective: IrisAgentReasoningLevel = configured;
-    let downgradeReason: string | undefined;
-    if (!selected) {
-      effective = 'off';
-      if (configured !== 'off') downgradeReason = 'The selected model is absent from the current model catalog.';
-    } else if (!selected.reasoning) {
-      effective = 'off';
-      if (configured !== 'off') downgradeReason = 'The selected model does not declare reasoning support.';
-    } else if (!(selected.supportedReasoningLevels ?? ['off']).includes(configured)) {
-      effective = 'off';
-      downgradeReason = `Reasoning level ${configured} is not supported by the selected model.`;
-    }
+    const profiles = await loadStoredIrisAgentProviderProfiles(providerProfileRoot);
+    const profile = profiles.find((candidate) => candidate.id === session.model!.provider.replace(/^iris-profile-/, ''));
+    const configuredModel = profile?.models?.find((candidate) => candidate.modelId === session.model!.modelId);
     return {
       model: { ...session.model },
       providerProxy,
-      reasoning: {
-        configured,
-        effective,
-        ...(downgradeReason ? { downgradeReason } : {}),
-      },
+      ...(configuredModel?.customParameters ? { customParameters: configuredModel.customParameters } : {}),
     };
   }
 

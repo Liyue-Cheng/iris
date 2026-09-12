@@ -796,34 +796,6 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
   );
 
   ipcMain.handle(
-    CHANNELS.ASSET_ADOPT,
-    (
-      event,
-      payload: { docPath: string; source: string } & ProjectScopedPayload,
-    ): Promise<AssetImportResult> => {
-      const ctx = requireContext(event);
-      requireProjectScope(ctx, payload, CHANNELS.ASSET_ADOPT);
-      return ctx.projectManager.adoptAsset(payload.docPath, payload.source);
-    },
-  );
-
-  ipcMain.handle(
-    CHANNELS.ASSET_TRASH,
-    (
-      event,
-      payload: { docPath: string; assetPath: string } & ProjectScopedPayload,
-    ): Promise<{ path: string }> => {
-      const ctx = requireContext(event);
-      requireProjectScope(ctx, payload, CHANNELS.ASSET_TRASH);
-      return ctx.projectManager.trashAsset(
-        payload.docPath,
-        payload.assetPath,
-        (path) => shell.trashItem(path),
-      );
-    },
-  );
-
-  ipcMain.handle(
     CHANNELS.ASSET_LINK_ADD,
     (event, payload: { docPath: string; targetPath: string } & ProjectScopedPayload) => {
       const ctx = requireContext(event);
@@ -1299,7 +1271,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
             reserveOutputTokens,
             keepRecentTokens: 20_000,
             compactTrigger: Math.max(1, contextWindowTokens - reserveOutputTokens),
-            reasoningLevel: 'off' as const,
+            customParameters: {},
             enabled: true,
             source: 'discovered' as const,
           };

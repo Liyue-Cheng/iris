@@ -4,8 +4,6 @@ import type {
   IrisAgentImageMimeType,
   IrisAgentModelRef,
   IrisAgentProviderContextCall,
-  IrisAgentReasoningLevel,
-  IrisAgentThinkingLevel,
   IrisAgentLivePhase,
   IrisJsonValue,
 } from './types';
@@ -178,11 +176,7 @@ export interface AgentWorkerInitRuntime {
 export interface AgentWorkerExecutionRuntime {
   model: IrisAgentModelRef;
   providerProxy: AgentProviderProxy;
-  reasoning?: {
-    configured: IrisAgentReasoningLevel;
-    effective: IrisAgentReasoningLevel;
-    downgradeReason?: string;
-  };
+  customParameters?: Record<string, unknown>;
 }
 
 export type AgentProviderProxy =
@@ -478,21 +472,7 @@ function isInitRuntime(value: unknown): value is AgentWorkerInitRuntime {
 
 function isExecutionRuntime(value: unknown): value is AgentWorkerExecutionRuntime {
   return isRecord(value) && isModelRef(value.model) && isProviderProxy(value.providerProxy) &&
-    (value.reasoning === undefined || isReasoningDecision(value.reasoning));
-}
-
-function isReasoningDecision(value: unknown): value is AgentWorkerExecutionRuntime['reasoning'] {
-  return isRecord(value) && isReasoningLevel(value.configured) && isReasoningLevel(value.effective) &&
-    (value.downgradeReason === undefined || typeof value.downgradeReason === 'string');
-}
-
-function isReasoningLevel(value: unknown): value is IrisAgentReasoningLevel {
-  return value === 'off' || isThinkingLevel(value);
-}
-
-function isThinkingLevel(value: unknown): value is IrisAgentThinkingLevel {
-  return value === 'minimal' || value === 'low' || value === 'medium' || value === 'high' ||
-    value === 'xhigh' || value === 'max';
+    (value.customParameters === undefined || isJsonValue(value.customParameters));
 }
 
 function isProviderReplay(value: unknown): value is AgentProviderReplay {

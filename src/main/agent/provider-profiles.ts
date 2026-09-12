@@ -6,7 +6,6 @@ import type {
   IrisAgentConfiguredModel,
   IrisAgentProviderProfileInfo,
   IrisAgentProviderTemplate,
-  IrisAgentReasoningLevel,
 } from '@shared/types';
 import { writeFileAtomic } from '../atomic-write';
 
@@ -193,7 +192,7 @@ function normalizeConfiguredModel(model: IrisAgentConfiguredModel): IrisAgentCon
     reserveOutputTokens,
     keepRecentTokens,
     compactTrigger: Math.max(1, Math.min(contextWindowTokens - 1, Math.floor(model.compactTrigger || contextWindowTokens - reserveOutputTokens))),
-    reasoningLevel: normalizeReasoningLevel(model.reasoningLevel),
+    ...(isCustomParameters(model.customParameters) ? { customParameters: model.customParameters } : {}),
     enabled: model.enabled !== false,
     source: model.source === 'manual' ? 'manual' : 'discovered',
     ...(model.lastVerifiedAt ? { lastVerifiedAt: model.lastVerifiedAt } : {}),
@@ -201,11 +200,8 @@ function normalizeConfiguredModel(model: IrisAgentConfiguredModel): IrisAgentCon
   };
 }
 
-function normalizeReasoningLevel(value: unknown): IrisAgentReasoningLevel {
-  return value === 'minimal' || value === 'low' || value === 'medium' || value === 'high' ||
-    value === 'xhigh' || value === 'max'
-    ? value
-    : 'off';
+function isCustomParameters(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 export function profileModelsConfig(

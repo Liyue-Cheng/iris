@@ -3,14 +3,12 @@
  * `<document-name>.assets/`. Markdown links and disk files are the index;
  * there is deliberately no manifest or hidden database.
  */
-import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { remark } from 'remark';
 import type {
   AssociatedPathEntry,
   AssetEntry,
-  AssetHealth,
   AssetImportPayload,
   AssetImportResult,
   AssetInventory,
@@ -18,11 +16,6 @@ import type {
 } from '@shared/types';
 import { mainT } from './i18n';
 import { writeFileAtomic } from './atomic-write';
-import { detectImageBytes } from '@shared/image-signature';
-
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
-const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.svg']);
 export const ASSOCIATED_PATHS_FILE = 'links.txt';
 
 interface MarkdownNode {
@@ -105,7 +98,7 @@ export class AssetManager {
           mimeType: detected.mimeType,
           size: stat.size,
           referenceCount: refs.length,
-          health: refs.length > 0 ? 'referenced' : 'orphan',
+          exists: true,
         });
       }
     } catch (err) {
@@ -122,7 +115,7 @@ export class AssetManager {
       const first = refs[0];
       if (!first) continue;
       const managed = isInside(directoryAbs, target);
-      if (!managed && shouldIgnoreUnmanagedReference(first)) continue;
+      if (!managed) continue;
       let stat: Awaited<ReturnType<typeof fs.stat>> | null = null;
       try {
         stat = await fs.stat(target);
@@ -138,39 +131,16 @@ export class AssetManager {
         mimeType: detected.mimeType,
         size: stat?.isFile() ? stat.size : null,
         referenceCount: refs.length,
-        health: managed ? 'missing' : 'unmanaged',
+        exists: Boolean(stat?.isFile()),
       });
     }
 
-    const embedded = new Map<string, AssetReference[]>();
-    for (const ref of references) {
-      if (ref.target || !isSupportedDataImage(ref.source)) continue;
-      const current = embedded.get(ref.source) ?? [];
-      current.push(ref);
-      embedded.set(ref.source, current);
-    }
-    for (const [source, refs] of embedded) {
-      const info = parseDataImage(source);
-      if (!info) continue;
-      assets.push({
-        path: '',
-        markdownUrl: source,
-        name: `embedded-image${info.extension}`,
-        kind: 'image',
-        mimeType: info.mimeType,
-        size: info.bytes.length,
-        referenceCount: refs.length,
-        health: 'unmanaged',
-      });
-    }
-
-    assets.sort((a, b) => healthRank(a.health) - healthRank(b.health) || a.name.localeCompare(b.name));
+    assets.sort((a, b) => a.name.localeCompare(b.name));
     const associated = await this.readAssociated(projectRoot, directoryAbs);
     return {
       docPath,
       directoryPath,
       assets,
-      counts: countHealth(assets),
       associated,
     };
   }
@@ -246,16 +216,7 @@ export class AssetManager {
       throw new AssetError('InvalidPayload', mainT('error.assetPayloadRequired'));
     }
     const bytes = Buffer.from(payload.bytes);
-    if (bytes.length === 0) throw new AssetError('InvalidPayload', mainT('error.assetEmpty'));
-
-    const detected = detectImportedFile(payload.name, payload.mimeType, bytes);
-    const limit = detected.kind === 'image' ? MAX_IMAGE_BYTES : MAX_ATTACHMENT_BYTES;
-    if (bytes.length > limit) {
-      throw new AssetError(
-        'TooLarge',
-        mainT('error.assetTooLarge', { name: payload.name, size: bytes.length, limit }),
-      );
-    }
+    const detected = detectImportedFile(payload.name, payload.mimeType);
 
     const directoryPath = companionPath(payload.docPath);
     const directoryAbs = resolveInside(projectRoot, directoryPath);
@@ -263,31 +224,8 @@ export class AssetManager {
     await requireSafeDirectoryIfPresent(projectRoot, directoryAbs);
     await fs.mkdir(directoryAbs, { recursive: true });
 
-    const hash = createHash('sha256').update(bytes).digest('hex');
-    const existing = await findExistingHash(directoryAbs, hash);
-    if (existing) {
-      const path = toProjectPath(projectRoot, existing);
-      return {
-        path,
-        markdownUrl: markdownUrlFor(payload.docPath, path),
-        name: basename(existing),
-        kind: detected.kind,
-        mimeType: detected.mimeType,
-        size: bytes.length,
-        reused: true,
-      };
-    }
-
     const stem = sanitizeStem(payload.name);
-    let target = '';
-    for (const hashLength of [12, 16, 24, 32, 64]) {
-      target = join(directoryAbs, `${stem}--${hash.slice(0, hashLength)}${detected.extension}`);
-      if (!(await pathExists(target))) break;
-      target = '';
-    }
-    if (!target) {
-      throw new AssetError('WriteFailed', mainT('error.assetUniqueName', { name: payload.name }));
-    }
+    const target = await allocateUniqueName(directoryAbs, stem, detected.extension);
 
     try {
       await writeFileAtomic(target, bytes);
@@ -307,100 +245,12 @@ export class AssetManager {
       kind: detected.kind,
       mimeType: detected.mimeType,
       size: bytes.length,
-      reused: false,
     };
-  }
-
-  async trash(
-    projectRoot: string,
-    docPath: string,
-    assetPath: string,
-    trashItem: (absolutePath: string) => Promise<void>,
-  ): Promise<{ path: string }> {
-    await this.requireDocument(projectRoot, docPath);
-    const directoryAbs = resolveInside(projectRoot, companionPath(docPath));
-    await requireSafeDirectoryIfPresent(projectRoot, directoryAbs);
-    const target = resolveInside(projectRoot, assetPath);
-    if (dirname(target) !== directoryAbs) {
-      throw new AssetError(
-        'InvalidPayload',
-        mainT('error.assetNotOwned', { assetPath, docPath }),
-      );
-    }
-    const inventory = await this.list(projectRoot, docPath);
-    const asset = inventory.assets.find((item) => normalize(item.path) === normalize(assetPath));
-    if (!asset || asset.health !== 'orphan') {
-      throw new AssetError('Referenced', mainT('error.assetReferenced', { path: assetPath }));
-    }
-    const stat = await fs.lstat(target).catch(() => null);
-    if (!stat?.isFile() || stat.isSymbolicLink()) {
-      throw new AssetError('InvalidPayload', mainT('error.assetNotRegularFile', { path: assetPath }));
-    }
-    try {
-      await trashItem(target);
-      await fs.rmdir(directoryAbs).catch(() => {});
-      return { path: assetPath };
-    } catch (err) {
-      throw new AssetError(
-        'WriteFailed',
-        messageFor(mainT('error.assetTrash', { path: assetPath }), err),
-      );
-    }
-  }
-
-  async adopt(
-    projectRoot: string,
-    docPath: string,
-    source: string,
-  ): Promise<AssetImportResult> {
-    const doc = await this.requireDocument(projectRoot, docPath);
-    const raw = await fs.readFile(doc.abs, 'utf8');
-    let name: string;
-    let mimeType: string;
-    let bytes: Uint8Array;
-
-    const embedded = parseDataImage(source);
-    if (embedded) {
-      name = `embedded-image${embedded.extension}`;
-      mimeType = embedded.mimeType;
-      bytes = embedded.bytes;
-    } else {
-      const target = resolveMarkdownTarget(projectRoot, docPath, source);
-      if (!target) throw new AssetError('InvalidPayload', mainT('error.assetAdoptLocalOnly'));
-      const companion = resolveInside(projectRoot, companionPath(docPath));
-      if (isInside(companion, target)) {
-        throw new AssetError('InvalidPayload', mainT('error.assetAlreadyManaged'));
-      }
-      const stat = await fs.lstat(target).catch(() => null);
-      if (!stat?.isFile() || stat.isSymbolicLink()) {
-        throw new AssetError('InvalidPayload', mainT('error.assetReferenceNotFile'));
-      }
-      resolveInside(projectRoot, await fs.realpath(target));
-      name = basename(target);
-      mimeType = detectStoredFile(name).mimeType;
-      bytes = await fs.readFile(target);
-    }
-
-    const imported = await this.import(projectRoot, { docPath, name, mimeType, bytes });
-    const next = rewriteMarkdownUrl(raw, source, imported.markdownUrl);
-    const current = await fs.readFile(doc.abs, 'utf8');
-    if (current !== raw) {
-      throw new AssetError('WriteFailed', mainT('error.assetDocumentChanged', { path: docPath }));
-    }
-    try {
-      await writeFileAtomic(doc.abs, next);
-    } catch (err) {
-      throw new AssetError(
-        'WriteFailed',
-        messageFor(mainT('error.assetDocumentUpdate', { path: docPath }), err),
-      );
-    }
-    return imported;
   }
 
   async managedFileCount(projectRoot: string, docPath: string): Promise<number> {
     const inventory = await this.list(projectRoot, docPath);
-    return inventory.assets.filter((asset) => asset.health === 'referenced' || asset.health === 'orphan').length;
+    return inventory.assets.filter((asset) => asset.path !== '').length;
   }
 
   companionPath(docPath: string): string {
@@ -498,7 +348,7 @@ function collectReferences(projectRoot: string, docPath: string, markdown: strin
     }
     if (!source) return;
     const target = resolveMarkdownTarget(projectRoot, docPath, source);
-    if (target || isSupportedDataImage(source)) references.push({ source, kind, target });
+    if (target) references.push({ source, kind, target });
   });
   return references;
 }
@@ -524,72 +374,15 @@ function resolveMarkdownTarget(projectRoot: string, docPath: string, source: str
   }
 }
 
-function rewriteMarkdownUrl(markdown: string, source: string, replacement: string): string {
-  const tree = remark().parse(markdown) as MarkdownNode;
-  const spans: Array<{ start: number; end: number }> = [];
-  walk(tree, (node) => {
-    if (!['image', 'link', 'definition'].includes(node.type ?? '') || node.url !== source) return;
-    const start = node.position?.start?.offset;
-    const end = node.position?.end?.offset;
-    if (start === undefined || end === undefined) return;
-    const slice = markdown.slice(start, end);
-    const local = slice.indexOf(source);
-    if (local >= 0) spans.push({ start: start + local, end: start + local + source.length });
-  });
-  const unique = [...new Map(spans.map((span) => [`${span.start}:${span.end}`, span])).values()];
-  if (unique.length === 0) {
-    throw new AssetError('InvalidPayload', mainT('error.assetUrlMissing'));
-  }
-  let next = markdown;
-  for (const span of unique.sort((a, b) => b.start - a.start)) {
-    next = next.slice(0, span.start) + replacement + next.slice(span.end);
-  }
-  return next;
-}
-
-function isSupportedDataImage(source: string): boolean {
-  return /^data:image\/(?:png|jpeg|gif|webp|avif);base64,/i.test(source);
-}
-
-function parseDataImage(
-  source: string,
-): { bytes: Uint8Array; mimeType: string; extension: string } | null {
-  const match = /^data:image\/(png|jpeg|gif|webp|avif);base64,([a-z\d+/=\s]+)$/i.exec(source);
-  if (!match?.[1] || !match[2]) return null;
-  const subtype = match[1].toLowerCase();
-  const bytes = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
-  const extension = subtype === 'jpeg' ? '.jpg' : `.${subtype}`;
-  return { bytes, mimeType: `image/${subtype}`, extension };
-}
-
-function shouldIgnoreUnmanagedReference(reference: AssetReference): boolean {
-  if (reference.kind === 'image') return false;
-  if (!reference.target) return true;
-  return extname(reference.target).toLowerCase() === '.md';
-}
-
-function detectImportedFile(name: string, declaredMime: string, bytes: Buffer): DetectedFile {
-  const image = detectImage(bytes);
-  const extension = extname(name).toLowerCase();
-  const claimsImage = declaredMime.toLowerCase().startsWith('image/') || IMAGE_EXTENSIONS.has(extension);
-  if (extension === '.svg' || declaredMime.toLowerCase() === 'image/svg+xml') {
-    throw new AssetError('UnsupportedType', mainT('error.assetSvgDisabled'));
-  }
-  if (claimsImage && !image) {
-    throw new AssetError('UnsupportedType', mainT('error.assetSignatureMismatch', { name }));
-  }
-  if (image) return image;
-  return detectStoredFile(name);
-}
-
-function detectImage(bytes: Buffer): DetectedFile | null {
-  const detected = detectImageBytes(bytes);
-  return detected ? { kind: 'image', ...detected } : null;
+function detectImportedFile(name: string, declaredMime: string): DetectedFile {
+  const stored = detectStoredFile(name);
+  return declaredMime ? { ...stored, mimeType: declaredMime } : stored;
 }
 
 function detectStoredFile(name: string): DetectedFile {
   const extension = extname(name).toLowerCase();
   const known = new Map<string, string>([
+    ['.svg', 'image/svg+xml'],
     ['.png', 'image/png'],
     ['.jpg', 'image/jpeg'],
     ['.jpeg', 'image/jpeg'],
@@ -608,19 +401,6 @@ function detectStoredFile(name: string): DetectedFile {
   return { kind, mimeType, extension: safeExtension };
 }
 
-async function findExistingHash(directory: string, hash: string): Promise<string | null> {
-  const entries = await fs.readdir(directory, { withFileTypes: true });
-  for (const entry of entries) {
-    if (!entry.isFile() || entry.isSymbolicLink()) continue;
-    const match = /--([a-f\d]{12,64})\.[^.]+$/i.exec(entry.name);
-    if (!match?.[1] || !hash.startsWith(match[1].toLowerCase())) continue;
-    const path = join(directory, entry.name);
-    const existingHash = createHash('sha256').update(await fs.readFile(path)).digest('hex');
-    if (existingHash === hash) return path;
-  }
-  return null;
-}
-
 function sanitizeStem(name: string): string {
   const stem = basename(name.replace(/\\/g, '/'), extname(name))
     .normalize('NFKC')
@@ -630,6 +410,15 @@ function sanitizeStem(name: string): string {
     .replace(/^[-.]+/g, '')
     .slice(0, 48);
   return stem || 'asset';
+}
+
+async function allocateUniqueName(directory: string, stem: string, extension: string): Promise<string> {
+  for (let index = 0; index < 10000; index += 1) {
+    const suffix = index === 0 ? '' : `-${index + 1}`;
+    const candidate = join(directory, `${stem}${suffix}${extension}`);
+    if (!(await pathExists(candidate))) return candidate;
+  }
+  throw new AssetError('WriteFailed', mainT('error.assetUniqueName', { name: stem }));
 }
 
 function markdownUrlFor(docPath: string, assetPath: string): string {
@@ -660,21 +449,6 @@ async function requireSafeDirectoryIfPresent(projectRoot: string, path: string):
     throw new AssetError('InvalidPayload', mainT('error.assetDirectoryNotRegular', { path }));
   }
   if (stat) resolveInside(projectRoot, await fs.realpath(path));
-}
-
-function countHealth(assets: AssetEntry[]): Record<AssetHealth, number> {
-  const counts: Record<AssetHealth, number> = {
-    referenced: 0,
-    orphan: 0,
-    missing: 0,
-    unmanaged: 0,
-  };
-  for (const asset of assets) counts[asset.health] += 1;
-  return counts;
-}
-
-function healthRank(health: AssetHealth): number {
-  return { missing: 0, orphan: 1, unmanaged: 2, referenced: 3 }[health];
 }
 
 function messageFor(prefix: string, error: unknown): string {

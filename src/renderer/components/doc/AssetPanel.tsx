@@ -8,22 +8,19 @@ import {
   FolderOpen,
   Image,
   Loader2,
-  PackagePlus,
   RefreshCw,
   Trash2,
   Upload,
 } from 'lucide-react';
-import type { AssetEntry, AssetHealth, AssetInventory, AssociatedPathEntry } from '@shared/types';
+import type { AssetEntry, AssetInventory, AssociatedPathEntry } from '@shared/types';
 import { EVENTS } from '@shared/protocol';
 import { cn } from '@renderer/lib/utils';
-import { confirmDialog } from '@renderer/components/ui/confirm-dialog';
 import { Button } from '@renderer/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@renderer/components/ui/dialog';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip';
 import { writeClipboardText } from '@renderer/lib/clipboard';
 import { openProjectItem, revealProjectItem } from '@renderer/lib/shell-actions';
 import {
-  adoptAsset,
   addAssociatedPath,
   importAsset,
   listAssets,
@@ -32,15 +29,7 @@ import {
   pickAssociatedPath,
   removeAssociatedPath,
   revealAssociatedPath,
-  trashAsset,
 } from '@renderer/lib/asset-actions';
-
-const HEALTH_LABEL: Record<AssetHealth, 'editor.assetReferenced' | 'editor.assetOrphan' | 'editor.assetMissing' | 'editor.assetUnmanaged'> = {
-  referenced: 'editor.assetReferenced',
-  orphan: 'editor.assetOrphan',
-  missing: 'editor.assetMissing',
-  unmanaged: 'editor.assetUnmanaged',
-};
 
 export function AssetPanel({
   docPath,
@@ -107,39 +96,6 @@ export function AssetPanel({
     } finally {
       setBusy(false);
       if (fileInput.current) fileInput.current.value = '';
-    }
-  };
-
-  const removeOrphan = async (asset: AssetEntry): Promise<void> => {
-    const confirmed = await confirmDialog({
-      title: t('editor.deleteOrphanTitle'),
-      message: t('editor.deleteOrphanMessage', { name: asset.name }),
-      confirmText: t('editor.moveToTrash'),
-      tone: 'destructive',
-    });
-    if (!confirmed) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await trashAsset(docPath, asset.path);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const adoptLegacy = async (asset: AssetEntry): Promise<void> => {
-    setBusy(true);
-    setError(null);
-    try {
-      await adoptAsset(docPath, asset.markdownUrl);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -229,11 +185,8 @@ export function AssetPanel({
             <>
             {assets.map((asset) => (
               <AssetRow
-                key={`${asset.health}:${asset.path}:${asset.markdownUrl}`}
+                key={`${asset.path}:${asset.markdownUrl}`}
                 asset={asset}
-                disabled={busy}
-                onAdopt={() => void adoptLegacy(asset)}
-                onRemove={() => void removeOrphan(asset)}
               />
             ))}
             {associated.length > 0 && (
@@ -266,19 +219,11 @@ export function AssetPanel({
 
 function AssetRow({
   asset,
-  disabled,
-  onAdopt,
-  onRemove,
 }: {
   asset: AssetEntry;
-  disabled: boolean;
-  onAdopt: () => void;
-  onRemove: () => void;
 }): JSX.Element {
   const { t } = useTranslation();
-  const canOpen = asset.health !== 'missing' && asset.path !== '';
-  const canTrash = asset.health === 'orphan';
-  const canAdopt = asset.health === 'unmanaged';
+  const canOpen = asset.exists && asset.path !== '';
   return (
     <div className="flex min-h-12 items-center gap-3 border-b px-5 py-2 last:border-b-0">
       {asset.kind === 'image' ? (
@@ -290,26 +235,18 @@ function AssetRow({
         <div className="truncate text-sm" aria-label={asset.name}>{asset.name}</div>
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
           <span
-            className={cn(
-              asset.health === 'missing' && 'text-destructive',
-              asset.health === 'orphan' && 'text-[var(--rp-gold)]',
-            )}
+            className={cn(!asset.exists && 'text-destructive')}
           >
-            {t(HEALTH_LABEL[asset.health])}
+            {asset.exists ? t('editor.assetReferenced') : t('editor.assetMissing')}
           </span>
           {asset.size !== null && <span>{formatBytes(asset.size)}</span>}
           {asset.referenceCount > 0 && <span>{t('editor.referenceCount', { count: asset.referenceCount })}</span>}
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
-        {canAdopt && (
-          <IconAction label={t('editor.adoptAsset')} disabled={disabled} onClick={onAdopt}>
-            <PackagePlus />
-          </IconAction>
-        )}
         <IconAction
           label={t('editor.copyMarkdown')}
-          disabled={asset.health === 'missing'}
+          disabled={!asset.exists}
           onClick={() => void writeClipboardText(markdownForAsset(asset))}
         >
           <Copy />
@@ -328,11 +265,6 @@ function AssetRow({
         >
           <ExternalLink />
         </IconAction>
-        {canTrash && (
-          <IconAction label={t('editor.moveToTrash')} disabled={disabled} destructive onClick={onRemove}>
-            <Trash2 />
-          </IconAction>
-        )}
       </div>
     </div>
   );

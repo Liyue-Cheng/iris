@@ -114,14 +114,13 @@ reflects: a1b3c2              # agent 侧盖戳约定:本文反映哪个 commit(
 
 每篇文档可拥有一个同目录、同名的 companion 目录:`auth.md` 拥有
 `auth.assets/`。正文只写普通相对 Markdown 链接,例如
-`![流程](./auth.assets/flow--c34ab87d2e10.png)`。协议不增加 manifest、
+`![流程](./auth.assets/flow.png)`。协议不增加 manifest、
 frontmatter 资产表或全局数据库;磁盘文件与 Markdown 引用本身就是索引。
 
-导入文件使用“可读原名 + SHA-256 前缀”命名,同一文档内按内容去重。已引用资产
-不可原地覆盖,替换时写新文件并更新链接。Iris 从磁盘推导 `referenced`、
-`orphan`、`missing`、`unmanaged` 四种状态;孤儿不会自动删除。人类删除文档时,
-文档与 companion 目录作为聚合进入系统回收站。既有项目内相对链接和 HTTPS 链接
-继续兼容但不受管;`blob:` 不得持久化。
+导入文件使用清洗后的可读原名，同名时追加数字后缀。资产只分为 Markdown 引用到
+companion 目录的内部文件，以及 `links.txt` 中登记的外部关联文件/文件夹，不再做
+内容哈希、内容去重或受管/非受管健康状态治理。人类删除文档时，文档与 companion
+目录作为聚合进入系统回收站。
 
 ### 规约的作用域链
 

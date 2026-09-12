@@ -105,13 +105,13 @@ describe('software prompt invariants', () => {
       expect(SOFTWARE_PROMPT_TEMPLATE).toContain(`\`${status}\``);
     }
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('GFM task checkbox');
-    expect(SOFTWARE_PROMPT_TEMPLATE).toContain('Write plain CommonMark');
+    expect(SOFTWARE_PROMPT_TEMPLATE).toContain('Write standard Markdown');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('<name>.assets/');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('`links.txt`');
-    expect(SOFTWARE_PROMPT_TEMPLATE).toContain('Never delete an asset merely because');
+    expect(SOFTWARE_PROMPT_TEMPLATE).toContain('Do not delete an internal file merely because');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('No unsolicited Iris-managed files');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain(
-      'This restriction does not apply to project source, tests,',
+      'For an explicitly requested implementation',
     );
     expect(SOFTWARE_PROMPT_TEMPLATE).not.toContain('Never create a new file');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('entry file');

@@ -307,18 +307,6 @@ export class ProjectManager extends EventEmitter {
     return this.assetManager.import(this.requireRoot(), payload);
   }
 
-  async trashAsset(
-    docPath: string,
-    assetPath: string,
-    trashItem: (absolutePath: string) => Promise<void>,
-  ): Promise<{ path: string }> {
-    return this.assetManager.trash(this.requireRoot(), docPath, assetPath, trashItem);
-  }
-
-  async adoptAsset(docPath: string, source: string): Promise<AssetImportResult> {
-    return this.assetManager.adopt(this.requireRoot(), docPath, source);
-  }
-
   async addAssociatedPath(docPath: string, targetPath: string): Promise<AssociatedPathEntry> {
     return this.assetManager.addAssociated(this.requireRoot(), docPath, targetPath);
   }

@@ -11,6 +11,7 @@ const SAFE_PAYLOAD_KEYS = new Set([
   'toolConfig', 'max_tokens', 'maxTokens', 'max_output_tokens', 'temperature', 'top_p',
   'topP', 'stop', 'stop_sequences', 'thinking', 'reasoning', 'stream', 'store',
   'parallel_tool_calls', 'response_format', 'generationConfig', 'inferenceConfig',
+  'reasoning_effort', 'output_config', 'include', 'metadata',
   'additionalModelRequestFields',
 ]);
 

@@ -3116,7 +3116,7 @@ describe('Iris Agent instance lifecycle', () => {
 
       expect((await manager.list(scopeA)).sessions).toHaveLength(0);
       expect((await manager.history(scopeA, workspaceAnchor)).find((entry) => entry.id === created.id))
-        .toMatchObject({ closed: true });
+        .toBeUndefined();
     } finally {
       await manager.shutdown();
       await removeTempDataDir(userData);
@@ -3139,7 +3139,7 @@ describe('Iris Agent instance lifecycle', () => {
     let second: IrisAgentSessionManager | null = null;
     try {
       await first.listModels();
-      const idle = await first.createSession({ scope, anchor: workspaceAnchor });
+      await first.createSession({ scope, anchor: workspaceAnchor });
       const busy = await first.createSession({ scope, anchor: workspaceAnchor });
       await first.send(scope, busy.id, 'still working');
       await first.shutdown();
@@ -3151,7 +3151,7 @@ describe('Iris Agent instance lifecycle', () => {
       // Nothing resumes automatically: the closed instances are history only.
       expect((await second.list(scope)).sessions).toHaveLength(0);
       const history = await second.history(scope, workspaceAnchor);
-      expect(history.map((entry) => entry.id).sort()).toEqual([idle.id, busy.id].sort());
+      expect(history.map((entry) => entry.id).sort()).toEqual([busy.id].sort());
       expect(history.every((entry) => entry.closed)).toBe(true);
       expect(second.countOpenSessions()).toBe(0);
     } finally {

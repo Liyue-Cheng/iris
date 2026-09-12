@@ -220,7 +220,7 @@ Iris 不会通过解析 Agent 的终端文本来判断工作是否完成，而�
 2026-08-08-auth-review.assets/
 ```
 
-导入资产使用内容哈希生成稳定、可移植的文件名。Asset 面板根据 Markdown 引用和磁盘内容推导四种健康状态：已引用、孤立、缺失和未管理。它可以收编历史本地图片或 data URL、复制 Markdown 链接、在文件管理器中显示文件，并将未引用的受管资产移入系统回收站。
+导入资产使用清洗后的原始文件名，同名时追加数字后缀。Asset 面板只区分 Markdown 引用到 companion 目录的内部文件，以及 `links.txt` 中登记的外部关联文件/文件夹。
 
 Iris 不会自动下载远程资产，也不会自动删除 orphan。删除文档时，Markdown 文件和 companion directory 会作为一个整体移入系统回收站。
 

@@ -285,9 +285,7 @@ async function prepareExecution(
     model: execution.model,
     commandShell: baseRuntime.commandShell,
     providerProxy: execution.providerProxy,
-    ...(execution.reasoning?.effective && execution.reasoning.effective !== 'off'
-      ? { reasoning: execution.reasoning.effective }
-      : {}),
+    ...(execution.customParameters ? { customParameters: execution.customParameters } : {}),
     executeToolCall: async (toolCall) => {
       const input = providerToolCallInput(toolCall.name, toolCall.arguments, baseRuntime.cwd);
       let result: AgentToolOperationResult;
@@ -350,7 +348,6 @@ async function prepareExecution(
           provider: model.provider,
           model: model.id,
           api: model.api,
-          ...(execution.reasoning ? { reasoning: { ...execution.reasoning } } : {}),
           payload: sanitizeProviderPayload(payload, payloadSecrets),
         },
       });

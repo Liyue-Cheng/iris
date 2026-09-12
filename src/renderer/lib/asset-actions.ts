@@ -26,14 +26,6 @@ export async function importAsset(docPath: string, file: File): Promise<AssetImp
   }) as Promise<AssetImportResult>;
 }
 
-export async function trashAsset(docPath: string, assetPath: string): Promise<void> {
-  await pipeline.dispatch('asset.trash', { docPath, assetPath });
-}
-
-export async function adoptAsset(docPath: string, source: string): Promise<AssetImportResult> {
-  return pipeline.dispatch('asset.adopt', { docPath, source }) as Promise<AssetImportResult>;
-}
-
 export async function addAssociatedPath(docPath: string, targetPath: string): Promise<AssociatedPathEntry> {
   return pipeline.dispatch('asset.link-add', { docPath, targetPath }) as Promise<AssociatedPathEntry>;
 }
@@ -55,9 +47,7 @@ export async function pickAssociatedPath(kind: 'file' | 'directory'): Promise<st
 }
 
 export function markdownForAsset(asset: AssetImportResult | AssetInventory['assets'][number]): string {
-  const label = asset.name
-    .replace(/--[a-f\d]{12,64}(?=\.[^.]+$)/i, '')
-    .replace(/\.[^.]+$/, '');
+  const label = asset.name.replace(/\.[^.]+$/, '');
   return asset.kind === 'image'
     ? `![${label}](${asset.markdownUrl})`
     : `[${label}](${asset.markdownUrl})`;

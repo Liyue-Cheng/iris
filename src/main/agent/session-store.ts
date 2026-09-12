@@ -294,9 +294,16 @@ export class IrisAgentSessionStore {
     }
     for (const session of this.sessions.values()) {
       if (!sameAnchor(session.anchor, anchor)) continue;
-      byId.set(session.id, metaOfAggregate(session, this.journalHashes.get(session.id) ?? ''));
+      const meta = metaOfAggregate(session, this.journalHashes.get(session.id) ?? '');
+      if (meta.intentCount === 0) {
+        byId.delete(session.id);
+        continue;
+      }
+      byId.set(session.id, meta);
     }
-    return [...byId.values()].sort((left, right) => right.updatedAt - left.updatedAt);
+    return [...byId.values()]
+      .filter((meta) => meta.intentCount > 0)
+      .sort((left, right) => right.updatedAt - left.updatedAt);
   }
 
   async commit(source: AgentSessionAggregate): Promise<AgentSessionAggregate> {
