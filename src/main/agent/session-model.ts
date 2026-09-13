@@ -17,7 +17,7 @@ import type {
   IrisAgentIntentView,
 } from '@shared/types';
 import { isDeepStrictEqual } from 'node:util';
-import type { AgentProviderReplay, AgentToolOperationInput, AgentToolOperationResult } from '@shared/agent-protocol';
+import type { AgentProviderReplay, JtpBuiltinInput, JtpBuiltinResult } from '@shared/agent-protocol';
 
 export interface AgentSessionAggregate {
   id: string;
@@ -151,7 +151,7 @@ export interface AgentToolOperation {
   toolActivityId: string;
   intentId: string;
   turnId: string;
-  input: AgentToolOperationInput;
+  input: JtpBuiltinInput;
   state: 'running' | 'completed' | 'failed';
   /**
    * Persisted in the reduced `AgentStoredToolResult` form. An image read keeps
@@ -167,7 +167,7 @@ export interface AgentToolOperation {
 
 /** An image tool result as it is stored: identity and metadata, never bytes. */
 export type AgentStoredToolResult =
-  | Exclude<AgentToolOperationResult, { kind: 'image' }>
+  | Exclude<JtpBuiltinResult, { kind: 'image' }>
   | {
       kind: 'image';
       attachmentId: string;
@@ -744,3 +744,4 @@ function pathFromInputSummary(summary: string): string {
   const space = summary.indexOf(' ');
   return space >= 0 ? summary.slice(space + 1) : summary;
 }
+

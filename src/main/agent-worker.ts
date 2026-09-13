@@ -6,8 +6,8 @@ import {
   isAgentWorkerRequest,
   type AgentCorrelation,
   type AgentHistorySnapshot,
-  type AgentToolOperationInput,
-  type AgentToolOperationResult,
+  type JtpBuiltinInput,
+  type JtpBuiltinResult,
   type AgentTerminalSupervisionInput,
   type AgentTerminalSupervisionResult,
   type AgentWorkerEvent,
@@ -24,7 +24,7 @@ import {
   unwrapProviderErrorMessage,
 } from './agent/pi-adapter';
 import { renderToolResultContent } from './agent/tool-result-content';
-import { jtpRequestToLegacyInput } from './jtp/builtin-provider';
+import { jtpRequestToBuiltinInput } from './jtp/builtin-provider';
 import { collectKnownSecrets, sanitizeProviderPayload } from './agent/context-artifact';
 import { loadStoredIrisAgentProviderProfiles } from './agent/provider-profiles';
 import { AGENT_SUPERVISION_RULE } from './agent/supervision';
@@ -33,7 +33,7 @@ if (!parentPort) throw new Error('Iris Agent Worker requires a worker_threads pa
 const workerPort = parentPort;
 
 type PendingTool = {
-  resolve: (result: AgentToolOperationResult) => void;
+  resolve: (result: JtpBuiltinResult) => void;
   reject: (error: Error) => void;
 };
 
@@ -296,10 +296,10 @@ async function prepareExecution(
           timestamp: Date.now(),
         };
       }
-      let result: AgentToolOperationResult;
+      let result: JtpBuiltinResult;
       try {
         const request = { id: toolCall.id, tool: toolCall.name, arguments: toolCall.arguments };
-        const input = jtpRequestToLegacyInput(request, baseRuntime.cwd);
+        const input = jtpRequestToBuiltinInput(request, baseRuntime.cwd);
         result = await requestTool(input, request);
       } catch (error) {
         // A deterministic ToolCall failure is part of the provider conversation.
@@ -438,9 +438,9 @@ function providerSecretEnvironment(): Record<string, string> {
 }
 
 async function requestTool(
-  input: AgentToolOperationInput,
+  input: JtpBuiltinInput,
   jtpRequest?: { id: string; tool: string; arguments: Record<string, unknown> },
-): Promise<AgentToolOperationResult> {
+): Promise<JtpBuiltinResult> {
   await providerEventChain;
   const operationId = randomUUID();
   const toolCallId = currentIrisProviderToolCallId() ?? operationId;
@@ -457,7 +457,7 @@ async function requestTool(
     input,
     request: jtpRequest ?? { id: toolCallId, tool: input.tool, arguments: input as unknown as Record<string, unknown> },
   } satisfies AgentWorkerEvent);
-  return new Promise<AgentToolOperationResult>((resolve, reject) => {
+  return new Promise<JtpBuiltinResult>((resolve, reject) => {
     pendingTools.set(operationId, { resolve, reject });
   }).finally(() => {
     post({ type: 'state', correlation: currentCorrelation, state: 'running' });
@@ -790,6 +790,8 @@ export function projectProviderFailure(
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
+
+
 
 
 

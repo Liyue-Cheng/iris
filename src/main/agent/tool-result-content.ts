@@ -9,7 +9,7 @@
  * result differently, and it makes the production path testable without a
  * worker thread.
  */
-import type { AgentToolOperationResult } from '@shared/agent-protocol';
+import type { JtpBuiltinResult } from '@shared/agent-protocol';
 
 export type AgentToolResultContentPart =
   | { type: 'text'; text: string }
@@ -24,7 +24,7 @@ export type AgentToolResultContentPart =
 export function renderToolResultContent(
   toolName: string,
   toolArguments: Record<string, unknown> | undefined,
-  result: AgentToolOperationResult,
+  result: JtpBuiltinResult,
 ): AgentToolResultContentPart[] {
   if (result.kind === 'image') {
     return [
@@ -36,7 +36,7 @@ export function renderToolResultContent(
 }
 
 /** The readable half of a result, for results that carry no pixels. */
-export function renderToolResultText(toolName: string, result: AgentToolOperationResult): string {
+export function renderToolResultText(toolName: string, result: JtpBuiltinResult): string {
   switch (result.kind) {
     case 'file':
       return Buffer.from(result.contentBase64, 'base64').toString('utf8');
@@ -84,3 +84,4 @@ function unhandledResult(toolName: string, result: never): never {
     `Iris Agent tool ${toolName} returned an unsupported result: ${JSON.stringify(result)}`,
   );
 }
+

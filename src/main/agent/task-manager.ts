@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import type {
-  AgentToolOperationResult,
+  JtpBuiltinResult,
 } from '@shared/agent-protocol';
 import type { IrisAgentTaskLog } from '@shared/types';
 import { writeFileAtomic } from '../atomic-write';
@@ -87,7 +87,7 @@ export class AgentTaskManager {
     title: string;
     cwd: string;
     successExitCodes?: number[];
-  }): Promise<AgentToolOperationResult> {
+  }): Promise<JtpBuiltinResult> {
     const tasks = await this.loadProject(input.projectRoot);
     const operationKey = `${input.sessionId}:${input.toolCallId}`;
     const existing = tasks.find((candidate) => candidate.operationKey === operationKey);
@@ -169,7 +169,7 @@ export class AgentTaskManager {
     return taskResult(task, task.completedAt === undefined ? 'Task started.' : 'Task was canceled before it started.');
   }
 
-  async get(query: AgentTaskQuery, projectRoot: string): Promise<AgentToolOperationResult> {
+  async get(query: AgentTaskQuery, projectRoot: string): Promise<JtpBuiltinResult> {
     const task = (await this.loadProject(projectRoot)).find((candidate) => candidate.taskId === query.taskId);
     if (!task) throw new Error(`Task not found: ${query.taskId}`);
     const requestedMaxBytes = query.maxBytes ?? DEFAULT_TAIL_BYTES;
@@ -231,7 +231,7 @@ export class AgentTaskManager {
     };
   }
 
-  async list(projectRoot: string, scope: 'active' | 'all' = 'active', cursor?: string, limit = 50): Promise<AgentToolOperationResult> {
+  async list(projectRoot: string, scope: 'active' | 'all' = 'active', cursor?: string, limit = 50): Promise<JtpBuiltinResult> {
     const tasks = await this.loadProject(projectRoot);
     const offset = decodeCursor(cursor);
     const filtered = scope === 'all'
@@ -253,7 +253,7 @@ export class AgentTaskManager {
     };
   }
 
-  async cancel(taskId: string, projectRoot: string): Promise<AgentToolOperationResult> {
+  async cancel(taskId: string, projectRoot: string): Promise<JtpBuiltinResult> {
     const task = (await this.loadProject(projectRoot)).find((candidate) => candidate.taskId === taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (task.status === 'queued' || task.status === 'starting' || task.status === 'running') {
@@ -413,7 +413,7 @@ function normalizeSuccessExitCodes(value: number[] | undefined): number[] {
   return normalized.length > 0 ? [...new Set(normalized)] : [0];
 }
 
-function taskResult(task: AgentTaskRecord, message: string): AgentToolOperationResult {
+function taskResult(task: AgentTaskRecord, message: string): JtpBuiltinResult {
   return {
     kind: 'task',
     taskId: task.taskId,
@@ -522,3 +522,4 @@ function alignUtf8End(bytes: Buffer, offset: number): number {
   while (end > 0 && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end -= 1;
   return end;
 }
+

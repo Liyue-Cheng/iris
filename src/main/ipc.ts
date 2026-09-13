@@ -20,7 +20,7 @@ import { stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { CHANNELS, EVENTS, type WindowEditAction } from '@shared/protocol';
-import type { AgentToolOperationResult } from '@shared/agent-protocol';
+import type { JtpBuiltinResult } from '@shared/agent-protocol';
 import { mainT } from './i18n';
 import type {
   AssetImportPayload,
@@ -1516,7 +1516,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
 
   ipcMain.handle(
     CHANNELS.IRIS_AGENT_TASK_GET,
-    (event, payload: { taskId: string; cursor?: string; maxBytes?: number } & ProjectScopedPayload): Promise<AgentToolOperationResult> => {
+    (event, payload: { taskId: string; cursor?: string; maxBytes?: number } & ProjectScopedPayload): Promise<JtpBuiltinResult> => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_TASK_GET);
       return ctx.agentSessionManager.getTask(scope, payload.taskId, payload.cursor, payload.maxBytes);
@@ -1525,7 +1525,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
 
   ipcMain.handle(
     CHANNELS.IRIS_AGENT_TASK_LIST,
-    (event, payload: { scope?: 'active' | 'all'; cursor?: string; limit?: number } & ProjectScopedPayload): Promise<AgentToolOperationResult> => {
+    (event, payload: { scope?: 'active' | 'all'; cursor?: string; limit?: number } & ProjectScopedPayload): Promise<JtpBuiltinResult> => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_TASK_LIST);
       return ctx.agentSessionManager.listTasks(scope, payload.scope, payload.cursor, payload.limit);
@@ -1713,3 +1713,4 @@ export function wireBroadcasts(
     agentSessionManager.off('jtpEvent', onJtpEvent);
   };
 }
+

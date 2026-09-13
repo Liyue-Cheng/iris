@@ -13,8 +13,8 @@ import { writeFileAtomic } from '../atomic-write';
 import type {
   AgentCommandShell,
   AgentCorrelation,
-  AgentToolOperationInput,
-  AgentToolOperationResult,
+  JtpBuiltinInput,
+  JtpBuiltinResult,
 } from '@shared/agent-protocol';
 import type { AgentToolActivity } from './session-model';
 import { applyTextEdits, type TextEdit } from './edit-diff';
@@ -30,7 +30,7 @@ import { AGENT_IMAGE_MAX_BYTES } from '@shared/agent-protocol';
 export const AGENT_READ_IMAGE_MAX_BYTES = AGENT_IMAGE_MAX_BYTES;
 
 export interface IrisAgentToolHostResult {
-  result: AgentToolOperationResult;
+  result: JtpBuiltinResult;
   update: { state: AgentToolActivity['state']; completedAt: number } & Partial<Pick<
     AgentToolActivity,
     'resultSummary' | 'diff' | 'path' | 'terminalId' | 'error' |
@@ -60,7 +60,7 @@ export class IrisAgentToolHost {
   constructor(private readonly options: IrisAgentToolHostOptions) {}
 
   async execute(
-    input: AgentToolOperationInput,
+    input: JtpBuiltinInput,
     correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>>,
   ): Promise<IrisAgentToolHostResult> {
     const started = Date.now();
@@ -107,11 +107,11 @@ export class IrisAgentToolHost {
   }
 
   private async executeUnchecked(
-    input: AgentToolOperationInput,
+    input: JtpBuiltinInput,
     correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>>,
     started: number,
   ): Promise<{
-    result: AgentToolOperationResult;
+    result: JtpBuiltinResult;
     update: Partial<Pick<AgentToolActivity, 'resultSummary' | 'diff' | 'path' | 'terminalId'>>;
   }> {
     if (input.tool === 'terminal') return this.executeTerminal(input, correlation, started);
@@ -209,11 +209,11 @@ export class IrisAgentToolHost {
   }
 
   private async executeTerminal(
-    input: Extract<AgentToolOperationInput, { tool: 'terminal' }>,
+    input: Extract<JtpBuiltinInput, { tool: 'terminal' }>,
     correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>>,
     started: number,
   ): Promise<{
-    result: AgentToolOperationResult;
+    result: JtpBuiltinResult;
     update: Pick<
       AgentToolActivity,
       'path' | 'terminalId' | 'terminalState' |
@@ -294,7 +294,7 @@ export class IrisAgentToolHost {
  * path and the model receives the honest bytes-as-text result instead of a
  * silently truncated image.
  */
-function readAgentImage(bytes: Buffer): Extract<AgentToolOperationResult, { kind: 'image' }> | null {
+function readAgentImage(bytes: Buffer): Extract<JtpBuiltinResult, { kind: 'image' }> | null {
   const detected = detectImageBytes(bytes);
   if (!detected || bytes.byteLength > AGENT_READ_IMAGE_MAX_BYTES) return null;
   const size = readImageSize(bytes, detected.mimeType);
@@ -309,7 +309,7 @@ function readAgentImage(bytes: Buffer): Extract<AgentToolOperationResult, { kind
 
 /** The text half of an image read; the model sees this next to the pixels. */
 export function describeImageResult(
-  image: Extract<AgentToolOperationResult, { kind: 'image' }>,
+  image: Extract<JtpBuiltinResult, { kind: 'image' }>,
 ): string {
   const dimensions = image.width && image.height ? ` ${String(image.width)}x${String(image.height)}` : '';
   return `${image.mimeType}${dimensions} ${formatByteCount(image.bytes)}`;
@@ -413,3 +413,4 @@ function truncateReadBuffer(
   }
   return { bytes: Buffer.from(output, 'utf8'), truncated };
 }
+

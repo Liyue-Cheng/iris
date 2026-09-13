@@ -28,7 +28,7 @@ import type {
   AgentProviderProxy,
   AgentTerminalIntent,
 } from '@shared/agent-protocol';
-import type { AgentToolOperationResult } from '@shared/agent-protocol';
+import type { JtpBuiltinResult } from '@shared/agent-protocol';
 import type { IrisAgentImageMimeType } from '@shared/types';
 import { AGENT_TERMINAL_MAX_TIMEOUT_SECONDS } from './command-pty';
 import type {
@@ -121,10 +121,10 @@ export interface IrisToolHostOperations {
   };
   terminal: IrisTerminalOperations;
   task?: {
-    start: (command: string, title: string, successExitCodes?: number[]) => Promise<AgentToolOperationResult>;
-    get: (taskId: string, cursor?: string, maxBytes?: number) => Promise<AgentToolOperationResult>;
-    list: (scope?: 'active' | 'all', cursor?: string, limit?: number) => Promise<AgentToolOperationResult>;
-    cancel: (taskId: string) => Promise<AgentToolOperationResult>;
+    start: (command: string, title: string, successExitCodes?: number[]) => Promise<JtpBuiltinResult>;
+    get: (taskId: string, cursor?: string, maxBytes?: number) => Promise<JtpBuiltinResult>;
+    list: (scope?: 'active' | 'all', cursor?: string, limit?: number) => Promise<JtpBuiltinResult>;
+    cancel: (taskId: string) => Promise<JtpBuiltinResult>;
   };
 }
 
@@ -312,7 +312,7 @@ export function createIrisPiToolDefinitions(
   ] as const;
 }
 
-function taskToolResponse(result: AgentToolOperationResult): { content: Array<{ type: 'text'; text: string }>; details: AgentToolOperationResult } {
+function taskToolResponse(result: JtpBuiltinResult): { content: Array<{ type: 'text'; text: string }>; details: JtpBuiltinResult } {
   return {
     content: [{ type: 'text', text: result.kind === 'task' ? result.outputText : JSON.stringify(result) }],
     details: result,
@@ -1239,3 +1239,4 @@ function isPiMessage(value: unknown): value is Record<string, unknown> {
   const role = (value as Record<string, unknown>).role;
   return role === 'user' || role === 'assistant' || role === 'toolResult';
 }
+

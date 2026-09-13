@@ -40,8 +40,8 @@ import type {
   AgentProviderProxy,
   AgentCorrelation,
   AgentSessionRuntimeState,
-  AgentToolOperationInput,
-  AgentToolOperationResult,
+  JtpBuiltinInput,
+  JtpBuiltinResult,
   AgentWorkerEvent,
   AgentWorkerExecutionRuntime,
   AgentTerminalSupervisionInput,
@@ -81,7 +81,7 @@ import type { JtpEvent } from '../jtp/protocol';
 import { JtpRegistry } from '../jtp/registry';
 import { JtpRuntime } from '../jtp/runtime';
 import type { JtpProvider } from '../jtp/provider';
-import { jtpRequestToLegacyInput } from '../jtp/builtin-provider';
+import { jtpRequestToBuiltinInput } from '../jtp/builtin-provider';
 import { JtpMcpProvider, discoverMcpDescriptors, type JtpMcpServerConfig } from './mcp-provider';
 import type {
   AgentReplyActivity,
@@ -156,7 +156,7 @@ export interface IrisAgentSessionManagerOptions {
   settingsManager?: SettingsManager;
   resolveProxy?: (url: string) => Promise<string>;
   toolExecutor?: (
-    input: AgentToolOperationInput,
+    input: JtpBuiltinInput,
     correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>>,
   ) => Promise<IrisAgentToolHostResult>;
   terminalFactory?: (options: AgentCommandPtyOptions) => AgentCommandPty;
@@ -279,7 +279,7 @@ export class IrisAgentSessionManager extends EventEmitter {
     taskId: string,
     cursor?: string,
     maxBytes?: number,
-  ): Promise<AgentToolOperationResult> {
+  ): Promise<JtpBuiltinResult> {
     await this.ensureStore(scope.root);
     return this.taskManager.get({ taskId, ...(cursor ? { cursor } : {}), ...(maxBytes === undefined ? {} : { maxBytes }) }, scope.root);
   }
@@ -306,7 +306,7 @@ export class IrisAgentSessionManager extends EventEmitter {
     taskScope: 'active' | 'all' = 'active',
     cursor?: string,
     limit?: number,
-  ): Promise<AgentToolOperationResult> {
+  ): Promise<JtpBuiltinResult> {
     await this.ensureStore(scope.root);
     return this.taskManager.list(scope.root, taskScope, cursor, limit);
   }
@@ -1950,7 +1950,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       event.request ?? {
         id: correlation.operationId,
         tool: event.input.tool,
-        arguments: legacyInputArguments(event.input),
+        arguments: builtinArguments(event.input),
       },
       new AbortController().signal,
       operationCorrelation,
@@ -1987,7 +1987,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       invoke: async (request, context) => {
         const metadata = context.metadata ?? {};
         const correlation = metadata as Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>>;
-        const input = jtpRequestToLegacyInput(request, scope.root);
+        const input = jtpRequestToBuiltinInput(request, scope.root);
         const executed = isTaskInput(input)
           ? await this.executeTaskInput(scope, input, correlation)
           : this.options.toolExecutor
@@ -2073,7 +2073,7 @@ export class IrisAgentSessionManager extends EventEmitter {
 
   private async executeTaskInput(
     scope: ProjectScope,
-    input: Extract<AgentToolOperationInput, { tool: 'task_start' | 'task_get' | 'task_list' | 'task_cancel' }>,
+    input: Extract<JtpBuiltinInput, { tool: 'task_start' | 'task_get' | 'task_list' | 'task_cancel' }>,
     correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>>,
   ): Promise<IrisAgentToolHostResult> {
     try {
@@ -2212,7 +2212,7 @@ export class IrisAgentSessionManager extends EventEmitter {
     store: IrisAgentSessionStore,
     sessionId: string,
     result: AgentStoredToolResult,
-  ): Promise<AgentToolOperationResult | null> {
+  ): Promise<JtpBuiltinResult | null> {
     if (result.kind !== 'image') return structuredClone(result);
     const bytes = await store
       .readAttachmentById(sessionId, result.attachmentId, result.mimeType)
@@ -2236,7 +2236,7 @@ export class IrisAgentSessionManager extends EventEmitter {
   private async persistToolImage(
     store: IrisAgentSessionStore,
     sessionId: string,
-    image: Extract<AgentToolOperationResult, { kind: 'image' }>,
+    image: Extract<JtpBuiltinResult, { kind: 'image' }>,
     relativePath: string | undefined,
   ): Promise<IrisAgentAttachment | null> {
     try {
@@ -2943,7 +2943,7 @@ export class IrisAgentSessionManager extends EventEmitter {
   }
 }
 
-function legacyInputArguments(input: AgentToolOperationInput): Record<string, unknown> {
+function builtinArguments(input: JtpBuiltinInput): Record<string, unknown> {
   if (input.tool === 'read') return { path: input.absolutePath, ...(input.offset === undefined ? {} : { offset: input.offset }), ...(input.limit === undefined ? {} : { limit: input.limit }) };
   if (input.tool === 'edit') return { path: input.absolutePath, edits: input.edits ?? [] };
   if (input.tool === 'write') return input.operation === 'mkdir' ? { path: input.absolutePath, content: '' } : { path: input.absolutePath, content: input.content ?? '' };
@@ -3276,7 +3276,7 @@ function providerMessageText(message: Record<string, unknown>): string | null {
     isRecord(part) && part.type === 'text' && typeof part.text === 'string' ? [part.text] : []).join('\n');
 }
 
-function compactToolInput(input: AgentToolOperationInput): string {
+function compactToolInput(input: JtpBuiltinInput): string {
   if (input.tool === 'terminal') return input.command.slice(0, 220);
   if (input.tool === 'task_start') return (`start ${input.title}: ${input.command}`).slice(0, 220);
   if (input.tool === 'task_get' || input.tool === 'task_cancel') return `${input.operation} ${input.taskId}`.slice(0, 220);
@@ -3311,7 +3311,7 @@ function errorMessage(error: unknown): string {
  * and metadata; its bytes are already owned by the attachment store.
  */
 function storedToolResult(
-  result: AgentToolOperationResult,
+  result: JtpBuiltinResult,
   attachment: IrisAgentAttachment | null,
 ): AgentStoredToolResult {
   if (result.kind !== 'image') return structuredClone(result);
@@ -3345,8 +3345,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isTaskInput(
-  input: AgentToolOperationInput,
-): input is Extract<AgentToolOperationInput, { tool: 'task_start' | 'task_get' | 'task_list' | 'task_cancel' }> {
+  input: JtpBuiltinInput,
+): input is Extract<JtpBuiltinInput, { tool: 'task_start' | 'task_get' | 'task_list' | 'task_cancel' }> {
   return input.tool === 'task_start' || input.tool === 'task_get' ||
     input.tool === 'task_list' || input.tool === 'task_cancel';
 }
@@ -3372,3 +3372,5 @@ function taskTerminalContent(task: AgentTaskRecord): string {
     '</background-task-result>',
   ].join('\n');
 }
+
+

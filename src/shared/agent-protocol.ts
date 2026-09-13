@@ -187,7 +187,8 @@ export interface AgentJtpRequest {
   arguments: Record<string, unknown>;
 }
 
-export type { JtpBuiltinResult, JtpInvokeRequest, JtpResponse } from './jtp-protocol';
+export type { JtpBuiltinInput, JtpBuiltinResult, JtpInvokeRequest, JtpResponse } from './jtp-protocol';
+import type { JtpBuiltinInput, JtpBuiltinResult } from './jtp-protocol';
 
 export type AgentProviderProxy =
   | { mode: 'direct' }
@@ -198,58 +199,6 @@ export interface AgentCommandShell {
   executable: string;
   displayName: string;
 }
-
-export type AgentToolOperationInput =
-  | { tool: 'read'; operation: 'access' | 'readFile'; absolutePath: string; offset?: number; limit?: number }
-  | { tool: 'edit'; operation: 'access' | 'readFile' | 'writeFile'; absolutePath: string; edits?: AgentTextEdit[] }
-  | { tool: 'write'; operation: 'mkdir'; absolutePath: string }
-  | { tool: 'write'; operation: 'writeFile'; absolutePath: string; content: string }
-  | {
-      tool: 'terminal';
-      operation: 'exec';
-      command: string;
-      intent: AgentTerminalIntent;
-      /** Frontend-facing seconds. The tool schema requires this field. */
-      timeout: number;
-      cwd: string;
-      successExitCodes?: number[];
-      env?: Record<string, string | undefined>;
-    }
-  | { tool: 'task_start'; operation: 'start'; command: string; title: string; successExitCodes?: number[] }
-  | { tool: 'task_get'; operation: 'get'; taskId: string; cursor?: string; maxBytes?: number }
-  | { tool: 'task_list'; operation: 'list'; scope?: 'active' | 'all'; cursor?: string; limit?: number }
-  | { tool: 'task_cancel'; operation: 'cancel'; taskId: string };
-
-export type AgentToolOperationResult =
-  | { kind: 'void'; message?: string }
-  | { kind: 'file'; contentBase64: string }
-  | {
-      kind: 'image';
-      mimeType: IrisAgentImageMimeType;
-      contentBase64: string;
-      bytes: number;
-      width?: number;
-      height?: number;
-    }
-  | {
-      kind: 'terminal';
-      exitCode: number | null;
-      success: boolean;
-      outputText: string;
-      outputTruncated: boolean;
-      terminalId: string;
-      outputPath: string;
-      shown: boolean;
-      termination?: 'natural' | 'timeout' | 'aborted';
-    }
-  | {
-      kind: 'task';
-      taskId?: string;
-      status?: 'queued' | 'starting' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'lost';
-      outputText: string;
-      outputTruncated?: boolean;
-      logRef?: string;
-    };
 
 interface AgentProtocolEnvelope {
   version: typeof IRIS_AGENT_PROTOCOL_VERSION;
@@ -284,7 +233,7 @@ export type AgentWorkerRequest = AgentProtocolEnvelope &
       }
     | { type: 'supervise-terminal'; supervisionId: string; input: AgentTerminalSupervisionInput }
     | { type: 'abort'; reason: 'user' | 'project-switch' | 'app-quit' }
-    | { type: 'tool-result'; ok: true; result: AgentToolOperationResult }
+    | { type: 'tool-result'; ok: true; result: JtpBuiltinResult }
     | { type: 'tool-result'; ok: false; error: string }
     | { type: 'event-ack'; eventId: string; ok: true }
     | { type: 'event-ack'; eventId: string; ok: false; error: string }
@@ -328,7 +277,7 @@ export type AgentWorkerEvent = AgentProtocolEnvelope &
         supervisionId: string;
         result: AgentTerminalSupervisionResult;
       }
-    | { type: 'tool-request'; input: AgentToolOperationInput; request?: AgentJtpRequest }
+    | { type: 'tool-request'; input: JtpBuiltinInput; request?: AgentJtpRequest }
     | { type: 'failure'; code: string; message: string }
     | { type: 'stopped'; reason: 'idle-timeout' | 'shutdown' }
   );
@@ -528,7 +477,7 @@ function isCommandShell(value: unknown): value is AgentCommandShell {
   );
 }
 
-function isToolOperationResult(value: unknown): value is AgentToolOperationResult {
+function isToolOperationResult(value: unknown): value is JtpBuiltinResult {
   if (!isRecord(value) || typeof value.kind !== 'string') return false;
   if (value.kind === 'void') return true;
   if (value.kind === 'file') return typeof value.contentBase64 === 'string';
@@ -565,3 +514,5 @@ function isToolOperationResult(value: unknown): value is AgentToolOperationResul
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
+
+

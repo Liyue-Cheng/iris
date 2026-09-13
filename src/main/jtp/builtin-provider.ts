@@ -1,21 +1,20 @@
-import type { AgentToolOperationInput, AgentToolOperationResult } from '@shared/agent-protocol';
 import type { JtpBuiltinInput, JtpBuiltinResult } from '@shared/jtp-protocol';
 import type { JtpInvokeRequest, JtpResponse } from './protocol';
 import type { JtpExecutionContext, JtpProvider } from './provider';
 
-export type BuiltinExecutor = (input: AgentToolOperationInput, context: JtpExecutionContext) => Promise<AgentToolOperationResult>;
+export type BuiltinExecutor = (input: JtpBuiltinInput, context: JtpExecutionContext) => Promise<JtpBuiltinResult>;
 
 export type NativeBuiltinExecutor = (input: JtpBuiltinInput, context: JtpExecutionContext) => Promise<JtpBuiltinResult>;
 
 export class BuiltinProvider implements JtpProvider {
-  constructor(private readonly execute: BuiltinExecutor, private readonly toInput: (request: JtpInvokeRequest) => AgentToolOperationInput) {}
+  constructor(private readonly execute: BuiltinExecutor, private readonly toInput: (request: JtpInvokeRequest) => JtpBuiltinInput) {}
   async invoke(request: JtpInvokeRequest, context: JtpExecutionContext): Promise<JtpResponse> {
     const result = await this.execute(this.toInput(request), context);
     return { id: request.id, ok: true, result };
   }
 }
 
-export function jtpRequestToLegacyInput(request: JtpInvokeRequest, cwd: string): AgentToolOperationInput {
+export function jtpRequestToBuiltinInput(request: JtpInvokeRequest, cwd: string): JtpBuiltinInput {
   const args = request.arguments;
   const path = typeof args.path === 'string' ? args.path : '';
   const absolutePath = path.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(path) ? path : `${cwd}/${path}`;
@@ -28,3 +27,7 @@ export function jtpRequestToLegacyInput(request: JtpInvokeRequest, cwd: string):
   if (request.tool === 'task_list') return { tool: 'task_list', operation: 'list' };
   return { tool: 'task_cancel', operation: 'cancel', taskId: String(args.taskId ?? '') };
 }
+
+
+
+
