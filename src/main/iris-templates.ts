@@ -76,7 +76,7 @@ The \`labels:\` frontmatter field is reserved. Preserve an existing \`labels:\` 
 user explicitly asks for label-related work.
 
 Do not mark an issue \`Done\`, \`Canceled\`, or \`On Hold\` unless the user asks.
-You may move an issue to \`In Review\` when the work is ready for review.
+When work is requested for an existing issue, update its \`status:\` to \`In Progress\` before substantive investigation or edits, and keep it there while work is ongoing. When the requested work is complete and only human review, verification, or approval remains, update it to \`In Review\` and add one unchecked task per remaining item. Do not set \`Blocked\`, \`Done\`, \`Canceled\`, or \`On Hold\` on your own; make those transitions only when the user explicitly asks.
 
 When an item requires human review, verification, approval, or follow-up,
 represent it with one GFM task checkbox (\`- [ ] …\`) per discrete item rather
