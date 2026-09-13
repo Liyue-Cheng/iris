@@ -187,6 +187,8 @@ export interface AgentJtpRequest {
   arguments: Record<string, unknown>;
 }
 
+export type { JtpBuiltinResult, JtpInvokeRequest, JtpResponse } from './jtp-protocol';
+
 export type AgentProviderProxy =
   | { mode: 'direct' }
   | { mode: 'proxy'; url: string };

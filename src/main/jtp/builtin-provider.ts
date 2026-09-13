@@ -1,8 +1,11 @@
 import type { AgentToolOperationInput, AgentToolOperationResult } from '@shared/agent-protocol';
+import type { JtpBuiltinInput, JtpBuiltinResult } from '@shared/jtp-protocol';
 import type { JtpInvokeRequest, JtpResponse } from './protocol';
 import type { JtpExecutionContext, JtpProvider } from './provider';
 
 export type BuiltinExecutor = (input: AgentToolOperationInput, context: JtpExecutionContext) => Promise<AgentToolOperationResult>;
+
+export type NativeBuiltinExecutor = (input: JtpBuiltinInput, context: JtpExecutionContext) => Promise<JtpBuiltinResult>;
 
 export class BuiltinProvider implements JtpProvider {
   constructor(private readonly execute: BuiltinExecutor, private readonly toInput: (request: JtpInvokeRequest) => AgentToolOperationInput) {}
