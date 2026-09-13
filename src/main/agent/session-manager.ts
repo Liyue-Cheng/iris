@@ -81,6 +81,8 @@ import type { JtpEvent } from '../jtp/protocol';
 import { JtpRegistry } from '../jtp/registry';
 import { JtpRuntime } from '../jtp/runtime';
 import type { JtpProvider } from '../jtp/provider';
+import { jtpRequestToLegacyInput } from '../jtp/builtin-provider';
+import { JtpMcpProvider, discoverMcpDescriptors, type JtpMcpServerConfig } from './mcp-provider';
 import type {
   AgentReplyActivity,
   AgentRequestFacts,
@@ -175,6 +177,8 @@ export interface IrisAgentSessionManagerOptions {
     signal: AbortSignal;
   }) => Promise<string>;
   compactionThresholds?: AgentCompactionThresholds;
+  /** Optional MCP stdio servers. Their tools are discovered into the Session Registry. */
+  mcpServers?: JtpMcpServerConfig[];
 }
 
 export interface IrisAgentCommandPrecondition {
@@ -194,6 +198,9 @@ interface PreparedAgentIntent {
 export class IrisAgentSessionManager extends EventEmitter {
   private loaded: LoadedStore | null = null;
   private readonly hosts = new Map<string, AgentWorkerHost>();
+  /** One JTP runtime/provider graph per live Agent Session. */
+  private readonly jtpRuntimes = new Map<string, JtpRuntime>();
+  private readonly jtpExecutionDetails = new Map<string, IrisAgentToolHostResult>();
   private readonly emittedProjections = new Map<string, IrisAgentSessionInfo>();
   private readonly livePhases = new Map<string, IrisAgentPhaseChangedPayload>();
   private currentScope: ProjectScope | null = null;
@@ -1603,6 +1610,9 @@ export class IrisAgentSessionManager extends EventEmitter {
       providerProxy,
       ...(configuredModel?.customParameters ? { customParameters: configuredModel.customParameters } : {}),
       enabledTools: [...enabledJtpToolIds(settings?.experimental?.jtpTools)],
+      tools: JTP_BUILTIN_DESCRIPTORS
+        .filter((descriptor) => enabledJtpToolIds(settings?.experimental?.jtpTools).has(descriptor.id))
+        .map((descriptor) => ({ name: descriptor.id, description: descriptor.description, parameters: descriptor.inputSchema })),
     };
   }
 
@@ -1928,21 +1938,60 @@ export class IrisAgentSessionManager extends EventEmitter {
     current.state = 'waiting-tool';
     this.emit('jtpEvent', { type: 'started', id: correlation.operationId, tool: event.input.tool, at: Date.now() } satisfies JtpEvent);
     current = await this.commitAndEmit(scope, store, current);
-    const operationCorrelation = {
+    const operationCorrelation: Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>> = {
       sessionId: session.id,
-      intentId: correlation.intentId,
+      intentId: correlation.intentId!,
       turnId: invoke.turnId,
-      toolCallId: correlation.toolCallId,
-      operationId: correlation.operationId,
+      toolCallId: correlation.toolCallId!,
+      operationId: correlation.operationId!,
     };
-    let executedDetails: IrisAgentToolHostResult | null = null;
+    const runtime = await this.jtpRuntimeFor(session, scope, store);
+    const execution = runtime.invoke(
+      event.request ?? {
+        id: correlation.operationId,
+        tool: event.input.tool,
+        arguments: legacyInputArguments(event.input),
+      },
+      new AbortController().signal,
+      operationCorrelation,
+    );
+    const eventToolName: string = String(event.request?.tool ?? event.input.tool ?? 'unknown');
+    void execution.then((response) => {
+      const executedDetails = this.jtpExecutionDetails.get(operationCorrelation.operationId);
+      if (!response.ok || !executedDetails) throw new Error(response.ok ? 'JTP provider returned no execution details.' : response.error.message);
+      this.jtpExecutionDetails.delete(operationCorrelation.operationId);
+      this.emit('jtpEvent', { type: 'completed', id: String(correlation.operationId), tool: String(eventToolName), at: Date.now(), response } satisfies JtpEvent);
+      return this.enqueueSessionMutation(session.id, () => this.settleToolOperation(
+        scope,
+        store,
+        session.id,
+        activity.id,
+        event,
+        executedDetails,
+      ));
+    }).catch((error) => {
+      this.jtpExecutionDetails.delete(operationCorrelation.operationId);
+      this.emit('jtpEvent', { type: 'failed', id: String(correlation.operationId), tool: String(eventToolName), at: Date.now(), error: { kind: 'execution', code: 'JTP_EXECUTION_FAILED', message: errorMessage(error), retryable: false } } satisfies JtpEvent);
+      return this.enqueueSessionMutation(session.id, () => this.pauseSessionExecution(session.id, errorMessage(error), correlation, 'runtime'));
+    });
+  }
+
+  private async jtpRuntimeFor(
+    session: AgentSessionAggregate,
+    scope: ProjectScope,
+    store: IrisAgentSessionStore,
+  ): Promise<JtpRuntime> {
+    const existing = this.jtpRuntimes.get(session.id);
+    if (existing) return existing;
     const provider: JtpProvider = {
-      invoke: async (request) => {
-        const input = event.input;
-        executedDetails = isTaskInput(input)
-          ? await this.executeTaskInput(scope, input, operationCorrelation)
+      invoke: async (request, context) => {
+        const metadata = context.metadata ?? {};
+        const correlation = metadata as Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>>;
+        const input = jtpRequestToLegacyInput(request, scope.root);
+        const executed = isTaskInput(input)
+          ? await this.executeTaskInput(scope, input, correlation)
           : this.options.toolExecutor
-            ? await this.options.toolExecutor(input, operationCorrelation)
+            ? await this.options.toolExecutor(input, correlation)
             : await new IrisAgentToolHost({
           projectRoot: scope.root,
           commandShell: this.commandShell,
@@ -1991,8 +2040,9 @@ export class IrisAgentSessionManager extends EventEmitter {
           onTerminalEvent: (terminalEvent, context) => {
             this.handleTerminalEvent(scope, store, session.id, terminalEvent, context.correlation);
           },
-              }).execute(input, operationCorrelation);
-        return { id: request.id, ok: true, result: executedDetails.result };
+              }).execute(input, correlation);
+        this.jtpExecutionDetails.set(correlation.operationId, executed);
+        return { id: request.id, ok: true, result: executed.result };
       },
     };
     const registry = new JtpRegistry();
@@ -2004,26 +2054,20 @@ export class IrisAgentSessionManager extends EventEmitter {
         provider: 'builtin', enabledByDefault: descriptor.enabledByDefault,
       }, provider);
     }
+    for (const config of this.options.mcpServers ?? []) {
+      const mcp = new JtpMcpProvider(config);
+      try {
+        const descriptors = await discoverMcpDescriptors(mcp, config.id);
+        for (const descriptor of descriptors) registry.register(descriptor, mcp);
+      } catch {
+        await mcp.close();
+      }
+    }
     registry.setEnabled(enabledJtpToolIds(this.options.settingsManager?.get().experimental.jtpTools));
-    const execution = event.request
-      ? new JtpRuntime(registry).invoke(event.request)
-      : provider.invoke({ id: correlation.operationId, tool: event.input.tool, arguments: event.input as unknown as Record<string, unknown> }, { signal: new AbortController().signal });
-    const eventToolName: string = String(event.request?.tool ?? event.input.tool ?? 'unknown');
-    void execution.then((response) => {
-      if (!response.ok || !executedDetails) throw new Error(response.ok ? 'JTP provider returned no execution details.' : response.error.message);
-      this.emit('jtpEvent', { type: 'completed', id: String(correlation.operationId), tool: String(eventToolName), at: Date.now(), response } satisfies JtpEvent);
-      return this.enqueueSessionMutation(session.id, () => this.settleToolOperation(
-      scope,
-      store,
-      session.id,
-      activity.id,
-      event,
-      executedDetails!,
-    ));
-    }).catch((error) => {
-      this.emit('jtpEvent', { type: 'failed', id: String(correlation.operationId), tool: String(eventToolName), at: Date.now(), error: { kind: 'execution', code: 'JTP_EXECUTION_FAILED', message: errorMessage(error), retryable: false } } satisfies JtpEvent);
-      return this.enqueueSessionMutation(session.id, () => this.pauseSessionExecution(session.id, errorMessage(error), correlation, 'runtime'));
-    });
+    const runtime = new JtpRuntime(registry);
+    runtime.subscribe((event) => this.emit('jtpEvent', event));
+    this.jtpRuntimes.set(session.id, runtime);
+    return runtime;
   }
 
 
@@ -2785,6 +2829,10 @@ export class IrisAgentSessionManager extends EventEmitter {
       );
     }
     await host?.shutdown('shutdown');
+    const runtime = this.jtpRuntimes.get(sessionId);
+    runtime?.close();
+    this.jtpRuntimes.delete(sessionId);
+    this.jtpExecutionDetails.clear();
   }
 
   private rejectPendingSupervisions(
@@ -2893,6 +2941,17 @@ export class IrisAgentSessionManager extends EventEmitter {
   private clearAllPhases(): void {
     for (const sessionId of [...this.livePhases.keys()]) this.clearPhase(sessionId);
   }
+}
+
+function legacyInputArguments(input: AgentToolOperationInput): Record<string, unknown> {
+  if (input.tool === 'read') return { path: input.absolutePath, ...(input.offset === undefined ? {} : { offset: input.offset }), ...(input.limit === undefined ? {} : { limit: input.limit }) };
+  if (input.tool === 'edit') return { path: input.absolutePath, edits: input.edits ?? [] };
+  if (input.tool === 'write') return input.operation === 'mkdir' ? { path: input.absolutePath, content: '' } : { path: input.absolutePath, content: input.content ?? '' };
+  if (input.tool === 'terminal') return { command: input.command, intent: input.intent, timeout: input.timeout, ...(input.successExitCodes ? { successExitCodes: input.successExitCodes } : {}) };
+  if (input.tool === 'task_start') return { command: input.command, title: input.title, ...(input.successExitCodes ? { successExitCodes: input.successExitCodes } : {}) };
+  if (input.tool === 'task_get') return { taskId: input.taskId, ...(input.cursor ? { cursor: input.cursor } : {}), ...(input.maxBytes === undefined ? {} : { maxBytes: input.maxBytes }) };
+  if (input.tool === 'task_list') return { ...(input.scope ? { scope: input.scope } : {}), ...(input.cursor ? { cursor: input.cursor } : {}), ...(input.limit === undefined ? {} : { limit: input.limit }) };
+  return { taskId: input.taskId };
 }
 
 function sha256(value: string): string {

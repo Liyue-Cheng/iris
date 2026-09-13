@@ -498,13 +498,15 @@ export async function createIrisPiSession(options: {
     cwd: string;
     agentDir: string;
     providerProfileRoot: string;
-    operations: IrisToolHostOperations;
+    operations?: IrisToolHostOperations;
     history: AgentHistorySnapshot;
     model: IrisAgentModelRef;
     commandShell: AgentCommandShell;
     providerProxy: AgentProviderProxy;
     customParameters?: Record<string, unknown>;
     enabledTools?: string[];
+    /** Pre-projected JTP tools. When supplied, Pi does not construct tool definitions. */
+    tools?: Tool[];
     systemPrompt?: string;
     executeToolCall?: (toolCall: ToolCall) => Promise<ToolResultMessage>;
     onProviderPayload?: (
@@ -543,7 +545,9 @@ export async function createIrisPiSession(options: {
     for (const listener of listeners) await listener(event);
   };
   const enabled = new Set(options.enabledTools ?? [...enabledJtpToolIds()]);
-  const tools = createIrisPiToolDefinitions(options.cwd, options.operations, options.commandShell)
+  const projectedTools = options.tools ?? (options.operations
+    ? createIrisPiToolDefinitions(options.cwd, options.operations, options.commandShell)
+    : [])
     .filter((tool) => enabled.has(tool.name))
     .map((tool) => {
       const descriptor = JTP_BUILTIN_DESCRIPTORS.find((item) => item.id === tool.name);
@@ -559,7 +563,7 @@ export async function createIrisPiSession(options: {
     }
     while (!aborted) {
       activeAbortController = new AbortController();
-      const context: Context = { systemPrompt: options.systemPrompt ?? IRIS_AGENT_PROMPT, messages: state.messages, tools };
+      const context: Context = { systemPrompt: options.systemPrompt ?? IRIS_AGENT_PROMPT, messages: state.messages, tools: projectedTools };
       const stream = streamRuntime.streamSimple(model, context, {
         signal: activeAbortController.signal,
         ...(options.customParameters ? {

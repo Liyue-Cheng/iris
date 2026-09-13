@@ -1,6 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
+import type { JtpInvokeRequest, JtpResponse } from '../jtp/protocol';
+import type { JtpExecutionContext, JtpProvider } from '../jtp/provider';
+import type { JtpToolDescriptor } from '../jtp/descriptor';
 
 export interface JtpMcpServerConfig {
   id: string;
@@ -23,7 +26,7 @@ export interface JtpMcpResult {
 }
 
 /** Minimal MCP stdio bridge. MCP stays entirely behind this provider boundary. */
-export class JtpMcpProvider {
+export class JtpMcpProvider implements JtpProvider {
   private process: ChildProcessWithoutNullStreams | null = null;
   private nextId = 0;
   private pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
@@ -54,7 +57,7 @@ export class JtpMcpProvider {
     return Array.isArray(tools) ? tools.filter((tool): tool is JtpMcpTool => Boolean(tool && typeof tool.name === 'string')) : [];
   }
 
-  async invoke(tool: string, arguments_: Record<string, unknown>): Promise<JtpMcpResult> {
+  async call(tool: string, arguments_: Record<string, unknown>): Promise<JtpMcpResult> {
     try {
       await this.connect();
       const result = await this.request('tools/call', { name: tool, arguments: arguments_ });
@@ -64,7 +67,16 @@ export class JtpMcpProvider {
     }
   }
 
-  close(): void {
+  async invoke(request: JtpInvokeRequest, _context: JtpExecutionContext): Promise<JtpResponse> {
+    const prefix = `mcp.${this.config.id}.`;
+    const toolName = request.tool.startsWith(prefix) ? request.tool.slice(prefix.length) : request.tool;
+    const result = await this.call(toolName, request.arguments);
+    return result.ok
+      ? { id: request.id, ok: true, result: result.result }
+      : { id: request.id, ok: false, error: result.error ?? { kind: 'execution', code: 'MCP_CALL_FAILED', message: 'MCP call failed', retryable: false } };
+  }
+
+  async close(): Promise<void> {
     this.process?.kill();
     this.process = null;
     this.failPending(new Error('MCP provider closed'));
@@ -100,3 +112,20 @@ export function mcpJtpToolId(serverId: string, toolName: string): string {
 }
 
 export function mcpCallId(): string { return randomUUID(); }
+
+/** Discover MCP tools and project them into ordinary JTP descriptors. */
+export async function discoverMcpDescriptors(
+  provider: JtpMcpProvider,
+  serverId: string,
+): Promise<JtpToolDescriptor[]> {
+  const tools = await provider.listTools();
+  return tools.map((tool) => ({
+    id: mcpJtpToolId(serverId, tool.name),
+    title: tool.name,
+    description: tool.description ?? `MCP tool ${tool.name}`,
+    inputSchema: tool.inputSchema ?? { type: 'object' },
+    effects: 'external' as const,
+    provider: `mcp:${serverId}`,
+    enabledByDefault: true,
+  }));
+}

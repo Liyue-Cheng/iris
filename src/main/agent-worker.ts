@@ -22,7 +22,6 @@ import {
   normalizeIrisInterruptedAssistantMessage,
   storedPiCredentialSecrets,
   unwrapProviderErrorMessage,
-  type IrisToolHostOperations,
 } from './agent/pi-adapter';
 import { renderToolResultContent } from './agent/tool-result-content';
 import { jtpRequestToLegacyInput } from './jtp/builtin-provider';
@@ -268,7 +267,6 @@ async function prepareExecution(
   if (!workerRuntime) throw new Error('Iris Agent Worker has not been initialized');
   const baseRuntime = workerRuntime;
   await disposeRuntime();
-  const operations = createWorkerOperations();
   const providerProfileSecrets = (await loadStoredIrisAgentProviderProfiles(
     baseRuntime.providerProfileRoot,
   ))
@@ -286,6 +284,7 @@ async function prepareExecution(
     providerProxy: execution.providerProxy,
     ...(execution.customParameters ? { customParameters: execution.customParameters } : {}),
     ...(execution.enabledTools ? { enabledTools: execution.enabledTools } : {}),
+    ...(execution.tools ? { tools: execution.tools as any } : {}),
     executeToolCall: async (toolCall) => {
       if (execution.enabledTools && !execution.enabledTools.includes(toolCall.name)) {
         return {
@@ -327,7 +326,6 @@ async function prepareExecution(
         timestamp: Date.now(),
       };
     },
-    operations,
     history,
     onProviderPayload: async (payload, model) => {
       if (!currentCorrelation.intentId) return;
@@ -437,102 +435,6 @@ function providerSecretEnvironment(): Record<string, string> {
         /(?:api[_-]?key|token|secret|password|authorization|credential)/iu.test(name),
     ),
   ) as Record<string, string>;
-}
-
-function createWorkerOperations(): IrisToolHostOperations {
-  const readMediaFile: IrisToolHostOperations['read']['readMediaFile'] = async (
-    absolutePath,
-    options,
-  ) => {
-    const result = await requestTool({
-      tool: 'read', operation: 'readFile', absolutePath, ...options,
-    });
-    if (result.kind === 'image') {
-      return {
-        kind: 'image' as const,
-        mimeType: result.mimeType,
-        dataBase64: result.contentBase64,
-        bytes: result.bytes,
-        ...(result.width === undefined ? {} : { width: result.width }),
-        ...(result.height === undefined ? {} : { height: result.height }),
-      };
-    }
-    if (result.kind !== 'file') throw new Error('Iris Agent readFile returned a non-file result');
-    return { kind: 'text' as const, text: Buffer.from(result.contentBase64, 'base64').toString('utf8') };
-  };
-  return {
-    read: {
-      access: async (absolutePath) => {
-        await requestTool({ tool: 'read', operation: 'access', absolutePath });
-      },
-      readMediaFile,
-      readFile: async (absolutePath, options) => {
-        const media = await readMediaFile(absolutePath, options);
-        // Callers that need text (the edit tool's read-before-write) must not
-        // silently receive base64 of a binary file as if it were the content.
-        if (media.kind === 'image') {
-          throw new Error('Iris Agent readFile returned an image where text was required.');
-        }
-        return Buffer.from(media.text, 'utf8');
-      },
-    },
-    edit: {
-      access: async (absolutePath) => {
-        await requestTool({ tool: 'edit', operation: 'access', absolutePath });
-      },
-      readFile: async (absolutePath) => {
-        const result = await requestTool({ tool: 'edit', operation: 'readFile', absolutePath });
-        if (result.kind !== 'file') throw new Error('Iris Agent edit.readFile returned a non-file result');
-        return Buffer.from(result.contentBase64, 'base64');
-      },
-      writeFile: async (absolutePath, content) => {
-        await requestTool({ tool: 'edit', operation: 'writeFile', absolutePath, edits: content });
-      },
-    },
-    write: {
-      mkdir: async (absolutePath) => {
-        await requestTool({ tool: 'write', operation: 'mkdir', absolutePath });
-      },
-      writeFile: async (absolutePath, content) => {
-        await requestTool({ tool: 'write', operation: 'writeFile', absolutePath, content });
-      },
-    },
-    terminal: {
-      exec: async (command, intent, successExitCodes, cwd, options) => {
-        if (options.timeout === undefined) {
-          throw new Error('Terminal timeout is required.');
-        }
-        const input: AgentToolOperationInput = {
-          tool: 'terminal',
-          operation: 'exec',
-          command,
-          intent,
-          timeout: options.timeout,
-          cwd,
-          successExitCodes,
-          ...(options.env === undefined ? {} : { env: options.env }),
-        };
-        const result = await requestTool(input);
-        if (result.kind !== 'terminal') {
-          throw new Error('Iris Agent terminal returned a non-terminal result');
-        }
-        options.onData(Buffer.from(result.outputText, 'utf8'));
-        return { exitCode: result.success ? 0 : result.exitCode };
-      },
-    },
-    task: {
-      start: async (command, title, successExitCodes) => requestTool({
-        tool: 'task_start', operation: 'start', command, title, ...(successExitCodes ? { successExitCodes } : {}),
-      }),
-      get: async (taskId, cursor, maxBytes) => requestTool({
-        tool: 'task_get', operation: 'get', taskId, ...(cursor ? { cursor } : {}), ...(maxBytes === undefined ? {} : { maxBytes }),
-      }),
-      list: async (scope, cursor, limit) => requestTool({
-        tool: 'task_list', operation: 'list', ...(scope ? { scope } : {}), ...(cursor ? { cursor } : {}), ...(limit === undefined ? {} : { limit }),
-      }),
-      cancel: async (taskId) => requestTool({ tool: 'task_cancel', operation: 'cancel', taskId }),
-    },
-  };
 }
 
 async function requestTool(
@@ -888,3 +790,6 @@ export function projectProviderFailure(
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
+
+
+

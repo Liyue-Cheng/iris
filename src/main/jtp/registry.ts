@@ -16,11 +16,18 @@ export class JtpRegistry {
     if (descriptor.enabledByDefault) this.enabled.add(descriptor.id);
   }
 
+  registerMany(entries: ReadonlyArray<{ descriptor: JtpToolDescriptor; provider: JtpProvider }>): void {
+    for (const entry of entries) this.register(entry.descriptor, entry.provider);
+  }
+
   setEnabled(ids: Iterable<string>): void { this.enabled = new Set(ids); }
   isEnabled(id: string): boolean { return this.enabled.has(id); }
   descriptor(id: string): JtpToolDescriptor | undefined { return this.descriptors.get(id); }
   provider(id: string): JtpProvider | undefined { return this.providers.get(id); }
   descriptorsList(): JtpToolDescriptor[] { return [...this.descriptors.values()]; }
+  snapshot(): Array<JtpToolDescriptor & { enabled: boolean }> {
+    return this.descriptorsList().map((descriptor) => ({ ...descriptor, enabled: this.enabled.has(descriptor.id) }));
+  }
   modelTools(): Tool[] {
     return this.descriptorsList().filter((d) => this.enabled.has(d.id)).map((d) => ({ name: d.id, description: d.description, parameters: d.inputSchema })) as Tool[];
   }

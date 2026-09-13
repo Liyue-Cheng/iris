@@ -178,6 +178,7 @@ export interface AgentWorkerExecutionRuntime {
   providerProxy: AgentProviderProxy;
   customParameters?: Record<string, unknown>;
   enabledTools?: string[];
+  tools?: Array<{ name: string; description: string; parameters: unknown }>;
 }
 
 export interface AgentJtpRequest {
@@ -479,7 +480,9 @@ function isInitRuntime(value: unknown): value is AgentWorkerInitRuntime {
 
 function isExecutionRuntime(value: unknown): value is AgentWorkerExecutionRuntime {
   return isRecord(value) && isModelRef(value.model) && isProviderProxy(value.providerProxy) &&
-    (value.customParameters === undefined || isJsonValue(value.customParameters));
+    (value.customParameters === undefined || isJsonValue(value.customParameters)) &&
+    (value.tools === undefined || (Array.isArray(value.tools) && value.tools.every((tool) =>
+      isRecord(tool) && typeof tool.name === 'string' && typeof tool.description === 'string' && 'parameters' in tool)));
 }
 
 function isProviderReplay(value: unknown): value is AgentProviderReplay {
