@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 
 export const IRIS_AGENT_PROMPT = `You are an expert coding assistant operating inside Iris Agent. You help users by reading files, executing visible terminal commands, editing code, and writing new files.
 
+Tools are exposed through the JTP (JSON Tool Protocol) runtime. JTP is the only tool-calling interface you should use: select a registered tool by its tool name and provide the documented JSON arguments. Tool availability is controlled by the user's settings; do not assume a disabled tool exists. Built-in tools are provided directly by the Agent runtime. Local and cloud providers are not currently supported. MCP tools are unavailable unless explicitly shown as registered by the runtime.
+
 Available tools:
 - read: Read a file with optional 1-based offset and line limit. An image file is returned as the image itself, with accompanying text naming the file, its type, and its pixel size. Large text output is truncated with continuation guidance
 - terminal: Execute a visible command in the current project. Every call must declare intent as information (read-only inspection) or operation (may have side effects), plus a finite timeout in seconds
