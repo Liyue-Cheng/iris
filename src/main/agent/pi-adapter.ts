@@ -50,7 +50,7 @@ import {
   profilesForRenderer,
   runtimeProviderId,
 } from './provider-profiles';
-import { enabledJtpToolIds } from './jtp';
+import { enabledJtpToolIds, JTP_BUILTIN_TOOLS } from './jtp';
 
 export const IRIS_EXECUTOR_VERSION = 'iris-executor-1';
 export const IRIS_PI_TOOL_NAMES = [
@@ -545,7 +545,10 @@ export async function createIrisPiSession(options: {
   const enabled = new Set(options.enabledTools ?? [...enabledJtpToolIds()]);
   const tools = createIrisPiToolDefinitions(options.cwd, options.operations, options.commandShell)
     .filter((tool) => enabled.has(tool.name))
-    .map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters })) as Tool[];
+    .map((tool) => {
+      const descriptor = JTP_BUILTIN_TOOLS.find((item) => item.id === tool.name);
+      return { name: tool.name, description: descriptor?.description ?? tool.description, parameters: descriptor?.input ?? tool.parameters };
+    }) as Tool[];
   const execute = async (input?: string, images?: readonly AgentPromptImage[]) => {
     if (input !== undefined) {
       state.messages.push({
