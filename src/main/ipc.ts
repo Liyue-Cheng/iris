@@ -262,7 +262,9 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
   });
   ipcMain.handle(CHANNELS.IRIS_AGENT_TOOLS, () => {
     const enabled = settingsManager.get().experimental.jtpTools;
-    return JTP_BUILTIN_DESCRIPTORS.map((tool) => ({ id: tool.id, title: tool.title, description: tool.description, provider: tool.provider, enabled: enabled[tool.id as keyof typeof enabled] ?? tool.enabledByDefault }));
+    const builtins = JTP_BUILTIN_DESCRIPTORS.map((tool) => ({ id: tool.id, title: tool.title, description: tool.description, provider: tool.provider, enabled: enabled[tool.id as keyof typeof enabled] ?? tool.enabledByDefault }));
+    const mcp = settingsManager.get().experimental.mcpServers.map((server) => ({ id: `mcp.${server.id}`, title: server.id, description: 'MCP server tools will appear after the server is started.', provider: `mcp:${server.id}`, enabled: true }));
+    return [...builtins, ...mcp];
   });
 
   const currentAppInfo = (): AppInfo =>

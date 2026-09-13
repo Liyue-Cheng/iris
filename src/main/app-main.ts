@@ -138,6 +138,7 @@ function createWindowContext(win: BrowserWindow, initialRoot: string | null): Wi
     appVersion: app.getVersion(),
     providerProfileRoot: appDataDir(),
     settingsManager,
+    mcpServers: settingsManager.get().experimental.mcpServers,
     resolveProxy: (url) => electronSession.defaultSession.resolveProxy(url),
     summarizeContext: (input) => summarizeIrisAgentHistory({
       agentDir: irisPiAgentDir(),

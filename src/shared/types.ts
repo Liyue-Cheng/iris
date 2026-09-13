@@ -102,6 +102,7 @@ export interface Settings {
     irisAgentDefaultModel: IrisAgentModelRef | null;
     /** JTP built-in tool switches. MCP remains unavailable until configured. */
     jtpTools: Partial<Record<'read' | 'edit' | 'write' | 'terminal' | 'task_start' | 'task_get' | 'task_list' | 'task_cancel', boolean>>;
+    mcpServers: Array<{ id: string; command: string; args?: string[]; cwd?: string; env?: Record<string, string> }>;
   };
   /**
    * Agent CLIs offered by the "open with X" gesture. The shell is dumb:

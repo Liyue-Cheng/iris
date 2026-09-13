@@ -90,6 +90,7 @@ export const DEFAULT_SETTINGS: Settings = {
       read: true, edit: true, write: true, terminal: true,
       task_start: true, task_get: true, task_list: true, task_cancel: true,
     },
+    mcpServers: [],
   },
   agents: AGENT_PRESETS.filter((preset) =>
     ['claude', 'codex', 'gemini', 'shell'].includes(preset.id),
@@ -513,6 +514,12 @@ export function validateSettings(s: Settings): void {
     )
   ) {
     throw new SettingsError('InvalidSettings', 'experimental.jtpTools must map known JTP tool IDs to booleans');
+  }
+  if (!Array.isArray(s.experimental.mcpServers) || s.experimental.mcpServers.some((server) =>
+    !server || typeof server.id !== 'string' || !server.id || typeof server.command !== 'string' || !server.command ||
+    (server.args !== undefined && (!Array.isArray(server.args) || server.args.some((arg) => typeof arg !== 'string'))),
+  )) {
+    throw new SettingsError('InvalidSettings', 'experimental.mcpServers must contain valid stdio server configurations');
   }
   const defaultModel = s.experimental.irisAgentDefaultModel;
   if (
