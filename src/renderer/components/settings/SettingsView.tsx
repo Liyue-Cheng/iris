@@ -76,6 +76,7 @@ import {
 import { CHANNELS, EVENTS } from '@shared/protocol';
 import { pipeline } from '@renderer/cpu';
 import { useSettings } from '@renderer/stores/settings-store';
+import { useJtpTools } from '@renderer/stores/jtp-store';
 import { useProject } from '@renderer/stores/project-store';
 import { editorStore } from '@renderer/stores/editor-store';
 import { Button } from '@renderer/components/ui/button';
@@ -847,6 +848,7 @@ function IrisAgentSettingsPanel({
 }): JSX.Element {
   const { t } = useTranslation();
   const settings = useSettings();
+  const jtpTools = useJtpTools();
   const [catalog, setCatalog] = useState<IrisAgentProviderCatalog | null>(null);
   const [templateId, setTemplateId] = useState('openai');
   const [profileName, setProfileName] = useState('');
@@ -1044,14 +1046,14 @@ function IrisAgentSettingsPanel({
 
       <SettingGroup title="JTP 内置工具">
         <p className="mb-3 text-xs text-muted-foreground">内置工具直接由 Agent 内核提供；本机工具和云端工具暂未支持。MCP 工具将在配置后接入。</p>
-        {([
+        {(jtpTools.length ? jtpTools : ([
           ['read', '读取文件'], ['edit', '编辑文件'], ['write', '写入文件'], ['terminal', '终端'],
           ['task_start', '启动后台任务'], ['task_get', '查看后台任务'], ['task_list', '列出后台任务'], ['task_cancel', '取消后台任务'],
-        ] as const).map(([id, label]) => (
-          <SettingRow key={id} label={label} hint={`控制 Agent 是否可以调用 ${label}`}>
+        ] as const).map(([id, title]) => ({ id, title, description: '', provider: 'builtin', enabled: settings?.experimental.jtpTools?.[id] ?? true })) ).map((tool) => (
+          <SettingRow key={tool.id} label={tool.title} hint={tool.description || `控制 Agent 是否可以调用 ${tool.title}`}>
             <ToggleSwitch
-              checked={settings?.experimental.jtpTools?.[id] ?? true}
-              onChange={(value) => void updateSettings({ experimental: { jtpTools: { [id]: value } } }, setError)}
+              checked={tool.enabled}
+              onChange={(value) => void updateSettings({ experimental: { jtpTools: { [tool.id]: value } } }, setError)}
             />
           </SettingRow>
         ))}
