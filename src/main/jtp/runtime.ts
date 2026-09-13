@@ -6,6 +6,8 @@ export class JtpRuntime {
   private readonly completed = new Set<string>();
   constructor(private readonly registry: JtpRegistry) {}
 
+  tools() { return this.registry.modelTools(); }
+
   async invoke(request: JtpInvokeRequest, signal = new AbortController().signal): Promise<JtpResponse> {
     if (!request.id || !request.tool || !request.arguments || typeof request.arguments !== 'object') return { id: request.id ?? '', ok: false, error: { kind: 'protocol', code: 'INVALID_REQUEST', message: 'Invalid JTP request.', retryable: false } };
     if (this.completed.has(request.id)) return { id: request.id, ok: false, error: { kind: 'protocol', code: 'DUPLICATE_CALL', message: 'Call ID has already completed.', retryable: false } };
