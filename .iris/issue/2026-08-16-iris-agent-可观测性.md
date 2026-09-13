@@ -1,6 +1,6 @@
 ---
 title: iris agent 可观测性
-status: In Review
+status: Done
 ---
 输入卡片和最终输出卡片，右上角都要有一个按钮，点击之后显示完整提示词，用默认程序打开
 
