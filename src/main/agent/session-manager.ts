@@ -76,8 +76,7 @@ import type {
   ProjectScope,
   IrisAgentTaskStatus,
 } from '@shared/types';
-import { enabledJtpToolIds } from './jtp';
-import { JTP_BUILTIN_TOOLS } from './jtp';
+import { enabledJtpToolIds, JTP_BUILTIN_DESCRIPTORS } from '../jtp/builtin-descriptors';
 import { JtpRegistry } from '../jtp/registry';
 import { JtpRuntime } from '../jtp/runtime';
 import type { JtpProvider } from '../jtp/provider';
@@ -1995,10 +1994,10 @@ export class IrisAgentSessionManager extends EventEmitter {
       },
     };
     const registry = new JtpRegistry();
-    for (const descriptor of JTP_BUILTIN_TOOLS) {
+    for (const descriptor of JTP_BUILTIN_DESCRIPTORS) {
       registry.register({
         id: descriptor.id, title: descriptor.title, description: descriptor.description,
-        inputSchema: descriptor.input,
+        inputSchema: descriptor.inputSchema,
         effects: descriptor.id === 'read' || descriptor.id === 'task_get' || descriptor.id === 'task_list' ? 'read' : 'write',
         provider: 'builtin', enabledByDefault: descriptor.enabledByDefault,
       }, provider);
