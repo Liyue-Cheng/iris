@@ -8,8 +8,6 @@
  *     reported as drift and never imported into this built-in source.
  *   Block parsing and synchronization live in software-prompt.ts.
  */
-import { ISSUE_STATUS, REPORT_STATUS } from '@shared/document-status';
-
 export const SOFTWARE_BLOCK_TAG = 'iris-software';
 export const PROJECT_BLOCK_TAG = 'iris-project';
 
