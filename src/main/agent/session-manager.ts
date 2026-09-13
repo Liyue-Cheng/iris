@@ -1987,6 +1987,25 @@ export class IrisAgentSessionManager extends EventEmitter {
   ): Promise<JtpRuntime> {
     const existing = this.jtpRuntimes.get(session.id);
     if (existing) return existing;
+    const nativeExecution = new JtpNativeExecution({
+      projectRoot: scope.root,
+      commandShell: this.commandShell,
+      displayThresholdMs: this.options.terminalDisplayThresholdMs ?? 3_000,
+      ...(this.options.terminalFactory ? { terminalFactory: this.options.terminalFactory } : {}),
+      onTerminalCreated: (terminal, context) => {
+        this.terminals.set(context.terminalId, {
+          sessionId: session.id, terminal, outputPath: context.outputPath, cursor: 0, plainText: '', running: true,
+          output: new TerminalOutputBatcher<IrisAgentTerminalOutputPayload>(
+            (seq, data) => ({ sessionId: session.id, terminalId: context.terminalId, seq, data }),
+            (payload) => this.emit('terminalOutput', payload), AGENT_TERMINAL_BATCH_MS,
+            { highBytes: AGENT_TERMINAL_HIGH_WATER_BYTES, lowBytes: AGENT_TERMINAL_LOW_WATER_BYTES, setBlocked: (blocked) => terminal.setOutputBlocked('renderer', blocked) }, false,
+          ), attachmentId: null,
+        });
+        void this.enqueueSessionMutation(session.id, () => this.recordTerminalStarted(scope, store, session.id, context.terminalId, context.correlation));
+        this.scheduleTerminalSupervision(session.id, context.terminalId);
+      },
+      onTerminalEvent: (terminalEvent, context) => { this.handleTerminalEvent(scope, store, session.id, terminalEvent, context.correlation); },
+    });
     const executeBuiltin = async (request: import('../jtp/protocol').JtpInvokeRequest, context: import('../jtp/provider').JtpExecutionContext) => {
       const metadata = context.metadata ?? {};
       const correlation = metadata as Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>>;
@@ -1995,25 +2014,7 @@ export class IrisAgentSessionManager extends EventEmitter {
         ? await this.executeTaskProvider(scope, input, correlation)
         : this.options.toolExecutor
           ? await this.options.toolExecutor(input, correlation)
-          : await new JtpNativeExecution({
-        projectRoot: scope.root,
-        commandShell: this.commandShell,
-        displayThresholdMs: this.options.terminalDisplayThresholdMs ?? 3_000,
-        ...(this.options.terminalFactory ? { terminalFactory: this.options.terminalFactory } : {}),
-        onTerminalCreated: (terminal, context) => {
-          this.terminals.set(context.terminalId, {
-            sessionId: session.id, terminal, outputPath: context.outputPath, cursor: 0, plainText: '', running: true,
-            output: new TerminalOutputBatcher<IrisAgentTerminalOutputPayload>(
-              (seq, data) => ({ sessionId: session.id, terminalId: context.terminalId, seq, data }),
-              (payload) => this.emit('terminalOutput', payload), AGENT_TERMINAL_BATCH_MS,
-              { highBytes: AGENT_TERMINAL_HIGH_WATER_BYTES, lowBytes: AGENT_TERMINAL_LOW_WATER_BYTES, setBlocked: (blocked) => terminal.setOutputBlocked('renderer', blocked) }, false,
-            ), attachmentId: null,
-          });
-          void this.enqueueSessionMutation(session.id, () => this.recordTerminalStarted(scope, store, session.id, context.terminalId, context.correlation));
-          this.scheduleTerminalSupervision(session.id, context.terminalId);
-        },
-        onTerminalEvent: (terminalEvent, context) => { this.handleTerminalEvent(scope, store, session.id, terminalEvent, context.correlation); },
-      }).execute(input, correlation);
+          : await nativeExecution.execute(input, correlation);
       this.jtpExecutionDetails.set(correlation.operationId, executed);
       return executed.result;
     };
