@@ -452,7 +452,6 @@ async function requestTool(
     version: IRIS_AGENT_PROTOCOL_VERSION,
     type: 'tool-request',
     correlation,
-    input,
     request: jtpRequest ?? { id: toolCallId, tool: input.tool, arguments: input as unknown as Record<string, unknown> },
   } satisfies AgentWorkerEvent);
   return new Promise<JtpBuiltinResult>((resolve, reject) => {

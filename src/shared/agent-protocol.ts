@@ -277,7 +277,7 @@ export type AgentWorkerEvent = AgentProtocolEnvelope &
         supervisionId: string;
         result: AgentTerminalSupervisionResult;
       }
-    | { type: 'tool-request'; input: JtpBuiltinInput; request?: AgentJtpRequest }
+    | { type: 'tool-request'; input?: JtpBuiltinInput; request?: AgentJtpRequest }
     | { type: 'failure'; code: string; message: string }
     | { type: 'stopped'; reason: 'idle-timeout' | 'shutdown' }
   );

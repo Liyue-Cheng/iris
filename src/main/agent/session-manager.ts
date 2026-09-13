@@ -1861,6 +1861,8 @@ export class IrisAgentSessionManager extends EventEmitter {
   ): Promise<void> {
     const correlation = event.correlation;
     if (!correlation.intentId || !correlation.toolCallId || !correlation.operationId) return;
+    const input = event.input ?? (event.request ? jtpRequestToBuiltinInput(event.request, scope.root) : null);
+    if (!input) return;
     let current = store.get(session.id) ?? session;
     if (!matchesActiveAgentIntent(current, correlation)) return;
     const invokeId = providerCallForToolCall(current, correlation.toolCallId);
@@ -1912,16 +1914,16 @@ export class IrisAgentSessionManager extends EventEmitter {
         turnId: invoke.turnId,
         invokeId,
         toolCallId: correlation.toolCallId,
-        tool: event.input.tool,
-        ...(event.input.tool === 'terminal' ? { intent: event.input.intent } : {}),
+        tool: input.tool,
+        ...(input.tool === 'terminal' ? { intent: input.intent } : {}),
         state: 'running',
-        inputSummary: compactToolInput(event.input),
-        operation: event.input.operation,
-        ...(event.input.tool === 'terminal'
+        inputSummary: compactToolInput(input),
+        operation: input.operation,
+        ...(input.tool === 'terminal'
           ? {
-              command: event.input.command,
-              cwd: event.input.cwd,
-              terminalSuccessExitCodes: event.input.successExitCodes ?? [0],
+              command: input.command,
+              cwd: input.cwd,
+              terminalSuccessExitCodes: input.successExitCodes ?? [0],
             }
           : {}),
         createdAt: Date.now(),
@@ -1933,12 +1935,12 @@ export class IrisAgentSessionManager extends EventEmitter {
       toolActivityId: activity.id,
       intentId: correlation.intentId,
       turnId: invoke.turnId,
-      input: structuredClone(event.input),
+      input: structuredClone(input),
       state: 'running',
       createdAt: Date.now(),
     });
     current.state = 'waiting-tool';
-    this.emit('jtpEvent', { type: 'started', id: correlation.operationId, tool: event.input.tool, at: Date.now() } satisfies JtpEvent);
+    this.emit('jtpEvent', { type: 'started', id: correlation.operationId, tool: input.tool, at: Date.now() } satisfies JtpEvent);
     current = await this.commitAndEmit(scope, store, current);
     const operationCorrelation: Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>> = {
       sessionId: session.id,
@@ -1951,13 +1953,13 @@ export class IrisAgentSessionManager extends EventEmitter {
     const execution = runtime.invoke(
       event.request ?? {
         id: correlation.operationId,
-        tool: event.input.tool,
-        arguments: builtinArguments(event.input),
+        tool: input.tool,
+        arguments: builtinArguments(input),
       },
       new AbortController().signal,
       operationCorrelation,
     );
-    const eventToolName: string = String(event.request?.tool ?? event.input.tool ?? 'unknown');
+    const eventToolName: string = String(event.request?.tool ?? input.tool ?? 'unknown');
     void execution.then((response) => {
       const executedDetails = this.jtpExecutionDetails.get(operationCorrelation.operationId);
       if (!response.ok || !executedDetails) throw new Error(response.ok ? 'JTP provider returned no execution details.' : response.error.message);
