@@ -116,6 +116,7 @@ import type {
   ServiceHealthChangedEvent,
 } from '@shared/app-error';
 import { serializeIpcError } from './ipc-error';
+import { JTP_BUILTIN_DESCRIPTORS } from './jtp/builtin-descriptors';
 
 type RawIpcHandler = (
   event: Electron.IpcMainInvokeEvent,
@@ -258,6 +259,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       pid: process.pid,
     };
   });
+  ipcMain.handle(CHANNELS.IRIS_AGENT_TOOLS, () => JTP_BUILTIN_DESCRIPTORS.map((tool) => ({ id: tool.id, title: tool.title, description: tool.description, provider: tool.provider, enabledByDefault: tool.enabledByDefault })));
 
   const currentAppInfo = (): AppInfo =>
     buildAppInfo(

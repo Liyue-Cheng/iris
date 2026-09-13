@@ -17,3 +17,8 @@ export interface JtpError {
 export type JtpResponse =
   | { id: string; ok: true; result: unknown }
   | { id: string; ok: false; error: JtpError };
+
+export type JtpEvent =
+  | { type: 'started'; id: string; tool: string; at: number }
+  | { type: 'completed'; id: string; tool: string; at: number; response: JtpResponse }
+  | { type: 'failed'; id: string; tool: string; at: number; error: JtpError };

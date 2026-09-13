@@ -151,6 +151,7 @@ export const CHANNELS = {
   IRIS_AGENT_SET_MODEL: 'iris-agent:set-model',
   IRIS_AGENT_MODELS: 'iris-agent:models',
   IRIS_AGENT_PROVIDERS: 'iris-agent:providers',
+  IRIS_AGENT_TOOLS: 'iris-agent:tools',
   IRIS_AGENT_PROVIDER_PROFILE_ADD: 'iris-agent:provider-profile-add',
   IRIS_AGENT_PROVIDER_PROFILE_SET_KEY: 'iris-agent:provider-profile-set-key',
   IRIS_AGENT_PROVIDER_PROFILE_REMOVE: 'iris-agent:provider-profile-remove',
@@ -219,5 +220,6 @@ export const EVENTS = {
   IRIS_AGENT_PHASE_CHANGED: 'evt:iris-agent:phase-changed',
   IRIS_AGENT_SESSION_DESTROYED: 'evt:iris-agent:session-destroyed',
   IRIS_AGENT_PROVIDERS_CHANGED: 'evt:iris-agent:providers-changed',
+  IRIS_AGENT_TOOLS_CHANGED: 'evt:iris-agent:tools-changed',
   IRIS_AGENT_TERMINAL_OUTPUT: 'evt:iris-agent:terminal-output',
 } as const;
