@@ -259,7 +259,10 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       pid: process.pid,
     };
   });
-  ipcMain.handle(CHANNELS.IRIS_AGENT_TOOLS, () => JTP_BUILTIN_DESCRIPTORS.map((tool) => ({ id: tool.id, title: tool.title, description: tool.description, provider: tool.provider, enabledByDefault: tool.enabledByDefault })));
+  ipcMain.handle(CHANNELS.IRIS_AGENT_TOOLS, () => {
+    const enabled = settingsManager.get().experimental.jtpTools;
+    return JTP_BUILTIN_DESCRIPTORS.map((tool) => ({ id: tool.id, title: tool.title, description: tool.description, provider: tool.provider, enabled: enabled[tool.id] ?? tool.enabledByDefault }));
+  });
 
   const currentAppInfo = (): AppInfo =>
     buildAppInfo(
@@ -1619,6 +1622,7 @@ export function wireBroadcasts(
     }
   };
   const onSettings = (e: SettingsChangedEvent): void => send(EVENTS.SETTINGS_CHANGED, e);
+  const onJtpSettings = (): void => send(EVENTS.IRIS_AGENT_TOOLS_CHANGED, undefined);
   const onIrisChanged = (e: FsIrisChangedEvent): void => {
     const scope = getProjectScope();
     if (!scope || scope.root !== e.projectRoot) return;
@@ -1671,6 +1675,7 @@ export function wireBroadcasts(
   window.on('maximize', onMaximize);
   window.on('unmaximize', onUnmaximize);
   settingsManager.on('settingsChanged', onSettings);
+  settingsManager.on('settingsChanged', onJtpSettings);
   projectManager.on('irisChanged', onIrisChanged);
   projectManager.on('promptChanged', onPromptChanged);
   gitManager.on('changed', onGitChanged);
@@ -1688,6 +1693,7 @@ export function wireBroadcasts(
     window.off('maximize', onMaximize);
     window.off('unmaximize', onUnmaximize);
     settingsManager.off('settingsChanged', onSettings);
+    settingsManager.off('settingsChanged', onJtpSettings);
     projectManager.off('irisChanged', onIrisChanged);
     projectManager.off('promptChanged', onPromptChanged);
     gitManager.off('changed', onGitChanged);
