@@ -180,6 +180,12 @@ export interface AgentWorkerExecutionRuntime {
   enabledTools?: string[];
 }
 
+export interface AgentJtpRequest {
+  id: string;
+  tool: string;
+  arguments: Record<string, unknown>;
+}
+
 export type AgentProviderProxy =
   | { mode: 'direct' }
   | { mode: 'proxy'; url: string };
@@ -319,7 +325,7 @@ export type AgentWorkerEvent = AgentProtocolEnvelope &
         supervisionId: string;
         result: AgentTerminalSupervisionResult;
       }
-    | { type: 'tool-request'; input: AgentToolOperationInput }
+    | { type: 'tool-request'; input: AgentToolOperationInput; request?: AgentJtpRequest }
     | { type: 'failure'; code: string; message: string }
     | { type: 'stopped'; reason: 'idle-timeout' | 'shutdown' }
   );

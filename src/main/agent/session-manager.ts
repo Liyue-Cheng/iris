@@ -1994,6 +1994,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       this.pauseSessionExecution(session.id, errorMessage(error), correlation, 'runtime')));
   }
 
+
   private async executeTaskInput(
     scope: ProjectScope,
     input: Extract<AgentToolOperationInput, { tool: 'task_start' | 'task_get' | 'task_list' | 'task_cancel' }>,

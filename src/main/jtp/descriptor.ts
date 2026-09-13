@@ -12,6 +12,10 @@ export interface JtpToolDescriptor {
   enabledByDefault: boolean;
 }
 
+export function descriptorFor(id: string, description = id): JtpToolDescriptor {
+  return { id, title: id, description, inputSchema: { type: 'object' }, effects: 'external', provider: 'builtin', enabledByDefault: true };
+}
+
 export function validateDescriptor(descriptor: JtpToolDescriptor): void {
   if (!descriptor.id || !/^[a-z][a-z0-9._-]*$/u.test(descriptor.id)) throw new Error(`Invalid JTP tool id: ${descriptor.id}`);
   if (!descriptor.title || !descriptor.description) throw new Error(`JTP tool ${descriptor.id} needs title and description`);

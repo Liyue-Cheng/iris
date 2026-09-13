@@ -298,9 +298,9 @@ async function prepareExecution(
           timestamp: Date.now(),
         };
       }
-      const input = providerToolCallInput(toolCall.name, toolCall.arguments, baseRuntime.cwd);
       let result: AgentToolOperationResult;
       try {
+        const input = providerToolCallInput(toolCall.name, toolCall.arguments, baseRuntime.cwd);
         result = await requestTool(input);
       } catch (error) {
         // A deterministic ToolCall failure is part of the provider conversation.
@@ -623,6 +623,7 @@ async function requestTool(input: AgentToolOperationInput): Promise<AgentToolOpe
     type: 'tool-request',
     correlation,
     input,
+    request: { id: toolCallId, tool: input.tool, arguments: input as unknown as Record<string, unknown> },
   } satisfies AgentWorkerEvent);
   return new Promise<AgentToolOperationResult>((resolve, reject) => {
     pendingTools.set(operationId, { resolve, reject });
