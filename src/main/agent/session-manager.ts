@@ -2008,10 +2008,10 @@ export class IrisAgentSessionManager extends EventEmitter {
     const execution = event.request
       ? new JtpRuntime(registry).invoke(event.request)
       : provider.invoke({ id: correlation.operationId, tool: event.input.tool, arguments: event.input as unknown as Record<string, unknown> }, { signal: new AbortController().signal });
-    const eventToolName = event.request?.tool ?? event.input.tool ?? 'unknown';
+    const eventToolName: string = String(event.request?.tool ?? event.input.tool ?? 'unknown');
     void execution.then((response) => {
       if (!response.ok || !executedDetails) throw new Error(response.ok ? 'JTP provider returned no execution details.' : response.error.message);
-      this.emit('jtpEvent', { type: 'completed', id: correlation.operationId, tool: eventToolName, at: Date.now(), response } satisfies JtpEvent);
+      this.emit('jtpEvent', { type: 'completed', id: String(correlation.operationId), tool: String(eventToolName), at: Date.now(), response } satisfies JtpEvent);
       return this.enqueueSessionMutation(session.id, () => this.settleToolOperation(
       scope,
       store,
@@ -2021,7 +2021,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       executedDetails!,
     ));
     }).catch((error) => {
-      this.emit('jtpEvent', { type: 'failed', id: correlation.operationId, tool: eventToolName, at: Date.now(), error: { kind: 'execution', code: 'JTP_EXECUTION_FAILED', message: errorMessage(error), retryable: false } } satisfies JtpEvent);
+      this.emit('jtpEvent', { type: 'failed', id: String(correlation.operationId), tool: String(eventToolName), at: Date.now(), error: { kind: 'execution', code: 'JTP_EXECUTION_FAILED', message: errorMessage(error), retryable: false } } satisfies JtpEvent);
       return this.enqueueSessionMutation(session.id, () => this.pauseSessionExecution(session.id, errorMessage(error), correlation, 'runtime'));
     });
   }
