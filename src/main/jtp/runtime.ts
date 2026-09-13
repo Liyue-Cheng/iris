@@ -1,5 +1,6 @@
 import type { JtpInvokeRequest, JtpResponse } from './protocol';
 import type { JtpRegistry } from './registry';
+import { Value } from 'typebox/value';
 
 export class JtpRuntime {
   private readonly completed = new Set<string>();
@@ -12,6 +13,9 @@ export class JtpRuntime {
     const provider = this.registry.provider(request.tool);
     if (!descriptor || !provider) return { id: request.id, ok: false, error: { kind: 'unavailable', code: 'UNKNOWN_TOOL', message: `Unknown tool: ${request.tool}`, retryable: false } };
     if (!this.registry.isEnabled(request.tool)) return { id: request.id, ok: false, error: { kind: 'unavailable', code: 'TOOL_DISABLED', message: `Tool is disabled: ${request.tool}`, retryable: false } };
+    if (!Value.Check(descriptor.inputSchema as never, request.arguments)) {
+      return { id: request.id, ok: false, error: { kind: 'validation', code: 'INVALID_ARGUMENTS', message: `Arguments do not match the schema for ${request.tool}.`, retryable: false } };
+    }
     try {
       const response = await provider.invoke(request, { signal });
       this.completed.add(request.id);
