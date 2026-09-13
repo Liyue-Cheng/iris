@@ -77,6 +77,10 @@ import type {
   IrisAgentTaskStatus,
 } from '@shared/types';
 import { enabledJtpToolIds } from './jtp';
+import { JTP_BUILTIN_TOOLS } from './jtp';
+import { JtpRegistry } from '../jtp/registry';
+import { JtpRuntime } from '../jtp/runtime';
+import type { JtpProvider } from '../jtp/provider';
 import type {
   AgentReplyActivity,
   AgentRequestFacts,
@@ -1930,11 +1934,15 @@ export class IrisAgentSessionManager extends EventEmitter {
       toolCallId: correlation.toolCallId,
       operationId: correlation.operationId,
     };
-    const execution = isTaskInput(event.input)
-      ? this.executeTaskInput(scope, event.input, operationCorrelation)
-      : this.options.toolExecutor
-      ? this.options.toolExecutor(event.input, operationCorrelation)
-      : new IrisAgentToolHost({
+    let executedDetails: IrisAgentToolHostResult | null = null;
+    const provider: JtpProvider = {
+      invoke: async (request) => {
+        const input = event.input;
+        executedDetails = isTaskInput(input)
+          ? await this.executeTaskInput(scope, input, operationCorrelation)
+          : this.options.toolExecutor
+            ? await this.options.toolExecutor(input, operationCorrelation)
+            : await new IrisAgentToolHost({
           projectRoot: scope.root,
           commandShell: this.commandShell,
           displayThresholdMs: this.options.terminalDisplayThresholdMs ?? 3_000,
@@ -1982,15 +1990,34 @@ export class IrisAgentSessionManager extends EventEmitter {
           onTerminalEvent: (terminalEvent, context) => {
             this.handleTerminalEvent(scope, store, session.id, terminalEvent, context.correlation);
           },
-      }).execute(event.input, operationCorrelation);
-    void execution.then((executed) => this.enqueueSessionMutation(session.id, () => this.settleToolOperation(
+              }).execute(input, operationCorrelation);
+        return { id: request.id, ok: true, result: executedDetails.result };
+      },
+    };
+    const registry = new JtpRegistry();
+    for (const descriptor of JTP_BUILTIN_TOOLS) {
+      registry.register({
+        id: descriptor.id, title: descriptor.title, description: descriptor.description,
+        inputSchema: descriptor.input,
+        effects: descriptor.id === 'read' || descriptor.id === 'task_get' || descriptor.id === 'task_list' ? 'read' : 'write',
+        provider: 'builtin', enabledByDefault: descriptor.enabledByDefault,
+      }, provider);
+    }
+    registry.setEnabled(enabledJtpToolIds(this.options.settingsManager?.get().experimental.jtpTools));
+    const execution = event.request
+      ? new JtpRuntime(registry).invoke(event.request)
+      : provider.invoke({ id: correlation.operationId, tool: event.input.tool, arguments: event.input as unknown as Record<string, unknown> }, { signal: new AbortController().signal });
+    void execution.then((response) => {
+      if (!response.ok || !executedDetails) throw new Error(response.ok ? 'JTP provider returned no execution details.' : response.error.message);
+      return this.enqueueSessionMutation(session.id, () => this.settleToolOperation(
       scope,
       store,
       session.id,
       activity.id,
       event,
-      executed,
-    ))).catch((error) => this.enqueueSessionMutation(session.id, () =>
+      executedDetails!,
+    ));
+    }).catch((error) => this.enqueueSessionMutation(session.id, () =>
       this.pauseSessionExecution(session.id, errorMessage(error), correlation, 'runtime')));
   }
 

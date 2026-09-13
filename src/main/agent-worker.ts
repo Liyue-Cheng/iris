@@ -301,7 +301,7 @@ async function prepareExecution(
       let result: AgentToolOperationResult;
       try {
         const input = providerToolCallInput(toolCall.name, toolCall.arguments, baseRuntime.cwd);
-        result = await requestTool(input);
+        result = await requestTool(input, { id: toolCall.id, tool: toolCall.name, arguments: toolCall.arguments });
       } catch (error) {
         // A deterministic ToolCall failure is part of the provider conversation.
         // Returning it as an error result lets the model recover or choose a
@@ -608,7 +608,10 @@ function parseTextEdits(value: unknown): AgentTextEdit[] {
   });
 }
 
-async function requestTool(input: AgentToolOperationInput): Promise<AgentToolOperationResult> {
+async function requestTool(
+  input: AgentToolOperationInput,
+  jtpRequest?: { id: string; tool: string; arguments: Record<string, unknown> },
+): Promise<AgentToolOperationResult> {
   await providerEventChain;
   const operationId = randomUUID();
   const toolCallId = currentIrisProviderToolCallId() ?? operationId;
@@ -623,7 +626,7 @@ async function requestTool(input: AgentToolOperationInput): Promise<AgentToolOpe
     type: 'tool-request',
     correlation,
     input,
-    request: { id: toolCallId, tool: input.tool, arguments: input as unknown as Record<string, unknown> },
+    request: jtpRequest ?? { id: toolCallId, tool: input.tool, arguments: input as unknown as Record<string, unknown> },
   } satisfies AgentWorkerEvent);
   return new Promise<AgentToolOperationResult>((resolve, reject) => {
     pendingTools.set(operationId, { resolve, reject });
