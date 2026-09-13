@@ -27,12 +27,12 @@ import { JtpNativeExecution, type JtpNativeExecutionResult } from '../jtp/native
 import { TerminalOutputBatcher } from '../terminal/output-pump';
 import {
   AgentCommandPty,
-  resolveAgentCommandShell,
   AGENT_TERMINAL_HIGH_WATER_BYTES,
   AGENT_TERMINAL_LOW_WATER_BYTES,
   type AgentCommandPtyEvent,
   type AgentCommandPtyOptions,
 } from './command-pty';
+import { createPlatformServices } from '../platform';
 import { AgentSupervisionLog } from './supervision';
 import type {
   AgentPromptImage,
@@ -209,7 +209,7 @@ export class IrisAgentSessionManager extends EventEmitter {
   private modelCatalogCache: IrisAgentModelCatalog | null = null;
   private modelCatalogLoad: { generation: number; promise: Promise<IrisAgentModelCatalog> } | null = null;
   private modelCatalogGeneration = 0;
-  private readonly commandShell = resolveAgentCommandShell(process.env);
+  private readonly commandShell = createPlatformServices().capabilities.shell;
   private readonly terminals = new Map<string, {
     sessionId: string;
     terminal: AgentCommandPty;

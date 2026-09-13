@@ -44,6 +44,7 @@ import type {
   SessionStateChangedPayload,
 } from '@shared/types';
 import type { SettingsManager } from './settings-manager';
+import { createPlatformServices, type PlatformServices } from './platform';
 import { buildSpawnEnv, injectTerminalHintEnv, validateDimensions } from './pty-utils';
 import { logger } from './logger';
 import { mainT } from './i18n';
@@ -61,10 +62,6 @@ import { terminalBaseColors } from '@shared/terminal/terminal-colors';
 import { reduceTerminalProcess } from '@shared/terminal/process-reducer';
 import { ReplayCoordinator } from './terminal/replay-coordinator';
 import type { SessionRecord } from './terminal/session-record';
-import {
-  defaultProcessTreeKiller,
-  type ProcessTreeKillFn,
-} from './terminal/process-tree';
 
 const SPAWN_ENV_SKIP = ['ELECTRON_RUN_AS_NODE', 'ELECTRON_RENDERER_URL'];
 
@@ -163,51 +160,11 @@ export interface CreateCommandSessionInput
  * Locate the shell that hosts agent commands. Windows: pwsh → powershell →
  * cmd, probed on PATH via the spawn env. POSIX: $SHELL → /bin/bash.
  */
-export function resolveHostShell(env: Record<string, string>): {
-  file: string;
-  /** Agent commands always return to an interactive shell when they exit. */
-  buildArgs: (command: string) => string[];
-} {
-  if (process.platform === 'win32') {
-    // PATH probing via where.exe is slow; node-pty resolves bare names
-    // against env.PATH itself, so just pick the first known-present name.
-    const candidates = ['pwsh.exe', 'powershell.exe'];
-    const pathDirs = (env.PATH ?? env.Path ?? '').split(';');
-    for (const c of candidates) {
-      for (const d of pathDirs) {
-        if (d && existsSync(`${d.replace(/[\\/]+$/, '')}\\${c}`)) {
-          return {
-            file: c,
-            buildArgs: (command) =>
-              command
-                ? ['-NoLogo', '-NoExit', '-Command', command]
-                : ['-NoLogo'],
-          };
-        }
-      }
-    }
-    return {
-      file: 'cmd.exe',
-      buildArgs: (command) => (command ? ['/k', command] : []),
-    };
-  }
-  const shell = process.env.SHELL || '/bin/bash';
-  return {
-    file: shell,
-    // After the command, re-exec an interactive login shell so the prompt
-    // returns instead of the PTY dying.
-    buildArgs: (command) =>
-      command
-        ? ['-lc', `${command}; exec "${shell}" -il`]
-        : ['-l'],
-  };
-}
-
 export class TerminalSessionManager extends EventEmitter {
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly replayCoordinator = new ReplayCoordinator();
   private readonly spawnFn: PtySpawnFn;
-  private readonly processTreeKillFn: ProcessTreeKillFn | null;
+  private readonly platform: PlatformServices;
   private readonly ptyExitWaitMs: number;
   private shutdownPromise: Promise<void> | null = null;
 
@@ -215,16 +172,20 @@ export class TerminalSessionManager extends EventEmitter {
     private readonly settingsManager: SettingsManager,
     options?: {
       spawnFn?: PtySpawnFn;
-      processTreeKillFn?: ProcessTreeKillFn | null;
+      platform?: PlatformServices;
+      processTreeKillFn?: ((pid: number) => Promise<void>) | null;
       ptyExitWaitMs?: number;
     },
   ) {
     super();
     this.spawnFn = options?.spawnFn ?? (defaultSpawnPty as PtySpawnFn);
-    this.processTreeKillFn =
-      options?.processTreeKillFn === undefined
-        ? defaultProcessTreeKiller()
-        : options.processTreeKillFn;
+    this.platform = options?.platform ?? createPlatformServices();
+    if (options?.processTreeKillFn !== undefined) {
+      this.platform = {
+        ...this.platform,
+        processTree: options.processTreeKillFn === null ? { kill: async () => undefined } : { kill: options.processTreeKillFn },
+      };
+    }
     this.ptyExitWaitMs = options?.ptyExitWaitMs ?? PTY_EXIT_WAIT_MS;
   }
 
@@ -294,35 +255,30 @@ export class TerminalSessionManager extends EventEmitter {
       env.IRIS_WORKSPACE_PATH = input.workspacePath ?? '.iris';
     }
 
-    const host = resolveHostShell(env);
-    const args = host.buildArgs(agent.command);
+    const host = this.platform.shell.resolve(env);
+    const args = this.platform.shell.interactiveArgs(host, agent.command);
 
     let pty: IPty;
     try {
-      pty = this.spawnFn(host.file, args, {
+      pty = this.spawnFn(host.executable, args, {
         name: 'xterm-256color',
         cols: dims.cols,
         rows: dims.rows,
         cwd,
         env,
         // Explicit ConPTY: avoids winpty fallback flashing a conhost window.
-        useConpty: true,
-        // The bundled DLL preserves synchronized-output boundaries that the
-        // system ConPTY can split into separate data packets, which exposes a
-        // transient cursor position in xterm during Codex frame rendering.
-        // node-pty ignores this option on non-Windows platforms.
-        useConptyDll: process.platform === 'win32',
+        ...this.platform.capabilities.supportsConpty ? { useConpty: true, useConptyDll: true } : {},
       });
     } catch (err) {
       throw new TerminalSessionError(
         'PtySpawnFailed',
         mainT('error.ptySpawnFailed', {
-          shellPath: host.file,
+          shellPath: host.executable,
           agentId: agent.id,
           cwd,
           error: err instanceof Error ? err.message : String(err),
         }),
-        { shellPath: host.file, cwd },
+        { shellPath: host.executable, cwd },
       );
     }
 
@@ -1004,12 +960,12 @@ export class TerminalSessionManager extends EventEmitter {
     const pty = managed.pty;
     if (pty) {
       const exited = this.waitForPtyExit(pty);
-      if (this.processTreeKillFn) {
+      if (this.platform.processTree) {
         try {
           // Run while the root shell PID still exists. Once node-pty closes the
           // pseudoconsole, detached descendants can outlive that PID and can no
           // longer be reached reliably through taskkill's /T traversal.
-          await this.processTreeKillFn(managed.info.pid);
+          await this.platform.processTree.kill(managed.info.pid);
         } catch (err) {
           logger.warn('session', `process-tree kill failed sid=${sid} pid=${managed.info.pid}`, err);
         }

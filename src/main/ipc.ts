@@ -99,7 +99,7 @@ import {
 } from './agent/provider-profiles';
 import { logger } from './logger';
 import { enqueueProjectSwitch } from './project-switch';
-import { launchSystemTerminal } from './system-terminal';
+import { createPlatformServices } from './platform';
 import {
   buildAppInfo,
   externalLink,
@@ -303,6 +303,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     );
 
   ipcMain.handle(CHANNELS.APP_INFO, (): AppInfo => currentAppInfo());
+  ipcMain.handle(CHANNELS.PLATFORM_CAPABILITIES, () => createPlatformServices().capabilities);
 
   ipcMain.handle(
     CHANNELS.APP_OPEN_LEGAL_DOCUMENT,
@@ -605,7 +606,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
         });
         return { kind: 'iris', session };
       }
-      const pid = await launchSystemTerminal(action.command, scope.root);
+      const pid = await createPlatformServices().systemTerminal.launch(action.command, scope.root);
       return { kind: 'system', pid };
     },
   );

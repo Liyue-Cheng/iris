@@ -18,7 +18,7 @@ import type {
 } from '@shared/agent-protocol';
 import type { AgentToolActivity } from '../agent/session-model';
 import { applyTextEdits, type TextEdit } from '../agent/edit-diff';
-import { defaultProcessTreeKiller } from '../terminal/process-tree';
+import { createPlatformServices } from '../platform';
 import { detectImageBytes, readImageSize } from '@shared/image-signature';
 import { AGENT_IMAGE_MAX_BYTES } from '@shared/agent-protocol';
 
@@ -232,7 +232,7 @@ export class JtpNativeExecution {
       outputPath,
       env: sanitizeEnv(input.env),
       commandShell: this.options.commandShell,
-      processTreeKillFn: defaultProcessTreeKiller(),
+      processTreeKillFn: createPlatformServices().processTree.kill,
       displayThresholdMs: this.options.displayThresholdMs ?? 3000,
       timeoutMs: timeoutSeconds * 1000,
       // Foreground terminals are replayed into a dialog, so a mirror nobody has

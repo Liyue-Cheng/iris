@@ -10,7 +10,7 @@ import {
   AgentCommandPty,
   type AgentCommandPtyOptions,
 } from './command-pty';
-import { defaultProcessTreeKiller } from '../terminal/process-tree';
+import { createPlatformServices } from '../platform';
 import type { AgentTaskSummary } from './session-model';
 import type { AgentCommandShell } from '@shared/agent-protocol';
 
@@ -130,14 +130,14 @@ export class AgentTaskManager {
         cwd: task.cwd,
         outputPath: task.logRef!,
         commandShell: this.options.commandShell,
-        processTreeKillFn: defaultProcessTreeKiller(),
+        processTreeKillFn: createPlatformServices().processTree.kill,
       }) ?? new AgentCommandPty({
         terminalId: taskId,
         command: task.command,
         cwd: task.cwd,
         outputPath: task.logRef!,
         commandShell: this.options.commandShell,
-        processTreeKillFn: defaultProcessTreeKiller(),
+        processTreeKillFn: createPlatformServices().processTree.kill,
       });
     } catch (error) {
       task.status = 'failed';

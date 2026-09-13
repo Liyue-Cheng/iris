@@ -72,7 +72,7 @@ Reports, status documents, and misc documents use \`Active\` or \`Backlog\`; new
 created non-issue documents normally start at \`Active\`. Preserve canonical
 status spelling when writing frontmatter.
 
-Preserve an existing \`labels:\` field verbatim. Do not change it unless the
+The \`labels:\` frontmatter field is reserved. Preserve an existing \`labels:\` field verbatim. Do not change it unless the
 user explicitly asks for label-related work.
 
 Do not mark an issue \`Done\`, \`Canceled\`, or \`On Hold\` unless the user asks.

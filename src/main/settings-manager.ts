@@ -11,8 +11,7 @@
  * 'settingsChanged' with dotted-path changedKeys for renderer broadcast.
  */
 import { EventEmitter } from 'node:events';
-import { homedir } from 'node:os';
-import { isAbsolute, join, normalize, resolve } from 'node:path';
+import { isAbsolute, normalize, resolve } from 'node:path';
 import {
   AGENT_PRESETS,
   type AgentConfig,
@@ -21,16 +20,13 @@ import {
   type Settings,
   type ThemeId,
 } from '@shared/types';
-import { getBuildType } from './build-type';
 import { JsonStore } from './persistence';
+export { appDataDir, irisHomeDir, settingsFilePath } from './platform/paths';
 
 /**
  * Directory of Iris's machine-level namespace. Always the real ~/.iris so
  * generated hook scripts remain stable across dev and packaged builds.
  */
-export function irisHomeDir(): string {
-  return join(homedir(), '.iris');
-}
 
 /**
  * Directory App-owned persistence lives in. Dev builds fork to ~/.iris-dev
@@ -40,13 +36,6 @@ export function irisHomeDir(): string {
  * explicit here). Portable and installed share ~/.iris: same machine, same
  * machine-level settings.
  */
-export function appDataDir(): string {
-  return getBuildType() === 'dev' ? join(homedir(), '.iris-dev') : irisHomeDir();
-}
-
-export function settingsFilePath(): string {
-  return join(appDataDir(), 'settings.json');
-}
 
 export const MAX_RECENT_ROOTS = 10;
 

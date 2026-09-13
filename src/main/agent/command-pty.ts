@@ -1,13 +1,14 @@
-import { existsSync } from 'node:fs';
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { spawn, type IDisposable, type IPty } from 'node-pty';
-import type { AgentCommandShell } from '@shared/agent-protocol';
 import { applyNonInteractiveEnv, buildSpawnEnv } from '../pty-utils';
 import { TerminalMirror } from '../terminal/terminal-mirror';
 import { TerminalFlowController } from '../terminal/flow-controller';
-import type { ProcessTreeKillFn } from '../terminal/process-tree';
+import { createPlatformServices } from '../platform';
+import type { AgentCommandShell } from '@shared/agent-protocol';
+
+export type ProcessTreeKillFn = (pid: number) => Promise<void>;
 
 export interface AgentCommandPtyResult {
   terminalId: string;
@@ -62,6 +63,7 @@ export interface AgentCommandPtyOptions {
   processTreeKillFn?: ProcessTreeKillFn | null;
   onEvent?: (event: AgentCommandPtyEvent) => void;
 }
+
 
 /** Protocol limit for foreground terminal calls. Background tasks have no deadline. */
 export const AGENT_TERMINAL_MAX_TIMEOUT_SECONDS = 3_600;
@@ -126,7 +128,9 @@ export class AgentCommandPty {
     // This PTY runs unattended under a hard deadline, so pager/editor/credential
     // prompts must never wait for a keystroke. See NON_INTERACTIVE_ENV.
     applyNonInteractiveEnv(env);
-    const shell = commandShell(options.command, env, process.platform, options.commandShell);
+    const platform = createPlatformServices();
+    const resolvedShell = options.commandShell ?? platform.shell.resolve(env);
+    const shell = { file: resolvedShell.executable, args: platform.shell.commandArgs(resolvedShell, options.command) };
     this.pty = (options.spawnFn ?? spawn)(shell.file, shell.args, {
       name: 'xterm-256color',
       cols: 80,
@@ -288,43 +292,6 @@ function countNewlines(value: string): number {
   let count = 0;
   for (const char of value) if (char === '\n') count += 1;
   return count;
-}
-
-export function commandShell(
-  command: string,
-  env: Record<string, string>,
-  platform: NodeJS.Platform = process.platform,
-  resolvedShell: AgentCommandShell = resolveAgentCommandShell(env, platform),
-): { file: string; args: string[] } {
-  if (resolvedShell.kind === 'powershell') {
-    return {
-      file: resolvedShell.executable,
-      args: ['-NoLogo', '-NoProfile', '-Command', command],
-    };
-  }
-  return { file: resolvedShell.executable, args: ['-lc', command] };
-}
-
-export function resolveAgentCommandShell(
-  env: Record<string, string | undefined> = process.env,
-  platform: NodeJS.Platform = process.platform,
-  fileExists: (path: string) => boolean = existsSync,
-): AgentCommandShell {
-  if (platform !== 'win32') {
-    const executable = env.SHELL || '/bin/bash';
-    return { kind: 'posix', executable, displayName: executable };
-  }
-
-  const pathDirs = (env.PATH ?? env.Path ?? '').split(';').filter(Boolean);
-  const hasPwsh = pathDirs.some((directory) =>
-    fileExists(`${directory.replace(/[\\/]+$/u, '')}\\pwsh.exe`));
-  return hasPwsh
-    ? { kind: 'powershell', executable: 'pwsh.exe', displayName: 'PowerShell 7' }
-    : {
-        kind: 'powershell',
-        executable: 'powershell.exe',
-        displayName: 'Windows PowerShell',
-      };
 }
 
 const fileOutputStore: AgentCommandOutputStore = {

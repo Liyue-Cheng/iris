@@ -33,7 +33,7 @@ import {
 } from '@renderer/stores/session-store';
 import type { DocType, IrisDoc, IrisWorkspace } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
-import { docDisplayTitle, isActiveIssue } from '@renderer/lib/doc-utils';
+import { docDisplayTitle, isActiveIssue, shouldShowLensStatusBadge } from '@renderer/lib/doc-utils';
 import { useLensPrefs, type LensSort } from '@renderer/stores/lens-prefs';
 import { useSettings } from '@renderer/stores/settings-store';
 import { openWorkspaceSession } from '@renderer/lib/session-actions';
@@ -129,7 +129,7 @@ function DocRow({ doc, archived }: { doc: IrisDoc; archived: boolean }): JSX.Ele
         {doc.frontmatterBroken && (
           <FileWarning className="ml-auto h-3.5 w-3.5 shrink-0 text-destructive/80" />
         )}
-        {doc.status && !doc.frontmatterBroken && (
+        {doc.status && shouldShowLensStatusBadge(doc) && (
           <StatusBadge value={doc.status} size="sm" className="ml-auto shrink-0" />
         )}
       </button>

@@ -15,10 +15,9 @@
  * powershell.exe. POSIX variants are a later milestone.
  */
 import { promises as fs } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ContextPreview, HookCliInfo, HookCliState, InjectionState } from '@shared/types';
-import { irisHomeDir } from './settings-manager';
+import { irisHomeDir } from './platform/paths';
 import {
   buildSoftwareBlock,
   parseProjectBlock,
@@ -35,7 +34,7 @@ import { writeFileAtomic } from './atomic-write';
 /** ~/.iris/focus-context.ps1 — always the REAL ~/.iris (hooks written into
  *  agent configs must keep working whether Iris runs as dev or packaged). */
 export function focusScriptPath(): string {
-  return join(irisHomeDir(), 'focus-context.ps1');
+  return join(irisHomeDir(), process.platform === 'win32' ? 'focus-context.ps1' : 'focus-context.sh');
 }
 
 /**
@@ -69,13 +68,13 @@ $root = (Get-Location).Path
 # a JSON array and reports "invalid session start JSON" instead of using text.
 if ($focus) {
   Write-Output ('Iris: This terminal was started by Iris; project root: ' + $root + '; focused document: ' + $focus)
-} else {
+  } else {
   Write-Output ('Iris: This terminal was started by Iris; project root: ' + $root + '; workspace: ' + $workspace)
   Write-Output ('<iris-workspace path="' + $workspace + '">')
   if ($workspace -eq '.iris') {
-    Write-Output 'This session has no focused document. FOCUS_DOC is unset, and no <iris-focus> block is injected. Do not infer a focused document; use the user''s request to determine what to inspect or change.'
+    Write-Output 'This is a project-root hub session. This session has no focused document. FOCUS_DOC is unset, and no <iris-focus> block is injected. Do not read or infer a focused document; use the user''s request to determine what to inspect or change.'
   } else {
-    Write-Output ('This session has no focused document. FOCUS_DOC is unset, and no <iris-focus> block is injected. Do not infer a focused document; use the user''s request to determine what to inspect or change.')
+    Write-Output ('This is a workspace hub session opened from ' + $workspace + '. This session has no focused document. FOCUS_DOC is unset, and no <iris-focus> block is injected. Do not read or infer a focused document; use the user''s request to determine what to inspect or change.')
   }
   Write-Output '</iris-workspace>'
 }
@@ -100,9 +99,37 @@ if ($focus) {
 }
 `;
 
+export const POSIX_FOCUS_CONTEXT_SCRIPT = `#!/bin/sh
+focus="${'$'}FOCUS_DOC"
+workspace="${'$'}IRIS_WORKSPACE_PATH"
+[ -z "${'$'}focus" ] && [ -z "${'$'}workspace" ] && exit 0
+root="${'$'}PWD"
+if [ -n "${'$'}focus" ]; then
+  printf '%s\\n' "Iris: This terminal was started by Iris; project root: ${'$'}root; focused document: ${'$'}focus"
+else
+  printf '%s\\n' "Iris: This terminal was started by Iris; project root: ${'$'}root; workspace: ${'$'}workspace"
+  printf '%s\\n' "<iris-workspace path=\"${'$'}workspace\">"
+  printf '%s\\n' "This session has no focused document. FOCUS_DOC is unset, and no <iris-focus> block is injected. Do not infer a focused document; use the user's request to determine what to inspect or change."
+  printf '%s\\n' '</iris-workspace>'
+fi
+printf '%s\\n' 'The injected layers follow. Environment variables and reading files from disk are fallbacks only: do not re-read content already injected unless you have reason to believe it changed. The content below is a snapshot taken at session start.'
+if [ -n "${'$'}focus" ]; then
+  doc="${'$'}root/${'$'}focus"
+  printf '%s\\n' "<iris-focus path=\"${'$'}focus\">"
+  if [ -f "${'$'}doc" ]; then
+    if [ "${'$'}(wc -c < \"${'$'}doc\")" -le 32768 ]; then cat "${'$'}doc"; else printf '%s\\n' "The focused document exceeds 32 KiB, so its contents were not inlined. Read the file directly."; fi
+  else
+    printf '%s\\n' 'The focused document is not currently on disk and may have been moved or deleted. Keep the path as context and follow the user request.'
+  fi
+  printf '%s\\n' '</iris-focus>'
+fi
+`;
+
 /** The one command every JSON-hook CLI gets pointed at. */
 export function hookCommand(): string {
-  return `powershell -NoProfile -ExecutionPolicy Bypass -File "${focusScriptPath()}"`;
+  return process.platform === 'win32'
+    ? `powershell -NoProfile -ExecutionPolicy Bypass -File "${focusScriptPath()}"`
+    : `sh "${focusScriptPath()}"`;
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -120,7 +147,7 @@ interface ContextHookAdapter {
 
 /** App-owned context adapters, independent from the user launcher list. */
 function contextHookAdapters(): ContextHookAdapter[] {
-  const home = homedir();
+  const home = irisHomeDir().replace(/[\\/]\.iris$/u, '');
   return [
     { id: 'claude', label: 'Claude Code', dir: join(home, '.claude'), file: 'settings.json', hookKey: 'SessionStart' },
     { id: 'gemini', label: 'Gemini CLI', dir: join(home, '.gemini'), file: 'settings.json', hookKey: 'SessionStart' },
@@ -145,7 +172,7 @@ async function exists(p: string): Promise<boolean> {
 function isIrisHandler(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== 'object') return false;
   const command = (value as Record<string, unknown>)['command'];
-  return typeof command === 'string' && command.includes('focus-context.ps1');
+    return typeof command === 'string' && (command.includes('focus-context.ps1') || command.includes('focus-context.sh'));
 }
 
 function eventHandlers(config: Record<string, unknown>, hookKey: string): unknown[] {
@@ -214,14 +241,17 @@ async function focusScriptState(
 ): Promise<'missing' | 'stale' | 'current'> {
   try {
     const text = await fs.readFile(path, 'utf8');
-    return text === UTF8_BOM + FOCUS_CONTEXT_SCRIPT ? 'current' : 'stale';
+    const expected = process.platform === 'win32' ? UTF8_BOM + FOCUS_CONTEXT_SCRIPT : POSIX_FOCUS_CONTEXT_SCRIPT;
+    return text === expected ? 'current' : 'stale';
   } catch {
     return 'missing';
   }
 }
 
 async function writeFocusScript(path: string): Promise<void> {
-  await writeFileAtomic(path, UTF8_BOM + FOCUS_CONTEXT_SCRIPT);
+  const script = process.platform === 'win32' ? UTF8_BOM + FOCUS_CONTEXT_SCRIPT : POSIX_FOCUS_CONTEXT_SCRIPT;
+  await writeFileAtomic(path, script);
+  if (process.platform !== 'win32') await fs.chmod(path, 0o755);
   logger.info('agent', `focus-context script written: ${path}`);
 }
 

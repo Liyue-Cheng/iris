@@ -1,7 +1,7 @@
 {
   "name": "iris-app",
   "productName": "Iris",
-  "version": "0.1.0-beta.22",
+  "version": "0.1.0-beta.23",
   "private": true,
   "description": "Iris — AI-native, document-centric, terminal-driven project management. The app is a reference implementation of the .iris/ protocol.",
   "author": {
@@ -39,7 +39,7 @@
     "licenses:check": "node scripts/generate-third-party-notices.mjs --check",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dist": "npm run build && npm run metadata:check && npm run licenses:check && node scripts/clean-release.mjs && electron-builder --win --x64"
+    "dist": "npm run build && npm run metadata:check && npm run licenses:check && node scripts/clean-release.mjs && electron-builder"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.84.1",

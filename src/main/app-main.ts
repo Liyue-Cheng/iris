@@ -48,11 +48,13 @@ import { CHANNELS, EVENTS } from '@shared/protocol';
 import { initializeMainI18n, mainT } from './i18n';
 import { serializeIpcError } from './ipc-error';
 import { externalUrl } from './app-info';
+import { createPlatformServices } from './platform';
 import type { ServiceHealthChangedEvent } from '@shared/app-error';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const isDev = !!process.env.ELECTRON_RENDERER_URL;
 const PROCESS_CRASH_CLEANUP_TIMEOUT_MS = 8000;
+const platformServices = createPlatformServices();
 
 // NO GPU intervention here on purpose. The portable multi-window corruption
 // (issue 2026-06-23-多窗口多项目) was traced to a portable-only GPU switch, NOT
@@ -305,9 +307,7 @@ function createWindow(initialRoot: string | null): BrowserWindow {
     show: false,
     title: 'Iris',
     ...(iconPath ? { icon: iconPath } : {}),
-    // Custom-drawn title bar (Marina M1-A): frame:false removes the OS bar;
-    // TitleBar.tsx provides the drag region and caption buttons via window:* IPC.
-    frame: false,
+    ...platformServices.windowChrome.options(iconPath),
     backgroundColor: '#191724', // rose-pine base; avoids white flash before CSS loads
     webPreferences: {
       preload: resolve(__dirname, '../preload/index.mjs'),
@@ -572,11 +572,8 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  // Windows-first app: quit when the last window closes (also on macOS for
-  // now — revisit if a macOS build ever matters).
-  app.quit();
+  if (platformServices.windowChrome.shouldQuitWhenLastWindowCloses()) app.quit();
 });
-
 let quitCleanupComplete = false;
 let quitCleanupPromise: Promise<void> | null = null;
 app.on('before-quit', (event) => {

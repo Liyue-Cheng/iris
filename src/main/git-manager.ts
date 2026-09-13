@@ -14,7 +14,7 @@ import type {
 import { mainT } from './i18n';
 import { logger } from './logger';
 import { parseGitPorcelainV1Z } from './git-porcelain';
-import { defaultProcessTreeKiller } from './terminal/process-tree';
+import { createPlatformServices } from './platform';
 
 interface RepositoryIdentity {
   projectRoot: string;
@@ -197,16 +197,7 @@ function runGit(
         child.kill();
         return;
       }
-      const windowsKiller = defaultProcessTreeKiller();
-      if (windowsKiller) {
-        void windowsKiller(pid).catch(() => { child.kill(); });
-        return;
-      }
-      try {
-        process.kill(-pid, 'SIGTERM');
-      } catch {
-        child.kill();
-      }
+      void createPlatformServices().processTree.kill(pid).catch(() => { child.kill(); });
     };
 
     const fail = (error: ProcessFailure): void => {

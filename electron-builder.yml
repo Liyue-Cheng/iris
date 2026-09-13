@@ -68,3 +68,21 @@ nsis:
   deleteAppDataOnUninstall: false       # 卸载保留用户数据
   license: LICENSE
   artifactName: ${productName}-${version}-setup.exe
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+linux:
+  category: Development
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+  artifactName: ${productName}-${version}-${arch}.${ext}

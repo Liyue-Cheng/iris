@@ -152,13 +152,12 @@ export const AGENT_PRESETS: readonly AgentConfig[] = [
   {
     id: 'aider',
     label: 'aider',
-    command: 'aider --read $env:FOCUS_DOC',
+    command: 'aider',
   },
   {
     id: 'goose',
     label: 'goose',
-    command:
-      'goose run --interactive --system "$((powershell -NoProfile -ExecutionPolicy Bypass -File \\"$env:USERPROFILE/.iris/focus-context.ps1\\") -join \\"`n\\")"',
+    command: 'goose run --interactive',
   },
   { id: 'shell', label: 'terminal', command: '' },
 ];

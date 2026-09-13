@@ -11,6 +11,7 @@ export const CHANNELS = {
   APP_PING: 'app:ping',
   /** Machine-level product/runtime facts for the About panel. */
   APP_INFO: 'app:info',
+  PLATFORM_CAPABILITIES: 'platform:capabilities',
   /** Product-scoped helpers. Payloads contain only fixed document/link ids. */
   APP_OPEN_LEGAL_DOCUMENT: 'app:open-legal-document',
   APP_OPEN_EXTERNAL_LINK: 'app:open-external-link',

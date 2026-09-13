@@ -1,54 +1,55 @@
-name: Windows CI
+name: Cross-platform CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-ci-${{ github.workflow }}-${{ github.ref }}
+  group: cross-platform-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   verify:
-    name: Test and build
-    runs-on: windows-2022
-    timeout-minutes: 20
+    name: Verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-22.04, macos-13]
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-
+      - name: Install Linux display server
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
       - name: Install dependencies
         run: npm ci
-
       - name: Check third-party notices
         run: npm run licenses:check
-
       - name: Check product metadata
         run: npm run metadata:check
-
       - name: Run tests
         run: npm test -- --run
-
       - name: Run type checks
         run: npm run typecheck
-
       - name: Build application
         run: npm run build
-
       - name: Check Agent Worker runtime
         run: npm run agent:worker-check
-
       - name: Smoke test application
+        if: runner.os != 'Linux'
         run: npm run smoke
+      - name: Smoke test application on Linux
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run smoke
