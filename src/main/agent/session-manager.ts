@@ -80,8 +80,10 @@ import { enabledJtpToolIds, JTP_BUILTIN_DESCRIPTORS } from '../jtp/builtin-descr
 import type { JtpEvent } from '../jtp/protocol';
 import { JtpRegistry } from '../jtp/registry';
 import { JtpRuntime } from '../jtp/runtime';
-import type { JtpProvider } from '../jtp/provider';
 import { jtpRequestToBuiltinInput } from '../jtp/builtin-provider';
+import { FileProvider } from '../jtp/file-provider';
+import { TerminalProvider } from '../jtp/terminal-provider';
+import { TaskProvider } from '../jtp/task-provider';
 import { JtpMcpProvider, discoverMcpDescriptors, type JtpMcpServerConfig } from './mcp-provider';
 import type {
   AgentReplyActivity,
@@ -1983,76 +1985,48 @@ export class IrisAgentSessionManager extends EventEmitter {
   ): Promise<JtpRuntime> {
     const existing = this.jtpRuntimes.get(session.id);
     if (existing) return existing;
-    const provider: JtpProvider = {
-      invoke: async (request, context) => {
-        const metadata = context.metadata ?? {};
-        const correlation = metadata as Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>>;
-        const input = jtpRequestToBuiltinInput(request, scope.root);
-        const executed = isTaskInput(input)
-          ? await this.executeTaskInput(scope, input, correlation)
-          : this.options.toolExecutor
-            ? await this.options.toolExecutor(input, correlation)
-            : await new IrisAgentToolHost({
-          projectRoot: scope.root,
-          commandShell: this.commandShell,
-          displayThresholdMs: this.options.terminalDisplayThresholdMs ?? 3_000,
-          ...(this.options.terminalFactory
-            ? { terminalFactory: this.options.terminalFactory }
-            : {}),
-          onTerminalCreated: (terminal, context) => {
-            this.terminals.set(context.terminalId, {
-              sessionId: session.id,
-              terminal,
-              outputPath: context.outputPath,
-              cursor: 0,
-              plainText: '',
-              running: true,
-              // Delivery starts disabled: a command nobody is watching must not
-              // pay for IPC, base64 and renderer queueing. Attaching later is
-              // lossless because the mirror snapshot is the source of truth.
-              output: new TerminalOutputBatcher<IrisAgentTerminalOutputPayload>(
-                (seq, data) => ({
-                  sessionId: session.id,
-                  terminalId: context.terminalId,
-                  seq,
-                  data,
-                }),
-                (payload) => this.emit('terminalOutput', payload),
-                AGENT_TERMINAL_BATCH_MS,
-                {
-                  highBytes: AGENT_TERMINAL_HIGH_WATER_BYTES,
-                  lowBytes: AGENT_TERMINAL_LOW_WATER_BYTES,
-                  setBlocked: (blocked) => terminal.setOutputBlocked('renderer', blocked),
-                },
-                false,
-              ),
-              attachmentId: null,
-            });
-            void this.enqueueSessionMutation(session.id, () => this.recordTerminalStarted(
-              scope,
-              store,
-              session.id,
-              context.terminalId,
-              context.correlation,
-            ));
-            this.scheduleTerminalSupervision(session.id, context.terminalId);
-          },
-          onTerminalEvent: (terminalEvent, context) => {
-            this.handleTerminalEvent(scope, store, session.id, terminalEvent, context.correlation);
-          },
-              }).execute(input, correlation);
-        this.jtpExecutionDetails.set(correlation.operationId, executed);
-        return { id: request.id, ok: true, result: executed.result };
-      },
+    const executeBuiltin = async (request: import('../jtp/protocol').JtpInvokeRequest, context: import('../jtp/provider').JtpExecutionContext) => {
+      const metadata = context.metadata ?? {};
+      const correlation = metadata as Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>>;
+      const input = jtpRequestToBuiltinInput(request, scope.root);
+      const executed = isTaskInput(input)
+        ? await this.executeTaskInput(scope, input, correlation)
+        : this.options.toolExecutor
+          ? await this.options.toolExecutor(input, correlation)
+          : await new IrisAgentToolHost({
+        projectRoot: scope.root,
+        commandShell: this.commandShell,
+        displayThresholdMs: this.options.terminalDisplayThresholdMs ?? 3_000,
+        ...(this.options.terminalFactory ? { terminalFactory: this.options.terminalFactory } : {}),
+        onTerminalCreated: (terminal, context) => {
+          this.terminals.set(context.terminalId, {
+            sessionId: session.id, terminal, outputPath: context.outputPath, cursor: 0, plainText: '', running: true,
+            output: new TerminalOutputBatcher<IrisAgentTerminalOutputPayload>(
+              (seq, data) => ({ sessionId: session.id, terminalId: context.terminalId, seq, data }),
+              (payload) => this.emit('terminalOutput', payload), AGENT_TERMINAL_BATCH_MS,
+              { highBytes: AGENT_TERMINAL_HIGH_WATER_BYTES, lowBytes: AGENT_TERMINAL_LOW_WATER_BYTES, setBlocked: (blocked) => terminal.setOutputBlocked('renderer', blocked) }, false,
+            ), attachmentId: null,
+          });
+          void this.enqueueSessionMutation(session.id, () => this.recordTerminalStarted(scope, store, session.id, context.terminalId, context.correlation));
+          this.scheduleTerminalSupervision(session.id, context.terminalId);
+        },
+        onTerminalEvent: (terminalEvent, context) => { this.handleTerminalEvent(scope, store, session.id, terminalEvent, context.correlation); },
+      }).execute(input, correlation);
+      this.jtpExecutionDetails.set(correlation.operationId, executed);
+      return executed.result;
     };
+    const fileProvider = new FileProvider(scope.root, executeBuiltin);
+    const terminalProvider = new TerminalProvider(scope.root, executeBuiltin);
+    const taskProvider = new TaskProvider(scope.root, executeBuiltin);
     const registry = new JtpRegistry();
     for (const descriptor of JTP_BUILTIN_DESCRIPTORS) {
+      const boundProvider = descriptor.id === 'terminal' ? terminalProvider : descriptor.id.startsWith('task_') ? taskProvider : fileProvider;
       registry.register({
         id: descriptor.id, title: descriptor.title, description: descriptor.description,
         inputSchema: descriptor.inputSchema,
         effects: descriptor.id === 'read' || descriptor.id === 'task_get' || descriptor.id === 'task_list' ? 'read' : 'write',
         provider: 'builtin', enabledByDefault: descriptor.enabledByDefault,
-      }, provider);
+      }, boundProvider);
     }
     for (const config of this.options.mcpServers ?? []) {
       const mcp = new JtpMcpProvider(config);
