@@ -76,6 +76,7 @@ import type {
   ProjectScope,
   IrisAgentTaskStatus,
 } from '@shared/types';
+import { enabledJtpToolIds } from './jtp';
 import type {
   AgentReplyActivity,
   AgentRequestFacts,
@@ -1592,10 +1593,12 @@ export class IrisAgentSessionManager extends EventEmitter {
     const profiles = await loadStoredIrisAgentProviderProfiles(providerProfileRoot);
     const profile = profiles.find((candidate) => candidate.id === session.model!.provider.replace(/^iris-profile-/, ''));
     const configuredModel = profile?.models?.find((candidate) => candidate.modelId === session.model!.modelId);
+    const settings = this.options.settingsManager?.get?.();
     return {
       model: { ...session.model },
       providerProxy,
       ...(configuredModel?.customParameters ? { customParameters: configuredModel.customParameters } : {}),
+      enabledTools: [...enabledJtpToolIds(settings?.experimental?.jtpTools)],
     };
   }
 

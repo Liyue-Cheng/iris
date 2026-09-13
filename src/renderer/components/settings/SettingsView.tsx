@@ -1042,6 +1042,21 @@ function IrisAgentSettingsPanel({
         </SettingRow>
       </SettingGroup>
 
+      <SettingGroup title="JTP 内置工具">
+        <p className="mb-3 text-xs text-muted-foreground">内置工具直接由 Agent 内核提供；本机工具和云端工具暂未支持。MCP 工具将在配置后接入。</p>
+        {([
+          ['read', '读取文件'], ['edit', '编辑文件'], ['write', '写入文件'], ['terminal', '终端'],
+          ['task_start', '启动后台任务'], ['task_get', '查看后台任务'], ['task_list', '列出后台任务'], ['task_cancel', '取消后台任务'],
+        ] as const).map(([id, label]) => (
+          <SettingRow key={id} label={label} hint={`控制 Agent 是否可以调用 ${label}`}>
+            <ToggleSwitch
+              checked={settings?.experimental.jtpTools?.[id] ?? true}
+              onChange={(value) => void updateSettings({ experimental: { jtpTools: { [id]: value } } }, setError)}
+            />
+          </SettingRow>
+        ))}
+      </SettingGroup>
+
       <SettingGroup title={t('settings.addProviderProfile')}>
         <SettingRow label={t('settings.providerTemplate')} hint={t('settings.providerTemplateHint')}>
           <select

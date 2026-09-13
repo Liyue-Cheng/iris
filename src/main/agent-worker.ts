@@ -286,6 +286,7 @@ async function prepareExecution(
     commandShell: baseRuntime.commandShell,
     providerProxy: execution.providerProxy,
     ...(execution.customParameters ? { customParameters: execution.customParameters } : {}),
+    ...(execution.enabledTools ? { enabledTools: execution.enabledTools } : {}),
     executeToolCall: async (toolCall) => {
       const input = providerToolCallInput(toolCall.name, toolCall.arguments, baseRuntime.cwd);
       let result: AgentToolOperationResult;

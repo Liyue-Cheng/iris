@@ -50,6 +50,7 @@ import {
   profilesForRenderer,
   runtimeProviderId,
 } from './provider-profiles';
+import { enabledJtpToolIds } from './jtp';
 
 export const IRIS_EXECUTOR_VERSION = 'iris-executor-1';
 export const IRIS_PI_TOOL_NAMES = [
@@ -503,6 +504,7 @@ export async function createIrisPiSession(options: {
     commandShell: AgentCommandShell;
     providerProxy: AgentProviderProxy;
     customParameters?: Record<string, unknown>;
+    enabledTools?: string[];
     systemPrompt?: string;
     executeToolCall?: (toolCall: ToolCall) => Promise<ToolResultMessage>;
     onProviderPayload?: (
@@ -540,7 +542,9 @@ export async function createIrisPiSession(options: {
   const emit = async (event: unknown) => {
     for (const listener of listeners) await listener(event);
   };
+  const enabled = new Set(options.enabledTools ?? [...enabledJtpToolIds()]);
   const tools = createIrisPiToolDefinitions(options.cwd, options.operations, options.commandShell)
+    .filter((tool) => enabled.has(tool.name))
     .map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters })) as Tool[];
   const execute = async (input?: string, images?: readonly AgentPromptImage[]) => {
     if (input !== undefined) {

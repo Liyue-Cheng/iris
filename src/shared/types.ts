@@ -100,6 +100,8 @@ export interface Settings {
     irisAgent: boolean;
     /** Last Iris Agent model the user selected; used as the default for new sessions. */
     irisAgentDefaultModel: IrisAgentModelRef | null;
+    /** JTP built-in tool switches. MCP remains unavailable until configured. */
+    jtpTools: Partial<Record<'read' | 'edit' | 'write' | 'terminal' | 'task_start' | 'task_get' | 'task_list' | 'task_cancel', boolean>>;
   };
   /**
    * Agent CLIs offered by the "open with X" gesture. The shell is dumb:

@@ -177,6 +177,7 @@ export interface AgentWorkerExecutionRuntime {
   model: IrisAgentModelRef;
   providerProxy: AgentProviderProxy;
   customParameters?: Record<string, unknown>;
+  enabledTools?: string[];
 }
 
 export type AgentProviderProxy =

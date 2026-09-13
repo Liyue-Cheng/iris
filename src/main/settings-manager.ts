@@ -86,6 +86,10 @@ export const DEFAULT_SETTINGS: Settings = {
   experimental: {
     irisAgent: false,
     irisAgentDefaultModel: null,
+    jtpTools: {
+      read: true, edit: true, write: true, terminal: true,
+      task_start: true, task_get: true, task_list: true, task_cancel: true,
+    },
   },
   agents: AGENT_PRESETS.filter((preset) =>
     ['claude', 'codex', 'gemini', 'shell'].includes(preset.id),
