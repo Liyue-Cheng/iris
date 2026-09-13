@@ -288,6 +288,16 @@ async function prepareExecution(
     ...(execution.customParameters ? { customParameters: execution.customParameters } : {}),
     ...(execution.enabledTools ? { enabledTools: execution.enabledTools } : {}),
     executeToolCall: async (toolCall) => {
+      if (execution.enabledTools && !execution.enabledTools.includes(toolCall.name)) {
+        return {
+          role: 'toolResult' as const,
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          content: [{ type: 'text' as const, text: `Tool is disabled in Agent settings: ${toolCall.name}` }],
+          isError: true,
+          timestamp: Date.now(),
+        };
+      }
       const input = providerToolCallInput(toolCall.name, toolCall.arguments, baseRuntime.cwd);
       let result: AgentToolOperationResult;
       try {

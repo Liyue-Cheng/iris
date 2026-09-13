@@ -503,6 +503,17 @@ export function validateSettings(s: Settings): void {
   if (typeof s.experimental.irisAgent !== 'boolean') {
     throw new SettingsError('InvalidSettings', 'experimental.irisAgent must be a boolean');
   }
+  if (
+    !s.experimental.jtpTools ||
+    typeof s.experimental.jtpTools !== 'object' ||
+    Array.isArray(s.experimental.jtpTools) ||
+    Object.entries(s.experimental.jtpTools).some(([id, value]) =>
+      !['read', 'edit', 'write', 'terminal', 'task_start', 'task_get', 'task_list', 'task_cancel'].includes(id) ||
+      typeof value !== 'boolean',
+    )
+  ) {
+    throw new SettingsError('InvalidSettings', 'experimental.jtpTools must map known JTP tool IDs to booleans');
+  }
   const defaultModel = s.experimental.irisAgentDefaultModel;
   if (
     defaultModel !== null &&
