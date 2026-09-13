@@ -8,7 +8,7 @@ import {
   AGENT_TERMINAL_MAX_TIMEOUT_SECONDS,
   type AgentCommandPtyEvent,
   type AgentCommandPtyOptions,
-} from './command-pty';
+} from '../agent/command-pty';
 import { writeFileAtomic } from '../atomic-write';
 import type {
   AgentCommandShell,
@@ -16,8 +16,8 @@ import type {
   JtpBuiltinInput,
   JtpBuiltinResult,
 } from '@shared/agent-protocol';
-import type { AgentToolActivity } from './session-model';
-import { applyTextEdits, type TextEdit } from './edit-diff';
+import type { AgentToolActivity } from '../agent/session-model';
+import { applyTextEdits, type TextEdit } from '../agent/edit-diff';
 import { defaultProcessTreeKiller } from '../terminal/process-tree';
 import { detectImageBytes, readImageSize } from '@shared/image-signature';
 import { AGENT_IMAGE_MAX_BYTES } from '@shared/agent-protocol';
@@ -29,7 +29,7 @@ import { AGENT_IMAGE_MAX_BYTES } from '@shared/agent-protocol';
  */
 export const AGENT_READ_IMAGE_MAX_BYTES = AGENT_IMAGE_MAX_BYTES;
 
-export interface IrisAgentToolHostResult {
+export interface JtpNativeExecutionResult {
   result: JtpBuiltinResult;
   update: { state: AgentToolActivity['state']; completedAt: number } & Partial<Pick<
     AgentToolActivity,
@@ -41,7 +41,7 @@ export interface IrisAgentToolHostResult {
   >>;
 }
 
-export interface IrisAgentToolHostOptions {
+export interface JtpNativeExecutionOptions {
   projectRoot: string;
   commandShell: AgentCommandShell;
   displayThresholdMs?: number;
@@ -56,13 +56,13 @@ export interface IrisAgentToolHostOptions {
   ) => void;
 }
 
-export class IrisAgentToolHost {
-  constructor(private readonly options: IrisAgentToolHostOptions) {}
+export class JtpNativeExecution {
+  constructor(private readonly options: JtpNativeExecutionOptions) {}
 
   async execute(
     input: JtpBuiltinInput,
     correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>>,
-  ): Promise<IrisAgentToolHostResult> {
+  ): Promise<JtpNativeExecutionResult> {
     const started = Date.now();
     try {
       const executed = await this.executeUnchecked(input, correlation, started);
@@ -413,4 +413,6 @@ function truncateReadBuffer(
   }
   return { bytes: Buffer.from(output, 'utf8'), truncated };
 }
+
+
 

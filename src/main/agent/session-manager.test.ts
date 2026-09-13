@@ -16,7 +16,7 @@ import type { ProjectManager } from '../project-manager';
 import { createTempDataDir, JsonStore, removeTempDataDir } from '../persistence';
 import { SettingsManager } from '../settings-manager';
 import type { AgentWorkerPort } from './worker-host';
-import type { IrisAgentToolHostResult } from './tool-host';
+import type { JtpNativeExecutionResult } from '../jtp/native-execution';
 import type { AgentCommandPty, AgentCommandPtyOptions, AgentCommandPtyResult } from './command-pty';
 import {
   IrisAgentSessionManager,
@@ -700,7 +700,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
     const userData = await createTempDataDir('iris-agent-manager-tool-stop-');
     const scope: ProjectScope = { root: userData, generation: 1 };
     const workers: FakeWorker[] = [];
-    let settleTool!: (result: IrisAgentToolHostResult) => void;
+    let settleTool!: (result: JtpNativeExecutionResult) => void;
     const manager = new IrisAgentSessionManager(userData, projectManager(), {
       workerFactory: () => {
         const worker = new FakeWorker();
@@ -3161,3 +3161,5 @@ describe('Iris Agent instance lifecycle', () => {
     }
   });
 });
+
+

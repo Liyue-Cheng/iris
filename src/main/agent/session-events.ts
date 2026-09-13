@@ -7,7 +7,7 @@ import type {
   AgentRequestFacts,
   AgentSessionAggregate,
   AgentTimelineActivity,
-  AgentToolOperation,
+  JtpCallRecord,
   AgentTurn,
 } from './session-model';
 import { cloneAgentSession, normalizeAgentSessionAggregate } from './session-model';
@@ -28,7 +28,7 @@ export type AgentSessionEntity =
   | AgentInvoke
   | AgentInvokeAttempt
   | AgentTimelineActivity
-  | AgentToolOperation
+  | JtpCallRecord
   | AgentRequestFacts
   | AgentCompaction;
 
@@ -401,3 +401,4 @@ function isCollection(value: unknown): value is AgentEntityCollection {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
+

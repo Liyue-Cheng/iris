@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createTempDataDir, removeTempDataDir } from '../persistence';
-import { AGENT_READ_IMAGE_MAX_BYTES, IrisAgentToolHost } from './tool-host';
+import { AGENT_READ_IMAGE_MAX_BYTES, JtpNativeExecution } from './native-execution';
 
 /** A PNG header plus padding, so the byte count is stable and predictable. */
 function pngFixture(width: number, height: number): Buffer {
@@ -29,14 +29,14 @@ const correlation = {
   operationId: 'operation-1',
 };
 
-describe('IrisAgentToolHost', () => {
+describe('JtpNativeExecution', () => {
   it('rejects patch text and empty edit lists without changing the file', async () => {
     const projectRoot = await createTempDataDir('iris-agent-edit-guard-');
     try {
       const target = join(projectRoot, 'src', 'value.ts');
       await fs.mkdir(join(projectRoot, 'src'), { recursive: true });
       await fs.writeFile(target, 'const value = 1;\n', 'utf8');
-      const host = new IrisAgentToolHost({ projectRoot, commandShell });
+      const host = new JtpNativeExecution({ projectRoot, commandShell });
 
       const empty = await host.execute(
         { tool: 'edit', operation: 'writeFile', absolutePath: target, edits: [] },
@@ -67,7 +67,7 @@ describe('IrisAgentToolHost', () => {
       const target = join(projectRoot, 'src', 'value.txt');
       await fs.mkdir(join(projectRoot, 'src'), { recursive: true });
       await fs.writeFile(target, 'before', 'utf8');
-      const host = new IrisAgentToolHost({ projectRoot, commandShell });
+      const host = new JtpNativeExecution({ projectRoot, commandShell });
 
       const read = await host.execute(
         { tool: 'read', operation: 'readFile', absolutePath: target },
@@ -104,7 +104,7 @@ describe('IrisAgentToolHost', () => {
       const target = join(projectRoot, 'shot.png');
       const bytes = pngFixture(1280, 720);
       await fs.writeFile(target, bytes);
-      const host = new IrisAgentToolHost({ projectRoot, commandShell });
+      const host = new JtpNativeExecution({ projectRoot, commandShell });
       const result = await host.execute(
         { tool: 'read', operation: 'readFile', absolutePath: target },
         correlation,
@@ -140,7 +140,7 @@ describe('IrisAgentToolHost', () => {
         pngFixture(1, 1),
         Buffer.alloc(AGENT_READ_IMAGE_MAX_BYTES + 1),
       ]));
-      const host = new IrisAgentToolHost({ projectRoot, commandShell });
+      const host = new JtpNativeExecution({ projectRoot, commandShell });
 
       const vector = await host.execute(
         { tool: 'read', operation: 'readFile', absolutePath: svg },
@@ -165,7 +165,7 @@ describe('IrisAgentToolHost', () => {
     try {
       const target = join(projectRoot, 'shot.png');
       await fs.writeFile(target, pngFixture(8, 8));
-      const host = new IrisAgentToolHost({ projectRoot, commandShell });
+      const host = new JtpNativeExecution({ projectRoot, commandShell });
       const result = await host.execute(
         { tool: 'edit', operation: 'readFile', absolutePath: target },
         correlation,
@@ -181,7 +181,7 @@ describe('IrisAgentToolHost', () => {
     try {
       const target = join(projectRoot, 'lines.txt');
       await fs.writeFile(target, 'one\ntwo\nthree\nfour\n', 'utf8');
-      const host = new IrisAgentToolHost({ projectRoot, commandShell });
+      const host = new JtpNativeExecution({ projectRoot, commandShell });
       const result = await host.execute(
         { tool: 'read', operation: 'readFile', absolutePath: target, offset: 2, limit: 2 },
         correlation,
@@ -201,7 +201,7 @@ describe('IrisAgentToolHost', () => {
   it('allows write tools to create managed documents in the first version', async () => {
     const projectRoot = await createTempDataDir('iris-agent-tool-project-');
         try {
-      const host = new IrisAgentToolHost({ projectRoot, commandShell });
+      const host = new JtpNativeExecution({ projectRoot, commandShell });
       const write = await host.execute(
         {
           tool: 'write',
@@ -242,7 +242,7 @@ describe('IrisAgentToolHost', () => {
       const linkedDirectory = join(projectRoot, 'linked');
       await fs.writeFile(join(outsideRoot, 'secret.txt'), 'outside', 'utf8');
       await fs.symlink(outsideRoot, linkedDirectory, 'junction');
-      const host = new IrisAgentToolHost({
+      const host = new JtpNativeExecution({
         projectRoot,
         commandShell,
       });
@@ -318,7 +318,7 @@ describe('IrisAgentToolHost', () => {
   it('returns cleaned output for a nonzero exit while recording command failure', async () => {
     const projectRoot = await createTempDataDir('iris-agent-tool-failure-project-');
         try {
-      const host = new IrisAgentToolHost({ projectRoot, commandShell });
+      const host = new JtpNativeExecution({ projectRoot, commandShell });
       const terminal = await host.execute(
         {
           tool: 'terminal',
@@ -355,7 +355,7 @@ describe('IrisAgentToolHost', () => {
   it('uses explicitly allowed nonzero exit codes consistently', async () => {
     const projectRoot = await createTempDataDir('iris-agent-tool-allowed-exit-project-');
         try {
-      const host = new IrisAgentToolHost({ projectRoot, commandShell });
+      const host = new JtpNativeExecution({ projectRoot, commandShell });
       const terminal = await host.execute(
         {
           tool: 'terminal',
@@ -383,7 +383,7 @@ describe('IrisAgentToolHost', () => {
   it('records terminal launch failure separately from command failure', async () => {
     const projectRoot = await createTempDataDir('iris-agent-tool-launch-project-');
         try {
-      const host = new IrisAgentToolHost({
+      const host = new JtpNativeExecution({
         projectRoot,
         commandShell,
         terminalFactory: () => { throw new Error('simulated spawn failure'); },
@@ -411,3 +411,6 @@ describe('IrisAgentToolHost', () => {
     }
   });
 });
+
+
+

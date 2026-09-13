@@ -43,7 +43,7 @@ export interface AgentSessionAggregate {
   invokes: AgentInvoke[];
   invokeAttempts: AgentInvokeAttempt[];
   timeline: AgentTimelineActivity[];
-  toolOperations: AgentToolOperation[];
+  toolOperations: JtpCallRecord[];
   requestFacts: AgentRequestFacts[];
   compactions: AgentCompaction[];
   activeCompactionId: string | null;
@@ -146,7 +146,7 @@ export interface AgentInjection {
   };
 }
 
-export interface AgentToolOperation {
+export interface JtpCallRecord {
   id: string;
   toolActivityId: string;
   intentId: string;
@@ -744,4 +744,5 @@ function pathFromInputSummary(summary: string): string {
   const space = summary.indexOf(' ');
   return space >= 0 ? summary.slice(space + 1) : summary;
 }
+
 

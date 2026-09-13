@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { agentHistoryDigest, IRIS_AGENT_PROTOCOL_VERSION, isAgentWorkerRequest } from './agent-protocol';
 
 /** The tool-result validator is module-private; exercise it through the envelope. */
-function isAgentToolOperationResultForTest(value: unknown): boolean {
+function isJtpCallRecordResultForTest(value: unknown): boolean {
   return isAgentWorkerRequest({
     version: IRIS_AGENT_PROTOCOL_VERSION,
     type: 'tool-result',
@@ -198,13 +198,13 @@ describe('Iris Agent Worker protocol', () => {
     })).toBe(false);
 
     // SVG is deliberately not a supported attachment MIME type.
-    expect(isAgentToolOperationResultForTest({
+    expect(isJtpCallRecordResultForTest({
       kind: 'image',
       mimeType: 'image/svg+xml',
       contentBase64: 'AAAA',
       bytes: 3,
     })).toBe(false);
-    expect(isAgentToolOperationResultForTest({
+    expect(isJtpCallRecordResultForTest({
       kind: 'image',
       mimeType: 'image/png',
       contentBase64: 'AAAA',
@@ -245,3 +245,4 @@ describe('Iris Agent Worker protocol', () => {
     })).toBe(agentHistoryDigest(history));
   });
 });
+

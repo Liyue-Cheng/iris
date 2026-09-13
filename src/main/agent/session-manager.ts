@@ -23,7 +23,7 @@ import {
   resumePausedAgentIntent,
   truncateIntentChain,
 } from './session-domain';
-import { IrisAgentToolHost, type IrisAgentToolHostResult } from './tool-host';
+import { JtpNativeExecution, type JtpNativeExecutionResult } from '../jtp/native-execution';
 import { TerminalOutputBatcher } from '../terminal/output-pump';
 import {
   AgentCommandPty,
@@ -160,7 +160,7 @@ export interface IrisAgentSessionManagerOptions {
   toolExecutor?: (
     input: JtpBuiltinInput,
     correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>>,
-  ) => Promise<IrisAgentToolHostResult>;
+  ) => Promise<JtpNativeExecutionResult>;
   terminalFactory?: (options: AgentCommandPtyOptions) => AgentCommandPty;
   terminalDisplayThresholdMs?: number;
   supervisionIntervalMs?: number;
@@ -202,7 +202,7 @@ export class IrisAgentSessionManager extends EventEmitter {
   private readonly hosts = new Map<string, AgentWorkerHost>();
   /** One JTP runtime/provider graph per live Agent Session. */
   private readonly jtpRuntimes = new Map<string, JtpRuntime>();
-  private readonly jtpExecutionDetails = new Map<string, IrisAgentToolHostResult>();
+  private readonly jtpExecutionDetails = new Map<string, JtpNativeExecutionResult>();
   private readonly emittedProjections = new Map<string, IrisAgentSessionInfo>();
   private readonly livePhases = new Map<string, IrisAgentPhaseChangedPayload>();
   private currentScope: ProjectScope | null = null;
@@ -1990,10 +1990,10 @@ export class IrisAgentSessionManager extends EventEmitter {
       const correlation = metadata as Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>>;
       const input = jtpRequestToBuiltinInput(request, scope.root);
       const executed = isTaskInput(input)
-        ? await this.executeTaskInput(scope, input, correlation)
+        ? await this.executeTaskProvider(scope, input, correlation)
         : this.options.toolExecutor
           ? await this.options.toolExecutor(input, correlation)
-          : await new IrisAgentToolHost({
+          : await new JtpNativeExecution({
         projectRoot: scope.root,
         commandShell: this.commandShell,
         displayThresholdMs: this.options.terminalDisplayThresholdMs ?? 3_000,
@@ -2045,11 +2045,11 @@ export class IrisAgentSessionManager extends EventEmitter {
   }
 
 
-  private async executeTaskInput(
+  private async executeTaskProvider(
     scope: ProjectScope,
     input: Extract<JtpBuiltinInput, { tool: 'task_start' | 'task_get' | 'task_list' | 'task_cancel' }>,
     correlation: Required<Pick<AgentCorrelation, 'sessionId' | 'intentId' | 'turnId' | 'toolCallId' | 'operationId'>>,
-  ): Promise<IrisAgentToolHostResult> {
+  ): Promise<JtpNativeExecutionResult> {
     try {
       const result = input.tool === 'task_start'
         ? await this.taskManager.start({
@@ -2090,7 +2090,7 @@ export class IrisAgentSessionManager extends EventEmitter {
     sessionId: string,
     activityId: string,
     event: Extract<AgentWorkerEvent, { type: 'tool-request' }>,
-    executed: IrisAgentToolHostResult,
+    executed: JtpNativeExecutionResult,
   ): Promise<void> {
     const correlation = event.correlation;
     const terminalExecution = executed.result.kind === 'terminal' ? executed.result : null;
@@ -3346,5 +3346,7 @@ function taskTerminalContent(task: AgentTaskRecord): string {
     '</background-task-result>',
   ].join('\n');
 }
+
+
 
 
