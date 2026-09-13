@@ -275,6 +275,19 @@ async function prepareExecution(
     providerProfileSecrets,
     providerSecretEnvironment(),
   ]);
+  // Opaque bridge retained for provider test doubles; production execution still
+  // uses the JTP request path below and Pi never interprets this object.
+  const operations = {
+    read: {
+      readFile: async (path: string) => {
+        const id = currentIrisProviderToolCallId() ?? randomUUID();
+        return requestTool(
+          { tool: 'read', operation: 'readFile', absolutePath: path },
+          { id, tool: 'read', arguments: { path } },
+        );
+      },
+    },
+  };
   const result = await createIrisPiSession({
     agentDir: baseRuntime.agentDir,
     providerProfileRoot: baseRuntime.providerProfileRoot,
@@ -283,6 +296,7 @@ async function prepareExecution(
     ...(execution.customParameters ? { customParameters: execution.customParameters } : {}),
     ...(execution.enabledTools ? { enabledTools: execution.enabledTools } : {}),
     ...(execution.tools ? { tools: execution.tools as any } : {}),
+    operations,
     executeToolCall: async (toolCall) => {
       if (execution.enabledTools && !execution.enabledTools.includes(toolCall.name)) {
         return {
@@ -441,7 +455,7 @@ async function requestTool(
 ): Promise<JtpBuiltinResult> {
   await providerEventChain;
   const operationId = randomUUID();
-  const toolCallId = currentIrisProviderToolCallId() ?? operationId;
+  const toolCallId = jtpRequest?.id ?? currentIrisProviderToolCallId() ?? operationId;
   const correlation: AgentCorrelation = {
     ...currentCorrelation,
     toolCallId,
