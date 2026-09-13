@@ -221,5 +221,6 @@ export const EVENTS = {
   IRIS_AGENT_SESSION_DESTROYED: 'evt:iris-agent:session-destroyed',
   IRIS_AGENT_PROVIDERS_CHANGED: 'evt:iris-agent:providers-changed',
   IRIS_AGENT_TOOLS_CHANGED: 'evt:iris-agent:tools-changed',
+  IRIS_AGENT_JTP_EVENT: 'evt:iris-agent:jtp-event',
   IRIS_AGENT_TERMINAL_OUTPUT: 'evt:iris-agent:terminal-output',
 } as const;

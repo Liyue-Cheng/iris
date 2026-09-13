@@ -15,7 +15,7 @@ import { hydrateProjectSettings } from './stores/project-settings-store';
 import { normalizeUiError } from './lib/action-runtime';
 import { notify } from './stores/notification-store';
 import { translate } from './i18n';
-import { hydrateJtpTools, wireJtpTools } from './stores/jtp-store';
+import { hydrateJtpTools, wireJtpTools, wireJtpEvents } from './stores/jtp-store';
 
 function installGlobalErrorFallbacks(): void {
   window.addEventListener('unhandledrejection', (event) => {
@@ -79,6 +79,7 @@ async function bootstrap(): Promise<void> {
   // wrong theme; index.html's static data-theme covers the load gap.
   await initSettingsStore();
   wireJtpTools();
+  wireJtpEvents();
   void hydrateJtpTools().catch(() => undefined);
 
   wireInterrupts();

@@ -117,6 +117,7 @@ import type {
 } from '@shared/app-error';
 import { serializeIpcError } from './ipc-error';
 import { JTP_BUILTIN_DESCRIPTORS } from './jtp/builtin-descriptors';
+import type { JtpEvent } from './jtp/protocol';
 
 type RawIpcHandler = (
   event: Electron.IpcMainInvokeEvent,
@@ -1669,6 +1670,7 @@ export function wireBroadcasts(
     send(EVENTS.IRIS_AGENT_SESSION_DESTROYED, e);
   const onAgentTerminalOutput = (e: IrisAgentTerminalOutputPayload): void =>
     send(EVENTS.IRIS_AGENT_TERMINAL_OUTPUT, e);
+  const onJtpEvent = (e: JtpEvent): void => send(EVENTS.IRIS_AGENT_JTP_EVENT, e);
   const onMaximize = (): void => send(EVENTS.WINDOW_MAXIMIZED_CHANGED, { maximized: true });
   const onUnmaximize = (): void => send(EVENTS.WINDOW_MAXIMIZED_CHANGED, { maximized: false });
 
@@ -1689,6 +1691,7 @@ export function wireBroadcasts(
   agentSessionManager.on('phaseChanged', onAgentPhaseChanged);
   agentSessionManager.on('sessionDestroyed', onAgentDestroyed);
   agentSessionManager.on('terminalOutput', onAgentTerminalOutput);
+  agentSessionManager.on('jtpEvent', onJtpEvent);
   return () => {
     window.off('maximize', onMaximize);
     window.off('unmaximize', onUnmaximize);
@@ -1707,5 +1710,6 @@ export function wireBroadcasts(
     agentSessionManager.off('phaseChanged', onAgentPhaseChanged);
     agentSessionManager.off('sessionDestroyed', onAgentDestroyed);
     agentSessionManager.off('terminalOutput', onAgentTerminalOutput);
+    agentSessionManager.off('jtpEvent', onJtpEvent);
   };
 }

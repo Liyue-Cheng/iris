@@ -77,6 +77,7 @@ import type {
   IrisAgentTaskStatus,
 } from '@shared/types';
 import { enabledJtpToolIds, JTP_BUILTIN_DESCRIPTORS } from '../jtp/builtin-descriptors';
+import type { JtpEvent } from '../jtp/protocol';
 import { JtpRegistry } from '../jtp/registry';
 import { JtpRuntime } from '../jtp/runtime';
 import type { JtpProvider } from '../jtp/provider';
@@ -1925,6 +1926,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       createdAt: Date.now(),
     });
     current.state = 'waiting-tool';
+    this.emit('jtpEvent', { type: 'started', id: correlation.operationId, tool: event.input.tool, at: Date.now() } satisfies JtpEvent);
     current = await this.commitAndEmit(scope, store, current);
     const operationCorrelation = {
       sessionId: session.id,
@@ -2006,8 +2008,10 @@ export class IrisAgentSessionManager extends EventEmitter {
     const execution = event.request
       ? new JtpRuntime(registry).invoke(event.request)
       : provider.invoke({ id: correlation.operationId, tool: event.input.tool, arguments: event.input as unknown as Record<string, unknown> }, { signal: new AbortController().signal });
+    const eventToolName = event.request?.tool ?? event.input.tool ?? 'unknown';
     void execution.then((response) => {
       if (!response.ok || !executedDetails) throw new Error(response.ok ? 'JTP provider returned no execution details.' : response.error.message);
+      this.emit('jtpEvent', { type: 'completed', id: correlation.operationId, tool: eventToolName, at: Date.now(), response } satisfies JtpEvent);
       return this.enqueueSessionMutation(session.id, () => this.settleToolOperation(
       scope,
       store,
@@ -2016,8 +2020,10 @@ export class IrisAgentSessionManager extends EventEmitter {
       event,
       executedDetails!,
     ));
-    }).catch((error) => this.enqueueSessionMutation(session.id, () =>
-      this.pauseSessionExecution(session.id, errorMessage(error), correlation, 'runtime')));
+    }).catch((error) => {
+      this.emit('jtpEvent', { type: 'failed', id: correlation.operationId, tool: eventToolName, at: Date.now(), error: { kind: 'execution', code: 'JTP_EXECUTION_FAILED', message: errorMessage(error), retryable: false } } satisfies JtpEvent);
+      return this.enqueueSessionMutation(session.id, () => this.pauseSessionExecution(session.id, errorMessage(error), correlation, 'runtime'));
+    });
   }
 
 
