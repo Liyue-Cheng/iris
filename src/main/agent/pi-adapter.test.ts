@@ -4,8 +4,6 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { IRIS_AGENT_PROMPT } from './prompt';
 import {
-  createIrisPiToolDefinitions,
-  currentIrisProviderToolCallId,
   instrumentProviderPayloads,
   loadIrisModelCatalog,
   loadIrisProviderCatalog,
@@ -20,7 +18,6 @@ import {
   unwrapProviderErrorMessage,
   IrisHistoryManager,
 } from './pi-adapter';
-import type { IrisToolHostOperations } from './pi-adapter';
 import {
   addIrisAgentProviderProfile,
   loadStoredIrisAgentProviderProfiles,
@@ -58,137 +55,6 @@ describe('Iris Pi adapter', () => {
 
   it('uses the built-in Iris prompt without discovered resources', () => {
     expect(IRIS_AGENT_PROMPT).toContain('operating inside Iris Agent');
-  });
-
-  it('exposes only wrapped public Pi tool definitions and delegates operations', async () => {
-    const root = process.cwd();
-    const operations = {
-      read: {
-        access: vi.fn(async () => {}),
-        readMediaFile: vi.fn(async () => {
-          expect(currentIrisProviderToolCallId()).toBe('call-1');
-          return { kind: 'text' as const, text: 'hello' };
-        }),
-        readFile: vi.fn(async () => Buffer.from('hello')),
-      },
-      edit: {
-        access: vi.fn(async () => {}),
-        readFile: vi.fn(async () => Buffer.from('before')),
-        writeFile: vi.fn(async () => {}),
-      },
-      write: { mkdir: vi.fn(async () => {}), writeFile: vi.fn(async () => {}) },
-      terminal: {
-        exec: vi.fn(async (_command, _intent, _successExitCodes, _cwd, options) => {
-          expect(currentIrisProviderToolCallId()).toBe('call-2');
-          options.onData(Buffer.from('terminal output'));
-          return { exitCode: 0 };
-        }),
-      },
-    };
-    const tools = createIrisPiToolDefinitions(root, operations, {
-      kind: 'powershell',
-      executable: 'pwsh.exe',
-      displayName: 'PowerShell 7',
-    });
-    expect(tools.map((tool) => tool.name)).toEqual(['read', 'edit', 'write', 'terminal']);
-    const read = tools[0]!;
-    expect(tools[1]!.parameters.required).toEqual(['path', 'edits']);
-    expect(Object.keys(tools[1]!.parameters.properties)).toEqual(['path', 'edits']);
-    expect(tools[2]!.parameters.required).toEqual(['path', 'content']);
-    const result = await read.execute(
-      'call-1',
-      { path: 'README.md' },
-      undefined,
-      undefined,
-      {} as never,
-    );
-    expect(operations.read.readMediaFile).toHaveBeenCalledWith(join(root, 'README.md'), undefined);
-    expect(result.content).toEqual([{ type: 'text', text: 'hello' }]);
-    await read.execute(
-      'call-1',
-      { path: 'README.md', offset: 3, limit: 5 },
-      undefined,
-      undefined,
-      {} as never,
-    );
-    expect(operations.read.readMediaFile).toHaveBeenLastCalledWith(
-      join(root, 'README.md'),
-      { offset: 3, limit: 5 },
-    );
-    const editResult = await tools[1]!.execute(
-      'call-edit',
-      { path: 'README.md', edits: [{ oldText: 'before', newText: 'after' }] },
-      undefined,
-      undefined,
-      {} as never,
-    );
-    expect(editResult.content[0]).toEqual({
-      type: 'text', text: 'Successfully replaced 1 block(s) in README.md.',
-    });
-    const writeResult = await tools[2]!.execute(
-      'call-write',
-      { path: 'out.txt', content: '你好' },
-      undefined,
-      undefined,
-      {} as never,
-    );
-    expect(writeResult.content[0]).toEqual({
-      type: 'text', text: 'Successfully wrote 6 bytes to out.txt',
-    });
-    expect(tools[3]).toMatchObject({ name: 'terminal', label: 'PowerShell' });
-    expect(tools[3]!.description).toContain('PowerShell 7 (pwsh.exe)');
-    expect(tools[3]!.description.toLowerCase()).not.toContain('bash');
-    expect(tools[3]!.promptGuidelines?.[0]).toContain('Do not emit Bash-only commands');
-    expect(tools[3]!.parameters.required).toEqual(['command', 'intent', 'timeout']);
-    expect(Object.keys(tools[3]!.parameters.properties)).toEqual([
-      'command', 'intent', 'timeout', 'successExitCodes',
-    ]);
-    const terminalResult = await tools[3]!.execute(
-      'call-2',
-      { command: 'git status', intent: 'information', timeout: 30 },
-      undefined,
-      undefined,
-      {} as never,
-    );
-    expect(operations.terminal.exec).toHaveBeenCalledWith(
-      'git status',
-      'information',
-      [0],
-      root,
-      expect.objectContaining({ onData: expect.any(Function) }),
-    );
-    expect(terminalResult.content).toEqual([{ type: 'text', text: 'terminal output' }]);
-  });
-
-  it('exposes background task tools without an intent classifier', async () => {
-    const operations: IrisToolHostOperations = {
-      read: {
-        access: vi.fn(async () => {}),
-        readMediaFile: vi.fn(async () => ({ kind: 'text' as const, text: '' })),
-        readFile: vi.fn(async () => Buffer.from('')),
-      },
-      edit: { access: vi.fn(async () => {}), readFile: vi.fn(async () => Buffer.from('')), writeFile: vi.fn(async () => {}) },
-      write: { mkdir: vi.fn(async () => {}), writeFile: vi.fn(async () => {}) },
-      terminal: { exec: vi.fn(async () => ({ exitCode: 0 })) },
-      task: {
-        start: vi.fn(async () => ({ kind: 'task' as const, taskId: 'task-1', status: 'running' as const, outputText: 'started' })),
-        get: vi.fn(async () => ({ kind: 'task' as const, taskId: 'task-1', status: 'running' as const, outputText: 'snapshot' })),
-        list: vi.fn(async () => ({ kind: 'task' as const, outputText: '{"tasks":[]}' })),
-        cancel: vi.fn(async () => ({ kind: 'task' as const, taskId: 'task-1', status: 'canceled' as const, outputText: 'canceled' })),
-      },
-    };
-    const tools = createIrisPiToolDefinitions('C:/project', operations, {
-      kind: 'powershell', executable: 'pwsh.exe', displayName: 'PowerShell 7',
-    });
-    expect(tools.map((tool) => tool.name)).toEqual([
-      'read', 'edit', 'write', 'terminal', 'task_start', 'task_get', 'task_list', 'task_cancel',
-    ]);
-    expect(tools[4]!.parameters.required).toEqual(['command', 'title']);
-    expect(Object.keys(tools[4]!.parameters.properties)).toEqual(['command', 'title', 'successExitCodes']);
-    expect(tools[4]!.parameters.properties).not.toHaveProperty('intent');
-    const taskStart = tools[4] as unknown as { execute: (id: string, params: unknown) => Promise<unknown> };
-    await taskStart.execute('task-call', { command: 'watch', title: 'Watch server' });
-    expect(operations.task!.start).toHaveBeenCalledWith('watch', 'Watch server', undefined);
   });
 
   it('injects persisted provider messages and tool results into Pi context', () => {
@@ -242,45 +108,6 @@ describe('Iris Pi adapter', () => {
         toolCallId: 'call-1', tool: 'read',
       }],
     })).toThrow(/expected an array of content blocks/);
-  });
-
-  it('returns an image block next to the text for an image read', async () => {
-    const root = process.cwd();
-    const operations: IrisToolHostOperations = {
-      read: {
-        access: vi.fn(async () => {}),
-        readMediaFile: vi.fn(async () => ({
-          kind: 'image' as const,
-          mimeType: 'image/png' as const,
-          dataBase64: 'AAAA',
-          bytes: 3,
-          width: 8,
-          height: 6,
-        })),
-        readFile: vi.fn(async () => Buffer.from('')),
-      },
-      edit: {
-        access: vi.fn(async () => {}),
-        readFile: vi.fn(async () => Buffer.from('')),
-        writeFile: vi.fn(async () => {}),
-      },
-      write: { mkdir: vi.fn(async () => {}), writeFile: vi.fn(async () => {}) },
-      terminal: { exec: vi.fn(async () => ({ exitCode: 0 })) },
-    };
-    const tools = createIrisPiToolDefinitions(root, operations, {
-      kind: 'powershell', executable: 'pwsh.exe', displayName: 'PowerShell 7',
-    });
-    const result = await tools[0]!.execute(
-      'call-1',
-      { path: 'shot.png' },
-      undefined,
-      undefined,
-      {} as never,
-    );
-    expect(result.content).toEqual([
-      { type: 'text', text: 'shot.png: image image/png 8x6 (3 B).' },
-      { type: 'image', data: 'AAAA', mimeType: 'image/png' },
-    ]);
   });
 
   it('attaches the request images to the same user message as the prompt', () => {
@@ -920,3 +747,4 @@ async function captureDeepSeekProviderPayload(
     await rm(agentDir, { recursive: true, force: true });
   }
 }
+

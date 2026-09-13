@@ -276,11 +276,9 @@ async function prepareExecution(
     providerSecretEnvironment(),
   ]);
   const result = await createIrisPiSession({
-    cwd: baseRuntime.cwd,
     agentDir: baseRuntime.agentDir,
     providerProfileRoot: baseRuntime.providerProfileRoot,
     model: execution.model,
-    commandShell: baseRuntime.commandShell,
     providerProxy: execution.providerProxy,
     ...(execution.customParameters ? { customParameters: execution.customParameters } : {}),
     ...(execution.enabledTools ? { enabledTools: execution.enabledTools } : {}),

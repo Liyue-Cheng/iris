@@ -19,18 +19,12 @@ import {
   type ToolResultMessage,
 } from '@earendil-works/pi-ai/compat';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
-import { Type } from 'typebox';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import type {
-  AgentCommandShell,
   AgentHistorySnapshot,
   AgentPromptImage,
   AgentProviderProxy,
-  AgentTerminalIntent,
 } from '@shared/agent-protocol';
-import type { JtpBuiltinResult } from '@shared/agent-protocol';
-import type { IrisAgentImageMimeType } from '@shared/types';
-import { AGENT_TERMINAL_MAX_TIMEOUT_SECONDS } from './command-pty';
 import type {
   IrisAgentConfiguredModel,
   IrisAgentModelCatalog,
@@ -40,8 +34,6 @@ import type {
   IrisAgentThinkingLevel,
 } from '@shared/types';
 import { IRIS_AGENT_PROMPT } from './prompt';
-import { renderReadImageSummary } from './tool-result-content';
-import type { TextEdit } from './edit-diff';
 import {
   IRIS_AGENT_PROVIDER_TEMPLATES,
   findIrisAgentProviderTemplate,
@@ -50,7 +42,6 @@ import {
   profilesForRenderer,
   runtimeProviderId,
 } from './provider-profiles';
-import { enabledJtpToolIds, JTP_BUILTIN_DESCRIPTORS } from '../jtp/builtin-descriptors';
 
 export const IRIS_EXECUTOR_VERSION = 'iris-executor-1';
 export const IRIS_PI_TOOL_NAMES = [
@@ -59,73 +50,14 @@ export const IRIS_PI_TOOL_NAMES = [
 ] as const;
 
 const irisToolCallContext = new AsyncLocalStorage<string>();
-const irisTerminalContext = new AsyncLocalStorage<{
-  intent: AgentTerminalIntent;
-  successExitCodes: number[];
-}>();
 
 export function currentIrisProviderToolCallId(): string | undefined {
   return irisToolCallContext.getStore();
 }
 
-interface IrisTerminalOperations {
-  exec: (
-    command: string,
-    intent: AgentTerminalIntent,
-    successExitCodes: number[],
-    cwd: string,
-    options: {
-      onData: (data: Buffer) => void;
-      signal?: AbortSignal;
-      env?: NodeJS.ProcessEnv;
-      timeout?: number;
-    },
-  ) => Promise<{ exitCode: number | null }>;
-}
-
 export function irisPiAgentDir(): string {
   const configured = process.env.PI_CODING_AGENT_DIR;
   return configured ? configured.replace(/^~(?=$|[\\/])/u, homedir()) : join(homedir(), '.pi', 'agent');
-}
-
-/**
- * One file read, already classified. A text read is a string; an image read
- * carries the base64 the provider needs plus the metadata the model is told
- * about, so the tool layer never has to guess from a byte blob.
- */
-export type IrisReadFileResult =
-  | { kind: 'text'; text: string }
-  | {
-      kind: 'image';
-      mimeType: IrisAgentImageMimeType;
-      dataBase64: string;
-      bytes: number;
-      width?: number;
-      height?: number;
-    };
-
-export interface IrisToolHostOperations {
-  read: {
-    access: (absolutePath: string) => Promise<void>;
-    readFile: (absolutePath: string, options?: { offset?: number; limit?: number }) => Promise<Buffer>;
-    readMediaFile: (absolutePath: string, options?: { offset?: number; limit?: number }) => Promise<IrisReadFileResult>;
-  };
-  edit: {
-    access: (absolutePath: string) => Promise<void>;
-    readFile: (absolutePath: string) => Promise<Buffer>;
-    writeFile: (absolutePath: string, edits: TextEdit[]) => Promise<void>;
-  };
-  write: {
-    mkdir: (absolutePath: string) => Promise<void>;
-    writeFile: (absolutePath: string, content: string) => Promise<void>;
-  };
-  terminal: IrisTerminalOperations;
-  task?: {
-    start: (command: string, title: string, successExitCodes?: number[]) => Promise<JtpBuiltinResult>;
-    get: (taskId: string, cursor?: string, maxBytes?: number) => Promise<JtpBuiltinResult>;
-    list: (scope?: 'active' | 'all', cursor?: string, limit?: number) => Promise<JtpBuiltinResult>;
-    cancel: (taskId: string) => Promise<JtpBuiltinResult>;
-  };
 }
 
 type StoredCredential = { type: 'api_key'; key: string };
@@ -155,168 +87,6 @@ export function storedPiCredentialSecrets(providerId: string, agentDir: string):
   } catch {
     return undefined;
   }
-}
-
-export function createIrisPiToolDefinitions(
-  cwd: string,
-  operations: IrisToolHostOperations,
-  commandShell: AgentCommandShell = defaultToolShell(),
-) {
-  const terminalParameters = Type.Object({
-    command: Type.String({ description: 'PowerShell or shell command to execute.' }),
-    intent: Type.Union([
-      Type.Literal('information'),
-      Type.Literal('operation'),
-    ], {
-      description: 'Use information only for read-only inspection; otherwise use operation.',
-    }),
-    timeout: Type.Number({
-      description: `Hard foreground deadline in seconds (1-${AGENT_TERMINAL_MAX_TIMEOUT_SECONDS}).`,
-      exclusiveMinimum: 0,
-      maximum: AGENT_TERMINAL_MAX_TIMEOUT_SECONDS,
-    }),
-    successExitCodes: Type.Optional(Type.Array(Type.Integer(), {
-      description: 'Exit codes that count as success. Defaults to [0].',
-      minItems: 1,
-      uniqueItems: true,
-    })),
-  });
-  const terminal = {
-    name: 'terminal',
-    label: commandShell.kind === 'powershell' ? 'PowerShell' : 'Terminal',
-    description: `Execute a visible ${commandShell.displayName} (${commandShell.executable}) command in the current project.`,
-    promptGuidelines: [
-      ...(commandShell.kind === 'powershell'
-        ? ['Use PowerShell syntax and quoting. Do not emit Bash-only commands, operators, or environment-variable syntax.']
-        : [`Use the ${commandShell.displayName} shell dialect and quoting.`]),
-      'Set intent to information only for read-only inspection; use operation for side effects.',
-      `Every call must provide a finite timeout in seconds no greater than ${AGENT_TERMINAL_MAX_TIMEOUT_SECONDS}. Use task_start for watches, servers, or commands without a reasonable finite bound.`,
-    ],
-    parameters: terminalParameters,
-    execute: (
-      _toolCallId: string,
-      params: { command: string; intent: AgentTerminalIntent; timeout?: number; successExitCodes?: number[] },
-      signal: AbortSignal | undefined,
-      _onUpdate?: unknown,
-      _context?: unknown,
-    ) => irisTerminalContext.run(
-      { intent: params.intent, successExitCodes: params.successExitCodes ?? [0] },
-      async () => {
-        const chunks: Buffer[] = [];
-        const result = await operations.terminal.exec(
-          params.command,
-          params.intent,
-          params.successExitCodes ?? [0],
-          cwd,
-          {
-            onData: (data) => chunks.push(data),
-            ...(signal ? { signal } : {}),
-            env: process.env,
-            ...(params.timeout === undefined ? {} : { timeout: params.timeout }),
-          },
-        );
-        return { content: [{ type: 'text' as const, text: chunks.length ? Buffer.concat(chunks).toString('utf8') : `exit code: ${String(result.exitCode)}` }], details: result };
-      },
-    ),
-  };
-  const taskStart = withIrisToolCallContext({
-    name: 'task_start',
-    label: 'Background task',
-    description: 'Start an independent background task. It has its own task card and no foreground timeout.',
-    promptGuidelines: ['Use for watch processes, development servers, interactive commands, or long-running work.'],
-    parameters: Type.Object({
-      command: Type.String({ description: 'PowerShell or shell command to run in the background.' }),
-      title: Type.String({ description: 'Short human-readable title for the task card.' }),
-      successExitCodes: Type.Optional(Type.Array(Type.Integer(), { minItems: 1, uniqueItems: true })),
-    }),
-    execute: async (_id: string, params: { command: string; title: string; successExitCodes?: number[] }) =>
-      taskToolResponse(await operations.task!.start(params.command, params.title, params.successExitCodes)),
-  });
-  const taskGet = withIrisToolCallContext({
-    name: 'task_get',
-    label: 'Get task',
-    description: 'Read an immediate task snapshot and a bounded tail of its log.',
-    parameters: Type.Object({
-      taskId: Type.String(),
-      cursor: Type.Optional(Type.String()),
-      maxBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 256 * 1024 })),
-    }),
-    execute: async (_id: string, params: { taskId: string; cursor?: string; maxBytes?: number }) =>
-      taskToolResponse(await operations.task!.get(params.taskId, params.cursor, params.maxBytes)),
-  });
-  const taskList = withIrisToolCallContext({
-    name: 'task_list',
-    label: 'List tasks',
-    description: 'List background task summaries without loading their complete logs.',
-    parameters: Type.Object({
-      scope: Type.Optional(Type.Union([Type.Literal('active'), Type.Literal('all')])),
-      cursor: Type.Optional(Type.String()),
-      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
-    }),
-    execute: async (_id: string, params: { scope?: 'active' | 'all'; cursor?: string; limit?: number }) =>
-      taskToolResponse(await operations.task!.list(params.scope, params.cursor, params.limit)),
-  });
-  const taskCancel = withIrisToolCallContext({
-    name: 'task_cancel',
-    label: 'Cancel task',
-    description: 'Request cancellation of a background task and return its current snapshot.',
-    parameters: Type.Object({ taskId: Type.String() }),
-    execute: async (_id: string, params: { taskId: string }) =>
-      taskToolResponse(await operations.task!.cancel(params.taskId)),
-  });
-  return [
-    withIrisToolCallContext(fileTool('read', Type.Object({
-      path: Type.String({ description: 'Path to the file to read (relative or absolute)' }),
-      offset: Type.Optional(Type.Number({ description: '1-indexed line number to start reading from' })),
-      limit: Type.Optional(Type.Number({ description: 'Maximum number of lines to read' })),
-    }), async (_id, params) => {
-      await operations.read.access(join(cwd, params.path));
-      const readOptions = {
-        ...(params.offset === undefined ? {} : { offset: params.offset }),
-        ...(params.limit === undefined ? {} : { limit: params.limit }),
-      };
-      const media = await operations.read.readMediaFile(
-        join(cwd, params.path),
-        Object.keys(readOptions).length > 0 ? readOptions : undefined,
-      );
-      if (media.kind === 'image') {
-        return {
-          content: [
-            { type: 'text' as const, text: renderReadImageSummary(params.path, media) },
-            { type: 'image' as const, data: media.dataBase64, mimeType: media.mimeType },
-          ],
-          details: {},
-        };
-      }
-      return { content: [{ type: 'text' as const, text: media.text }], details: {} };
-    })),
-    withIrisToolCallContext(fileTool('edit', Type.Object({
-      path: Type.String(),
-      edits: Type.Array(Type.Object({ oldText: Type.String(), newText: Type.String() }), { minItems: 1 }),
-    }), async (_id, params) => {
-      await operations.edit.writeFile(join(cwd, params.path), params.edits);
-      return {
-        content: [{ type: 'text' as const, text: `Successfully replaced ${params.edits.length} block(s) in ${params.path}.` }],
-        details: {},
-      };
-    })),
-    withIrisToolCallContext(fileTool('write', Type.Object({
-      path: Type.String({ description: 'Path to the file to write (relative or absolute)' }),
-      content: Type.String({ description: 'Content to write to the file' }),
-    }), async (_id, params) => {
-      await operations.write.writeFile(join(cwd, params.path), params.content);
-      return { content: [{ type: 'text' as const, text: `Successfully wrote ${Buffer.byteLength(params.content, 'utf8')} bytes to ${params.path}` }], details: {} };
-    })),
-    withIrisToolCallContext(terminal),
-    ...(operations.task ? [taskStart, taskGet, taskList, taskCancel] : []),
-  ] as const;
-}
-
-function taskToolResponse(result: JtpBuiltinResult): { content: Array<{ type: 'text'; text: string }>; details: JtpBuiltinResult } {
-  return {
-    content: [{ type: 'text', text: result.kind === 'task' ? result.outputText : JSON.stringify(result) }],
-    details: result,
-  };
 }
 
 interface IrisModelRuntime {
@@ -372,21 +142,6 @@ function createIrisRuntime(agentDir: string): IrisModelRuntime {
     getError: () => undefined,
     streamSimple: (model, context, options) => models.streamSimple(model, context, options),
     completeSimple: (model, context, options) => models.completeSimple(model, context, options),
-  };
-}
-
-function fileTool(name: string, parameters: unknown, execute: (id: string, params: any) => Promise<unknown>): any {
-  return { name, label: name, description: `${name} a file`, parameters, execute };
-}
-
-function withIrisToolCallContext<T extends { execute: (...args: any[]) => any }>(tool: T): T {
-  return {
-    ...tool,
-    execute: (toolCallId: string, params: unknown, signal?: AbortSignal, onUpdate?: unknown, context?: unknown) =>
-      irisToolCallContext.run(
-        toolCallId,
-        () => tool.execute(toolCallId, params, signal, onUpdate, context),
-      ),
   };
 }
 
@@ -495,16 +250,12 @@ export function renderPromptContent(
 }
 
 export async function createIrisPiSession(options: {
-    cwd: string;
     agentDir: string;
     providerProfileRoot: string;
-    operations?: IrisToolHostOperations;
     history: AgentHistorySnapshot;
     model: IrisAgentModelRef;
-    commandShell: AgentCommandShell;
     providerProxy: AgentProviderProxy;
     customParameters?: Record<string, unknown>;
-    enabledTools?: string[];
     /** Pre-projected JTP tools. When supplied, Pi does not construct tool definitions. */
     tools?: Tool[];
     systemPrompt?: string;
@@ -544,15 +295,7 @@ export async function createIrisPiSession(options: {
   const emit = async (event: unknown) => {
     for (const listener of listeners) await listener(event);
   };
-  const enabled = new Set(options.enabledTools ?? [...enabledJtpToolIds()]);
-  const projectedTools = options.tools ?? (options.operations
-    ? createIrisPiToolDefinitions(options.cwd, options.operations, options.commandShell)
-    : [])
-    .filter((tool) => enabled.has(tool.name))
-    .map((tool) => {
-      const descriptor = JTP_BUILTIN_DESCRIPTORS.find((item) => item.id === tool.name);
-      return { name: tool.name, description: descriptor?.description ?? tool.description, parameters: descriptor?.inputSchema ?? tool.parameters };
-    }) as Tool[];
+  const projectedTools = options.tools ?? [];
   const execute = async (input?: string, images?: readonly AgentPromptImage[]) => {
     if (input !== undefined) {
       state.messages.push({
@@ -901,16 +644,6 @@ function compareModels(left: IrisAgentModelOption, right: IrisAgentModelOption):
   return left.provider.localeCompare(right.provider) || left.name.localeCompare(right.name);
 }
 
-function defaultToolShell(): AgentCommandShell {
-  return process.platform === 'win32'
-    ? { kind: 'powershell', executable: 'powershell.exe', displayName: 'Windows PowerShell' }
-    : {
-        kind: 'posix',
-        executable: process.env.SHELL || '/bin/bash',
-        displayName: process.env.SHELL || '/bin/bash',
-      };
-}
-
 export function restoreIrisPiHistory(
   sessionManager: IrisHistoryManager,
   history: AgentHistorySnapshot,
@@ -1239,4 +972,6 @@ function isPiMessage(value: unknown): value is Record<string, unknown> {
   const role = (value as Record<string, unknown>).role;
   return role === 'user' || role === 'assistant' || role === 'toolResult';
 }
+
+
 
