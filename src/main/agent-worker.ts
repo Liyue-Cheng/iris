@@ -15,7 +15,6 @@ import {
   type AgentWorkerInitRuntime,
   type AgentWorkerRequest,
 } from '@shared/agent-protocol';
-import type { AgentTextEdit } from '@shared/agent-protocol';
 import {
   IRIS_EXECUTOR_VERSION,
   createIrisPiSession,
@@ -26,7 +25,7 @@ import {
   type IrisToolHostOperations,
 } from './agent/pi-adapter';
 import { renderToolResultContent } from './agent/tool-result-content';
-import { AGENT_TERMINAL_MAX_TIMEOUT_SECONDS } from './agent/command-pty';
+import { jtpRequestToLegacyInput } from './jtp/builtin-provider';
 import { collectKnownSecrets, sanitizeProviderPayload } from './agent/context-artifact';
 import { loadStoredIrisAgentProviderProfiles } from './agent/provider-profiles';
 import { AGENT_SUPERVISION_RULE } from './agent/supervision';
@@ -300,8 +299,9 @@ async function prepareExecution(
       }
       let result: AgentToolOperationResult;
       try {
-        const input = providerToolCallInput(toolCall.name, toolCall.arguments, baseRuntime.cwd);
-        result = await requestTool(input, { id: toolCall.id, tool: toolCall.name, arguments: toolCall.arguments });
+        const request = { id: toolCall.id, tool: toolCall.name, arguments: toolCall.arguments };
+        const input = jtpRequestToLegacyInput(request, baseRuntime.cwd);
+        result = await requestTool(input, request);
       } catch (error) {
         // A deterministic ToolCall failure is part of the provider conversation.
         // Returning it as an error result lets the model recover or choose a
@@ -389,68 +389,6 @@ async function prepareExecution(
     cwd: baseRuntime.cwd,
     agentDir: baseRuntime.agentDir,
   };
-}
-
-function providerToolCallInput(
-  name: string,
-  args: Record<string, unknown>,
-  cwd: string,
-): AgentToolOperationInput {
-  const path = typeof args.path === 'string' ? args.path : '';
-  if (name === 'read') return {
-    tool: 'read', operation: 'readFile',
-    absolutePath: path.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(path) ? path : `${cwd}/${path}`,
-    ...(typeof args.offset === 'number' ? { offset: args.offset } : {}),
-    ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
-  };
-  if (name === 'edit') return {
-    tool: 'edit', operation: 'writeFile',
-    absolutePath: path.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(path) ? path : `${cwd}/${path}`,
-    edits: parseTextEdits(args.edits),
-  };
-  if (name === 'write') return {
-    tool: 'write', operation: 'writeFile',
-    absolutePath: path.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(path) ? path : `${cwd}/${path}`,
-    content: typeof args.content === 'string' ? args.content : '',
-  };
-  if (name === 'terminal') {
-    const timeout = args.timeout;
-    if (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout <= 0 ||
-      timeout > AGENT_TERMINAL_MAX_TIMEOUT_SECONDS) {
-      throw new Error(`Terminal timeout must be a finite positive value no greater than ${AGENT_TERMINAL_MAX_TIMEOUT_SECONDS} seconds.`);
-    }
-    return {
-      tool: 'terminal', operation: 'exec', command: typeof args.command === 'string' ? args.command : '',
-      intent: args.intent === 'operation' ? 'operation' : 'information', cwd,
-      timeout,
-      ...(Array.isArray(args.successExitCodes)
-        ? { successExitCodes: args.successExitCodes.filter((value): value is number => typeof value === 'number') }
-        : {}),
-    };
-  }
-  if (name === 'task_start') return {
-    tool: 'task_start', operation: 'start',
-    command: typeof args.command === 'string' ? args.command : '',
-    title: typeof args.title === 'string' ? args.title : '',
-    ...(Array.isArray(args.successExitCodes)
-      ? { successExitCodes: args.successExitCodes.filter((value): value is number => typeof value === 'number') }
-      : {}),
-  };
-  if (name === 'task_get') return {
-    tool: 'task_get', operation: 'get', taskId: typeof args.taskId === 'string' ? args.taskId : '',
-    ...(typeof args.cursor === 'string' ? { cursor: args.cursor } : {}),
-    ...(typeof args.maxBytes === 'number' ? { maxBytes: args.maxBytes } : {}),
-  };
-  if (name === 'task_list') return {
-    tool: 'task_list', operation: 'list',
-    ...(args.scope === 'all' || args.scope === 'active' ? { scope: args.scope } : {}),
-    ...(typeof args.cursor === 'string' ? { cursor: args.cursor } : {}),
-    ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
-  };
-  if (name === 'task_cancel') return {
-    tool: 'task_cancel', operation: 'cancel', taskId: typeof args.taskId === 'string' ? args.taskId : '',
-  };
-  throw new Error(`Unknown Iris Agent tool: ${name}`);
 }
 
 async function superviseTerminal(
@@ -595,17 +533,6 @@ function createWorkerOperations(): IrisToolHostOperations {
       cancel: async (taskId) => requestTool({ tool: 'task_cancel', operation: 'cancel', taskId }),
     },
   };
-}
-
-function parseTextEdits(value: unknown): AgentTextEdit[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
-    const item = entry as Record<string, unknown>;
-    return typeof item.oldText === 'string' && typeof item.newText === 'string'
-      ? [{ oldText: item.oldText, newText: item.newText } satisfies AgentTextEdit]
-      : [];
-  });
 }
 
 async function requestTool(
