@@ -79,7 +79,7 @@ async function bootstrap(): Promise<void> {
   // wrong theme; index.html's static data-theme covers the load gap.
   await initSettingsStore();
   wireJtpTools();
-  void hydrateJtpTools();
+  void hydrateJtpTools().catch(() => undefined);
 
   wireInterrupts();
 

@@ -261,7 +261,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
   });
   ipcMain.handle(CHANNELS.IRIS_AGENT_TOOLS, () => {
     const enabled = settingsManager.get().experimental.jtpTools;
-    return JTP_BUILTIN_DESCRIPTORS.map((tool) => ({ id: tool.id, title: tool.title, description: tool.description, provider: tool.provider, enabled: enabled[tool.id] ?? tool.enabledByDefault }));
+    return JTP_BUILTIN_DESCRIPTORS.map((tool) => ({ id: tool.id, title: tool.title, description: tool.description, provider: tool.provider, enabled: enabled[tool.id as keyof typeof enabled] ?? tool.enabledByDefault }));
   });
 
   const currentAppInfo = (): AppInfo =>
