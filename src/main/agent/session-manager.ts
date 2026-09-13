@@ -2035,7 +2035,11 @@ export class IrisAgentSessionManager extends EventEmitter {
         await mcp.close();
       }
     }
-    registry.setEnabled(enabledJtpToolIds(this.options.settingsManager?.get().experimental.jtpTools));
+    const enabledIds = enabledJtpToolIds(this.options.settingsManager?.get().experimental.jtpTools);
+    for (const descriptor of registry.descriptorsList()) {
+      if (descriptor.provider.startsWith('mcp:')) enabledIds.add(descriptor.id);
+    }
+    registry.setEnabled(enabledIds);
     const runtime = new JtpRuntime(registry);
     runtime.subscribe((event) => this.emit('jtpEvent', event));
     this.jtpRuntimes.set(session.id, runtime);
