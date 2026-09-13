@@ -39,7 +39,7 @@ import { useSettings } from '@renderer/stores/settings-store';
 import { openWorkspaceSession } from '@renderer/lib/session-actions';
 import { openIrisAgent } from '@renderer/lib/iris-agent-actions';
 import { closeProjectedSession } from '@renderer/lib/session-projection-actions';
-import { isActiveReportStatus } from '@shared/document-status';
+import { isActiveDocumentStatus } from '@shared/document-status';
 import { StatusBadge } from '@renderer/components/ui/status-badge';
 import { SessionDot } from '@renderer/components/ui/session-dot';
 import { LauncherMenuItems } from '@renderer/components/layout/RightPane';
@@ -129,7 +129,7 @@ function DocRow({ doc, archived }: { doc: IrisDoc; archived: boolean }): JSX.Ele
         {doc.frontmatterBroken && (
           <FileWarning className="ml-auto h-3.5 w-3.5 shrink-0 text-destructive/80" />
         )}
-        {doc.type === 'issue' && doc.status && !doc.frontmatterBroken && (
+        {doc.status && !doc.frontmatterBroken && (
           <StatusBadge value={doc.status} size="sm" className="ml-auto shrink-0" />
         )}
       </button>
@@ -166,8 +166,8 @@ function TypeSection({
             isActiveIssue(doc) ||
             projections.some((session) => session.anchor.kind === 'document' && session.anchor.path === doc.path),
         )
-      : type === 'report' && !archived
-        ? docs.filter((d) => isActiveReportStatus(d.status))
+      : type !== 'issue' && !archived
+        ? docs.filter((d) => isActiveDocumentStatus(d.status))
         : docs;
   const visibleDocs = sortDocs(
     lensDocs.filter((d) => matchesFilter(d, filter)),

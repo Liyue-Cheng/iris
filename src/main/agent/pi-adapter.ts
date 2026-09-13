@@ -525,6 +525,11 @@ export async function createIrisPiSession(options: {
       `Configured Iris Agent model was not found: ${modelRef.provider}/${modelRef.modelId}`,
     );
   }
+  if (!model.input?.length) {
+    throw new Error(
+      `Model input capability is not configured: ${modelRef.provider}/${modelRef.modelId}. Configure text/image input explicitly before use.`,
+    );
+  }
   const transport = createProviderTransport(providerProxy);
   const streamRuntime = instrumentProviderPayloads(modelRuntime, onProviderPayload, onProviderFailure, transport.fetch);
   const messages = options.history.messages.map((item) => toPiHistoryMessage(item, model));
@@ -854,10 +859,11 @@ export function toIrisModelOption(model: {
     api: model.api,
     reasoning: model.reasoning,
     ...(configured?.customParameters ? { customParameters: configured.customParameters } : {}),
-    // The composer gates its attach control on this. A catalog that does not
-    // declare image input is treated as text-only rather than assumed capable.
+    // The composer gates its attach control on explicit model capability data.
     capabilities: {
-      input: model.input?.includes('image') ? ['text', 'image'] : ['text'],
+      input: (configured?.input ?? model.input)?.includes('image')
+        ? ['text', 'image']
+        : (configured?.input ?? model.input)?.length ? ['text'] : [],
     },
     ...(model.contextWindow ? { contextWindowTokens: model.contextWindow } : {}),
     ...(model.maxTokens ? { maxOutputTokens: model.maxTokens } : {}),
@@ -1174,11 +1180,16 @@ function toPiHistoryMessage(
     } as AssistantMessage;
   }
   if (item.role === 'tool' && item.toolCallId && item.tool) {
+    if (!Array.isArray(item.content)) {
+      throw new Error(
+        `Invalid tool history content for ${item.toolCallId}: expected an array of content blocks, got ${typeof item.content}.`,
+      );
+    }
     return {
       role: 'toolResult',
       toolCallId: item.toolCallId,
       toolName: item.tool,
-      content: toPiContent(item.content),
+      content: toPiToolResultContent(item.content),
       isError: item.isError ?? false,
       timestamp: item.createdAt,
     } as ToolResultMessage;
@@ -1199,6 +1210,14 @@ function toPiContent(
   content: AgentHistorySnapshot['messages'][number]['content'],
 ): string | Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> {
   if (typeof content === 'string') return content;
+  return content.map((part) => part.type === 'text'
+    ? { type: 'text' as const, text: part.text }
+    : { type: 'image' as const, data: part.dataBase64, mimeType: part.attachment.mimeType });
+}
+
+function toPiToolResultContent(
+  content: Exclude<AgentHistorySnapshot['messages'][number]['content'], string>,
+): Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> {
   return content.map((part) => part.type === 'text'
     ? { type: 'text' as const, text: part.text }
     : { type: 'image' as const, data: part.dataBase64, mimeType: part.attachment.mimeType });

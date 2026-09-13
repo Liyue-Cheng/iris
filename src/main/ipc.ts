@@ -1265,6 +1265,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
           return {
             modelId: model.modelId,
             displayName: model.name,
+            ...(model.capabilities?.input ? { input: [...model.capabilities.input] } : {}),
             api: model.api === 'anthropic-messages' ? 'anthropic-messages' as const : 'openai-responses' as const,
             contextWindowTokens,
             maxOutputTokens: model.maxOutputTokens ?? reserveOutputTokens,

@@ -186,6 +186,7 @@ function normalizeConfiguredModel(model: IrisAgentConfiguredModel): IrisAgentCon
   return {
     modelId: model.modelId.trim(),
     displayName: model.displayName.trim() || model.modelId.trim(),
+    ...(model.input?.length ? { input: [...new Set(model.input.filter((kind): kind is 'text' | 'image' => kind === 'text' || kind === 'image'))] } : {}),
     ...(model.api ? { api: model.api } : {}),
     contextWindowTokens,
     maxOutputTokens,
@@ -221,7 +222,10 @@ export function profileModelsConfig(
         name: id,
         api,
         reasoning: false,
-        input: ['text'] as ('text' | 'image')[],
+        // Unknown provider models have no trustworthy capability metadata. An
+        // empty declaration keeps them conservative without pretending they
+        // are text-only; users can explicitly set input on the profile.
+        input: configured?.input?.length ? [...configured.input] : [],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: configured?.contextWindowTokens ?? 128_000,
         maxTokens: configured?.maxOutputTokens ?? 16_384,
@@ -232,7 +236,7 @@ export function profileModelsConfig(
       name: model.name,
       api,
       reasoning: model.reasoning,
-      input: [...model.input],
+      input: configured?.input?.length ? [...configured.input] : [...model.input],
       cost: model.cost,
       contextWindow: configured?.contextWindowTokens ?? model.contextWindow,
       maxTokens: configured?.maxOutputTokens ?? model.maxTokens,

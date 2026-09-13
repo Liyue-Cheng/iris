@@ -45,8 +45,7 @@ function typedFolder(path: string): StatusDocumentType | null {
   const segments = path.replace(/\\/g, '/').split('/');
   for (let i = segments.length - 2; i >= 0; i--) {
     const segment = segments[i];
-    if (segment === 'issue' || segment === 'report') return segment;
-    if (segment === 'status' || segment === 'misc') return null;
+    if (segment === 'issue' || segment === 'report' || segment === 'status' || segment === 'misc') return segment;
   }
   return null;
 }

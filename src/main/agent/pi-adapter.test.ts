@@ -210,7 +210,7 @@ describe('Iris Pi adapter', () => {
           id: 't1',
           intentId: 'turn-1',
           role: 'tool',
-          content: 'tool output',
+          content: [{ type: 'text', text: 'tool output' }],
           createdAt: 3,
           toolCallId: 'call-1',
           tool: 'read',
@@ -229,6 +229,19 @@ describe('Iris Pi adapter', () => {
       ],
     });
     expect(messages[2]).toMatchObject({ toolCallId: 'call-1' });
+    expect(messages[2]).toMatchObject({ content: [{ type: 'text', text: 'tool output' }] });
+  });
+
+  it('rejects legacy string tool history at the Pi boundary', () => {
+    const manager = new IrisHistoryManager();
+    expect(() => restoreIrisPiHistory(manager, {
+      revision: 1,
+      anchor: { kind: 'workspace', path: '.iris' },
+      messages: [{
+        id: 'tool-1', intentId: 'intent-1', role: 'tool', content: 'invalid', createdAt: 1,
+        toolCallId: 'call-1', tool: 'read',
+      }],
+    })).toThrow(/expected an array of content blocks/);
   });
 
   it('returns an image block next to the text for an image read', async () => {
@@ -299,10 +312,10 @@ describe('Iris Pi adapter', () => {
       reasoning: false, input: ['text'],
     });
     expect(textOnly.capabilities).toEqual({ input: ['text'] });
-    // A catalog that says nothing is treated as text-only, never as capable.
+    // A catalog that says nothing is unknown, never silently text-only.
     expect(toIrisModelOption({
       provider: 'openai', id: 'unknown', name: 'Unknown', api: 'openai-responses', reasoning: false,
-    }).capabilities).toEqual({ input: ['text'] });
+    }).capabilities).toEqual({ input: [] });
   });
 
   it('replays a stored image into the provider context with its bytes', () => {

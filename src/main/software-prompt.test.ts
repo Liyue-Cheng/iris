@@ -109,17 +109,10 @@ describe('software prompt invariants', () => {
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('<name>.assets/');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('`links.txt`');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('Do not delete an internal file merely because');
-    expect(SOFTWARE_PROMPT_TEMPLATE).toContain('No unsolicited Iris-managed files');
-    expect(SOFTWARE_PROMPT_TEMPLATE).toContain(
-      'For an explicitly requested implementation',
-    );
+    expect(SOFTWARE_PROMPT_TEMPLATE).toContain('When writing PM results');
     expect(SOFTWARE_PROMPT_TEMPLATE).not.toContain('Never create a new file');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('entry file');
-    expect(SOFTWARE_PROMPT_TEMPLATE).toContain(
-      'The `labels:` frontmatter field is reserved and is not currently enabled.',
-    );
-    expect(SOFTWARE_PROMPT_TEMPLATE).toContain('Do not add, populate, edit, normalize, or remove it');
-    expect(SOFTWARE_PROMPT_TEMPLATE).toContain('Preserve an existing valid');
+    expect(SOFTWARE_PROMPT_TEMPLATE).toContain('Preserve an existing `labels:` field verbatim.');
     expect(SOFTWARE_PROMPT_TEMPLATE).not.toContain('feeds the filter chips');
     expect(SOFTWARE_PROMPT_TEMPLATE).not.toContain('iris-user');
     expect(SOFTWARE_PROMPT_TEMPLATE).not.toContain('~/.iris/CONVENTIONS.md');
@@ -130,7 +123,7 @@ describe('software prompt invariants', () => {
   it('keeps new-document skeletons aligned with the prompt', () => {
     expect(docSkeleton('issue', 'x')).toBe('---\ntitle: x\nstatus: Todo\n---\n');
     expect(docSkeleton('report', 'x')).toBe('---\ntitle: x\nstatus: Active\n---\n');
-    expect(docSkeleton('status', 'x')).toBe('---\ntitle: x\n---\n');
-    expect(docSkeleton('misc', 'x')).toBe('---\ntitle: x\n---\n');
+    expect(docSkeleton('status', 'x')).toBe('---\ntitle: x\nstatus: Active\n---\n');
+    expect(docSkeleton('misc', 'x')).toBe('---\ntitle: x\nstatus: Active\n---\n');
   });
 });

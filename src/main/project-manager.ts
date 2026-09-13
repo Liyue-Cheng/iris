@@ -897,8 +897,11 @@ export class ProjectManager extends EventEmitter {
       const blocks = source === null ? [] : parseProjectBlocks(source);
       const writeError = this.projectPromptWriteErrors.get(path) ?? null;
       let state: ProjectPromptEntryStatus['state'];
-      if (writeError) state = 'write-failed';
-      else if (blocks.length > 1) state = 'duplicate';
+      // A malformed entry is deterministically reported as duplicate even
+      // when the attempted projection also recorded the same failure. This
+      // keeps the state useful instead of making it depend on watcher timing.
+      if (blocks.length > 1) state = 'duplicate';
+      else if (writeError) state = 'write-failed';
       else if (desired === '' && blocks.length === 0) state = 'synced';
       else if (blocks.length === 0) state = 'missing';
       else if (blocks[0]?.body === desired && !blocks[0].hasAttributes) state = 'synced';

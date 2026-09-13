@@ -3092,6 +3092,10 @@ function applyProviderMessage(
     return;
   }
   if (role !== 'toolResult') return;
+  if (!Array.isArray(message.content) || !message.content.every((part) =>
+    isRecord(part) && (part.type === 'text' || part.type === 'image'))) {
+    throw new Error('Provider returned an invalid tool result: content must be an array of content blocks.');
+  }
   const toolCallId = correlation.toolCallId ?? (typeof message.toolCallId === 'string' ? message.toolCallId : null);
   if (!toolCallId) return;
   const turn = session.turns.find((candidate) =>

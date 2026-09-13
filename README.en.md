@@ -14,7 +14,7 @@ Iris brings project documents, agents, Git state, and human attention into one d
 
 Your project state stays in ordinary Markdown under `.iris/`. External agents run in real PTYs at the project root. Git remains the collaboration and delivery layer. There is no Iris account, cloud database, or proprietary project format.
 
-> Current version: `0.1.0-beta.20`. The experimental Iris Agent remains very early and is disabled by default; the existing external agent CLI workflow is unchanged. Iris is Windows-first and currently ships for Windows x64.
+> Current version: `0.1.0-beta.22`. The experimental Iris Agent remains very early and is disabled by default; the existing external agent CLI workflow is unchanged. Iris is Windows-first and currently ships for Windows x64.
 
 > This is the English product overview. Active development records and maintainer discussions are currently written primarily in Simplified Chinese. English bug reports and pull requests are welcome, but contributors may need translation support when following the live `.iris/` project record.
 

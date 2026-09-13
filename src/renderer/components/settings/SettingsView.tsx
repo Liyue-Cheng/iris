@@ -1008,6 +1008,7 @@ function IrisAgentSettingsPanel({
       [profileId]: [...models, {
         modelId,
         displayName: modelId,
+        input: ['text'],
         contextWindowTokens: 128_000,
         maxOutputTokens: 16_384,
         reserveOutputTokens: 16_384,
@@ -1266,6 +1267,19 @@ function IrisAgentSettingsPanel({
                         <div className="min-w-0">
                           <div className="truncate text-[13px] text-foreground">{model.displayName || model.modelId}</div>
                           <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">{model.modelId}</div>
+                          <label className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+                            <input
+                              type="checkbox"
+                              checked={model.input?.includes('image') === true}
+                              onChange={(event) => setEditingModels((current) => ({
+                                ...current,
+                                [profile.id]: models.map((item, itemIndex) => itemIndex === index
+                                  ? { ...item, input: event.target.checked ? ['text', 'image'] : ['text'] }
+                                  : item),
+                              }))}
+                            />
+                            Image input
+                          </label>
                         </div>
                         <div className="flex min-w-0 items-center gap-2">
                           <Input

@@ -119,7 +119,7 @@ function StatusEditor({
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState('');
-  const options: readonly string[] = type === 'report' ? REPORT_STATUSES : ISSUE_STATUSES;
+  const options: readonly string[] = type === 'issue' ? ISSUE_STATUSES : REPORT_STATUSES;
 
   const set = (v: string): void => {
     const trimmed = v.trim();

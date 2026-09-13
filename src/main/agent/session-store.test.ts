@@ -286,7 +286,7 @@ describe('IrisAgentSessionStore', () => {
       const toolMessage = (await store.history('session-1')).messages
         .find((message) => message.role === 'tool')!;
       // A missing file must never become a fabricated image block.
-      expect(toolMessage.content).toBe('image was here');
+      expect(toolMessage.content).toEqual([{ type: 'text', text: 'image was here' }]);
     } finally {
       await removeTempDataDir(userData);
     }

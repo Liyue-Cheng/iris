@@ -61,7 +61,7 @@ describe('i18n protocol boundary', () => {
     expect(englishLocaleOutput).toEqual(chineseLocaleOutput);
     expect(englishLocaleOutput.issue).toContain('status: Todo');
     expect(englishLocaleOutput.report).toContain('status: Active');
-    expect(englishLocaleOutput.status).toBe('---\ntitle: Current truth\n---\n');
+    expect(englishLocaleOutput.status).toBe('---\ntitle: Current truth\nstatus: Active\n---\n');
     expect(englishLocaleOutput.focusScript).toContain('FOCUS_DOC');
     expect(englishLocaleOutput.focusScript).toContain('<iris-focus');
     expect(englishLocaleOutput.focusScript).toContain('<iris-workspace');

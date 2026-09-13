@@ -683,6 +683,8 @@ export interface IrisAgentProviderCatalog {
 export interface IrisAgentConfiguredModel {
   modelId: string;
   displayName: string;
+  /** Explicit provider capability metadata. Required for models not in Pi's catalog. */
+  input?: Array<'text' | 'image'>;
   api?: 'openai-responses' | 'anthropic-messages';
   contextWindowTokens: number;
   maxOutputTokens: number;

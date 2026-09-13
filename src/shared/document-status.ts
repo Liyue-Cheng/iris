@@ -20,6 +20,9 @@ export const REPORT_STATUS = {
 export type ReportStatus = (typeof REPORT_STATUS)[keyof typeof REPORT_STATUS];
 export const REPORT_STATUSES = Object.freeze(Object.values(REPORT_STATUS)) as readonly ReportStatus[];
 
+/** Non-issue documents share the simple attention lifecycle. */
+export const DOCUMENT_STATUSES = REPORT_STATUSES;
+
 export type StatusActivity = 'active' | 'inactive';
 export type IssueResolution = 'open' | 'resolved';
 
@@ -32,7 +35,7 @@ export interface DocumentStatusSemantics {
   completesIssue: boolean;
 }
 
-export type StatusDocumentType = 'issue' | 'report';
+export type StatusDocumentType = 'issue' | 'status' | 'report' | 'misc';
 
 export interface StatusTransitionPlan {
   closeSessions: boolean;
@@ -110,6 +113,15 @@ export function classifyReportStatus(status: string | null): DocumentStatusSeman
   return reportSemanticsByValue.get(normalize(status)) ?? ACTIVE_OPEN;
 }
 
+/** Status semantics for every non-issue typed document. */
+export function classifyDocumentStatus(status: string | null): DocumentStatusSemantics {
+  return classifyReportStatus(status);
+}
+
+export function isActiveDocumentStatus(status: string | null): boolean {
+  return classifyDocumentStatus(status).activity === 'active';
+}
+
 export function isActiveIssueStatus(status: string | null): boolean {
   return classifyIssueStatus(status).activity === 'active';
 }
@@ -135,8 +147,8 @@ export function planDocumentStatusTransition(
 ): StatusTransitionPlan {
   const semantics = type === 'issue'
     ? classifyIssueStatus(status)
-    : type === 'report'
-      ? classifyReportStatus(status)
+    : type === 'report' || type === 'status' || type === 'misc'
+      ? classifyDocumentStatus(status)
       : null;
   return {
     closeSessions: semantics?.closeSessionsOnEnter ?? false,

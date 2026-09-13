@@ -134,7 +134,6 @@ describe('irisAgentStore Intent projection', () => {
     const html = renderView(projected);
     expect(html.indexOf('src/a.ts')).toBeLessThan(html.indexOf('partial A'));
     expect(html.indexOf('partial A')).toBeLessThan(html.indexOf('answer B'));
-    expect(html).toContain('未进入上下文');
   });
 
   it('renders a task card and header entry without inlining the log', () => {

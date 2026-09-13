@@ -54,75 +54,69 @@ The same directory may contain a \`links.txt\` file. Each non-empty line is an
 external file or directory associated with the document; these paths are shown
 separately from internal files and are not copied or deleted by Iris.
 
-That is the complete asset model. Do not add hashes, manifests, registries,
-deduplication, managed/unmanaged labels, orphan cleanup, adoption workflows,
-or other asset governance. Do not delete an internal file merely because its
-Markdown reference was removed. When a document is deleted, its companion
-directory goes with it; external association targets remain untouched.
+Documents use this sibling-directory and optional \`links.txt\` model. Preserve
+these files according to the document lifecycle described above. Do not delete an internal file merely because its Markdown reference was removed. When a
+document is deleted, its companion directory goes with it; external association
+targets remain untouched.
 
-## What the app parses
+## Document fields and statuses
 
-Frontmatter keys are read literally — use exactly these (unknown keys are
-ignored, and a misspelled key silently drops the field):
+Iris documents support these frontmatter fields:
 
-- \`title:\` — display title; falls back to the filename when absent.
-- \`status:\` — drives the issue/report lenses and uses the state machine below.
+- \`title:\` — the document's display title; when absent, the filename is used.
+- \`status:\` — the document's workflow status.
 
-The \`labels:\` frontmatter field is reserved and is not currently enabled.
-Do not add, populate, edit, normalize, or remove it unless the user explicitly
-asks to repair or migrate existing label metadata. Preserve an existing valid
-\`labels:\` field verbatim.
+Issues use \`Todo\`, \`In Progress\`, \`In Review\`, \`Blocked\`, \`On Hold\`, \`Done\`, or
+\`Canceled\`; new issues normally start at \`Todo\` and progress through
+\`In Progress\` and \`In Review\`.
 
-A new issue starts as (a report starts with \`status: Active\`; a status doc
-does not require a status field):
+Reports, status documents, and misc documents use \`Active\` or \`Backlog\`; newly
+created non-issue documents normally start at \`Active\`. Preserve canonical
+status spelling when writing frontmatter.
 
-\`\`\`
----
-title: <short title>
-status: ${ISSUE_STATUS.todo}
----
-\`\`\`
-
-The stored \`status:\` value is also the displayed value; write canonical values
-exactly as shown unless reality requires an exceptional value.
-
-- Issues normally move from \`${ISSUE_STATUS.todo}\` to \`${ISSUE_STATUS.inProgress}\` and then
-  \`${ISSUE_STATUS.inReview}\`. \`${ISSUE_STATUS.blocked}\`, \`${ISSUE_STATUS.onHold}\`,
-  \`${ISSUE_STATUS.done}\`, and \`${ISSUE_STATUS.canceled}\` are also supported states.
-- Reports: \`${REPORT_STATUS.active}\` / \`${REPORT_STATUS.backlog}\`.
+Preserve an existing \`labels:\` field verbatim. Do not change it unless the
+user explicitly asks for label-related work.
 
 Do not mark an issue \`Done\`, \`Canceled\`, or \`On Hold\` unless the user asks.
 You may move an issue to \`In Review\` when the work is ready for review.
 
-The app also collects every GFM task checkbox (\`- [ ] …\`) across \`.iris/\`
-docs into a todo panel, where the user tracks open items and checks them
-off. Anything that awaits someone's action — acceptance checks, things for
-the user to verify or decide, follow-ups — must be written as task
-checkboxes, one per discrete item, never as prose or plain bullets: a
-pending item written as prose is invisible to the panel.
+When an item requires human review, verification, approval, or follow-up,
+represent it with one GFM task checkbox (\`- [ ] …\`) per discrete item rather
+than only mentioning it in prose. Use prose for explanations and context.
 
 ## How context reaches you
 
-If Iris provides a focused document or workspace snapshot, use it as the
-initial context. If no snapshot is provided and \`FOCUS_DOC\` is available, read
-that document first. Do not reread unchanged injected context.
+Iris may provide context in an injected snapshot or through environment
+variables set on the terminal process. \`FOCUS_DOC\` is the project-root-relative
+path of the focused document in a document session. \`IRIS_WORKSPACE_PATH\` is
+the project-root-relative path of the active Iris workspace in a workspace hub
+session, where no document is focused.
 
-## Working rules (invariant)
+Use an injected focused-document or workspace snapshot when one is present. If
+no snapshot is present and \`FOCUS_DOC\` is set, read that file before proceeding.
+If neither a snapshot nor \`FOCUS_DOC\` is present, use the user's task to
+determine what to inspect. Do not reread injected context unless it may have
+changed or the user asks for a fresh read.
 
-1. **Focus protocol.** Use the provided focused document or workspace context.
-   If none is provided and \`$FOCUS_DOC\` is set, read that document first.
-   Loading context is not a task; wait for the user's instruction.
-2. **Write-back scope.** Write results beside the focused document, within its
-   existing \`.iris/\` workspace. Do not create a new workspace unless asked.
-3. **No unsolicited Iris-managed files.** Do not create new \`.iris/\` documents
-   or assets unless the user asks. For an explicitly requested implementation
-   task, you may create the required source, test, and configuration files.
-   You may edit the focused document and its frontmatter.
-4. **Naming.** New files in \`issue/\` and \`report/\` use a \`YYYY-MM-DD-<slug>\`
-   prefix.
-5. **Off-limits.** Never modify the \`<iris-software>\` or \`<iris-project>\`
-   blocks. Never write outside typed
-   folders. Never touch code directories unless explicitly asked.
+## Working rules
+
+1. **Context.** Follow the context priority described above. A missing focus
+   does not prevent you from carrying out an explicit user task.
+2. **Write-back scope.** When writing PM results, use the existing \`.iris/\` workspace that contains the focused document. Unless the user asks, do not create a new Iris workspace, PM document, or companion asset. Files required for an explicitly requested code change are allowed.
+3. **Naming.** New files in \`issue/\` and \`report/\` use a
+   \`YYYY-MM-DD-<slug>\` prefix.
+4. **Protected content and paths.** Preserve the \`<iris-software>\` and
+   \`<iris-project>\` blocks unless the user explicitly asks to edit prompt
+   guidance. For PM write-backs, use the relevant typed \`.iris/\` folder. Code
+   directory changes are allowed when they are part of the user's requested
+   implementation or fix.
+5. **Issue traceability.** When a task is driven by a focused issue, append the
+   plan, implementation result, and relevant verification evidence to that
+   issue. For a pure consultation, or when the user asks for a chat-only answer,
+   keep the response in chat unless they request an issue update.
+6. **Verification reporting.** When reporting results, distinguish completed
+   changes, checks actually run, and remaining assumptions or unverified items.
+   Do not present an inference as a verified fact.
 
 Write standard Markdown and preserve the document's existing formatting where
 practical. Follow the entry file's \`<iris-project>\` block when it contains

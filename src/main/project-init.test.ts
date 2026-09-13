@@ -265,7 +265,7 @@ describe('project prompt disk synchronization', () => {
     const state = await pm.softwarePromptState();
     expect(state.project.state).toBe('partial');
     expect(state.project.entries).toEqual(expect.arrayContaining([
-      expect.objectContaining({ path: 'AGENTS.md', state: 'write-failed' }),
+      expect.objectContaining({ path: 'AGENTS.md', state: 'duplicate' }),
       expect.objectContaining({ path: 'CLAUDE.md', state: 'write-failed' }),
     ]));
     expect(await fs.readFile(join(dir, 'AGENTS.md'), 'utf8')).toBe(duplicate);
