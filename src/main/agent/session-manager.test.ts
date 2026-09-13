@@ -742,7 +742,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         version: IRIS_AGENT_PROTOCOL_VERSION,
         type: 'tool-request',
         correlation,
-        input: { tool: 'read', operation: 'readFile', absolutePath: 'README.md' },
+        request: { id: 'tool-1', tool: 'read', arguments: { path: 'README.md' } },
       });
       await vi.waitFor(async () => {
         expect((await manager.list(scope)).sessions[0]?.state).toBe('waiting-tool');
@@ -843,7 +843,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
           toolCallId: 'tool-1',
           operationId: 'operation-1',
         },
-        input: { tool: 'read', operation: 'readFile', absolutePath: 'README.md' },
+        request: { id: 'tool-1', tool: 'read', arguments: { path: 'README.md' } },
       });
       await vi.waitFor(() => expect(worker.last('tool-result')).toMatchObject({
         correlation: { toolCallId: 'tool-1', operationId: 'operation-1' },
@@ -977,7 +977,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         version: IRIS_AGENT_PROTOCOL_VERSION,
         type: 'tool-request',
         correlation: { ...run.correlation, toolCallId: 'tool-image', operationId: 'operation-image' },
-        input: { tool: 'read', operation: 'readFile', absolutePath: 'assets/shot.png' },
+        request: { id: 'tool-image', tool: 'read', arguments: { path: 'assets/shot.png' } },
       });
       await vi.waitFor(() => expect(worker.last('tool-result')).toMatchObject({
         correlation: { toolCallId: 'tool-image', operationId: 'operation-image' },
@@ -1011,7 +1011,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         version: IRIS_AGENT_PROTOCOL_VERSION,
         type: 'tool-request',
         correlation: { ...run.correlation, toolCallId: 'tool-image', operationId: 'operation-image' },
-        input: { tool: 'read', operation: 'readFile', absolutePath: 'assets/shot.png' },
+        request: { id: 'tool-image', tool: 'read', arguments: { path: 'assets/shot.png' } },
       });
       await vi.waitFor(() => expect(worker.last('tool-result')).toMatchObject({
         correlation: { toolCallId: 'tool-image', operationId: 'operation-image' },
@@ -1144,7 +1144,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         version: IRIS_AGENT_PROTOCOL_VERSION,
         type: 'tool-request',
         correlation: { ...run.correlation, toolCallId: 'tool-lost', operationId: 'operation-lost' },
-        input: { tool: 'read', operation: 'readFile', absolutePath: 'shot.png' },
+        request: { id: 'tool-lost', tool: 'read', arguments: { path: 'shot.png' } },
       });
       await vi.waitFor(() => expect(worker.last('tool-result')).toMatchObject({ ok: true }));
 
@@ -1165,7 +1165,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         version: IRIS_AGENT_PROTOCOL_VERSION,
         type: 'tool-request',
         correlation: { ...run.correlation, toolCallId: 'tool-lost', operationId: 'operation-lost' },
-        input: { tool: 'read', operation: 'readFile', absolutePath: 'shot.png' },
+        request: { id: 'tool-lost', tool: 'read', arguments: { path: 'shot.png' } },
       });
       // No bytes means no image block: the model is told the stored image is
       // gone instead of being handed a fabricated one.
@@ -1849,14 +1849,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
             toolCallId: 'tool-terminal',
             operationId: 'operation-terminal',
           },
-          input: {
-            tool: 'terminal',
-            operation: 'exec',
-            command,
-            intent: 'operation',
-            timeout: 30,
-            cwd: userData,
-          },
+          request: { id: 'tool-terminal', tool: 'terminal', arguments: { command, intent: 'operation', timeout: 30 } },
         });
 
         await vi.waitFor(async () => {
@@ -2002,14 +1995,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
             toolCallId: 'tool-retained',
             operationId: 'operation-retained',
           },
-          input: {
-            tool: 'terminal',
-            operation: 'exec',
-            command: 'interactive',
-            intent: 'operation',
-            timeout: 30,
-            cwd: userData,
-          },
+          request: { id: 'tool-retained', tool: 'terminal', arguments: { command: 'interactive', intent: 'operation', timeout: 30 } },
         });
         await vi.waitFor(async () => {
           expect((await manager.list(scope)).sessions[0]?.terminals[0]).toMatchObject({ state: 'running' });
@@ -2098,14 +2084,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
             toolCallId: 'tool-attach',
             operationId: 'operation-attach',
           },
-          input: {
-            tool: 'terminal',
-            operation: 'exec',
-            command: 'interactive',
-            intent: 'operation',
-            timeout: 30,
-            cwd: userData,
-          },
+          request: { id: 'tool-attach', tool: 'terminal', arguments: { command: 'interactive', intent: 'operation', timeout: 30 } },
         });
         await vi.waitFor(async () => {
           expect((await manager.list(scope)).sessions[0]?.terminals[0]).toMatchObject({ state: 'running' });
@@ -3161,5 +3140,6 @@ describe('Iris Agent instance lifecycle', () => {
     }
   });
 });
+
 
 

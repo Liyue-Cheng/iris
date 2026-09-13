@@ -188,7 +188,7 @@ export interface AgentJtpRequest {
 }
 
 export type { JtpBuiltinInput, JtpBuiltinResult, JtpInvokeRequest, JtpResponse } from './jtp-protocol';
-import type { JtpBuiltinInput, JtpBuiltinResult } from './jtp-protocol';
+import type { JtpBuiltinResult } from './jtp-protocol';
 
 export type AgentProviderProxy =
   | { mode: 'direct' }
@@ -277,7 +277,7 @@ export type AgentWorkerEvent = AgentProtocolEnvelope &
         supervisionId: string;
         result: AgentTerminalSupervisionResult;
       }
-    | { type: 'tool-request'; input?: JtpBuiltinInput; request?: AgentJtpRequest }
+    | { type: 'tool-request'; request: AgentJtpRequest }
     | { type: 'failure'; code: string; message: string }
     | { type: 'stopped'; reason: 'idle-timeout' | 'shutdown' }
   );

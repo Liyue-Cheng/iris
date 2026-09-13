@@ -118,6 +118,7 @@ import type {
 import { serializeIpcError } from './ipc-error';
 import { JTP_BUILTIN_DESCRIPTORS } from './jtp/builtin-descriptors';
 import type { JtpEvent } from './jtp/protocol';
+import { JtpMcpProvider, discoverMcpDescriptors } from './agent/mcp-provider';
 
 type RawIpcHandler = (
   event: Electron.IpcMainInvokeEvent,
@@ -260,11 +261,30 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       pid: process.pid,
     };
   });
-  ipcMain.handle(CHANNELS.IRIS_AGENT_TOOLS, () => {
+  ipcMain.handle(CHANNELS.IRIS_AGENT_TOOLS, async () => {
     const enabled = settingsManager.get().experimental.jtpTools;
     const builtins = JTP_BUILTIN_DESCRIPTORS.map((tool) => ({ id: tool.id, title: tool.title, description: tool.description, provider: tool.provider, enabled: enabled[tool.id as keyof typeof enabled] ?? tool.enabledByDefault }));
-    const mcp = settingsManager.get().experimental.mcpServers.map((server) => ({ id: `mcp.${server.id}`, title: server.id, description: 'MCP server tools will appear after the server is started.', provider: `mcp:${server.id}`, enabled: true }));
-    return [...builtins, ...mcp];
+    const mcpTools: Array<{ id: string; title: string; description: string; provider: string; enabled: boolean }> = [];
+    for (const server of settingsManager.get().experimental.mcpServers) {
+      const provider = new JtpMcpProvider(server);
+      try {
+        const descriptors = await discoverMcpDescriptors(provider, server.id);
+        for (const descriptor of descriptors) {
+          mcpTools.push({
+            id: descriptor.id,
+            title: descriptor.title,
+            description: descriptor.description,
+            provider: descriptor.provider,
+            enabled: enabled[descriptor.id as keyof typeof enabled] ?? descriptor.enabledByDefault,
+          });
+        }
+      } catch {
+        mcpTools.push({ id: `mcp.${server.id}`, title: server.id, description: 'MCP server unavailable.', provider: `mcp:${server.id}`, enabled: false });
+      } finally {
+        await provider.close();
+      }
+    }
+    return [...builtins, ...mcpTools];
   });
 
   const currentAppInfo = (): AppInfo =>

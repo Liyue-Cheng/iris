@@ -258,7 +258,6 @@ export async function createIrisPiSession(options: {
     customParameters?: Record<string, unknown>;
     /** Pre-projected JTP tools. When supplied, Pi does not construct tool definitions. */
     tools?: Tool[];
-    operations?: unknown;
     systemPrompt?: string;
     executeToolCall?: (toolCall: ToolCall) => Promise<ToolResultMessage>;
     onProviderPayload?: (

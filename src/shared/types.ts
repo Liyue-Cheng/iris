@@ -101,7 +101,8 @@ export interface Settings {
     /** Last Iris Agent model the user selected; used as the default for new sessions. */
     irisAgentDefaultModel: IrisAgentModelRef | null;
     /** JTP built-in tool switches. MCP remains unavailable until configured. */
-    jtpTools: Partial<Record<'read' | 'edit' | 'write' | 'terminal' | 'task_start' | 'task_get' | 'task_list' | 'task_cancel', boolean>>;
+    /** Per-tool enable switches. Built-ins use stable IDs; MCP descriptors use mcp.<server>.<tool>. */
+    jtpTools: Record<string, boolean>;
     mcpServers: Array<{ id: string; command: string; args?: string[]; cwd?: string; env?: Record<string, string> }>;
   };
   /**

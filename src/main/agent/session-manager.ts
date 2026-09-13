@@ -1860,8 +1860,8 @@ export class IrisAgentSessionManager extends EventEmitter {
   ): Promise<void> {
     const correlation = event.correlation;
     if (!correlation.intentId || !correlation.toolCallId || !correlation.operationId) return;
-    const input = event.input ?? (event.request ? jtpRequestToBuiltinInput(event.request, scope.root) : null);
-    if (!input) return;
+    const request = event.request;
+    const input = jtpRequestToBuiltinInput(request, scope.root);
     let current = store.get(session.id) ?? session;
     if (!matchesActiveAgentIntent(current, correlation)) return;
     const invokeId = providerCallForToolCall(current, correlation.toolCallId);
@@ -1949,11 +1949,7 @@ export class IrisAgentSessionManager extends EventEmitter {
     };
     const runtime = await this.jtpRuntimeFor(session, scope, store);
     const execution = runtime.invoke(
-      event.request ?? {
-        id: correlation.operationId,
-        tool: input.tool,
-        arguments: builtinArguments(input),
-      },
+      request,
       new AbortController().signal,
       operationCorrelation,
     );
@@ -2036,8 +2032,11 @@ export class IrisAgentSessionManager extends EventEmitter {
       }
     }
     const enabledIds = enabledJtpToolIds(this.options.settingsManager?.get().experimental.jtpTools);
+    const configuredTools = this.options.settingsManager?.get().experimental.jtpTools ?? {};
     for (const descriptor of registry.descriptorsList()) {
-      if (descriptor.provider.startsWith('mcp:')) enabledIds.add(descriptor.id);
+      if (descriptor.provider.startsWith('mcp:') && (configuredTools[descriptor.id] ?? descriptor.enabledByDefault)) {
+        enabledIds.add(descriptor.id);
+      }
     }
     registry.setEnabled(enabledIds);
     const runtime = new JtpRuntime(registry);
@@ -2917,17 +2916,6 @@ export class IrisAgentSessionManager extends EventEmitter {
   private clearAllPhases(): void {
     for (const sessionId of [...this.livePhases.keys()]) this.clearPhase(sessionId);
   }
-}
-
-function builtinArguments(input: JtpBuiltinInput): Record<string, unknown> {
-  if (input.tool === 'read') return { path: input.absolutePath, ...(input.offset === undefined ? {} : { offset: input.offset }), ...(input.limit === undefined ? {} : { limit: input.limit }) };
-  if (input.tool === 'edit') return { path: input.absolutePath, edits: input.edits ?? [] };
-  if (input.tool === 'write') return input.operation === 'mkdir' ? { path: input.absolutePath, content: '' } : { path: input.absolutePath, content: input.content ?? '' };
-  if (input.tool === 'terminal') return { command: input.command, intent: input.intent, timeout: input.timeout, ...(input.successExitCodes ? { successExitCodes: input.successExitCodes } : {}) };
-  if (input.tool === 'task_start') return { command: input.command, title: input.title, ...(input.successExitCodes ? { successExitCodes: input.successExitCodes } : {}) };
-  if (input.tool === 'task_get') return { taskId: input.taskId, ...(input.cursor ? { cursor: input.cursor } : {}), ...(input.maxBytes === undefined ? {} : { maxBytes: input.maxBytes }) };
-  if (input.tool === 'task_list') return { ...(input.scope ? { scope: input.scope } : {}), ...(input.cursor ? { cursor: input.cursor } : {}), ...(input.limit === undefined ? {} : { limit: input.limit }) };
-  return { taskId: input.taskId };
 }
 
 function sha256(value: string): string {

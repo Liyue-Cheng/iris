@@ -6,7 +6,6 @@ import {
   isAgentWorkerRequest,
   type AgentCorrelation,
   type AgentHistorySnapshot,
-  type JtpBuiltinInput,
   type JtpBuiltinResult,
   type AgentTerminalSupervisionInput,
   type AgentTerminalSupervisionResult,
@@ -18,13 +17,11 @@ import {
 import {
   IRIS_EXECUTOR_VERSION,
   createIrisPiSession,
-  currentIrisProviderToolCallId,
   normalizeIrisInterruptedAssistantMessage,
   storedPiCredentialSecrets,
   unwrapProviderErrorMessage,
 } from './agent/pi-adapter';
 import { renderToolResultContent } from './agent/tool-result-content';
-import { jtpRequestToBuiltinInput } from './jtp/builtin-provider';
 import { collectKnownSecrets, sanitizeProviderPayload } from './agent/context-artifact';
 import { loadStoredIrisAgentProviderProfiles } from './agent/provider-profiles';
 import { AGENT_SUPERVISION_RULE } from './agent/supervision';
@@ -275,19 +272,6 @@ async function prepareExecution(
     providerProfileSecrets,
     providerSecretEnvironment(),
   ]);
-  // Opaque bridge retained for provider test doubles; production execution still
-  // uses the JTP request path below and Pi never interprets this object.
-  const operations = {
-    read: {
-      readFile: async (path: string) => {
-        const id = currentIrisProviderToolCallId() ?? randomUUID();
-        return requestTool(
-          { tool: 'read', operation: 'readFile', absolutePath: path },
-          { id, tool: 'read', arguments: { path } },
-        );
-      },
-    },
-  };
   const result = await createIrisPiSession({
     agentDir: baseRuntime.agentDir,
     providerProfileRoot: baseRuntime.providerProfileRoot,
@@ -296,7 +280,6 @@ async function prepareExecution(
     ...(execution.customParameters ? { customParameters: execution.customParameters } : {}),
     ...(execution.enabledTools ? { enabledTools: execution.enabledTools } : {}),
     ...(execution.tools ? { tools: execution.tools as any } : {}),
-    operations,
     executeToolCall: async (toolCall) => {
       if (execution.enabledTools && !execution.enabledTools.includes(toolCall.name)) {
         return {
@@ -311,8 +294,7 @@ async function prepareExecution(
       let result: JtpBuiltinResult;
       try {
         const request = { id: toolCall.id, tool: toolCall.name, arguments: toolCall.arguments };
-        const input = jtpRequestToBuiltinInput(request, baseRuntime.cwd);
-        result = await requestTool(input, request);
+        result = await requestTool(request);
       } catch (error) {
         // A deterministic ToolCall failure is part of the provider conversation.
         // Returning it as an error result lets the model recover or choose a
@@ -450,12 +432,11 @@ function providerSecretEnvironment(): Record<string, string> {
 }
 
 async function requestTool(
-  input: JtpBuiltinInput,
-  jtpRequest?: { id: string; tool: string; arguments: Record<string, unknown> },
+  jtpRequest: { id: string; tool: string; arguments: Record<string, unknown> },
 ): Promise<JtpBuiltinResult> {
   await providerEventChain;
   const operationId = randomUUID();
-  const toolCallId = jtpRequest?.id ?? currentIrisProviderToolCallId() ?? operationId;
+  const toolCallId = jtpRequest.id;
   const correlation: AgentCorrelation = {
     ...currentCorrelation,
     toolCallId,
@@ -466,7 +447,7 @@ async function requestTool(
     version: IRIS_AGENT_PROTOCOL_VERSION,
     type: 'tool-request',
     correlation,
-    request: jtpRequest ?? { id: toolCallId, tool: input.tool, arguments: input as unknown as Record<string, unknown> },
+    request: jtpRequest,
   } satisfies AgentWorkerEvent);
   return new Promise<JtpBuiltinResult>((resolve, reject) => {
     pendingTools.set(operationId, { resolve, reject });

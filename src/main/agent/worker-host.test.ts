@@ -314,9 +314,7 @@ describe('Iris Agent Worker provider attempts', () => {
     let providerHooks: {
       onProviderPayload: (payload: unknown, model: ProviderModel) => Promise<void>;
       onProviderFailure: (failure: string | null, model: ProviderModel) => void;
-      operations: {
-        read: { readFile: (absolutePath: string) => Promise<Buffer> };
-      };
+      executeToolCall: (toolCall: { id: string; name: string; arguments: Record<string, unknown> }) => Promise<unknown>;
     } | undefined;
     const pendingToolCallIds: string[] = [];
     const executionModels: Array<{ provider: string; modelId: string }> = [];
@@ -382,8 +380,8 @@ describe('Iris Agent Worker provider attempts', () => {
         });
         pendingToolCallIds.push('tool-a', 'tool-b');
         await Promise.all([
-          providerHooks!.operations.read.readFile('a.md'),
-          providerHooks!.operations.read.readFile('b.md'),
+          providerHooks!.executeToolCall({ id: 'tool-a', name: 'read', arguments: { path: 'a.md' } }),
+          providerHooks!.executeToolCall({ id: 'tool-b', name: 'read', arguments: { path: 'b.md' } }),
         ]);
         subscribe!({
           type: 'message_end',

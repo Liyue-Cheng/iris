@@ -509,7 +509,7 @@ export function validateSettings(s: Settings): void {
     typeof s.experimental.jtpTools !== 'object' ||
     Array.isArray(s.experimental.jtpTools) ||
     Object.entries(s.experimental.jtpTools).some(([id, value]) =>
-      !['read', 'edit', 'write', 'terminal', 'task_start', 'task_get', 'task_list', 'task_cancel'].includes(id) ||
+      (!['read', 'edit', 'write', 'terminal', 'task_start', 'task_get', 'task_list', 'task_cancel'].includes(id) && !id.startsWith('mcp.')) ||
       typeof value !== 'boolean',
     )
   ) {
