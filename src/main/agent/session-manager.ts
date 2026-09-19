@@ -91,7 +91,7 @@ import type {
   AgentToolActivity,
 } from './session-model';
 import { AgentTaskManager, rendererTaskView, type AgentTaskRecord } from './task-manager';
-import { diffAnchorText, renderAnchorMaterial, buildAgentContextFromSession } from './trace-context';
+import { diffAnchorText, renderAnchorMaterial, buildAgentContextFromSession, restoreAgentPrompt } from './trace-context';
 import {
   AGENT_COMPACTION_INSTRUCTION,
   agentCompactionTrigger,
@@ -1127,6 +1127,22 @@ export class IrisAgentSessionManager extends EventEmitter {
       session = await this.requireSession(scope, sessionId);
       const latestIntent = session.intents.find((candidate) => candidate.id === intent.id);
       if (!latestIntent || latestIntent.state !== 'paused') throw new Error('The paused intent changed before Continue.');
+      // A provider attempt creates a Turn even if the connection fails before
+      // any answer. Both that case and a continuation after tools need the
+      // request-only layers restored; Trace stores only the user's raw task.
+      const prepared = await this.preparePrompt(session, latestIntent.content, latestIntent.id);
+      const traceHistory = await store.history(sessionId);
+      const history = restoreAgentPrompt(traceHistory, latestIntent.id, prepared.prompt);
+      try {
+        await store.savePromptSnapshot(session.id, latestIntent.id, prepared.prompt);
+        latestIntent.assembledInputAvailable = true;
+      } catch {
+        latestIntent.assembledInputAvailable = false;
+      }
+      session.requestFacts.push(prepared.facts);
+      // Measure layers separately from the raw Trace, as on Send. Measuring
+      // the restored history here would count the layers twice.
+      await this.applyContextMeasurement(session, prepared.prompt, traceHistory);
       const running = await store.commit(resumePausedAgentIntent(session));
       this.emitChanged(scope, running);
       const correlation = activeIntentCorrelation(running, host.workerEpoch);
@@ -1140,7 +1156,7 @@ export class IrisAgentSessionManager extends EventEmitter {
           invokeOffset: running.invokes.filter((invoke) => invoke.intentId === intent.id).length,
           ...(heldInvoke ? { invokeId: heldInvoke.id } : {}),
           ...(heldInvoke ? { attemptOffset: heldInvoke.attemptIds.length } : {}),
-          history: await store.history(sessionId),
+          history: { ...history, revision: running.revision },
           runtime: await this.executionRuntimeFor(running),
         });
       } catch (error) {
@@ -1992,8 +2008,12 @@ export class IrisAgentSessionManager extends EventEmitter {
             { highBytes: AGENT_TERMINAL_HIGH_WATER_BYTES, lowBytes: AGENT_TERMINAL_LOW_WATER_BYTES, setBlocked: (blocked) => terminal.setOutputBlocked('renderer', blocked) }, false,
           ), attachmentId: null,
         });
-        void this.enqueueSessionMutation(session.id, () => this.recordTerminalStarted(scope, store, session.id, context.terminalId, context.correlation));
-        this.scheduleTerminalSupervision(session.id, context.terminalId);
+        void this.enqueueSessionMutation(session.id, async () => {
+          await this.recordTerminalStarted(scope, store, session.id, context.terminalId, context.correlation);
+          // Supervision needs the committed activity. Starting its timer before
+          // persistence can consume the initial output and stop supervision.
+          this.scheduleTerminalSupervision(session.id, context.terminalId);
+        });
       },
       onTerminalEvent: (terminalEvent, context) => { this.handleTerminalEvent(scope, store, session.id, terminalEvent, context.correlation); },
     });

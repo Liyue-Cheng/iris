@@ -224,6 +224,8 @@ A document may own a sibling companion directory:
 
 Imports use the sanitized original filename, adding a numeric suffix on collisions. The asset panel distinguishes only internal files referenced from the companion directory and external file/directory associations recorded in `links.txt`.
 
+Each workspace root may also contain an `external.txt` file with one associated external file or directory per line; blank lines and `#` comments are ignored. Relative paths resolve from the workspace directory, while absolute paths remain machine-specific. The left-pane External section can open items with their default application, reveal them in the file manager, copy their paths, or drag them into the Markdown editor and terminal. Removing a reference, document, or workspace never deletes an external target. `external.txt` is a workspace attachment index, not a fifth document type and not the per-document `links.txt` file.
+
 Iris does not automatically download remote assets or delete orphans. Deleting a document moves the Markdown file and its companion directory to the system trash as one aggregate.
 
 ## Git Integration

@@ -44,6 +44,11 @@ Treat documents under `report/` as historical unless the user asks to change the
   the user requests.
 - `misc/` — Human scratch space. Do not touch unless asked.
 
+Issue records may be incomplete or inaccurate; do not assume they were written
+or maintained rigorously, and do not treat them as a source of truth. Workflow
+statuses, including `Done`, do not establish that work was fully implemented
+or verified.
+
 ## Document assets
 
 Each Markdown document may have a sibling `<name>.assets/` directory. Files
@@ -74,11 +79,11 @@ Reports, status documents, and misc documents use `Active` or `Backlog`; newly
 created non-issue documents normally start at `Active`. Preserve canonical
 status spelling when writing frontmatter.
 
-Preserve an existing `labels:` field verbatim. Do not change it unless the
+The `labels:` frontmatter field is reserved. Preserve an existing `labels:` field verbatim. Do not change it unless the
 user explicitly asks for label-related work.
 
 Do not mark an issue `Done`, `Canceled`, or `On Hold` unless the user asks.
-You may move an issue to `In Review` when the work is ready for review.
+When work is requested for an existing issue, update its `status:` to `In Progress` before substantive investigation or edits, and keep it there while work is ongoing. When the requested work is complete and only human review, verification, or approval remains, update it to `In Review` and add one unchecked task per remaining item. Do not set `Blocked`, `Done`, `Canceled`, or `On Hold` on your own; make those transitions only when the user explicitly asks.
 
 When an item requires human review, verification, approval, or follow-up,
 represent it with one GFM task checkbox (`- [ ] …`) per discrete item rather

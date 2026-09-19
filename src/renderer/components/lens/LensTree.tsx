@@ -58,6 +58,7 @@ import {
 } from '@renderer/components/ui/context-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip';
 import { setDocDragData } from '@renderer/lib/doc-drag';
+import { ExternalSection } from './ExternalSection';
 import { projectStore, useProject } from '@renderer/stores/project-store';
 import { compareDisplayText } from '@renderer/lib/locale';
 import { sessionViewStore, useSelectedSessionView } from '@renderer/stores/session-view-store';
@@ -475,16 +476,20 @@ function WorkspaceSection({
         {(!archived || hubSessions.some((session) => session.orphanedDocPath)) && (
           <WorkspaceSessionList workspacePath={workspacePath} orphanedOnly={archived} />
         )}
-        {sectionsOpen &&
-          TYPE_ORDER.map((t) => (
-            <TypeSection
-              key={t}
-              type={t}
-              docs={byType(t)}
-              archived={archived}
-              workspacePath={ws.path}
-            />
-          ))}
+        {sectionsOpen && (
+          <>
+            {TYPE_ORDER.map((t) => (
+              <TypeSection
+                key={t}
+                type={t}
+                docs={byType(t)}
+                archived={archived}
+                workspacePath={ws.path}
+              />
+            ))}
+            <ExternalSection external={ws.external} archived={archived} />
+          </>
+        )}
         {ws.children.map((c) => (
           <WorkspaceSection key={c.path} ws={c} depth={depth + 1} parentArchived={archived} />
         ))}

@@ -1,6 +1,6 @@
 ---
 title: iris agent 右键菜单
-status: In Review
+status: Done
 ---
 目前输入框的右键菜单还没有任何效果，你检查一下，然后实现一个完整的效果
 

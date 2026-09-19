@@ -377,6 +377,41 @@ export interface IrisDoc {
  * A workspace: any folder containing at least one typed folder. Inferred,
  * never declared (no manifest, no registry). `.iris/` is the root workspace.
  */
+export type ExternalPathKind = 'file' | 'directory';
+
+export type ExternalPathError =
+  | 'invalid'
+  | 'missing'
+  | 'unreadable'
+  | 'unsupported-platform';
+
+export interface ExternalPathEntry {
+  /** Exact trimmed line stored in the workspace's external.txt. */
+  storedPath: string;
+  /** Resolved OS path; null when this platform cannot interpret the line. */
+  absolutePath: string | null;
+  name: string;
+  kind: ExternalPathKind | null;
+  exists: boolean;
+  /** Zero-based line index, used with storedPath as a compare-and-swap identity. */
+  line: number;
+  error: ExternalPathError | null;
+}
+
+export interface WorkspaceExternalPaths {
+  workspacePath: string;
+  manifestPath: string;
+  exists: boolean;
+  entries: ExternalPathEntry[];
+  diagnostics: Array<{ line: number | null; message: string }>;
+}
+
+export interface ExternalPathIdentity {
+  workspacePath: string;
+  storedPath: string;
+  line: number;
+}
+
 export interface IrisWorkspace {
   /** Relative dir path, e.g. ".iris" or ".iris/spike-auth". */
   path: string;
@@ -384,6 +419,8 @@ export interface IrisWorkspace {
   name: string;
   /** Docs owned by this workspace (nearest-workspace rule), grouped by type at render time. */
   docs: IrisDoc[];
+  /** Workspace-level references from the direct child external.txt. */
+  external: WorkspaceExternalPaths;
   /** Nested workspaces (recursive). */
   children: IrisWorkspace[];
   /**
@@ -484,6 +521,8 @@ export interface EntrySync {
 
 export interface ProjectInitResult {
   createdFolders: string[];
+  /** True only when initialization created .iris/external.txt. */
+  createdExternalFile: boolean;
   /** 'appended'/'updated' when AGENTS.md pre-existed; 'created' when written
    *  fresh; 'already-has-section' when its block was already current. */
   agentsMd: 'created' | 'appended' | 'updated' | 'already-has-section';
@@ -881,6 +920,7 @@ export type IrisAgentCardView =
       id: string;
       state: IrisAgentCardState;
       path: string;
+      tool: 'edit' | 'write';
       action: 'created' | 'updated' | 'unchanged' | 'attempted';
       diff?: string;
       detail?: string;

@@ -115,9 +115,16 @@ export const CHANNELS = {
   ASSET_LINK_REMOVE: 'asset:link-remove',
   ASSET_LINK_OPEN: 'asset:link-open',
   ASSET_LINK_REVEAL: 'asset:link-reveal',
+  /** Workspace-level external.txt references. */
+  EXTERNAL_LIST: 'external:list',
+  EXTERNAL_ADD: 'external:add',
+  EXTERNAL_REMOVE: 'external:remove',
+  EXTERNAL_OPEN: 'external:open',
+  EXTERNAL_REVEAL: 'external:reveal',
   /** UI helper: native folder picker (returns a path or null; no side effect). */
   DIALOG_PICK_FOLDER: 'dialog:pick-folder',
   DIALOG_PICK_ASSET_PATH: 'dialog:pick-asset-path',
+  DIALOG_PICK_EXTERNAL_PATH: 'dialog:pick-external-path',
   /** Session verbs (instruction-backed). */
   SESSION_OPEN: 'session:open',
   SESSION_CLOSE: 'session:close',

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { promises as fs, renameSync, rmSync } from 'node:fs';
 import { dirname, extname } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 export interface AtomicWriteOptions {
   encoding?: BufferEncoding;
@@ -48,7 +49,19 @@ export async function writeFileAtomic(
     handle = null;
 
     await options.beforeReplace?.();
-    await fs.rename(temp, target);
+    // Windows readers and virus scanners can briefly deny replacement. Keep
+    // the old file intact and retry the rename, never delete it as a fallback.
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await fs.rename(temp, target);
+        break;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (process.platform !== 'win32' || attempt >= 4 ||
+          (code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY')) throw error;
+        await delay(50 * (attempt + 1));
+      }
+    }
     ownsTemp = false;
   } catch (err) {
     await handle?.close().catch(() => {});

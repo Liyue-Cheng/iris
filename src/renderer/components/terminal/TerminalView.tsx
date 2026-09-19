@@ -43,7 +43,9 @@ import { pipeline } from '@renderer/cpu';
 import type { ProjectScope } from '@shared/types';
 import {
   getDocDragPath,
+  getExternalDragPath,
   isDocDrag,
+  isExternalPathDrag,
   resolveSystemFilePaths,
 } from '@renderer/lib/doc-drag';
 import { matchKeybinding } from '@shared/terminal-keybindings';
@@ -678,12 +680,18 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
           onWheel={handleWheel}
           onDragOver={(e) => {
             // Internal doc drag OR an OS file drag both drop here.
-            if (isDocDrag(e.dataTransfer) || e.dataTransfer.types.includes('Files')) {
+            if (isExternalPathDrag(e.dataTransfer) || isDocDrag(e.dataTransfer) || e.dataTransfer.types.includes('Files')) {
               e.preventDefault();
               e.dataTransfer.dropEffect = 'copy';
             }
           }}
           onDrop={(e) => {
+            const externalPath = getExternalDragPath(e.dataTransfer);
+            if (externalPath) {
+              e.preventDefault();
+              void handleFileDrop([externalPath]);
+              return;
+            }
             const docPath = getDocDragPath(e.dataTransfer);
             if (docPath) {
               e.preventDefault();

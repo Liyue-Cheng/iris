@@ -108,6 +108,10 @@ describe('software prompt invariants', () => {
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('Write standard Markdown');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('<name>.assets/');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('`links.txt`');
+    expect(SOFTWARE_PROMPT_TEMPLATE).toContain('`external.txt`');
+    expect(SOFTWARE_PROMPT_TEMPLATE).toContain('not a fifth document type');
+    expect(SOFTWARE_PROMPT_TEMPLATE).toContain('Relative paths are resolved from the workspace directory');
+    expect(SOFTWARE_PROMPT_TEMPLATE).toContain('never deletes an external target');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('Do not delete an internal file merely because');
     expect(SOFTWARE_PROMPT_TEMPLATE).toContain('When writing PM results');
     expect(SOFTWARE_PROMPT_TEMPLATE).not.toContain('Never create a new file');

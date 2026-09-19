@@ -19,6 +19,7 @@
 | 文档树 | react-arborist 或社区 shadcn tree-view | shadcn 唯一缺口 |
 | 文件监听 | chokidar | Electron 主进程（Node） |
 | 文档资产 | sibling `.assets/` + remark AST | 原始文件名落盘，同名追加数字后缀；内部引用 + `links.txt` 外部关联 |
+| 工作区外部连接 | `external.txt` + ExternalPathManager | 工作区根一行一路径；主进程校验成员关系，不递归扫描目标 |
 | PTY | node-pty + xterm.js（含 webgl/fit/serialize/headless 等 addon） | 直接复用 Marina 的会话层 |
 | git | shell out 或 simple-git | v1 无 git 功能（reflects 延后），暂不引入 |
 | License | AGPL-3.0 | Marina 为 MIT、同一作者，复制无障碍 |
@@ -28,6 +29,10 @@
 **设计语言**：继承姊妹项目 Marina——Rose Pine 配色 + 霞鹜文楷。家族相似性白来，零设计决策。xterm.js 主题与 Tailwind CSS 变量对齐同一色板。主题系统的具体方案见"主题系统"一节。
 
 **编辑器红线**：永不自研 CodeMirror live-preview——该生态历史是一连串弃船（HyperMD、MarkText），打磨表格/图片/列表的成本即"需要大量编写的地方"。
+
+### External 路径链路
+
+`external.txt` 由 `ExternalPathManager` 统一解析和最小修改。scanner 只在已识别工作区根读取它，并将结果作为可重建投影挂在 `IrisWorkspace` 上；chokidar 继续只监听 `.iris/`，不监听外部磁盘或网络目录。添加/移除经 FrontCPU 以工作区资源串行，打开和 Reveal 在主进程重新读取清单并验证“行号 + 原值”成员关系，renderer 不能借此打开任意绝对路径。编辑器使用独立 MIME 插入绝对路径，终端复用 OS 文件拖入的 shell quoting 与危险字符确认。
 
 ---
 

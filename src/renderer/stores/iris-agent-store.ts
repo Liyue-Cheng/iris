@@ -23,6 +23,7 @@ let state: IrisAgentStoreState = {
   phases: {},
 };
 const subscribers = new Set<() => void>();
+let hydrationRequest = 0;
 
 function emit(): void {
   subscribers.forEach((cb) => cb());
@@ -66,10 +67,14 @@ export const irisAgentStore = {
     const existing = state.sessions.find((session) => session.id === update.sessionId);
     if (existing && existing.revision >= update.revision) return 'stale';
     if (!existing || existing.revision !== update.baseRevision) return 'gap';
+    // Untouched intents are shared by reference instead of cloned: the view
+    // memoises per intent, so a fresh copy here would re-render every intent —
+    // and every card in it — on every projection update, including each
+    // streamed token. Only the intents below are rebuilt.
     const next: IrisAgentSessionInfo = {
       ...structuredClone(update.session),
       revision: update.revision,
-      intents: structuredClone(existing.intents),
+      intents: [...existing.intents],
     };
     for (const intentPatch of update.intents) {
       if (intentPatch.operation === 'remove') {
@@ -152,13 +157,31 @@ function upsertAt<T>(items: T[], index: number, value: T): T[] {
 }
 
 async function pullIrisAgentSessions(scope: ProjectScope): Promise<void> {
+  const request = ++hydrationRequest;
+  const before = new Map(state.sessions.map((session) => [session.id, session]));
   const snapshot = await window.api.invoke<
     { expectedScope: ProjectScope },
     IrisAgentListSnapshot
   >(CHANNELS.IRIS_AGENT_LIST, { expectedScope: scope });
+  if (request !== hydrationRequest) return;
   if (!sameProjectScope(scope, projectScopeState.get())) return;
   if (!sameProjectScope(snapshot.scope, scope)) return;
-  irisAgentStore.reset(snapshot.sessions, snapshot.scope);
+  // IPC events can advance a session while the list request is in flight.
+  // In particular, an older list may contain the failed reply but not the
+  // subsequent pause: blindly resetting hides the only Continue control.
+  const current = new Map(state.sessions.map((session) => [session.id, session]));
+  const listed = new Set(snapshot.sessions.map((session) => session.id));
+  const sessions = snapshot.sessions.flatMap((session) => {
+    const latest = current.get(session.id);
+    if (!latest && before.has(session.id)) return []; // Closed while loading.
+    return [latest && latest.revision > session.revision ? latest : session];
+  });
+  for (const session of current.values()) {
+    if (listed.has(session.id)) continue;
+    const previous = before.get(session.id);
+    if (!previous || session.revision > previous.revision) sessions.push(session);
+  }
+  irisAgentStore.reset(sessions, snapshot.scope);
   healthStore.resolve('iris-agent-projection', scope);
 }
 

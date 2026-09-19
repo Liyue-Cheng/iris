@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   IRIS_DOC_MIME,
+  IRIS_EXTERNAL_PATH_MIME,
   formatDroppedPaths,
   governEditorPathDrop,
   isEditorPathDrag,
@@ -29,6 +30,22 @@ function file(name: string): File {
 }
 
 describe('editor path drop governance', () => {
+  it('prioritizes workspace external paths over document and system drags', () => {
+    const dt = dataTransfer({
+      types: [IRIS_EXTERNAL_PATH_MIME, IRIS_DOC_MIME, 'Files'],
+      data: {
+        [IRIS_EXTERNAL_PATH_MIME]: 'E:\\shared files\\reference.pdf',
+        [IRIS_DOC_MIME]: '.iris/issue/ignored.md',
+      },
+      files: [file('ignored.txt')],
+    });
+
+    expect(resolveEditorPathDrop(dt, vi.fn())).toEqual({
+      source: 'iris-external',
+      paths: ['E:\\shared files\\reference.pdf'],
+    });
+  });
+
   it('prioritizes the Iris document MIME and preserves its relative path', () => {
     const dt = dataTransfer({
       types: [IRIS_DOC_MIME, 'Files'],

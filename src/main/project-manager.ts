@@ -23,6 +23,9 @@ import type {
   AssetInventory,
   AssociatedPathEntry,
   ContextPreview,
+  ExternalPathEntry,
+  ExternalPathIdentity,
+  WorkspaceExternalPaths,
   DocContent,
   DocImageResult,
   DocType,
@@ -55,6 +58,7 @@ import {
 } from './software-prompt';
 import { logger } from './logger';
 import { AssetManager } from './asset-manager';
+import { EXTERNAL_PATHS_FILE, ExternalPathManager } from './external-path-manager';
 import { mainT } from './i18n';
 import { writeFileAtomic } from './atomic-write';
 import {
@@ -115,6 +119,7 @@ export interface PreparedProject {
 
 export class ProjectManager extends EventEmitter {
   private readonly assetManager = new AssetManager();
+  private readonly externalPathManager = new ExternalPathManager();
   private projectRoot: string | null = null;
   private watcher: FSWatcher | null = null;
   private pendingChanges: FsIrisChangedEvent['changes'] = [];
@@ -319,6 +324,22 @@ export class ProjectManager extends EventEmitter {
     return this.assetManager.resolveAssociated(this.requireRoot(), docPath, targetPath);
   }
 
+  listExternalPaths(workspacePath: string): Promise<WorkspaceExternalPaths> {
+    return this.externalPathManager.list(this.requireRoot(), workspacePath);
+  }
+
+  addExternalPath(workspacePath: string, targetPath: string): Promise<ExternalPathEntry> {
+    return this.externalPathManager.add(this.requireRoot(), workspacePath, targetPath);
+  }
+
+  removeExternalPath(identity: ExternalPathIdentity): Promise<void> {
+    return this.externalPathManager.remove(this.requireRoot(), identity);
+  }
+
+  resolveExternalPath(identity: ExternalPathIdentity): Promise<ExternalPathEntry> {
+    return this.externalPathManager.resolve(this.requireRoot(), identity);
+  }
+
   /** Compare-and-swap a document. expectedContent is the renderer's baseline;
    * null is the explicit user-authorized overwrite path. Identical content is
    * a no-op so false dirty state can never perturb mtime ordering. */
@@ -496,6 +517,10 @@ export class ProjectManager extends EventEmitter {
       }
     }
 
+    const externalPath = join(irisAbs, EXTERNAL_PATHS_FILE);
+    const createdExternalFile = !(await exists(externalPath));
+    if (createdExternalFile) await writeFileAtomic(externalPath, '');
+
     await this.initializeProjectSettings(root);
     const settings = await readProjectSettings(root);
     const participants = settings.settings.agentContext.entries;
@@ -534,6 +559,7 @@ export class ProjectManager extends EventEmitter {
     );
     const result: ProjectInitResult = {
       createdFolders,
+      createdExternalFile,
       agentsMd,
       vendorEntries,
       foreignEntries,
@@ -763,6 +789,7 @@ export class ProjectManager extends EventEmitter {
       for (const t of DOC_TYPES) {
         await fs.mkdir(join(wsAbs, t), { recursive: true });
       }
+      await writeFileAtomic(join(wsAbs, EXTERNAL_PATHS_FILE), '');
     }
     return { path: `${parentPath}/${trimmed}` };
   }

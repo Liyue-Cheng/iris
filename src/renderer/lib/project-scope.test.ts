@@ -109,11 +109,13 @@ function openProjectState(docs: IrisDoc[] = []): ProjectScope {
       path: '.iris',
       name: 'project-a',
       docs: docs.filter((doc) => doc.workspacePath === '.iris'),
+      external: { workspacePath: '.iris', manifestPath: '.iris/external.txt', exists: false, entries: [], diagnostics: [] },
       children: [
         {
           path: '.iris/spike',
           name: 'spike',
           docs: docs.filter((doc) => doc.workspacePath === '.iris/spike'),
+          external: { workspacePath: '.iris/spike', manifestPath: '.iris/spike/external.txt', exists: false, entries: [], diagnostics: [] },
           children: [],
           archived: false,
         },

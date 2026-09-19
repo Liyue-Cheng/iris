@@ -89,6 +89,25 @@ describe('scanProject on the sample fixture', () => {
     expect(broken.title).toBeNull();
   });
 
+  it('projects external.txt only from recognized workspace roots', async () => {
+    const temp = await createTempDataDir('iris-scanner-external-');
+    try {
+      await fs.mkdir(join(temp, '.iris', 'issue'), { recursive: true });
+      await fs.mkdir(join(temp, '.iris', 'ordinary'), { recursive: true });
+      await fs.writeFile(join(temp, 'target.txt'), 'target', 'utf8');
+      await fs.writeFile(join(temp, '.iris', 'external.txt'), '../target.txt\n', 'utf8');
+      await fs.writeFile(join(temp, '.iris', 'ordinary', 'external.txt'), '../../target.txt\n', 'utf8');
+
+      const result = await scanProject(temp);
+      expect(result.root?.external.entries).toEqual([
+        expect.objectContaining({ name: 'target.txt', kind: 'file', exists: true }),
+      ]);
+      expect(result.root?.children).toEqual([]);
+    } finally {
+      await removeTempDataDir(temp).catch(() => {});
+    }
+  });
+
   it('ignores non-md files and loose workspace-root files in the lens model', async () => {
     const { root } = await scanProject(FIXTURE);
     const allDocs: string[] = [];

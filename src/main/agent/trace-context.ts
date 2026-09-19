@@ -133,6 +133,28 @@ export function buildAgentContextFromSession(
   };
 }
 
+/** Restore request-only layers without adding another task or losing hydrated images. */
+export function restoreAgentPrompt(
+  history: AgentHistorySnapshot,
+  intentId: string,
+  prompt: string,
+): AgentHistorySnapshot {
+  const target = history.messages.findIndex(
+    (message) => message.id === `intent:${intentId}` && message.role === 'user',
+  );
+  if (target < 0) throw new Error('Cannot restore context: the current intent is missing from history.');
+  return {
+    ...history,
+    messages: history.messages.map((message, index) => index !== target ? message : {
+      ...message,
+      content: typeof message.content === 'string' ? prompt : [
+        { type: 'text' as const, text: prompt },
+        ...message.content.filter((part) => part.type !== 'text'),
+      ],
+    }),
+  };
+}
+
 /**
  * The persisted compaction contract is the only source of Context folding, so the
  * same Trace and the same active compaction always project the same Context.

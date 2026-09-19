@@ -575,8 +575,125 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       expect(resumed.invokeId).toBe(held.invokes[0]?.id);
       expect(resumed.runtime.model).toEqual({ provider: 'anthropic', modelId: 'claude-test' });
       expect(resumed.history.messages).toContainEqual(expect.objectContaining({
-        role: 'user', content: 'recover across providers',
+        role: 'user', content: expect.stringContaining('<user-request>\nrecover across providers\n</user-request>'),
       }));
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(userData);
+    }
+  });
+
+  it.each([false, true])('restores injected context and images after a failed request (prior tools: %s)', async (afterTools) => {
+    const userData = await createTempDataDir('iris-agent-resume-context-');
+    const scope: ProjectScope = { root: userData, generation: 1 };
+    const workers: FakeWorker[] = [];
+    const project = projectManager();
+    let document = '# Focus\nOnly propose a plan.';
+    vi.mocked(project.readDoc).mockImplementation(async (path) => ({ path, raw: document }) as Awaited<ReturnType<ProjectManager['readDoc']>>);
+    const toolExecutor = vi.fn();
+    const manager = new IrisAgentSessionManager(userData, project, {
+      workerFactory: () => {
+        const worker = new FakeWorker();
+        workers.push(worker);
+        return worker;
+      },
+      modelCatalogLoader: async () => catalog,
+      toolExecutor,
+    });
+    try {
+      await manager.listModels();
+      const created = await manager.createSession({
+        scope, anchor: { kind: 'document', path: '.iris/issue/task.md' },
+      });
+      const png = pngFixture(8, 6);
+      await manager.send(scope, created.id, '', {}, [
+        { name: 'shot.png', dataBase64: png.toString('base64') },
+      ]);
+      const worker = workers[0]!;
+      const run = worker.last('run');
+      if (afterTools) {
+        const completed = providerCorrelation(run, 'read');
+        worker.emitMessage({
+          version: IRIS_AGENT_PROTOCOL_VERSION, type: 'provider-attempt',
+          correlation: completed, phase: 'started', index: 1,
+        });
+        worker.emitMessage({
+          version: IRIS_AGENT_PROTOCOL_VERSION, type: 'provider-message', correlation: completed,
+          message: {
+            role: 'assistant', stopReason: 'toolUse',
+            content: [
+              { type: 'text', text: 'Read once.' },
+              { type: 'toolCall', id: 'read-once', name: 'read', arguments: { path: 'README.md' } },
+            ],
+          },
+        });
+        worker.emitMessage({
+          version: IRIS_AGENT_PROTOCOL_VERSION, type: 'provider-attempt',
+          correlation: completed, phase: 'completed', index: 1,
+        });
+        worker.emitMessage({
+          version: IRIS_AGENT_PROTOCOL_VERSION, type: 'provider-message',
+          correlation: { ...run.correlation, toolCallId: 'read-once', providerMessageId: 'read-result' },
+          message: {
+            role: 'toolResult', toolCallId: 'read-once',
+            content: [{ type: 'text', text: 'Already read contents.' }], isError: false,
+          },
+        });
+      }
+      const failed = providerCorrelation(run, 'connection');
+      worker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION, type: 'provider-attempt',
+        correlation: failed, phase: 'started', index: 1,
+      });
+      worker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION, type: 'provider-attempt',
+        correlation: failed, phase: 'failed', index: 1, error: 'ECONNRESET',
+      });
+      worker.emitMessage({
+        version: IRIS_AGENT_PROTOCOL_VERSION, type: 'execution-paused',
+        correlation: failed, reason: 'provider-exhausted', message: 'ECONNRESET',
+      });
+      await vi.waitFor(async () => {
+        expect((await manager.list(scope)).sessions[0]?.pause?.reason).toBe('provider');
+      });
+      document += '\nLatest requirement before continuing.';
+      const promptState = await project.softwarePromptState();
+      vi.mocked(project.softwarePromptState).mockResolvedValue({
+        ...promptState,
+        project: { ...promptState.project, text: 'Latest project rule.' },
+      });
+
+      await manager.retry(scope, created.id);
+      const resume = workers[1]!.last('resume');
+      expect(resume.invokeId).toBe(failed.invokeId);
+      expect(resume.attemptOffset).toBe(1);
+      expect(resume.history.messages.map((message) => message.role))
+        .toEqual(afterTools ? ['user', 'assistant', 'tool'] : ['user']);
+      const prompt = historyText(resume.history.messages[0]!.content);
+      expect(prompt).toContain('<iris-software>');
+      expect(prompt).toContain('<iris-project>\nLatest project rule.\n</iris-project>');
+      expect(prompt).toContain('<iris-anchor kind="document" path=".iris/issue/task.md">');
+      expect(prompt).toContain('Only propose a plan.');
+      expect(prompt).toContain('Latest requirement before continuing.');
+      expect(prompt.match(/<user-request>/g)).toHaveLength(1);
+      expect(prompt).toContain('<user-request>\n请根据文档内容开始工作\n</user-request>');
+      expect(resume.history.messages[0]!.content).toEqual([
+        { type: 'text', text: prompt }, run.attachments![0],
+      ]);
+      if (afterTools) {
+        expect(resume.history.messages.slice(1)).toEqual(workers[1]!.last('initialize').history.messages.slice(1));
+        expect(historyText(resume.history.messages.at(-1)!.content)).toBe('Already read contents.');
+      }
+      expect(toolExecutor).not.toHaveBeenCalled();
+      expect(workers[1]!.messages.some((message) => message.type === 'run')).toBe(false);
+      const store = await IrisAgentSessionStore.load({ userDataPath: userData, projectRoot: scope.root });
+      const persisted = store.get(created.id)!;
+      expect(persisted.intents).toHaveLength(1);
+      expect(persisted.intents[0]!.content).toBe('请根据文档内容开始工作');
+      expect(persisted.requestFacts).toHaveLength(2);
+      expect(await readFile(store.promptSnapshotPath(created.id, persisted.intents[0]!.id), 'utf8')).toBe(prompt);
+      // Request enrichment must not change the persisted conversation.
+      expect(historyText((await store.history(created.id)).messages[0]!.content)).toBe('请根据文档内容开始工作');
     } finally {
       await manager.shutdown();
       await removeTempDataDir(userData);
@@ -1415,7 +1532,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         expect(dispatched).toMatchObject({
           attachments: [expect.objectContaining({ dataBase64: png.toString('base64') })],
         });
-      });
+      }, { timeout: 5_000 });
     } finally {
       await manager.shutdown();
       await removeTempDataDir(userData);
@@ -1781,7 +1898,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
   });
 
   it(
-    'reveals and supervises one interactive PTY without timing it out',
+    'reveals and supervises one interactive PTY even when terminal persistence is delayed',
     async () => {
       const userData = await createTempDataDir('iris-agent-manager-terminal-');
       const scope: ProjectScope = { root: userData, generation: 1 };
@@ -1796,6 +1913,18 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       });
       manager.on('terminalOutput', (event: { terminalId: string; cursor: number }) => {
         outputEvents.push(event);
+      });
+      const originalCommit = IrisAgentSessionStore.prototype.commit;
+      let delayedTerminalStart = false;
+      const commit = vi.spyOn(IrisAgentSessionStore.prototype, 'commit').mockImplementation(async function (this: IrisAgentSessionStore, source) {
+        if (!delayedTerminalStart && source.timeline.some((activity) =>
+          activity.kind === 'tool' && activity.terminalId !== undefined)) {
+          delayedTerminalStart = true;
+          // Longer than the supervision interval: the first observation must
+          // wait until the terminal has a durable activity to supervise.
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+        return originalCommit.call(this, source);
       });
       try {
         await manager.listModels();
@@ -1869,6 +1998,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
           worker.messages.filter((message) => message.type === 'supervise-terminal'),
         ).toHaveLength(1), { timeout: 5_000 });
         const firstSupervision = worker.last('supervise-terminal');
+        expect(delayedTerminalStart).toBe(true);
         expect(firstSupervision.input.incrementalOutput).toContain('first');
         worker.emitMessage({
           version: IRIS_AGENT_PROTOCOL_VERSION,
@@ -1932,6 +2062,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
           manager.writeTerminal(scope, created.id, running.id, 'late\r'),
         ).rejects.toThrow('no longer running');
       } finally {
+        commit.mockRestore();
         await manager.shutdown();
         await removeTempDataDir(userData);
       }

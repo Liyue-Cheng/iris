@@ -76,6 +76,32 @@ export const appISA: Record<string, InstructionDefinition> = {
     config: { channel: CHANNELS.ASSET_LINK_REVEAL, projectScoped: true },
   },
 
+  'shell.open-workspace-external': {
+    meta: {
+      description: 'Open a registered workspace external path',
+      category: 'system',
+      resourceIdentifier: (p: { workspacePath: string }) => [projectScopeRead(), `external:${p.workspacePath}`],
+      schedulingStrategy: 'read-write',
+      priority: 5,
+      timeout: 5000,
+    },
+    executor: 'ipc',
+    config: { channel: CHANNELS.EXTERNAL_OPEN, projectScoped: true },
+  },
+
+  'shell.reveal-workspace-external': {
+    meta: {
+      description: 'Reveal a registered workspace external path',
+      category: 'system',
+      resourceIdentifier: (p: { workspacePath: string }) => [projectScopeRead(), `external:${p.workspacePath}`],
+      schedulingStrategy: 'read-write',
+      priority: 5,
+      timeout: 5000,
+    },
+    executor: 'ipc',
+    config: { channel: CHANNELS.EXTERNAL_REVEAL, projectScoped: true },
+  },
+
   'shell.open-external-url': {
     meta: {
       description: 'Open a validated URL in the operating-system handler',

@@ -1,23 +1,19 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   AlertTriangle,
   Bot,
   Check,
   ChevronDown,
   ChevronRight,
-  FileDiff,
   FileText,
-  FolderSearch,
   ImagePlus,
   LoaderCircle,
   Pencil,
   Play,
-  Plus,
   RotateCcw,
   Send,
   Square,
   SquareTerminal,
-  Trash2,
   Undo2,
   X,
 } from 'lucide-react';
@@ -27,6 +23,7 @@ import type {
   IrisAgentAttachment,
   IrisAgentCardState,
   IrisAgentCardView,
+  IrisAgentIntentView,
   IrisAgentModelOption,
   IrisAgentLivePhase,
   IrisAgentSessionInfo,
@@ -70,6 +67,22 @@ import {
   taskStatusTone,
   terminalStatusLabel,
 } from '@renderer/lib/agent-status';
+import {
+  buildActivityRows,
+  fileActionLabel,
+  groupAgentCards,
+  summarizeActivityRows,
+  type ActivityGroupTool,
+  type FileChangeAction,
+  type StandaloneCard,
+  type TrivialCard,
+} from '@renderer/lib/agent-activity-group';
+import {
+  agentCardStateLabel,
+  agentCardStateTone,
+  cardStateDotClass,
+  cardStateTextClass,
+} from '@renderer/lib/agent-card-state';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -175,6 +188,10 @@ export function IrisAgentView({
   const [showErrorDialog, setShowErrorDialog] = useState(false);
   const [openTerminalId, setOpenTerminalId] = useState<string | null>(null);
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  // Stable handlers: `AgentIntentView` is memoised, so a fresh closure here
+  // would re-render every intent on every session update.
+  const handleOpenTerminal = useCallback((terminalId: string): void => setOpenTerminalId(terminalId), []);
+  const handleOpenTask = useCallback((taskId: string): void => setOpenTaskId(taskId), []);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
   const filePickerRef = useRef<HTMLInputElement | null>(null);
@@ -636,29 +653,15 @@ export function IrisAgentView({
             </div>
           ) : (
             <div className="space-y-4">
-              {session.intents.map((intent) => {
-                return (
-                  <div key={intent.id} className="space-y-2">
-                  <UserMessage
-                    sessionId={session.id}
-                    message={intent.user}
-                  />
-                  {groupAgentCards(intent.cards).map((group) => group.kind === 'activity-group' ? (
-                    <CombinedActivityGroup key={group.cards[0]!.id} cards={group.cards} onOpenTerminal={(terminalId) => setOpenTerminalId(terminalId)} />
-                  ) : (
-                    <AgentActivityCard
-                      key={group.card.id}
-                      sessionId={session.id}
-                      card={group.card}
-                      canRetry={false}
-                      onRetry={() => undefined}
-                      onOpenTerminal={(terminalId) => setOpenTerminalId(terminalId)}
-                      onOpenTask={(taskId) => setOpenTaskId(taskId)}
-                    />
-                  ))}
-                  </div>
-                );
-              })}
+              {session.intents.map((intent) => (
+                <AgentIntentView
+                  key={intent.id}
+                  sessionId={session.id}
+                  intent={intent}
+                  onOpenTerminal={handleOpenTerminal}
+                  onOpenTask={handleOpenTask}
+                />
+              ))}
             </div>
           )}
         </div>
@@ -953,253 +956,151 @@ function TaskLauncher({
   );
 }
 
-function AgentActivityCard({
+/** Retry stays wired but off until the session layer can retry a settled intent. */
+const noop = (): void => undefined;
+
+/**
+ * One intent's message plus its cards. Memoised, so a session update —
+ * including the per-token streaming updates — only re-renders the intent whose
+ * cards actually changed. That holds because the store keeps every untouched
+ * intent by reference instead of cloning the whole list.
+ */
+const AgentIntentView = memo(function AgentIntentView({
   sessionId,
-  card,
-  canRetry,
-  onRetry,
+  intent,
   onOpenTerminal,
   onOpenTask,
 }: {
   sessionId: string;
-  card: IrisAgentCardView;
-  canRetry: boolean;
-  onRetry: () => void;
+  intent: IrisAgentIntentView;
+  onOpenTerminal: (terminalId: string) => void;
+  onOpenTask: (taskId: string) => void;
+}): JSX.Element {
+  const groups = useMemo(() => groupAgentCards(intent.cards), [intent.cards]);
+  return (
+    <div className="space-y-2">
+      <UserMessage sessionId={sessionId} message={intent.user} />
+      {groups.map((group) => group.kind === 'activity-group' ? (
+        <CombinedActivityGroup key={group.cards[0]!.id} cards={group.cards} onOpenTerminal={onOpenTerminal} />
+      ) : (
+        <AgentActivityCard
+          key={group.card.id}
+          sessionId={sessionId}
+          card={group.card}
+          onOpenTerminal={onOpenTerminal}
+          onOpenTask={onOpenTask}
+        />
+      ))}
+    </div>
+  );
+});
+
+function AgentActivityCard({
+  sessionId,
+  card,
+  onOpenTerminal,
+  onOpenTask,
+}: {
+  sessionId: string;
+  card: StandaloneCard;
   onOpenTerminal: (terminalId: string) => void;
   onOpenTask: (taskId: string) => void;
 }): JSX.Element {
   switch (card.kind) {
-    case 'local-retrieval':
-      return <LocalRetrievalCard card={card} sessionId={sessionId} onOpenTerminal={onOpenTerminal} />;
-    case 'file-change':
-      return <FileChangeGroupCard cards={[card]} />;
     case 'terminal-operation':
       return <TerminalOperationCard card={card} onOpenTerminal={onOpenTerminal} />;
     case 'task':
       return <BackgroundTaskCard sessionId={sessionId} card={card} onOpenTask={onOpenTask} />;
     case 'agent-reply':
-      return <AgentReplyCard
-        card={card}
-        canRetry={canRetry}
-        onRetry={onRetry}
-      />;
+      return <AgentReplyCard card={card} canRetry={false} onRetry={noop} />;
   }
 }
 
-function LocalRetrievalCard({
-  card,
-  sessionId,
-  onOpenTerminal,
-}: {
-  card: Extract<IrisAgentCardView, { kind: 'local-retrieval' }>;
-  sessionId: string;
-  onOpenTerminal: (terminalId: string) => void;
-}): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
-  const files = card.items.filter((item) => item.kind === 'file').length;
-  const queries = card.items.length - files;
-  const failed = card.items.filter((item) => item.state === 'failed').length;
-  const visibleItems = expanded ? card.items : card.items.slice(-5);
-  const summary = card.state === 'running'
-    ? '正在获取本地信息'
-    : [files > 0 ? `${files} 个文件` : '', queries > 0 ? `${queries} 条查询` : '']
-        .filter(Boolean)
-        .join(' · ');
-  return (
-    <CardFrame
-      cardType="retrievals"
-      icon={<FolderSearch className="h-4 w-4" />}
-      title="信息检索"
-      summary={failed > 0 ? `${summary} · ${failed} 项失败` : summary}
-      state={card.state}
-      action={card.items.length > 5 ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6"
-          aria-label={expanded ? '收起获取记录' : '展开全部获取记录'}
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded ? <ChevronDown className="!size-3.5" /> : <ChevronRight className="!size-3.5" />}
-        </Button>
-      ) : undefined}
-    >
-      <div>
-        {!expanded && card.items.length > 5 && (
-          <div className="bg-muted/10 px-4 py-1.5 text-center text-[11px] text-muted-foreground">
-            另有 {card.items.length - 5} 项
-          </div>
-        )}
-        {visibleItems.map((item) => (
-          <div key={item.id} className="min-w-0">
-            <div className="flex min-h-7 min-w-0 items-center gap-2.5 px-4 py-1 text-xs">
-              {item.kind === 'file'
-                ? <FileText className="h-3.5 w-3.5 shrink-0 text-[var(--iris-card-retrievals)]" />
-                : <SquareTerminal className="h-3.5 w-3.5 shrink-0 text-[var(--iris-card-retrievals)]" />}
-              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground" aria-label={item.label}>
-                {item.label}
-              </span>
-              <CompactRowStateIcon
-                state={item.state}
-                accent="var(--iris-card-retrievals)"
-                detail={[item.error, item.errorDetail].filter(Boolean).join('\n\n') || undefined}
-                onClick={item.state === 'failed' && item.terminalId
-                  ? () => onOpenTerminal(item.terminalId!)
-                  : undefined}
-              />
-            </div>
-            {item.image && <RetrievalImage sessionId={sessionId} attachment={item.image} />}
-          </div>
-        ))}
-      </div>
-    </CardFrame>
-  );
-}
+/** Rows a group shows before it starts scrolling; older rows stay reachable. */
+const ACTIVITY_GROUP_VISIBLE_ROWS = 5;
+
+/** Exactly that many `min-h-7` rows plus the `space-y-0.5` gaps between them. */
+const ACTIVITY_GROUP_WINDOW_HEIGHT =
+  `calc(${String(ACTIVITY_GROUP_VISIBLE_ROWS)} * 1.75rem + ${String(ACTIVITY_GROUP_VISIBLE_ROWS - 1)} * 0.125rem)`;
 
 /**
- * One image the Agent read, loaded on demand from main. The card shows a
- * bounded thumbnail rather than the model's full-resolution payload so a long
- * conversation cannot be pushed out of shape by its own attachments.
+ * Consecutive trivial operations as one bounded, scrollable list. The window
+ * holds the newest `ACTIVITY_GROUP_VISIBLE_ROWS` rows and follows the tail like
+ * a terminal, so live work stays in view without discarding older rows.
  */
-function RetrievalImage({
-  sessionId,
-  attachment,
-}: {
-  sessionId: string;
-  attachment: IrisAgentAttachment;
-}): JSX.Element {
-  const { containerRef, dataUrl, failed } = useLazyAttachment(sessionId, attachment.id);
+function CombinedActivityGroup({ cards, onOpenTerminal }: { cards: TrivialCard[]; onOpenTerminal: (id: string) => void }): JSX.Element {
+  const rows = useMemo(() => buildActivityRows(cards), [cards]);
+  const summary = useMemo(() => summarizeActivityRows(rows), [rows]);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const followTail = useRef(true);
 
-  if (failed) {
-    return (
-      <div ref={containerRef} className="px-4 pb-2 pl-10 text-[11px] text-muted-foreground">
-        图片已不可读取（{attachment.name}）
-      </div>
-    );
-  }
+  useIsomorphicLayoutEffect(() => {
+    const list = listRef.current;
+    if (!list || !followTail.current) return;
+    list.scrollTop = list.scrollHeight;
+  }, [rows.length]);
+
   return (
-    <div ref={containerRef} className="px-4 pb-2 pl-10">
-      {dataUrl ? (
-        <img
-          src={dataUrl}
-          alt={attachment.name}
-          loading="lazy"
-          className="max-h-40 rounded-md border border-border/70 bg-muted/30 object-contain"
-        />
-      ) : (
-        <div className="h-16 w-24 animate-pulse rounded-md border border-border/60 bg-muted/30" aria-hidden="true" />
+    <div className="py-1" aria-label={summary}>
+      {rows.length > ACTIVITY_GROUP_VISIBLE_ROWS && (
+        <div className="px-2 pb-1 text-[10px] text-muted-foreground">{summary}</div>
       )}
-    </div>
-  );
-}
-
-type FileChangeCardView = Extract<IrisAgentCardView, { kind: 'file-change' }>;
-
-function FileChangeGroupCard({
-  cards,
-}: {
-  cards: FileChangeCardView[];
-}): JSX.Element {
-  const additions = cards.reduce((total, card) => total + diffLineStats(card.diff).additions, 0);
-  const deletions = cards.reduce((total, card) => total + diffLineStats(card.diff).deletions, 0);
-  const summary = `${cards.length} 个文件${additions || deletions ? ` · +${additions} -${deletions}` : ''}`;
-  return (
-    <CardFrame
-      cardType="files"
-      icon={<FileDiff className="h-4 w-4" />}
-      title="文件变更"
-      summary={summary}
-      state={groupState(cards)}
-    >
-      <div>
-        {cards.map((card) => {
-          const stats = diffLineStats(card.diff);
-          const action = card.action === 'created' ? '创建' : card.action === 'updated' ? '修改' : card.action === 'unchanged' ? '未改变' : '写入失败';
+      <div
+        ref={listRef}
+        className="space-y-0.5 overflow-y-auto"
+        style={{ maxHeight: ACTIVITY_GROUP_WINDOW_HEIGHT }}
+        onScroll={() => {
+          const list = listRef.current;
+          if (!list) return;
+          followTail.current = list.scrollHeight - list.scrollTop - list.clientHeight <= 4;
+        }}
+      >
+        {rows.map((row) => {
+          const terminalId = row.terminalId;
           return (
-            <div key={card.id} className="flex min-h-7 items-center gap-2.5 px-4 py-1 text-xs">
-              <FileActionIcon action={card.action} />
-              <span className="min-w-0 flex-1 truncate font-mono text-[11px]" aria-label={card.path}>{card.path}</span>
-              {(stats.additions || stats.deletions) ? (
-                <span className="shrink-0 font-mono text-[11px] font-semibold">
-                  <span className="text-emerald-600 dark:text-emerald-400">+{stats.additions}</span>
-                  {' '}
-                  <span className="text-red-600 dark:text-red-400">-{stats.deletions}</span>
-                </span>
-              ) : (
-                <span className="shrink-0 text-[11px] text-muted-foreground">{action}</span>
+            <div key={row.id} className="flex min-h-7 min-w-0 items-center gap-2.5 px-2 py-1 text-xs">
+              <ActivityRowIcon tool={row.tool} />
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px]" aria-label={row.label}>{row.label}</span>
+              {row.family === 'file-change' && (
+                <FileChangeResult action={row.action} additions={row.additions} deletions={row.deletions} />
               )}
               <CompactRowStateIcon
-                state={card.state}
-                accent="var(--iris-card-files)"
-                detail={card.error}
+                state={row.state}
+                accent="var(--primary)"
+                detail={row.error}
+                onClick={terminalId ? () => onOpenTerminal(terminalId) : undefined}
               />
             </div>
           );
         })}
       </div>
-    </CardFrame>
+    </div>
   );
 }
 
-function CombinedActivityGroup({ cards, onOpenTerminal }: { cards: Array<Extract<IrisAgentCardView, { kind: 'local-retrieval' | 'file-change' }>>; onOpenTerminal: (id: string) => void }): JSX.Element {
-  type Row = { id: string; icon: ReactNode; label: string; state: IrisAgentCardState | 'canceled'; error: string | undefined; terminalId: string | undefined };
-  const rows: Row[] = cards.flatMap((card): Row[] => card.kind === 'file-change'
-    ? [{ id: card.id, icon: <FileActionIcon action={card.action} />, label: card.path, state: card.state, error: card.error, terminalId: undefined }]
-    : card.items.map((item) => ({ id: `${card.id}-${item.id}`, icon: item.kind === 'file' ? <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : <SquareTerminal className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />, label: item.label, state: item.state, error: item.error, terminalId: item.terminalId })));
-  const files = rows.filter((row) => 'terminalId' in row === false).length;
-  const info = cards.filter((card) => card.kind === 'local-retrieval').reduce((n, card) => n + card.items.length, 0);
-  const edits = cards.filter((card) => card.kind === 'file-change').length;
-  const failed = rows.filter((row) => row.state === 'failed').length;
-  const summary = [`${files}读取`, `${info}信息`, `${edits}编辑`, `${failed}错误`].join(' · ');
-  return <div className="space-y-0.5 py-1" aria-label={summary}>
-    {rows.length > 5 && <div className="px-2 pb-1 text-[10px] text-muted-foreground">{summary}</div>}
-    {rows.slice(0, 5).map((row) => <div key={row.id} className="flex min-h-7 min-w-0 items-center gap-2.5 px-2 py-1 text-xs">{row.icon}<span className="min-w-0 flex-1 truncate font-mono text-[11px]">{row.label}</span><CompactRowStateIcon state={row.state} accent="var(--primary)" detail={row.error} onClick={'terminalId' in row && row.terminalId ? () => onOpenTerminal(row.terminalId!) : undefined} /></div>)}
-  </div>;
+/** The left icon follows the tool that ran, never the outcome. */
+function ActivityRowIcon({ tool }: { tool: ActivityGroupTool }): JSX.Element {
+  if (tool === 'edit') return <Pencil className="h-3.5 w-3.5 shrink-0 text-sky-500" aria-label="编辑工具" />;
+  if (tool === 'write') return <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label="写入工具" />;
+  if (tool === 'terminal') return <SquareTerminal className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />;
+  return <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />;
 }
 
-function FileActionIcon({ action }: { action: FileChangeCardView['action'] }): JSX.Element {
-  if (action === 'created') return <Plus className="h-3.5 w-3.5 shrink-0 text-emerald-500" aria-label="新增" />;
-  if (action === 'updated') return <Pencil className="h-3.5 w-3.5 shrink-0 text-sky-500" aria-label="编辑" />;
-  if (action === 'attempted') return <Trash2 className="h-3.5 w-3.5 shrink-0 text-rose-500" aria-label="删除" />;
-  return <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label="文件" />;
-}
-
-function groupAgentCards(cards: IrisAgentCardView[]): Array<
-  | { kind: 'activity-group'; cards: Array<Extract<IrisAgentCardView, { kind: 'local-retrieval' | 'file-change' }>> }
-  | { kind: 'single'; card: Exclude<IrisAgentCardView, FileChangeCardView> }
-> {
-  const groups: Array<{ kind: 'activity-group'; cards: Array<Extract<IrisAgentCardView, { kind: 'local-retrieval' | 'file-change' }>> } | { kind: 'single'; card: Exclude<IrisAgentCardView, FileChangeCardView> }> = [];
-  for (const card of cards) {
-    if (card.kind === 'file-change' || card.kind === 'local-retrieval') {
-      const previous = groups.at(-1);
-      if (previous?.kind === 'activity-group') previous.cards.push(card);
-      else groups.push({ kind: 'activity-group', cards: [card] });
-    } else {
-      groups.push({ kind: 'single', card });
-    }
-  }
-  return groups;
-}
-
-function diffLineStats(diff: string | undefined): { additions: number; deletions: number } {
-  if (!diff) return { additions: 0, deletions: 0 };
-  let additions = 0;
-  let deletions = 0;
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('+') && !line.startsWith('+++')) additions += 1;
-    if (line.startsWith('-') && !line.startsWith('---')) deletions += 1;
-  }
-  return { additions, deletions };
-}
-
-function groupState(cards: FileChangeCardView[]): IrisAgentCardState {
-  if (cards.some((card) => card.state === 'failed')) return 'failed';
-  if (cards.some((card) => card.state === 'partial')) return 'partial';
-  if (cards.some((card) => card.state === 'running')) return 'running';
-  if (cards.some((card) => card.state === 'stopped')) return 'stopped';
-  if (cards.every((card) => card.state === 'unchanged')) return 'unchanged';
-  return 'completed';
+/** Result of one file change: what happened, plus the diff line counts. */
+function FileChangeResult({ action, additions, deletions }: { action: FileChangeAction; additions: number; deletions: number }): JSX.Element {
+  return (
+    <span className="flex shrink-0 items-center gap-1.5 text-[11px]">
+      <span className={action === 'attempted' ? 'text-destructive' : 'text-muted-foreground'}>
+        {fileActionLabel(action)}
+      </span>
+      {additions > 0 && (
+        <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400">+{additions}</span>
+      )}
+      {deletions > 0 && (
+        <span className="font-mono font-semibold text-red-600 dark:text-red-400">-{deletions}</span>
+      )}
+    </span>
+  );
 }
 
 function TerminalOperationCard({
@@ -1216,7 +1117,7 @@ function TerminalOperationCard({
       cardType="operations"
       icon={<SquareTerminal className="h-4 w-4" />}
       title="执行命令"
-      summary={cardStateLabel(card.state)}
+      summary={agentCardStateLabel(card.state)}
       state={card.state}
       action={multiline ? (
         <Button
@@ -1381,7 +1282,7 @@ function AgentReplyCard({
   );
 }
 
-type CardType = 'files' | 'operations' | 'retrievals' | 'tasks' | 'message';
+type CardType = 'operations' | 'tasks';
 
 function CardFrame({
   cardType,
@@ -1404,12 +1305,12 @@ function CardFrame({
 
   return (
     <section
-      className={`iris-agent-card overflow-hidden ${cardType === 'files' || cardType === 'retrievals' ? '' : 'rounded-lg border border-border/80 bg-card/40'}`}
+      className="iris-agent-card overflow-hidden rounded-lg border border-border/80 bg-card/40"
       data-state={state}
       style={{ '--iris-agent-card-accent': accent } as CSSProperties}
       aria-label={title}
     >
-      {cardType !== 'files' && cardType !== 'retrievals' && <div className="flex min-h-10 items-center gap-2.5 px-4 py-2">
+      <div className="flex min-h-10 items-center gap-2.5 px-4 py-2">
         <span className="iris-agent-card-icon shrink-0" aria-hidden="true">{icon}</span>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-baseline gap-2">
@@ -1425,53 +1326,44 @@ function CardFrame({
         <span className="flex w-5 shrink-0 items-center justify-center">
           <CardStateIcon state={state} />
         </span>
-      </div>}
-      {cardType !== 'files' && cardType !== 'retrievals' && <div className="iris-agent-card-line" aria-hidden="true" />}
+      </div>
+      <div className="iris-agent-card-line" aria-hidden="true" />
       {children}
     </section>
   );
 }
 
 function CardStateIcon({ state }: { state: IrisAgentCardState }): JSX.Element {
-  if (state === 'running') {
+  const tone = agentCardStateTone(state);
+  const label = agentCardStateLabel(state);
+  if (tone === 'running') {
     return (
-      <span className="iris-agent-working-dots" role="img" aria-label="运行中">
+      <span className="iris-agent-working-dots" role="img" aria-label={label}>
         <span />
         <span />
         <span />
       </span>
     );
   }
-  if (state === 'failed') {
-    return <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="失败" />;
+  if (tone === 'neutral') {
+    return <Square className="h-3 w-3 shrink-0 text-muted-foreground" aria-label={label} />;
   }
-  if (state === 'partial') {
-    return <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="部分失败" />;
+  if (tone === 'failure' || tone === 'warning') {
+    return <AlertTriangle className={`h-3.5 w-3.5 shrink-0 ${cardStateTextClass(tone)}`} aria-label={label} />;
   }
-  if (state === 'stopped') {
-    return <Square className="h-3 w-3 shrink-0 text-muted-foreground" aria-label="已停止" />;
-  }
-  return <Check className="h-3.5 w-3.5 shrink-0 text-emerald-500" aria-label={state === 'unchanged' ? '无变化' : '完成'} />;
+  return <Check className={`h-3.5 w-3.5 shrink-0 ${cardStateTextClass(tone)}`} aria-label={label} />;
 }
 
+/** Live states paint with the card accent, so the dot only owns the settled tones. */
 function TerminalStateDot({ state }: { state: IrisAgentCardState }): JSX.Element {
-  const label = cardStateLabel(state);
-  const color = state === 'failed'
-    ? 'bg-destructive'
-    : state === 'partial'
-      ? 'bg-amber-500'
-      : state === 'completed' || state === 'unchanged'
-        ? 'bg-emerald-500'
-        : state === 'running'
-          ? 'bg-[var(--iris-agent-card-accent)]'
-          : 'bg-muted-foreground';
+  const tone = agentCardStateTone(state);
   return (
     <span className="mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center">
       <span
-        className={`iris-agent-terminal-dot h-2 w-2 rounded-full ${color}`}
+        className={`iris-agent-terminal-dot h-2 w-2 rounded-full ${tone === 'running' ? 'bg-[var(--iris-agent-card-accent)]' : cardStateDotClass(tone)}`}
         data-running={state === 'running' || undefined}
         role="img"
-        aria-label={label}
+        aria-label={agentCardStateLabel(state)}
       />
     </span>
   );
@@ -1488,14 +1380,15 @@ function CompactRowStateIcon({
   detail?: string | undefined;
   onClick?: (() => void) | undefined;
 }): JSX.Element {
-  const label = detail ? `${retrievalStateLabel(state)}：${detail}` : retrievalStateLabel(state);
-  const icon = state === 'running'
+  const tone = agentCardStateTone(state);
+  const label = detail ? `${agentCardStateLabel(state)}：${detail}` : agentCardStateLabel(state);
+  const icon = tone === 'running'
     ? <LoaderCircle className="h-3 w-3 animate-spin" style={{ color: accent }} />
-    : state === 'failed' || state === 'partial'
-      ? <X className={`h-3.5 w-3.5 ${state === 'partial' ? 'text-amber-500' : 'text-destructive'}`} />
-      : state === 'canceled' || state === 'stopped'
+    : tone === 'failure' || tone === 'warning'
+      ? <X className={`h-3.5 w-3.5 ${cardStateTextClass(tone)}`} />
+      : tone === 'neutral'
         ? <X className="h-3.5 w-3.5 text-muted-foreground" />
-        : <Check className="h-3.5 w-3.5 text-emerald-500" />;
+        : <Check className={`h-3.5 w-3.5 ${cardStateTextClass(tone)}`} />;
   const className = `flex h-5 w-5 shrink-0 items-center justify-center rounded-sm${onClick ? ' hover:bg-muted' : ''}`;
   if (onClick) {
     return (
@@ -1505,22 +1398,6 @@ function CompactRowStateIcon({
     );
   }
   return <span className={className} role="img" aria-label={label}>{icon}</span>;
-}
-
-function retrievalStateLabel(state: IrisAgentCardState | 'canceled'): string {
-  if (state === 'running') return '运行中';
-  if (state === 'failed') return '失败';
-  if (state === 'partial') return '部分失败';
-  if (state === 'canceled' || state === 'stopped') return '已停止';
-  if (state === 'unchanged') return '无变化';
-  return '成功';
-}
-
-function cardStateLabel(state: IrisAgentCardState): string {
-  if (state === 'running') return '运行中';
-  if (state === 'failed') return '失败';
-  if (state === 'stopped') return '已停止';
-  return '成功';
 }
 
 function UserMessage({

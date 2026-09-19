@@ -10,6 +10,7 @@
 import type { DocContent } from '@shared/types';
 
 export const IRIS_DOC_MIME = 'application/x-iris-doc';
+export const IRIS_EXTERNAL_PATH_MIME = 'application/x-iris-external-path';
 
 export interface EditorDropPoint {
   x: number;
@@ -22,7 +23,7 @@ export interface EditorAdapter {
 }
 
 export interface EditorPathDrop {
-  source: 'iris-document' | 'system-file';
+  source: 'iris-document' | 'iris-external' | 'system-file';
   paths: string[];
 }
 
@@ -46,6 +47,20 @@ export function setDocDragData(dt: DataTransfer, docPath: string): void {
   dt.effectAllowed = 'copy';
 }
 
+export function setExternalPathDragData(dt: DataTransfer, absolutePath: string): void {
+  dt.setData(IRIS_EXTERNAL_PATH_MIME, absolutePath);
+  dt.setData('text/plain', absolutePath);
+  dt.effectAllowed = 'copy';
+}
+
+export function isExternalPathDrag(dt: DataTransfer): boolean {
+  return dt.types.includes(IRIS_EXTERNAL_PATH_MIME);
+}
+
+export function getExternalDragPath(dt: DataTransfer): string | null {
+  return dt.getData(IRIS_EXTERNAL_PATH_MIME) || null;
+}
+
 export function isDocDrag(dt: DataTransfer): boolean {
   return dt.types.includes(IRIS_DOC_MIME);
 }
@@ -55,7 +70,7 @@ export function getDocDragPath(dt: DataTransfer): string | null {
 }
 
 export function isEditorPathDrag(dt: DataTransfer): boolean {
-  return isDocDrag(dt) || dt.types.includes('Files') || dt.files.length > 0;
+  return isExternalPathDrag(dt) || isDocDrag(dt) || dt.types.includes('Files') || dt.files.length > 0;
 }
 
 export function resolveSystemFilePaths(
@@ -78,6 +93,10 @@ export function resolveEditorPathDrop(
   dt: DataTransfer,
   resolvePath: FilePathResolver,
 ): EditorPathDrop | null {
+  if (isExternalPathDrag(dt)) {
+    const path = getExternalDragPath(dt);
+    return { source: 'iris-external', paths: path ? [path] : [] };
+  }
   if (isDocDrag(dt)) {
     const path = getDocDragPath(dt);
     return { source: 'iris-document', paths: path ? [path] : [] };

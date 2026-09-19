@@ -11,6 +11,7 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  Files,
   GitBranch,
   ListChecks,
   Loader2,
@@ -44,6 +45,7 @@ import {
   pickAndOpenProject,
 } from '@renderer/lib/project-actions';
 import { LensTree } from '@renderer/components/lens/LensTree';
+import { RawTree } from '@renderer/components/lens/RawTree';
 import { InitDialog } from '@renderer/components/project/InitDialog';
 import { CreateWorkspaceDialog } from '@renderer/components/project/CreateWorkspaceDialog';
 import { SourceControlPanel } from '@renderer/components/git/SourceControlPanel';
@@ -170,7 +172,7 @@ export function ProjectToolbarActions(): JSX.Element | null {
 
 export function LeftPane(): JSX.Element {
   const { t } = useTranslation();
-  const { phase, error, scan, view } = useProject();
+  const { phase, error, scan, view, rawMode, rawTree } = useProject();
   const { sort, filter, filterOpen } = useLensPrefs();
   const [initOpen, setInitOpen] = useState(false);
   const [wsOpen, setWsOpen] = useState(false);
@@ -337,6 +339,24 @@ export function LeftPane(): JSX.Element {
                     </TooltipTrigger>
                     <TooltipContent>{t('layout.filterDocuments')}</TooltipContent>
                   </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className={cn('h-7 w-7', rawMode && 'bg-accent text-accent-foreground')}
+                        aria-label={t('layout.fileTree')}
+                        onClick={() => {
+                          void projectStore.toggleRawMode().catch((err) => {
+                            console.warn('[left-pane] file tree refresh failed', err);
+                          });
+                        }}
+                      >
+                        <Files className="!size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{t('layout.fileTree')}</TooltipContent>
+                  </Tooltip>
                 </>
               )}
               {scan.root && (
@@ -472,7 +492,10 @@ export function LeftPane(): JSX.Element {
             </EmptyState>
           )}
 
-          {phase === 'ready' && scan?.hasIris && scan.root && (
+          {phase === 'ready' && scan?.hasIris && rawMode && rawTree && (
+            <RawTree root={rawTree} />
+          )}
+          {phase === 'ready' && scan?.hasIris && !rawMode && scan.root && (
             <LensTree root={scan.root} />
           )}
         </div>

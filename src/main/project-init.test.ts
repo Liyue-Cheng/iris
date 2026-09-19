@@ -39,6 +39,8 @@ describe('initIris', () => {
       ['.iris/issue', '.iris/misc', '.iris/report', '.iris/status'].sort(),
     );
     expect(result.agentsMd).toBe('created');
+    expect(result.createdExternalFile).toBe(true);
+    await expect(fs.readFile(join(dir, '.iris', 'external.txt'), 'utf8')).resolves.toBe('');
     await expect(fs.access(join(dir, '.iris', 'CONVENTIONS.md'))).rejects.toThrow();
     await expect(fs.access(join(dir, '.iris', 'styles.json'))).rejects.toThrow();
     expect(await readProjectSettings(dir)).toMatchObject({
@@ -66,6 +68,7 @@ describe('initIris', () => {
     const before = await fs.readFile(join(dir, 'AGENTS.md'), 'utf8');
     const second = await init(pm);
     expect(second.createdFolders).toEqual([]);
+    expect(second.createdExternalFile).toBe(false);
     expect(second.agentsMd).toBe('already-has-section');
     expect(await fs.readFile(join(dir, 'AGENTS.md'), 'utf8')).toBe(before);
     await expect(fs.access(join(dir, 'AGENTS.md.bak'))).rejects.toThrow();
@@ -314,6 +317,8 @@ describe('createWorkspace', () => {
   it('creates standard and empty workspace shapes', async () => {
     await pm.createWorkspace({ parentPath: '.iris', name: 'spike-x', template: 'standard' });
     await pm.createWorkspace({ parentPath: '.iris', name: 'notes', template: 'empty' });
+    await expect(fs.readFile(join(dir, '.iris', 'spike-x', 'external.txt'), 'utf8')).resolves.toBe('');
+    await expect(fs.access(join(dir, '.iris', 'notes', 'external.txt'))).rejects.toThrow();
     const scan = await pm.scan();
     expect(scan.root!.children.map((child) => child.path)).toContain('.iris/spike-x');
     expect(scan.root!.children.map((child) => child.path)).not.toContain('.iris/notes');

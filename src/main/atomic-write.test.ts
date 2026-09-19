@@ -80,6 +80,37 @@ describe('atomic file paths', () => {
     expect((await fs.readdir(root)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 
+  it.runIf(process.platform === 'win32')('recovers from transient replacement locks without repeating backup preparation', async () => {
+    const target = join(root, 'settings.json');
+    await fs.writeFile(target, 'old', 'utf8');
+    const rename = vi.spyOn(fs, 'rename')
+      .mockRejectedValueOnce(Object.assign(new Error('locked'), { code: 'EPERM' }))
+      .mockRejectedValueOnce(Object.assign(new Error('busy'), { code: 'EBUSY' }));
+    const beforeReplace = vi.fn(async () => {
+      expect(await fs.readFile(target, 'utf8')).toBe('old');
+    });
+
+    await writeFileAtomic(target, 'new', { beforeReplace });
+
+    expect(rename).toHaveBeenCalledTimes(3);
+    expect(beforeReplace).toHaveBeenCalledTimes(1);
+    expect(await fs.readFile(target, 'utf8')).toBe('new');
+    expect((await fs.readdir(root)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it.runIf(process.platform === 'win32')('bounds retries and preserves the target when replacement stays denied', async () => {
+    const target = join(root, 'settings.json');
+    await fs.writeFile(target, 'old', 'utf8');
+    const error = Object.assign(new Error('access denied'), { code: 'EACCES' });
+    const rename = vi.spyOn(fs, 'rename').mockRejectedValue(error);
+
+    await expect(writeFileAtomic(target, 'new')).rejects.toBe(error);
+
+    expect(rename).toHaveBeenCalledTimes(5);
+    expect(await fs.readFile(target, 'utf8')).toBe('old');
+    expect((await fs.readdir(root)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+
   it('preserves a backup that can recover a corrupted user settings file', async () => {
     const target = join(root, 'settings.json');
     await fs.writeFile(target, JSON.stringify({ value: 'durable' }), 'utf8');

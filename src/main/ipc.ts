@@ -31,6 +31,8 @@ import type {
   AppLegalDocumentId,
   DeepPartial,
   DocContent,
+  ExternalPathEntry,
+  ExternalPathIdentity,
   FsIrisChangedEvent,
   GitChangedEvent,
   GitSnapshot,
@@ -67,6 +69,7 @@ import type {
   Settings,
   SettingsChangedEvent,
   WindowBootstrapState,
+  WorkspaceExternalPaths,
 } from '@shared/types';
 import { appDataDir, type SettingsManager } from './settings-manager';
 import type { ProjectManager } from './project-manager';
@@ -863,6 +866,59 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     },
   );
 
+  ipcMain.handle(
+    CHANNELS.EXTERNAL_LIST,
+    (event, payload: { workspacePath: string } & ProjectScopedPayload): Promise<WorkspaceExternalPaths> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.EXTERNAL_LIST);
+      return ctx.projectManager.listExternalPaths(payload.workspacePath);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.EXTERNAL_ADD,
+    (event, payload: { workspacePath: string; targetPath: string } & ProjectScopedPayload): Promise<ExternalPathEntry> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.EXTERNAL_ADD);
+      return ctx.projectManager.addExternalPath(payload.workspacePath, payload.targetPath);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.EXTERNAL_REMOVE,
+    async (event, payload: ExternalPathIdentity & ProjectScopedPayload): Promise<void> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.EXTERNAL_REMOVE);
+      await ctx.projectManager.removeExternalPath(payload);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.EXTERNAL_OPEN,
+    async (event, payload: ExternalPathIdentity & ProjectScopedPayload): Promise<void> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.EXTERNAL_OPEN);
+      const entry = await ctx.projectManager.resolveExternalPath(payload);
+      const error = await shell.openPath(entry.absolutePath!);
+      if (error) throw new Error(`[${CHANNELS.EXTERNAL_OPEN}] ${error}`);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.EXTERNAL_REVEAL,
+    async (event, payload: ExternalPathIdentity & ProjectScopedPayload): Promise<void> => {
+      const ctx = requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.EXTERNAL_REVEAL);
+      const entry = await ctx.projectManager.resolveExternalPath(payload);
+      if (entry.kind === 'directory') {
+        const error = await shell.openPath(entry.absolutePath!);
+        if (error) throw new Error(`[${CHANNELS.EXTERNAL_REVEAL}] ${error}`);
+      } else {
+        shell.showItemInFolder(entry.absolutePath!);
+      }
+    },
+  );
+
   // ── sessions ───────────────────────────────────────────────────────
 
   ipcMain.handle(
@@ -1609,16 +1665,26 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     return result.filePaths[0] ?? null;
   });
 
+  const pickExternalPath = async (
+    event: Electron.IpcMainInvokeEvent,
+    payload: { kind: 'file' | 'directory' },
+  ): Promise<string | null> => {
+    const parent = senderWindow(event);
+    const properties: Array<'openFile' | 'openDirectory'> = payload?.kind === 'directory' ? ['openDirectory'] : ['openFile'];
+    const options = { title: mainT(payload?.kind === 'directory' ? 'app.addAssociatedFolder' : 'app.addAssociatedFile'), properties };
+    const result = await (parent ? dialog.showOpenDialog(parent, options) : dialog.showOpenDialog(options));
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0] ?? null;
+  };
+
   ipcMain.handle(
     CHANNELS.DIALOG_PICK_ASSET_PATH,
-    async (event, payload: { kind: 'file' | 'directory' }): Promise<string | null> => {
-      const parent = senderWindow(event);
-      const properties: Array<'openFile' | 'openDirectory'> = payload?.kind === 'directory' ? ['openDirectory'] : ['openFile'];
-      const options = { title: mainT(payload?.kind === 'directory' ? 'app.addAssociatedFolder' : 'app.addAssociatedFile'), properties };
-      const result = await (parent ? dialog.showOpenDialog(parent, options) : dialog.showOpenDialog(options));
-      if (result.canceled || result.filePaths.length === 0) return null;
-      return result.filePaths[0] ?? null;
-    },
+    pickExternalPath,
+  );
+
+  ipcMain.handle(
+    CHANNELS.DIALOG_PICK_EXTERNAL_PATH,
+    pickExternalPath,
   );
 
   logger.info('ipc', 'handlers registered');

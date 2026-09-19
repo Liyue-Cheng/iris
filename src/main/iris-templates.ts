@@ -42,6 +42,24 @@ Treat documents under \`report/\` as historical unless the user asks to change t
   the user requests.
 - \`misc/\` — Human scratch space. Do not touch unless asked.
 
+Issue records may be incomplete or inaccurate; do not assume they were written
+or maintained rigorously, and do not treat them as a source of truth. Workflow
+statuses, including \`Done\`, do not establish that work was fully implemented
+or verified.
+
+## Workspace external paths
+
+A workspace may contain an \`external.txt\` file at its root. Each non-empty,
+non-comment line associates one external file or directory with that workspace.
+Relative paths are resolved from the workspace directory; absolute paths remain
+machine-specific. These entries are references only: do not move, modify, or
+delete their targets unless the user explicitly asks.
+
+\`external.txt\` is not a fifth document type and is not a PM write-back target.
+Preserve comments, blank lines, unknown or unavailable paths, and existing line
+order when editing it. Prefer portable relative paths for shared projects. A
+workspace or document deletion never deletes an external target.
+
 ## Document assets
 
 Each Markdown document may have a sibling \`<name>.assets/\` directory. Files

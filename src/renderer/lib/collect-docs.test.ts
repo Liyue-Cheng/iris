@@ -22,6 +22,7 @@ function workspace(docs: IrisDoc[]): IrisWorkspace {
     path: '.iris',
     name: 'project',
     docs,
+    external: { workspacePath: '.iris', manifestPath: '.iris/external.txt', exists: false, entries: [], diagnostics: [] },
     children: [],
     archived: false,
   };

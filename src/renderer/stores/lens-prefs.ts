@@ -8,6 +8,12 @@ import { useSyncExternalStore } from 'react';
 
 export type LensSort = 'mtime' | 'alpha';
 
+export interface LensRevealIntent {
+  workspacePath: string;
+  section: 'external';
+  nonce: number;
+}
+
 export interface LensPrefs {
   /** 'mtime' = newest first; 'alpha' = display-title A→Z. */
   sort: LensSort;
@@ -15,9 +21,10 @@ export interface LensPrefs {
   filter: string;
   /** Whether the filter input row is shown. */
   filterOpen: boolean;
+  revealIntent: LensRevealIntent | null;
 }
 
-let state: LensPrefs = { sort: 'mtime', filter: '', filterOpen: false };
+let state: LensPrefs = { sort: 'mtime', filter: '', filterOpen: false, revealIntent: null };
 const subscribers = new Set<() => void>();
 
 function setState(patch: Partial<LensPrefs>): void {
@@ -38,6 +45,12 @@ export const lensPrefs = {
   toggleFilter(): void {
     // Closing also clears the query so a hidden filter never silently hides docs.
     setState({ filterOpen: !state.filterOpen, filter: state.filterOpen ? '' : state.filter });
+  },
+  revealExternal(workspacePath: string): void {
+    setState({ revealIntent: { workspacePath, section: 'external', nonce: Date.now() } });
+  },
+  clearReveal(nonce: number): void {
+    if (state.revealIntent?.nonce === nonce) setState({ revealIntent: null });
   },
 };
 

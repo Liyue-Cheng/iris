@@ -667,7 +667,8 @@ export function projectCards(activities: AgentTimelineActivity[]): IrisAgentCard
           : action === 'unchanged'
             ? 'unchanged'
             : toolCardState(activity.state),
-        path: activity.path ?? pathFromInputSummary(activity.inputSummary),
+        path: normalizeDisplayedPath(activity.path ?? pathFromInputSummary(activity.inputSummary)),
+        tool: activity.tool,
         action,
         ...(activity.diff ? { diff: activity.diff } : {}),
         ...(activity.resultSummary ? { detail: activity.resultSummary } : {}),
@@ -699,7 +700,7 @@ function localRetrievalItem(activity: AgentToolActivity) {
     return {
       id: activity.id,
       kind: 'file' as const,
-      label: activity.path ?? pathFromInputSummary(activity.inputSummary),
+      label: normalizeDisplayedPath(activity.path ?? pathFromInputSummary(activity.inputSummary)),
       state: activity.state,
       ...(activity.imageAttachment ? { image: { ...activity.imageAttachment } } : {}),
       ...(activity.error ? { error: activity.error } : {}),
@@ -740,9 +741,15 @@ function fileAction(activity: AgentToolActivity): Extract<
   return 'attempted';
 }
 
+function normalizeDisplayedPath(path: string): string {
+  const normalized = path.replaceAll('\\', '/');
+  const marker = '/.iris/';
+  const index = normalized.indexOf(marker);
+  if (index >= 0) return normalized.slice(index + 1);
+  return normalized;
+}
+
 function pathFromInputSummary(summary: string): string {
   const space = summary.indexOf(' ');
   return space >= 0 ? summary.slice(space + 1) : summary;
 }
-
-

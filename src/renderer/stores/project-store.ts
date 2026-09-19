@@ -785,6 +785,10 @@ export const projectStore = {
     }
   },
 
+  showLens(): void {
+    setState({ rawMode: false });
+  },
+
   async refreshRawTree(): Promise<void> {
     const scope = state.scope;
     if (!scope) return;

@@ -6,11 +6,12 @@ import { TooltipProvider } from '@renderer/components/ui/tooltip';
 import {
   irisAgentAnchorKey,
   irisAgentStore,
+  hydrateIrisAgentSessions,
 } from '@renderer/stores/iris-agent-store';
 import { sessionViewStore } from '@renderer/stores/session-view-store';
 import { irisAgentSessionKey } from '@renderer/lib/session-projection';
 import { projectScopeState } from '@renderer/stores/project-scope-state';
-import type { IrisAgentSessionInfo, ProjectScope } from '@shared/types';
+import type { IrisAgentListSnapshot, IrisAgentSessionInfo, ProjectScope } from '@shared/types';
 
 /**
  * The view assumes the app-level tooltip provider, exactly as `App.tsx` mounts
@@ -233,5 +234,128 @@ describe('irisAgentStore Intent projection', () => {
       intents: [],
     })).toBe('gap');
     expect(irisAgentStore.get().sessions[0]?.revision).toBe(2);
+  });
+
+  it('keeps the pause banner when an older list arrives after the pause event', async () => {
+    const failed = session('a', '.iris/issue/a.md');
+    failed.revision = 1169;
+    failed.state = 'running';
+    failed.currentIntentId = 'intent-1';
+    failed.intents = [{
+      id: 'intent-1', state: 'running', canFork: false,
+      user: { id: 'user-1', content: 'implement', createdAt: 1, contextAvailable: true },
+      cards: [{
+        kind: 'agent-reply', id: 'reply-1', state: 'failed', content: '',
+        excludedFromContext: true, error: 'bad_response: stream ended with reason timeout',
+      }],
+    }];
+    irisAgentStore.handleChanged(failed);
+    let resolveList!: (snapshot: IrisAgentListSnapshot) => void;
+    const response = new Promise<IrisAgentListSnapshot>((resolve) => { resolveList = resolve; });
+    const invoke = vi.spyOn(window.api, 'invoke').mockReturnValue(response);
+    try {
+      const loading = hydrateIrisAgentSessions();
+      const { revision: _revision, intents: _intents, ...header } = failed;
+      expect(irisAgentStore.handleProjectionUpdate({
+        kind: 'patch', sessionId: failed.id, baseRevision: 1169, revision: 1170,
+        session: {
+          ...header, state: 'paused',
+          pause: { reason: 'provider', message: 'bad_response: stream ended with reason timeout' },
+        },
+        intents: [{
+          operation: 'upsert', index: 0,
+          intent: { id: 'intent-1', state: 'paused', canFork: true, user: failed.intents[0]!.user },
+          cards: [],
+        }],
+      })).toBe('applied');
+      resolveList({ scope, sessions: [failed] });
+      expect(await loading).toBe(true);
+      const actual = irisAgentStore.get().sessions[0]!;
+      expect(actual).toMatchObject({ revision: 1170, state: 'paused', pause: { reason: 'provider' } });
+      const html = renderView(actual);
+      expect(html).toContain('bad_response');
+      expect(html).toContain('请求已暂停');
+      expect((html.match(/继续/gu) ?? [])).toHaveLength(1);
+    } finally {
+      invoke.mockRestore();
+    }
+  });
+
+  it('keeps sessions opened during hydration and does not resurrect closed sessions', async () => {
+    const closed = session('a', '.iris/issue/a.md');
+    irisAgentStore.handleChanged(closed);
+    let resolveList!: (snapshot: IrisAgentListSnapshot) => void;
+    const response = new Promise<IrisAgentListSnapshot>((resolve) => { resolveList = resolve; });
+    const invoke = vi.spyOn(window.api, 'invoke').mockReturnValue(response);
+    try {
+      const loading = hydrateIrisAgentSessions();
+      irisAgentStore.handleDestroyed(closed.id);
+      const opened = session('b', '.iris/issue/b.md');
+      irisAgentStore.handleChanged(opened);
+      resolveList({ scope, sessions: [closed] });
+      await loading;
+      expect(irisAgentStore.get().sessions).toEqual([opened]);
+    } finally {
+      invoke.mockRestore();
+    }
+  });
+
+  it('ignores an older overlapping hydration response', async () => {
+    const old = session('a', '.iris/issue/a.md');
+    irisAgentStore.handleChanged(old);
+    let resolveFirst!: (snapshot: IrisAgentListSnapshot) => void;
+    let resolveSecond!: (snapshot: IrisAgentListSnapshot) => void;
+    const first = new Promise<IrisAgentListSnapshot>((resolve) => { resolveFirst = resolve; });
+    const second = new Promise<IrisAgentListSnapshot>((resolve) => { resolveSecond = resolve; });
+    const invoke = vi.spyOn(window.api, 'invoke').mockReturnValueOnce(first).mockReturnValueOnce(second);
+    try {
+      const loadingFirst = hydrateIrisAgentSessions();
+      const loadingSecond = hydrateIrisAgentSessions();
+      resolveSecond({ scope, sessions: [] });
+      await loadingSecond;
+      resolveFirst({ scope, sessions: [old] });
+      await loadingFirst;
+      expect(irisAgentStore.get().sessions).toEqual([]);
+    } finally {
+      invoke.mockRestore();
+    }
+  });
+
+  it('renders every operation of a group, with its tool counters and file results', () => {
+    const view = session('a', '.iris/issue/a.md');
+    view.intents = [{
+      id: 'intent-1',
+      state: 'completed',
+      user: { id: 'user-1', content: 'inspect', createdAt: 1, contextAvailable: true },
+      canFork: false,
+      cards: [
+        {
+          kind: 'local-retrieval', id: 'r1', state: 'completed',
+          items: [
+            { id: 'i1', kind: 'file', label: 'src/first.ts', state: 'completed' },
+            { id: 'i2', kind: 'file', label: 'src/second.ts', state: 'completed' },
+            { id: 'i3', kind: 'file', label: 'src/third.ts', state: 'completed' },
+            { id: 'i4', kind: 'query', label: 'git status', state: 'completed' },
+          ],
+        },
+        {
+          kind: 'file-change', id: 'f1', state: 'completed', path: 'src/a.ts',
+          tool: 'edit', action: 'created', diff: '--- a\n+++ b\n@@ -0,0 +1,2 @@\n+one\n+two\n',
+        },
+        {
+          kind: 'file-change', id: 'f2', state: 'failed', path: 'src/b.ts',
+          tool: 'write', action: 'attempted',
+        },
+      ],
+    }];
+
+    const html = renderView(view);
+    // Six rows: the counters only appear because more than five do not fit.
+    expect(html).toContain('3读取 · 1信息 · 2编辑 · 1错误');
+    expect(html).toContain('创建');
+    expect(html).toContain('+2');
+    expect(html).toContain('写入失败');
+    // The last operation is rendered as well: the window scrolls rather than dropping it.
+    expect(html).toContain('src/b.ts');
   });
 });

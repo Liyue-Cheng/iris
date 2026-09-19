@@ -33,8 +33,10 @@ import {
   type RawTreeNode,
 } from '@shared/types';
 import { logger } from './logger';
+import { ExternalPathManager } from './external-path-manager';
 
 const IRIS_DIR = '.iris';
+const externalPathManager = new ExternalPathManager();
 
 function isDocType(name: string): name is DocType {
   return (DOC_TYPES as readonly string[]).includes(name);
@@ -233,6 +235,7 @@ async function scanWorkspaceDir(
     path: wsRel,
     name: basename(wsAbs),
     docs: [],
+    external: await externalPathManager.list(projectRoot, wsRel),
     children: [],
     archived,
   };
@@ -321,11 +324,10 @@ export async function scanProject(projectRoot: string): Promise<IrisScanResult> 
   return result;
 }
 
-/** Raw file tree of .iris/ (escape-hatch view). Dirs first, then files. */
+/** Raw file tree of the complete project (escape-hatch view). Dirs first, then files. */
 export async function scanRawTree(projectRoot: string): Promise<RawTreeNode | null> {
-  const irisAbs = join(projectRoot, IRIS_DIR);
   try {
-    if (!(await fs.stat(irisAbs)).isDirectory()) return null;
+    if (!(await fs.stat(projectRoot)).isDirectory()) return null;
   } catch {
     return null;
   }
@@ -342,5 +344,7 @@ export async function scanRawTree(projectRoot: string): Promise<RawTreeNode | nu
     return { name: basename(abs), path: toRel(projectRoot, abs), kind: 'dir', children };
   }
 
-  return walk(irisAbs);
+  const root = await walk(projectRoot);
+  root.name = basename(projectRoot);
+  return root;
 }
