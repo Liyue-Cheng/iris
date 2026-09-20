@@ -4,7 +4,7 @@
  * between them doesn't shift the layout (软件定义书 §5 — 其余类型从简).
  */
 import { useEffect, useRef } from 'react';
-import { Archive, FileWarning, Plus } from 'lucide-react';
+import { FileWarning, Plus } from 'lucide-react';
 import type { DocType, IrisWorkspace } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
 import { collectDocs, docDate } from '@renderer/lib/collect-docs';
@@ -106,7 +106,6 @@ export function SimpleList({
               style={{ gridTemplateColumns: GRID }}
               className={cn(
                 ROW_BASE,
-                item.archived && 'opacity-50',
                 selectedPath === item.doc.path && 'bg-accent/80',
               )}
             >
@@ -115,7 +114,6 @@ export function SimpleList({
                 {item.doc.frontmatterBroken && (
                   <FileWarning className="h-3.5 w-3.5 shrink-0 text-destructive/80" />
                 )}
-                {item.archived && <Archive className="h-3 w-3 shrink-0 text-muted-foreground/60" />}
               </span>
               <span className="min-w-0 truncate text-[11px] text-muted-foreground">
                 {item.workspaceName}

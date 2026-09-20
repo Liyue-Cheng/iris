@@ -15,7 +15,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  Archive,
   ChevronRight,
   FileWarning,
   Plus,
@@ -158,9 +157,6 @@ function IssueTitleCell({
         {item.doc.frontmatterBroken && (
           <FileWarning className="h-3.5 w-3.5 shrink-0 text-destructive/80" />
         )}
-        {item.archived && (
-          <Archive className="h-3 w-3 shrink-0 text-muted-foreground/60" />
-        )}
       </span>
     </div>
   );
@@ -179,7 +175,7 @@ function IssueColumnMeasurer({
   const statusSamples = useMemo(() => {
     const seen = new Set<string>();
     return rows.flatMap((item) => {
-      const editable = !item.archived && !item.doc.frontmatterBroken;
+      const editable = !item.doc.frontmatterBroken;
       const key = `${item.doc.status ?? ''}\u0000${editable ? '1' : '0'}`;
       if (seen.has(key)) return [];
       seen.add(key);
@@ -254,7 +250,7 @@ function IssueColumnMeasurer({
 
 function StatusEditor({ item }: { item: CollectedDoc }): JSX.Element {
   const { t } = useTranslation();
-  const editable = !item.archived && !item.doc.frontmatterBroken;
+  const editable = !item.doc.frontmatterBroken;
   const badge = item.doc.status ? (
     <StatusBadge
       value={item.doc.status}
@@ -440,15 +436,15 @@ export function IssuePanel({
   });
 
   const counts: Record<Filter, number> = {
-    active: all.filter((i) => !i.archived && isActiveIssue(i.doc)).length,
-    onHold: all.filter((i) => !i.archived && isInactiveOpenIssue(i.doc)).length,
+    active: all.filter((i) => isActiveIssue(i.doc)).length,
+    onHold: all.filter((i) => isInactiveOpenIssue(i.doc)).length,
     resolved: all.filter((i) => isResolvedIssue(i.doc)).length,
     all: all.length,
   };
 
   const rows = all.filter((item) => {
-    if (filter === 'active') return !item.archived && isActiveIssue(item.doc);
-    if (filter === 'onHold') return !item.archived && isInactiveOpenIssue(item.doc);
+    if (filter === 'active') return isActiveIssue(item.doc);
+    if (filter === 'onHold') return isInactiveOpenIssue(item.doc);
     if (filter === 'resolved') return isResolvedIssue(item.doc);
     return true;
   });
@@ -650,7 +646,6 @@ export function IssuePanel({
                         style={gridStyle}
                         className={cn(
                           'group relative grid h-9 cursor-pointer select-none border-b border-subtle/60 text-sm hover:bg-muted/50',
-                          item.archived && 'opacity-50',
                           detailPath === item.doc.path && 'bg-accent/80',
                           i === activeIdx &&
                             detailPath !== item.doc.path &&

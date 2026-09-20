@@ -22,14 +22,11 @@ import { Input } from '@renderer/components/ui/input';
 
 function flattenWorkspaces(root: IrisWorkspace): { path: string; label: string }[] {
   const out: { path: string; label: string }[] = [];
-  const walk = (ws: IrisWorkspace, depth: number, archived: boolean): void => {
-    const isArchived = archived || ws.archived;
-    if (!isArchived) {
-      out.push({ path: ws.path, label: `${'　'.repeat(depth)}${depth === 0 ? ws.name : ws.path.split('/').pop()}` });
-    }
-    ws.children.forEach((c) => walk(c, depth + 1, isArchived));
+  const walk = (ws: IrisWorkspace, depth: number): void => {
+    out.push({ path: ws.path, label: `${'　'.repeat(depth)}${depth === 0 ? ws.name : ws.path.split('/').pop()}` });
+    ws.children.forEach((c) => walk(c, depth + 1));
   };
-  walk(root, 0, false);
+  walk(root, 0);
   return out;
 }
 

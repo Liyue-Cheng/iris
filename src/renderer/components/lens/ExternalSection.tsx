@@ -5,7 +5,6 @@ import {
   ChevronRight,
   Copy,
   ExternalLink,
-  File,
   FilePlus,
   FileWarning,
   Folder,
@@ -13,7 +12,6 @@ import {
   FolderPlus,
   Link2,
   Plus,
-  RefreshCw,
   Trash2,
 } from 'lucide-react';
 import type { ExternalPathEntry, WorkspaceExternalPaths } from '@shared/types';
@@ -21,7 +19,7 @@ import { cn } from '@renderer/lib/utils';
 import { runUserAction } from '@renderer/lib/action-runtime';
 import { writeClipboardText } from '@renderer/lib/clipboard';
 import { editorStore } from '@renderer/stores/editor-store';
-import { lensPrefs, useLensPrefs } from '@renderer/stores/lens-prefs';
+import { useLensPrefs } from '@renderer/stores/lens-prefs';
 import { projectScopeState, sameProjectScope } from '@renderer/stores/project-scope-state';
 import { setExternalPathDragData } from '@renderer/lib/doc-drag';
 import {
@@ -50,26 +48,17 @@ import {
 
 export function ExternalSection({
   external,
-  archived,
 }: {
   external: WorkspaceExternalPaths;
-  archived: boolean;
 }): JSX.Element | null {
   const { t } = useTranslation();
-  const { filter, revealIntent } = useLensPrefs();
+  const { filter } = useLensPrefs();
   const [inventory, setInventory] = useState(external);
   const [open, setOpen] = useState(true);
   const [busy, setBusy] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => setInventory(external), [external]);
-  useEffect(() => {
-    if (revealIntent?.workspacePath !== external.workspacePath) return;
-    setOpen(true);
-    requestAnimationFrame(() => rootRef.current?.scrollIntoView({ block: 'nearest' }));
-    lensPrefs.clearReveal(revealIntent.nonce);
-  }, [external.workspacePath, revealIntent]);
-
   const refresh = async (): Promise<void> => {
     setBusy(true);
     try {
@@ -122,43 +111,29 @@ export function ExternalSection({
           className="flex min-w-0 flex-1 items-center gap-2 py-1 text-xs font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground"
         >
           <Link2 className="h-3.5 w-3.5" />
-          {t('external.title')}
+          External
           <span className="ml-1 font-normal text-muted-foreground/60">{visible.length}</span>
         </button>
-        {!archived && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                disabled={busy}
-                aria-label={t('external.add')}
-                className="rounded-sm p-0.5 text-muted-foreground/0 hover:bg-muted hover:!text-foreground group-hover/section:text-muted-foreground"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => void add('file').catch(() => undefined)}>
-                <FilePlus /> {t('external.addFile')}
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => void add('directory').catch(() => undefined)}>
-                <FolderPlus /> {t('external.addFolder')}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
-        <button
-          type="button"
-          disabled={busy}
-          aria-label={t('common.refresh')}
-          onClick={() => void runUserAction(
-            { title: t('common.refresh'), dedupeKey: `external:refresh:${external.workspacePath}` },
-            refresh,
-          )}
-          className="rounded-sm p-0.5 text-muted-foreground/0 hover:bg-muted hover:!text-foreground group-hover/section:text-muted-foreground"
-        >
-          <RefreshCw className={cn('h-3.5 w-3.5', busy && 'animate-spin')} />
-        </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              disabled={busy}
+              aria-label={t('external.add')}
+              className="rounded-sm p-0.5 text-muted-foreground/0 hover:bg-muted hover:!text-foreground group-hover/section:text-muted-foreground"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => void add('file').catch(() => undefined)}>
+              <FilePlus /> {t('external.addFile')}
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => void add('directory').catch(() => undefined)}>
+              <FolderPlus /> {t('external.addFolder')}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
       {open && (
         <div className="pb-1">
@@ -167,7 +142,6 @@ export function ExternalSection({
               key={`${entry.line}:${entry.storedPath}`}
               workspacePath={external.workspacePath}
               entry={entry}
-              archived={archived}
               onChanged={refresh}
             />
           ))}
@@ -183,12 +157,10 @@ export function ExternalSection({
 function ExternalRow({
   workspacePath,
   entry,
-  archived,
   onChanged,
 }: {
   workspacePath: string;
   entry: ExternalPathEntry;
-  archived: boolean;
   onChanged: () => Promise<void>;
 }): JSX.Element {
   const { t } = useTranslation();
@@ -208,7 +180,6 @@ function ExternalRow({
       },
     );
   };
-  const Icon = entry.error ? FileWarning : entry.kind === 'directory' ? Folder : File;
   const row = (
     <button
       type="button"
@@ -224,8 +195,13 @@ function ExternalRow({
         canUse ? 'hover:bg-muted' : 'cursor-default text-muted-foreground/60',
       )}
     >
-      <Icon className={cn('h-3.5 w-3.5 shrink-0', entry.error && 'text-[var(--rp-gold)]')} />
+      <span className="flex w-3 shrink-0 items-center justify-center">
+        {entry.error && <FileWarning className="h-3.5 w-3.5 text-[var(--rp-gold)]" />}
+      </span>
       <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+      {!entry.error && entry.kind === 'directory' && (
+        <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      )}
     </button>
   );
   return (
@@ -246,14 +222,10 @@ function ExternalRow({
         <ContextMenuItem onClick={() => void writeClipboardText(entry.storedPath)}>
           <Copy /> {t('external.copyStoredPath')}
         </ContextMenuItem>
-        {!archived && (
-          <>
-            <ContextMenuSeparator />
-            <ContextMenuItem className="text-destructive focus:text-destructive" onClick={() => void remove().catch(() => undefined)}>
-              <Trash2 /> {t('external.remove')}
-            </ContextMenuItem>
-          </>
-        )}
+        <ContextMenuSeparator />
+        <ContextMenuItem className="text-destructive focus:text-destructive" onClick={() => void remove().catch(() => undefined)}>
+          <Trash2 /> {t('external.remove')}
+        </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   );

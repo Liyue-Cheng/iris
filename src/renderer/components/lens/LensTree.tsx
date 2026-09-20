@@ -1,8 +1,7 @@
 /**
  * The lens tree (software-definition.md §5 左栏): workspaces as group
  * levels, docs classified by type inside each. The issue section shows
- * ACTIVE issues only; reports hide `Backlog`; archived workspaces (inside
- * report/) render grayed as one frozen block.
+ * ACTIVE issues only; reports hide `Backlog` in every workspace.
  *
  * Root and sub-workspaces are symmetric (子工作区平权): both render flat with
  * NO indentation — depth reads from the chevron + bold header, not a rail —
@@ -15,7 +14,6 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  Archive,
   ChevronDown,
   ChevronRight,
   CircleDot,
@@ -107,7 +105,7 @@ function matchesFilter(doc: IrisDoc, filter: string): boolean {
   );
 }
 
-function DocRow({ doc, archived }: { doc: IrisDoc; archived: boolean }): JSX.Element {
+function DocRow({ doc }: { doc: IrisDoc }): JSX.Element {
   const { view } = useProject();
   const selected = view.kind === 'doc' && view.path === doc.path;
 
@@ -121,7 +119,6 @@ function DocRow({ doc, archived }: { doc: IrisDoc; archived: boolean }): JSX.Ele
         className={cn(
           'group flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm leading-tight',
           selected ? 'bg-accent text-accent-foreground' : 'hover:bg-muted',
-          archived && 'opacity-60',
         )}
         aria-label={doc.path}
       >
@@ -141,12 +138,10 @@ function DocRow({ doc, archived }: { doc: IrisDoc; archived: boolean }): JSX.Ele
 function TypeSection({
   type,
   docs,
-  archived,
   workspacePath,
 }: {
   type: DocType;
   docs: IrisDoc[];
-  archived: boolean;
   workspacePath: string;
 }): JSX.Element | null {
   const { t } = useTranslation();
@@ -158,24 +153,19 @@ function TypeSection({
   // Lens filters: issues show active ones plus any inactive issue that still
   // anchors a terminal. Exited sessions count too: their scrollback remains
   // available until the user explicitly closes the session. Reports use the
-  // same shared activity semantics. Archived
-  // sections freeze whole and show everything. Then sort + text filter apply.
+  // same shared activity semantics. Then sort + text filter apply.
   const lensDocs =
-    type === 'issue' && !archived
+    type === 'issue'
       ? docs.filter(
           (doc) =>
             isActiveIssue(doc) ||
             projections.some((session) => session.anchor.kind === 'document' && session.anchor.path === doc.path),
         )
-      : type !== 'issue' && !archived
-        ? docs.filter((d) => isActiveDocumentStatus(d.status))
-        : docs;
+      : docs.filter((d) => isActiveDocumentStatus(d.status));
   const visibleDocs = sortDocs(
     lensDocs.filter((d) => matchesFilter(d, filter)),
     sort,
   );
-  // Archived workspaces are frozen: hide empty sections AND the + button.
-  if (docs.length === 0 && archived) return null;
   // While filtering, drop sections with no match and force the rest open.
   if (filter !== '' && visibleDocs.length === 0) return null;
   const sectionOpen = filter !== '' ? true : open;
@@ -209,21 +199,19 @@ function TypeSection({
           {label}
           <span className="ml-1 font-normal text-muted-foreground/60">{visibleDocs.length}</span>
         </button>
-        {!archived && (
-          <button
-            type="button"
-            aria-label={t('layout.newDocument', { type: label })}
-            onClick={() => openCreateDialog({ workspacePath, type })}
-            className="rounded-sm p-0.5 text-muted-foreground/0 hover:bg-muted hover:!text-foreground group-hover/section:text-muted-foreground"
-          >
-            <Plus className="h-3.5 w-3.5" />
-          </button>
-        )}
+        <button
+          type="button"
+          aria-label={t('layout.newDocument', { type: label })}
+          onClick={() => openCreateDialog({ workspacePath, type })}
+          className="rounded-sm p-0.5 text-muted-foreground/0 hover:bg-muted hover:!text-foreground group-hover/section:text-muted-foreground"
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </button>
       </div>
       {sectionOpen && (
         <div className="pb-1">
           {visibleDocs.map((d) => (
-            <DocRow key={d.path} doc={d} archived={archived} />
+            <DocRow key={d.path} doc={d} />
           ))}
           {visibleDocs.length === 0 && (
             <div className="px-7 py-0.5 text-xs text-muted-foreground/50">
@@ -300,10 +288,8 @@ function NewWorkspaceSessionButton({
  */
 function WorkspaceSessionList({
   workspacePath,
-  orphanedOnly = false,
 }: {
   workspacePath: string;
-  orphanedOnly?: boolean;
 }): JSX.Element | null {
   const { t } = useTranslation();
   const projections = useSessionProjections();
@@ -312,8 +298,7 @@ function WorkspaceSessionList({
   const selectedItemId = useSelectedSessionView(scope, hubKey);
   const hubSessions = projections.filter(
     (s) =>
-      sessionProjectionAnchorKey(s.anchor) === hubKey &&
-      (!orphanedOnly || s.orphanedDocPath),
+      sessionProjectionAnchorKey(s.anchor) === hubKey,
   );
   if (hubSessions.length === 0) return null;
   const effectiveSelectedKey = selectedItemId ?? hubSessions.at(-1)?.key ?? null;
@@ -394,25 +379,21 @@ function WorkspaceSessionList({
  * No indentation (平铺) — depth is read from the chevron + bold header, not a
  * rail. Only one selection shadow at a time: a staged hub session carries the
  * highlight and the header stays plain; the header highlights only when this
- * hub view shows no session (the launch pad). Archived workspaces freeze: no
- * +, no hub selection, sessions hidden — just grayed, collapsible docs.
+ * hub view shows no session (the launch pad).
  * Orphaned sessions remain visible with a warning so an external document
  * deletion cannot hide work.
  */
 function WorkspaceSection({
   ws,
   depth,
-  parentArchived,
 }: {
   ws: IrisWorkspace;
   depth: number;
-  parentArchived: boolean;
 }): JSX.Element {
   const { t } = useTranslation();
   const [sectionsOpen, setSectionsOpen] = useState(true);
   const { view, scope } = useProject();
   const projections = useSessionProjections();
-  const archived = ws.archived || parentArchived;
   const isRoot = depth === 0;
   const workspacePath = isRoot ? ROOT_WS_PATH : ws.path;
   const byType = (t: DocType): IrisDoc[] => ws.docs.filter((d) => d.type === t);
@@ -432,9 +413,9 @@ function WorkspaceSection({
       <div
         className={cn(
           'group/hub flex items-center gap-1 rounded-sm pr-1',
-          !archived && headerSelected
+          headerSelected
             ? 'bg-accent text-accent-foreground'
-            : cn('hover:bg-muted', archived ? 'text-muted-foreground/70' : 'text-foreground'),
+            : 'hover:bg-muted text-foreground',
         )}
       >
         <button
@@ -449,33 +430,19 @@ function WorkspaceSection({
             <ChevronRight className="h-3.5 w-3.5" />
           )}
         </button>
-        {archived ? (
-          <span className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 text-[13px] font-semibold">
-            <span className="truncate">{ws.name}</span>
-            <span className="ml-1 flex items-center gap-0.5 rounded-sm bg-muted px-1 py-px text-[11px] font-normal text-muted-foreground">
-              <Archive className="h-2.5 w-2.5" />
-              {t('layout.archived')}
-            </span>
-          </span>
-        ) : (
-          <>
-            <button
-              type="button"
-              aria-label={isRoot ? t('layout.rootHubHint') : t('layout.workspaceHubHint')}
-              onClick={() => selectHub(workspacePath)}
-              className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-[13px] font-semibold"
-            >
-              {isRoot && <FolderRoot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
-              <span className="truncate">{ws.name}</span>
-            </button>
-            <NewWorkspaceSessionButton workspacePath={workspacePath} label={isRoot ? t('layout.projectRoot') : ws.name} />
-          </>
-        )}
+        <button
+          type="button"
+          aria-label={isRoot ? t('layout.rootHubHint') : t('layout.workspaceHubHint')}
+          onClick={() => selectHub(workspacePath)}
+          className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-[13px] font-semibold"
+        >
+          {isRoot && <FolderRoot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+          <span className="truncate">{ws.name}</span>
+        </button>
+        <NewWorkspaceSessionButton workspacePath={workspacePath} label={isRoot ? t('layout.projectRoot') : ws.name} />
       </div>
-      <div className={cn('space-y-2 pt-1', archived && 'opacity-75')}>
-        {(!archived || hubSessions.some((session) => session.orphanedDocPath)) && (
-          <WorkspaceSessionList workspacePath={workspacePath} orphanedOnly={archived} />
-        )}
+      <div className="space-y-2 pt-1">
+        <WorkspaceSessionList workspacePath={workspacePath} />
         {sectionsOpen && (
           <>
             {TYPE_ORDER.map((t) => (
@@ -483,15 +450,14 @@ function WorkspaceSection({
                 key={t}
                 type={t}
                 docs={byType(t)}
-                archived={archived}
                 workspacePath={ws.path}
               />
             ))}
-            <ExternalSection external={ws.external} archived={archived} />
+            <ExternalSection external={ws.external} />
           </>
         )}
         {ws.children.map((c) => (
-          <WorkspaceSection key={c.path} ws={c} depth={depth + 1} parentArchived={archived} />
+          <WorkspaceSection key={c.path} ws={c} depth={depth + 1} />
         ))}
       </div>
     </div>
@@ -501,7 +467,7 @@ function WorkspaceSection({
 export function LensTree({ root }: { root: IrisWorkspace }): JSX.Element {
   return (
     <div className="px-1 py-1">
-      <WorkspaceSection ws={root} depth={0} parentArchived={false} />
+      <WorkspaceSection ws={root} depth={0} />
     </div>
   );
 }

@@ -4,7 +4,7 @@
  */
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Archive, FileWarning, Plus } from 'lucide-react';
+import { FileWarning, Plus } from 'lucide-react';
 import type { IrisWorkspace } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
 import { collectDocs, docDate } from '@renderer/lib/collect-docs';
@@ -105,7 +105,6 @@ export function StatusList({
               style={{ gridTemplateColumns: GRID }}
               className={cn(
                 ROW_BASE,
-                item.archived && 'opacity-50',
                 selectedPath === item.doc.path && 'bg-accent/80',
               )}
             >
@@ -114,7 +113,6 @@ export function StatusList({
                 {item.doc.frontmatterBroken && (
                   <FileWarning className="h-3.5 w-3.5 shrink-0 text-destructive/80" />
                 )}
-                {item.archived && <Archive className="h-3 w-3 shrink-0 text-muted-foreground/60" />}
               </span>
               <span className="min-w-0 truncate text-[11px] text-muted-foreground">
                 {item.workspaceName}

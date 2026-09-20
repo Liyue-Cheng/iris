@@ -7,7 +7,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Archive, FileWarning, Plus } from 'lucide-react';
+import { FileWarning, Plus } from 'lucide-react';
 import type { IrisWorkspace } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
 import { collectDocs, docDate, type CollectedDoc } from '@renderer/lib/collect-docs';
@@ -208,7 +208,6 @@ export function ReportTimeline({
                     style={{ gridTemplateColumns: GRID }}
                     className={cn(
                       ROW_BASE,
-                      item.archived && 'opacity-50',
                       selectedPath === item.doc.path && 'bg-accent/80',
                     )}
                   >
@@ -220,9 +219,6 @@ export function ReportTimeline({
                       <span className="truncate">{docDisplayTitle(item.doc)}</span>
                       {item.doc.frontmatterBroken && (
                         <FileWarning className="h-3.5 w-3.5 shrink-0 text-destructive/80" />
-                      )}
-                      {item.archived && (
-                        <Archive className="h-3 w-3 shrink-0 text-muted-foreground/60" />
                       )}
                     </span>
                     <span className="flex min-w-0 items-center gap-1 overflow-hidden">

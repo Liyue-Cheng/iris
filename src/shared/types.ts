@@ -423,12 +423,6 @@ export interface IrisWorkspace {
   external: WorkspaceExternalPaths;
   /** Nested workspaces (recursive). */
   children: IrisWorkspace[];
-  /**
-   * True when this workspace sits inside an ancestor's report/ folder —
-   * the archive gesture: a finished workspace moved into report/ freezes
-   * whole (renders grayed).
-   */
-  archived: boolean;
 }
 
 export interface IrisScanResult {
@@ -543,6 +537,8 @@ export interface RawTreeNode {
   name: string;
   /** Relative path from project root, forward slashes. */
   path: string;
+  /** Canonical scan-time OS path used only for local tree/external matching. */
+  absolutePath: string;
   kind: 'dir' | 'file';
   children?: RawTreeNode[];
 }

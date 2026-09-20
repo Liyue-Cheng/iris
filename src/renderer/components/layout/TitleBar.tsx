@@ -14,6 +14,7 @@ import { pipeline } from '@renderer/cpu';
 import { useSettings } from '@renderer/stores/settings-store';
 import { useProject } from '@renderer/stores/project-store';
 import { Button } from '@renderer/components/ui/button';
+import { HealthBanner } from '@renderer/components/ui/health-banner';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -137,8 +138,11 @@ export function TitleBar(): JSX.Element {
     <div className="app-region-drag flex h-10 shrink-0 items-center gap-2 bg-card pl-3">
       <span className="text-sm font-semibold tracking-wide text-primary">Iris</span>
       <ProjectCrumb />
+      <div className="ml-auto min-w-0">
+        <HealthBanner />
+      </div>
 
-      <div className="app-region-no-drag ml-auto flex items-center gap-1.5">
+      <div className="app-region-no-drag flex shrink-0 items-center gap-1.5">
         <DropdownMenu>
           <Tooltip>
             <TooltipTrigger asChild>

@@ -44,7 +44,6 @@ function openProjectState(): ProjectScope {
       docs: [],
       external: { workspacePath: '.iris', manifestPath: '.iris/external.txt', exists: false, entries: [], diagnostics: [] },
       children: [],
-      archived: false,
     },
     scannedAt: 1,
   };

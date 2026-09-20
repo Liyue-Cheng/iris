@@ -117,10 +117,8 @@ function openProjectState(docs: IrisDoc[] = []): ProjectScope {
           docs: docs.filter((doc) => doc.workspacePath === '.iris/spike'),
           external: { workspacePath: '.iris/spike', manifestPath: '.iris/spike/external.txt', exists: false, entries: [], diagnostics: [] },
           children: [],
-          archived: false,
         },
       ],
-      archived: false,
     },
     scannedAt: 1,
   };

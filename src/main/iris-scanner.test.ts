@@ -2,7 +2,7 @@
  * Scanner unit tests against fixtures/sample-project — the protocol's
  * deterministic rendering rules, pinned:
  *   name-is-type (recursive) / workspace inference / nearest-workspace
- *   ownership / archive-inside-report / frontmatter tolerance.
+ *   ownership / workspaces-inside-report / frontmatter tolerance.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { promises as fs } from 'node:fs';
@@ -53,7 +53,6 @@ describe('scanProject on the sample fixture', () => {
   it('assigns sub-workspace docs to the sub-workspace, not the root', async () => {
     const { root } = await scanProject(FIXTURE);
     const spike = byPath(root!, '.iris/spike-auth')!;
-    expect(spike.archived).toBe(false);
 
     const spikePaths = spike.docs.map((d) => d.path);
     expect(spikePaths).toContain('.iris/spike-auth/issue/2026-06-10-token-expiry.md');
@@ -62,15 +61,40 @@ describe('scanProject on the sample fixture', () => {
     expect(rootPaths.some((p) => p.startsWith('.iris/spike-auth/'))).toBe(false);
   });
 
-  it('marks a workspace inside report/ as archived (the archive gesture)', async () => {
+  it('treats a workspace inside report/ as an ordinary workspace with its own document types', async () => {
     const { root } = await scanProject(FIXTURE);
     const cache = byPath(root!, '.iris/report/spike-cache')!;
-    expect(cache.archived).toBe(true);
+    expect(cache).not.toHaveProperty('archived');
+    expect(cache.docs.find((doc) => doc.name === 'conclusion.md')?.type).toBe('status');
     expect(cache.docs.map((d) => d.path)).toContain(
       '.iris/report/spike-cache/status/conclusion.md',
     );
     // and its docs do NOT leak into the root's report docs
     expect(root!.docs.some((d) => d.path.startsWith('.iris/report/spike-cache/'))).toBe(false);
+  });
+
+  it('preserves nested workspace ownership, active status and external references under report/', async () => {
+    const temp = await createTempDataDir('iris-scanner-report-workspace-');
+    const parentPath = '.iris/report/project';
+    const childPath = `${parentPath}/child`;
+    try {
+      await fs.mkdir(join(temp, parentPath, 'issue'), { recursive: true });
+      await fs.mkdir(join(temp, childPath, 'status'), { recursive: true });
+      await fs.writeFile(join(temp, parentPath, 'issue/task.md'), '---\nstatus: Todo\n---\n- [ ] task\n');
+      await fs.writeFile(join(temp, childPath, 'status/state.md'), 'current state');
+      await fs.writeFile(join(temp, parentPath, 'external.txt'), './issue/task.md\n');
+
+      const { root } = await scanProject(temp);
+      const parent = byPath(root!, parentPath)!;
+      const child = byPath(root!, childPath)!;
+      expect(parent).not.toHaveProperty('archived');
+      expect(child).not.toHaveProperty('archived');
+      expect(parent.docs).toEqual([expect.objectContaining({ type: 'issue', status: 'Todo', workspacePath: parentPath })]);
+      expect(child.docs).toEqual([expect.objectContaining({ type: 'status', workspacePath: childPath })]);
+      expect(parent.external.entries).toEqual([expect.objectContaining({ name: 'task.md', exists: true })]);
+    } finally {
+      await removeTempDataDir(temp).catch(() => {});
+    }
   });
 
   it('passes soft status values through verbatim', async () => {

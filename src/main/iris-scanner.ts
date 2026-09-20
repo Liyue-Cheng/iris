@@ -10,8 +10,6 @@
  *   - Workspaces are inferred, never declared: any folder containing at
  *     least one typed folder is a workspace. `.iris/` is the root workspace.
  *   - A doc belongs to the nearest enclosing workspace.
- *   - Archive gesture: a workspace nested anywhere inside a report/ folder
- *     is archived (frozen past, renders grayed).
  *
  *   Keys are hard (folder names, frontmatter keys parsed literally); values
  *   are soft (`status:` etc. pass through verbatim — no validation here,
@@ -165,7 +163,6 @@ async function collectTypedDocs(
   type: DocType,
   workspacePath: string,
   nestedWorkspaces: IrisWorkspace[],
-  insideReport: boolean,
 ): Promise<IrisDoc[]> {
   const docs: IrisDoc[] = [];
   const { dirs, files } = await listDir(typedDirAbs);
@@ -178,10 +175,9 @@ async function collectTypedDocs(
   for (const d of dirs) {
     if (isAssetDir(d.name)) continue;
     if (await isWorkspaceDir(d.abs)) {
-      // A workspace living inside a typed folder — the archive gesture when
-      // that folder is report/. Recurse as a full workspace.
+      // Nested workspaces retain their own document types in every folder.
       nestedWorkspaces.push(
-        await scanWorkspaceDir(projectRoot, d.abs, insideReport || type === 'report'),
+        await scanWorkspaceDir(projectRoot, d.abs),
       );
     } else if (isDocType(d.name)) {
       // A typed folder nested directly inside another typed folder re-types
@@ -193,7 +189,6 @@ async function collectTypedDocs(
           d.name,
           workspacePath,
           nestedWorkspaces,
-          insideReport || type === 'report',
         )),
       );
     } else {
@@ -205,7 +200,6 @@ async function collectTypedDocs(
           type,
           workspacePath,
           nestedWorkspaces,
-          insideReport,
         )),
       );
     }
@@ -228,7 +222,6 @@ async function isWorkspaceDir(abs: string): Promise<boolean> {
 async function scanWorkspaceDir(
   projectRoot: string,
   wsAbs: string,
-  archived: boolean,
 ): Promise<IrisWorkspace> {
   const wsRel = toRel(projectRoot, wsAbs);
   const ws: IrisWorkspace = {
@@ -237,7 +230,6 @@ async function scanWorkspaceDir(
     docs: [],
     external: await externalPathManager.list(projectRoot, wsRel),
     children: [],
-    archived,
   };
 
   const { dirs } = await listDir(wsAbs);
@@ -251,13 +243,12 @@ async function scanWorkspaceDir(
           d.name,
           wsRel,
           ws.children,
-          archived,
         )),
       );
     } else if (await containsWorkspaceSomewhere(d.abs)) {
       // Non-typed folder that (transitively) holds workspaces: descend so
       // arbitrarily organized sub-workspaces are still found.
-      ws.children.push(...(await findWorkspaces(projectRoot, d.abs, archived)));
+      ws.children.push(...(await findWorkspaces(projectRoot, d.abs)));
     }
   }
 
@@ -281,16 +272,15 @@ async function containsWorkspaceSomewhere(abs: string): Promise<boolean> {
 async function findWorkspaces(
   projectRoot: string,
   abs: string,
-  archived: boolean,
 ): Promise<IrisWorkspace[]> {
   if (await isWorkspaceDir(abs)) {
-    return [await scanWorkspaceDir(projectRoot, abs, archived)];
+    return [await scanWorkspaceDir(projectRoot, abs)];
   }
   const out: IrisWorkspace[] = [];
   const { dirs } = await listDir(abs);
   for (const d of dirs) {
     if (isAssetDir(d.name)) continue;
-    out.push(...(await findWorkspaces(projectRoot, d.abs, archived)));
+    out.push(...(await findWorkspaces(projectRoot, d.abs)));
   }
   return out;
 }
@@ -318,7 +308,7 @@ export async function scanProject(projectRoot: string): Promise<IrisScanResult> 
     return result;
   }
 
-  const root = await scanWorkspaceDir(projectRoot, irisAbs, false);
+  const root = await scanWorkspaceDir(projectRoot, irisAbs);
   root.name = projectName; // root workspace displays the project's name
   const result = { projectRoot, projectName, hasIris: true, root, scannedAt: Date.now() };
   return result;
@@ -339,9 +329,9 @@ export async function scanRawTree(projectRoot: string): Promise<RawTreeNode | nu
       children.push(await walk(d.abs));
     }
     for (const f of files.sort((a, b) => a.name.localeCompare(b.name))) {
-      children.push({ name: f.name, path: toRel(projectRoot, f.abs), kind: 'file' });
+      children.push({ name: f.name, path: toRel(projectRoot, f.abs), absolutePath: f.abs, kind: 'file' });
     }
-    return { name: basename(abs), path: toRel(projectRoot, abs), kind: 'dir', children };
+    return { name: basename(abs), path: toRel(projectRoot, abs), absolutePath: abs, kind: 'dir', children };
   }
 
   const root = await walk(projectRoot);

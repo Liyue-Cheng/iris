@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { IrisDoc, IrisWorkspace } from '@shared/types';
-import { collectTodos } from './collect-docs';
+import { collectDocs, collectTodos } from './collect-docs';
 
 function issue(name: string, status: string): IrisDoc {
   return {
@@ -17,18 +17,32 @@ function issue(name: string, status: string): IrisDoc {
   };
 }
 
-function workspace(docs: IrisDoc[]): IrisWorkspace {
+function workspace(docs: IrisDoc[], path = '.iris'): IrisWorkspace {
   return {
-    path: '.iris',
+    path,
     name: 'project',
-    docs,
-    external: { workspacePath: '.iris', manifestPath: '.iris/external.txt', exists: false, entries: [], diagnostics: [] },
+    docs: docs.map((doc) => ({ ...doc, path: `${path}/issue/${doc.name}`, workspacePath: path })),
+    external: { workspacePath: path, manifestPath: `${path}/external.txt`, exists: false, entries: [], diagnostics: [] },
     children: [],
-    archived: false,
   };
 }
 
 describe('active issue todo projection', () => {
+  it('includes active tasks in report-nested workspaces and keeps each workspace scope independent', () => {
+    const root = workspace([]);
+    const child = workspace([issue('todo', 'Todo'), issue('done', 'Done')], '.iris/report/project');
+    const nested = workspace([issue('nested', 'In Progress')], `${child.path}/child`);
+    root.children.push(child);
+    child.children.push(nested);
+
+    expect(collectTodos(root, null).map((item) => item.doc.path)).toEqual([
+      `${child.path}/issue/todo.md`,
+      `${nested.path}/issue/nested.md`,
+    ]);
+    expect(collectTodos(root, child.path).map((item) => item.doc.name)).toEqual(['todo.md']);
+    expect(collectDocs(root, 'issue', child.path).map((item) => item.doc.name)).toEqual(['todo.md', 'done.md']);
+  });
+
   it('excludes On Hold and resolved issues while preserving soft active values', () => {
     const todos = collectTodos(
       workspace([

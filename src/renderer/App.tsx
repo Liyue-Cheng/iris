@@ -10,7 +10,6 @@ import {
 } from '@renderer/components/ui/confirm-dialog';
 import { NotificationHost } from '@renderer/components/ui/notification-host';
 import { AppErrorBoundary } from '@renderer/components/ui/error-boundary';
-import { HealthBanner } from '@renderer/components/ui/health-banner';
 import { SettingsView, useSettingsViewOpen } from '@renderer/components/settings/SettingsView';
 import { WelcomeView } from '@renderer/components/project/WelcomeView';
 import { useProject } from '@renderer/stores/project-store';
@@ -29,7 +28,6 @@ export function App(): JSX.Element {
     <TooltipProvider delayDuration={400} skipDelayDuration={0} disableHoverableContent>
       <div className="flex h-full flex-col">
         <TitleBar />
-        <HealthBanner />
         <div className="min-h-0 flex-1">
           {settingsOpen ? (
             <SettingsView />
