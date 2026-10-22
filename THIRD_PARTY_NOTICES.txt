@@ -19701,7 +19701,7 @@ THE SOFTWARE.
 
 ------------------------------------------------------------------------
 
-js-yaml@3.15.1
+js-yaml@3.15.2
 License: MIT
 Source: nodeca/js-yaml
 
@@ -22186,7 +22186,7 @@ THE SOFTWARE.
 
 ------------------------------------------------------------------------
 
-nanoid@5.1.11
+nanoid@5.1.16
 License: MIT
 Source: ai/nanoid
 
@@ -22215,7 +22215,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
 
-nanoid@3.3.12
+nanoid@3.3.19
 License: MIT
 Source: ai/nanoid
 
@@ -23101,7 +23101,7 @@ SOFTWARE.
 
 ------------------------------------------------------------------------
 
-postcss@8.5.15
+postcss@8.5.28
 License: MIT
 Source: postcss/postcss
 
@@ -26036,7 +26036,7 @@ SOFTWARE.
 
 ------------------------------------------------------------------------
 
-undici@6.26.0
+undici@6.29.0
 License: MIT
 Source: git+https://github.com/nodejs/undici.git
 

@@ -174,6 +174,10 @@ export function LeftPane(): JSX.Element {
   const { t } = useTranslation();
   const { phase, error, scan, view, rawMode, rawTree } = useProject();
   const { sort, filter, filterOpen } = useLensPrefs();
+  const sortLabel = t(rawMode
+    ? (sort === 'mtime' ? 'layout.fileSortMtime' : 'layout.fileSortAlpha')
+    : (sort === 'mtime' ? 'layout.sortMtime' : 'layout.sortAlpha'));
+  const filterLabel = t(rawMode ? 'layout.filterFiles' : 'layout.filterDocuments');
   const [initOpen, setInitOpen] = useState(false);
   const [wsOpen, setWsOpen] = useState(false);
   const [gitOpen, setGitOpen] = useState(false);
@@ -304,49 +308,59 @@ export function LeftPane(): JSX.Element {
               </Tooltip>
               {scan.root && (
                 <>
+                  {!gitOpen && (
+                    <>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            aria-label={sortLabel}
+                            onClick={() => lensPrefs.toggleSort()}
+                          >
+                            {sort === 'mtime' ? (
+                              <Clock className="!size-4" />
+                            ) : (
+                              <ArrowDownAZ className="!size-4" />
+                            )}
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          {sortLabel}
+                        </TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className={cn(
+                              'h-7 w-7',
+                              filterOpen && 'bg-accent text-accent-foreground',
+                            )}
+                            onClick={() => lensPrefs.toggleFilter()}
+                            aria-label={filterLabel}
+                            aria-expanded={filterOpen}
+                          >
+                            <Search className="!size-4" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>{filterLabel}</TooltipContent>
+                      </Tooltip>
+                    </>
+                  )}
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7"
-                        onClick={() => lensPrefs.toggleSort()}
-                      >
-                        {sort === 'mtime' ? (
-                          <Clock className="!size-4" />
-                        ) : (
-                          <ArrowDownAZ className="!size-4" />
-                        )}
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {sort === 'mtime' ? t('layout.sortMtime') : t('layout.sortAlpha')}
-                    </TooltipContent>
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className={cn(
-                          'h-7 w-7',
-                          filterOpen && 'bg-accent text-accent-foreground',
-                        )}
-                        onClick={() => lensPrefs.toggleFilter()}
-                      >
-                        <Search className="!size-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>{t('layout.filterDocuments')}</TooltipContent>
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className={cn('h-7 w-7', rawMode && 'bg-accent text-accent-foreground')}
+                        className={cn('h-7 w-7', rawMode && !gitOpen && 'bg-accent text-accent-foreground')}
                         aria-label={t('layout.fileTree')}
+                        aria-pressed={rawMode && !gitOpen}
                         onClick={() => {
+                          setGitOpen(false);
+                          if (gitOpen && rawMode) return;
                           void projectStore.toggleRawMode().catch((err) => {
                             console.warn('[left-pane] file tree refresh failed', err);
                           });
@@ -369,7 +383,9 @@ export function LeftPane(): JSX.Element {
                         'relative h-7 w-7',
                         view.kind === 'todos' && 'bg-accent text-accent-foreground',
                       )}
-                      onClick={() => projectStore.openTodos(null)}
+                      aria-label={t('layout.todosHint')}
+                      aria-pressed={view.kind === 'todos'}
+                      onClick={() => projectStore.toggleTodos()}
                     >
                       <ListChecks className="!size-4" />
                       {todoCount > 0 && (
@@ -428,7 +444,8 @@ export function LeftPane(): JSX.Element {
           <input
             autoFocus
             value={filter}
-            placeholder={t('layout.filterPlaceholder')}
+            placeholder={t(rawMode ? 'layout.fileFilterPlaceholder' : 'layout.filterPlaceholder')}
+            aria-label={filterLabel}
             onChange={(e) => lensPrefs.setFilter(e.target.value.toLowerCase())}
             onKeyDown={(e) => {
               if (e.key === 'Escape') lensPrefs.toggleFilter();
@@ -493,7 +510,7 @@ export function LeftPane(): JSX.Element {
           )}
 
           {phase === 'ready' && scan?.hasIris && rawMode && rawTree && (
-            <RawTree root={rawTree} />
+            <RawTree key={rawTree.absolutePath} root={rawTree} />
           )}
           {phase === 'ready' && scan?.hasIris && !rawMode && scan.root && (
             <LensTree root={scan.root} />

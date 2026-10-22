@@ -440,6 +440,150 @@ describe('Markdown document navigation', () => {
   });
 });
 
+describe('todo view memory', () => {
+  it('restores the source document with fresh content and its selected terminal', async () => {
+    const doc = scanDoc('.iris/issue/a.md', 'issue');
+    const scope = openProjectState([doc]);
+    await projectStore.selectDoc(doc.path);
+    sessionViewStore.select(scope, doc.path, terminalSessionKey('doc-terminal'));
+
+    await expect(projectStore.toggleTodos()).resolves.toBe(true);
+    expect(projectStore.get().view).toEqual({ kind: 'todos', workspacePath: null });
+    expect(editorStore.get()).toBeNull();
+    invoke.mockResolvedValue({ ...docContent(doc.path), raw: '# updated\n', body: '# updated\n' });
+
+    await expect(projectStore.toggleTodos()).resolves.toBe(true);
+    expect(projectStore.get().view).toEqual({ kind: 'doc', path: doc.path });
+    expect(editorStore.get()?.path).toBe(doc.path);
+    expect(editorStore.get()?.originalBody).toBe('# updated\n');
+    expect(sessionViewStore.selected(scope, doc.path)).toBe(terminalSessionKey('doc-terminal'));
+  });
+
+  it('restores empty, root and workspace views and replaces the previous memory', async () => {
+    openProjectState();
+    await projectStore.toggleTodos();
+    await projectStore.toggleTodos();
+    expect(projectStore.get().view).toEqual({ kind: 'doc', path: null });
+
+    await projectStore.selectRoot();
+    await projectStore.toggleTodos();
+    await projectStore.toggleTodos();
+    expect(projectStore.get().view).toEqual({ kind: 'root' });
+
+    await projectStore.selectWorkspace('.iris/spike');
+    await projectStore.toggleTodos();
+    await projectStore.toggleTodos();
+    expect(projectStore.get().view).toEqual({ kind: 'workspace', path: '.iris/spike' });
+  });
+
+  it('restores a collection selection and preserves its original return destination', async () => {
+    const doc = scanDoc('.iris/issue/a.md', 'issue');
+    openProjectState([doc]);
+    await projectStore.selectWorkspace('.iris/spike');
+    await projectStore.openCollection('issue', null);
+    await projectStore.selectCollectionDoc(doc.path);
+    const source = projectStore.get().view;
+
+    await projectStore.toggleTodos();
+    await projectStore.toggleTodos();
+    expect(projectStore.get().view).toEqual(source);
+    expect(editorStore.get()?.path).toBe(doc.path);
+    await projectStore.leaveCollection();
+    expect(projectStore.get().view).toEqual({ kind: 'workspace', path: '.iris/spike' });
+  });
+
+  it('keeps the source while changing todo scope or visiting and leaving a collection', async () => {
+    openProjectState();
+    await projectStore.selectRoot();
+    await projectStore.openTodos('.iris/spike');
+    await projectStore.openTodos(null);
+    await projectStore.openCollection('issue', null);
+    await projectStore.leaveCollection();
+    await projectStore.toggleTodos();
+    expect(projectStore.get().view).toEqual({ kind: 'root' });
+  });
+
+  it('remembers the new document after navigating out of todos', async () => {
+    const doc = scanDoc('.iris/issue/a.md', 'issue');
+    openProjectState([doc]);
+    await projectStore.selectRoot();
+    await projectStore.toggleTodos();
+    await projectStore.selectDoc(doc.path);
+    await projectStore.toggleTodos();
+    await projectStore.toggleTodos();
+    expect(projectStore.get().view).toEqual({ kind: 'doc', path: doc.path });
+  });
+
+  it('keeps the view and memory intact when saving refuses navigation', async () => {
+    openProjectState();
+    await projectStore.selectWorkspace('.iris/spike');
+    const flush = vi.spyOn(editorStore, 'flushBeforeSwitch').mockResolvedValue(false);
+    await expect(projectStore.toggleTodos()).resolves.toBe(false);
+    expect(projectStore.get().view).toEqual({ kind: 'workspace', path: '.iris/spike' });
+    flush.mockResolvedValue(true);
+    await projectStore.toggleTodos();
+    flush.mockResolvedValue(false);
+    await expect(projectStore.toggleTodos()).resolves.toBe(false);
+    expect(projectStore.get().view.kind).toBe('todos');
+    flush.mockResolvedValue(true);
+    await projectStore.toggleTodos();
+    expect(projectStore.get().view).toEqual({ kind: 'workspace', path: '.iris/spike' });
+  });
+
+  it('does not restore a stale target after a newer navigation intent', async () => {
+    openProjectState();
+    await projectStore.selectWorkspace('.iris/spike');
+    await projectStore.toggleTodos();
+    const pending = deferredBoolean();
+    vi.spyOn(editorStore, 'flushBeforeSwitch').mockReturnValueOnce(pending.promise);
+    const returning = projectStore.toggleTodos();
+    await projectStore.selectRoot();
+    pending.resolve(true);
+    await expect(returning).resolves.toBe(false);
+    expect(projectStore.get().view).toEqual({ kind: 'root' });
+  });
+
+  it('does not carry a previous project destination into the next project', async () => {
+    openProjectState();
+    await projectStore.selectWorkspace('.iris/spike');
+    await projectStore.toggleTodos();
+    openProjectState();
+    await projectStore.toggleTodos();
+    await projectStore.toggleTodos();
+    expect(projectStore.get().view).toEqual({ kind: 'doc', path: null });
+  });
+
+  it('falls back when the source document and then its workspace disappear', async () => {
+    const doc = scanDoc('.iris/spike/issue/a.md', 'issue', '.iris/spike');
+    openProjectState([doc]);
+    await projectStore.selectDoc(doc.path);
+    await projectStore.toggleTodos();
+    projectStore.get().scan!.root!.children[0]!.docs = [];
+    await projectStore.toggleTodos();
+    expect(projectStore.get().view).toEqual({ kind: 'workspace', path: '.iris/spike' });
+    await projectStore.toggleTodos();
+    projectStore.get().scan!.root!.children = [];
+    await projectStore.toggleTodos();
+    expect(projectStore.get().view).toEqual({ kind: 'root' });
+  });
+
+  it('clears a deleted collection selection and falls back for a deleted collection workspace', async () => {
+    const doc = scanDoc('.iris/spike/issue/a.md', 'issue', '.iris/spike');
+    openProjectState([doc]);
+    await projectStore.openCollection('issue', '.iris/spike');
+    await projectStore.selectCollectionDoc(doc.path);
+    await projectStore.toggleTodos();
+    projectStore.get().scan!.root!.children[0]!.docs = [];
+    await projectStore.toggleTodos();
+    expect(projectStore.get().view).toMatchObject({ kind: 'collection', selectedPath: null });
+    expect(editorStore.get()).toBeNull();
+    await projectStore.toggleTodos();
+    projectStore.get().scan!.root!.children = [];
+    await projectStore.toggleTodos();
+    expect(projectStore.get().view).toEqual({ kind: 'root' });
+  });
+});
+
 describe('document collection navigation', () => {
   it('restores the Todo main page after leaving a collection', async () => {
     openProjectState([scanDoc('.iris/issue/a.md', 'issue')]);

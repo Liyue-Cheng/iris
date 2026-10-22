@@ -322,6 +322,15 @@ export async function scanRawTree(projectRoot: string): Promise<RawTreeNode | nu
     return null;
   }
 
+  async function modifiedTime(abs: string): Promise<number> {
+    try {
+      return (await fs.stat(abs)).mtimeMs;
+    } catch (err) {
+      logger.warn('scanner', `stat failed for ${abs}`, err);
+      return 0;
+    }
+  }
+
   async function walk(abs: string): Promise<RawTreeNode> {
     const { dirs, files } = await listDir(abs);
     const children: RawTreeNode[] = [];
@@ -329,9 +338,9 @@ export async function scanRawTree(projectRoot: string): Promise<RawTreeNode | nu
       children.push(await walk(d.abs));
     }
     for (const f of files.sort((a, b) => a.name.localeCompare(b.name))) {
-      children.push({ name: f.name, path: toRel(projectRoot, f.abs), absolutePath: f.abs, kind: 'file' });
+      children.push({ name: f.name, path: toRel(projectRoot, f.abs), absolutePath: f.abs, kind: 'file', mtimeMs: await modifiedTime(f.abs) });
     }
-    return { name: basename(abs), path: toRel(projectRoot, abs), absolutePath: abs, kind: 'dir', children };
+    return { name: basename(abs), path: toRel(projectRoot, abs), absolutePath: abs, kind: 'dir', mtimeMs: await modifiedTime(abs), children };
   }
 
   const root = await walk(projectRoot);

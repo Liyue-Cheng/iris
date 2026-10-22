@@ -45,6 +45,7 @@ import {
 import { getBuildType } from './build-type';
 import { logger } from './logger';
 import { CHANNELS, EVENTS } from '@shared/protocol';
+import { themeBaseColors } from '@shared/theme-colors';
 import { initializeMainI18n, mainT } from './i18n';
 import { serializeIpcError } from './ipc-error';
 import { externalUrl } from './app-info';
@@ -308,7 +309,8 @@ function createWindow(initialRoot: string | null): BrowserWindow {
     title: 'Iris',
     ...(iconPath ? { icon: iconPath } : {}),
     ...platformServices.windowChrome.options(iconPath),
-    backgroundColor: '#191724', // rose-pine base; avoids white flash before CSS loads
+    // Native background can be exposed before the page paints or during restore.
+    backgroundColor: themeBaseColors(settingsManager.get().appearance.theme).background,
     webPreferences: {
       preload: resolve(__dirname, '../preload/index.mjs'),
       contextIsolation: true,
@@ -411,6 +413,10 @@ function createWindow(initialRoot: string | null): BrowserWindow {
   };
   win.webContents.on('did-finish-load', applyZoom);
   const onSettingsChanged = ({ changedKeys }: { changedKeys: string[] }): void => {
+    if (win.isDestroyed()) return;
+    if (changedKeys.includes('appearance.theme')) {
+      win.setBackgroundColor(themeBaseColors(settingsManager.get().appearance.theme).background);
+    }
     if (changedKeys.includes('appearance.uiZoom')) applyZoom();
   };
   settingsManager.on('settingsChanged', onSettingsChanged);

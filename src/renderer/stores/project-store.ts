@@ -90,6 +90,10 @@ let scanInFlight = false;
 let scanDirty = false;
 let navigationIntent = 0;
 const collectionSelectionByScope = new Map<string, string>();
+let todosReturnTarget: {
+  view: Exclude<MiddleView, { kind: 'todos' }>;
+  workspacePath: string | null;
+} | null = null;
 
 function collectionScopeKey(type: DocType, workspacePath: string | null): string {
   return `${state.scope?.root ?? ''}\u0000${type}\u0000${workspacePath ?? ''}`;
@@ -380,6 +384,7 @@ export const projectStore = {
     }
     beginNavigationIntent();
     collectionSelectionByScope.clear();
+    todosReturnTarget = null;
     sessionViewStore.clear();
     editorStore.closeSession();
     projectScopeState.set(scope);
@@ -703,7 +708,63 @@ export const projectStore = {
   async openTodos(workspacePath: string | null): Promise<boolean> {
     const intent = beginNavigationIntent();
     if (!(await mayCommitNavigation(intent))) return false;
-    setState({ view: { kind: 'todos', workspacePath } });
+    if (state.view.kind !== 'todos') {
+      todosReturnTarget = {
+        view: state.view,
+        workspacePath:
+          state.view.kind === 'doc' && state.view.path && state.scan?.root
+            ? findDocByPath(state.scan.root, state.view.path)?.workspacePath ?? null
+            : null,
+      };
+    }
+    editorStore.closeSession();
+    setState({ view: { kind: 'todos', workspacePath }, docLoading: false, docError: null });
+    return true;
+  },
+
+  /** Toggle the toolbar's todo panel, restoring its source view on the second click. */
+  async toggleTodos(): Promise<boolean> {
+    if (state.view.kind !== 'todos') return this.openTodos(null);
+    const intent = beginNavigationIntent();
+    if (!(await mayCommitNavigation(intent))) return false;
+
+    let view: MiddleView = todosReturnTarget?.view ?? { kind: 'root' };
+    const root = state.scan?.root;
+    if (view.kind === 'doc' && view.path) {
+      // Unindexed files from the raw tree are read normally; indexed documents
+      // that disappeared fall back to their original workspace.
+      if (!todosReturnTarget?.workspacePath || !root || findDocByPath(root, view.path)) {
+        return commitDocNavigation(intent, view.path);
+      }
+      view = { kind: 'workspace', path: todosReturnTarget.workspacePath };
+    }
+    if (
+      view.kind === 'workspace' &&
+      (view.path === '.iris' || (root && !workspaceExists(root, view.path)))
+    ) {
+      view = { kind: 'root' };
+    }
+    if (view.kind === 'collection') {
+      if (view.workspacePath && root && !workspaceExists(root, view.workspacePath)) {
+        view = { kind: 'root' };
+      } else {
+        const selectedDoc =
+          view.selectedPath && root ? findDocByPath(root, view.selectedPath) : null;
+        if (
+          !selectedDoc || selectedDoc.type !== view.type ||
+          (view.workspacePath !== null && selectedDoc.workspacePath !== view.workspacePath)
+        ) {
+          view = { ...view, selectedPath: null };
+        }
+      }
+    }
+
+    editorStore.closeSession();
+    const selectedPath = selectedPathForView(view);
+    setState({ view, docLoading: selectedPath !== null, docError: null });
+    if (view.kind === 'collection' && selectedPath) {
+      return loadCollectionDoc(intent, selectedPath);
+    }
     return true;
   },
 

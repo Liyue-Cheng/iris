@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import { describe, expect, it } from 'vitest';
 import { agentHistoryDigest, IRIS_AGENT_PROTOCOL_VERSION, isAgentWorkerRequest } from './agent-protocol';
 

@@ -16,7 +16,7 @@ Iris 是一个以持久项目记忆为核心的本地优先人机协同开发工
 
 项目状态以普通 Markdown 文件保存在 `.iris/` 下。外部 Agent 在项目根目录的真实 PTY 中运行，Git 仍然是协作与交付层。Iris 不需要账户或云端数据库，也不使用专有项目格式。
 
-> 当前版本：`0.1.0-beta.24`。实验性的 Iris Agent 仍处于非常早期阶段、默认关闭；现有的外部 Agent CLI 工作流不受影响。Iris 以 Windows 为优先平台，目前提供 Windows x64 版本。
+> 当前源码版本：`0.1.0`，首个不带预发布后缀的版本。首版仅支持 Windows x64，实际可下载版本以 [GitHub Releases](https://github.com/Liyue-Cheng/iris/releases) 为准。内置 Iris Agent 仍为实验功能，默认关闭。
 
 ![Iris 工作区](docs/images/readme-overview.png)
 
@@ -79,6 +79,8 @@ Iris 将可移植协议、桌面参考实现和 Agent 适配器分成三个层�
 my-project/
 |-- AGENTS.md
 |-- .iris/
+|   |-- settings.json
+|   |-- external.txt
 |   |-- status/
 |   |   `-- architecture.md
 |   |-- issue/
@@ -98,12 +100,12 @@ my-project/
 
 | 目录 | 时间方向 | 用途 |
 | --- | --- | --- |
-| `status/` | 现在 | 当前代码库的镜像，并标注其对应的 Git commit |
+| `status/` | 现在 | 持续维护、与当前代码库一致的状态说明 |
 | `issue/` | 未来与进行中 | 问题、任务、决策及其工作记录 |
 | `report/` | 有日期的过去 | 审查、分析、总结和其他阶段性产物 |
 | `misc/` | 工作流之外 | 没有新鲜度约束的人类草稿空间 |
 
-距离文档最近的 typed folder 决定文档类型。任何直接包含 typed folder 的目录都会被推断为 workspace，不需要 workspace manifest 或数据库。
+距离文档最近的 typed folder 决定文档类型。任何直接包含 typed folder 的目录都会被推断为 workspace，不需要 workspace manifest 或数据库。工作区不会因位于 `report/` 下而自动归档；文档是否活跃由自身状态决定。项目根 `.iris/settings.json` 保存项目提示词与工具栏配置，工作区的 `external.txt` 是可选的外部关联索引。
 
 Frontmatter key 是按字面解析的接口，值则保持灵活：
 
@@ -114,11 +116,11 @@ status: In Progress
 ---
 ```
 
-Issue 默认状态为 `Todo`、`In Progress`、`In Review`、`Blocked`、`On Hold`、`Done` 或 `Canceled`；report 使用 `Active` 和 `Backlog`。`On Hold` 表示暂时不活跃但尚未解决。Iris 会保留例外状态，而不是拒绝文档。
+Issue 默认状态为 `Todo`、`In Progress`、`In Review`、`Blocked`、`On Hold`、`Done` 或 `Canceled`；status、report、misc 使用 `Active` 和 `Backlog`。`On Hold` 表示暂时不活跃但尚未解决，`Done` 和 `Canceled` 表示已解决。Iris 会保留例外状态，而不是拒绝文档。通过界面转入非活跃状态时，会先处理关联会话；完成 issue 时可按设置勾选其待办。
 
 `labels:` frontmatter 字段已保留但尚未启用。Iris 会保留有效的历史元数据，但应用和托管的 Agent 指引不会创建、编辑、展示、分组或筛选标签。
 
-活跃 issue 中的每一项 GFM task 都会被投影到 Todo 面板：
+活跃 issue 中尚未勾选的 GFM task 会被投影到 Todo 面板：
 
 ```markdown
 - [ ] 在打包版本中复现问题
@@ -132,6 +134,7 @@ Issue 默认状态为 `Todo`、`In Progress`、`In Review`、`Blocked`、`On Hol
 Electron 应用是协议的参考实现和操作控制面，提供：
 
 - 递归扫描 `.iris/` 并实时投影文件系统变化
+- 文档 Lens 与项目文件树切换，以及工作区外部文件关联
 - 项目初始化和推断式子工作区
 - 针对不同文档类型的集合视图
 - WYSIWYG Markdown 编辑器和源码模式
@@ -141,6 +144,7 @@ Electron 应用是协议的参考实现和操作控制面，提供：
 - Git 状态、暂存、取消暂存、提交和本地分支切换
 - 会话与 watcher 状态隔离的多项目窗口
 - 机器级主题、编辑器行为、终端行为和 Agent 配置
+- 简体中文／英文界面、项目提示词治理和可配置的项目工具栏命令
 
 协议保证可移植性，应用则提供工作流效率、安全检查和明确的并发边界。
 
@@ -148,7 +152,7 @@ Electron 应用是协议的参考实现和操作控制面，提供：
 
 Iris 默认运行你已经安装并完成认证的 Agent 命令。默认配置包括 Claude Code、Codex、Gemini 和普通终端，所有条目和命令行都可以编辑。
 
-`0.1.0-beta.10` 也包含默认关闭的实验性 Iris Agent。启用后，可以配置模型供应商并从当前文档或 workspace 启动内置会话。它仍处于非常早期阶段，适合试用和反馈，不应视为外部 Agent CLI 的稳定替代品。
+内置 Iris Agent 默认关闭，需要自行配置模型供应商、API Key 和模型。它提供流式对话、图片附件、文件读写、受管终端、子任务、MCP 工具接入、上下文压缩及本地会话历史恢复。该功能仍处于实验阶段，适合试用和反馈。
 
 文档会话会收到：
 
@@ -158,7 +162,7 @@ FOCUS_DOC=.iris/issue/2026-08-08-fix-auth.md
 
 Workspace hub 会话会收到 `IRIS_WORKSPACE_PATH`，并且有意不设置焦点文档。
 
-在 Windows 上，Iris 可以安装生成的 SessionStart 上下文脚本 `~/.iris/focus-context.ps1`，并在用户明确确认后连接受支持 CLI 的 hook 配置。当前 hook 适配器识别 Claude Code、Codex CLI、Gemini CLI、Qwen Code 和 Cursor CLI。不支持 hook 的 CLI 仍然可以直接读取环境指针和项目指引。
+Iris 可以生成 SessionStart 上下文脚本 `~/.iris/focus-context.ps1`。经用户确认后，可连接 Claude Code、Codex CLI、Gemini CLI、Qwen Code 和 Cursor CLI 的 hook 配置；具体行为取决于所安装 CLI 的 hook 支持。脚本注入文档或工作区上下文，超过 32 KiB 的文档仅提供读取指引。不支持 hook 的 CLI 仍然可以直接读取环境指针和项目指引。
 
 静态项目规则位于 `AGENTS.md` 等入口文件中，动态焦点则存在于会话环境。两者生命周期不同，因此有意分离。
 
@@ -166,7 +170,9 @@ Workspace hub 会话会收到 `IRIS_WORKSPACE_PATH`，并且有意不设置焦�
 
 ### 左侧：工作与注意力
 
-Lens Tree 按工作区和类型组织文档。活跃的 issue 和 report 保持突出，已解决工作则离开默认视图。会话状态点显示锚定终端正在输出、已经安静并可能等待输入，还是已经退出。
+Lens Tree 按工作区和类型组织文档，默认突出活跃文档，带关联会话的非活跃 issue 仍可保留入口，包括尚未关闭的已退出终端。会话状态点显示锚定终端正在输出、已经安静并可能等待输入，还是已经退出；安静状态不代表工作已完成。
+
+切换到文件树可浏览项目文件，按名称或修改时间排序，并按文件名或相对路径筛选。点击文件会使用系统默认程序打开；编辑 Iris 文档使用文档 Lens 或集合视图。文件树也提供复制路径、拖放与工作区外部关联操作。
 
 左侧还提供项目切换、最近项目、新窗口、workspace 创建、搜索、排序、Todo 面板和 Git Source Control。
 
@@ -178,7 +184,7 @@ Lens Tree 按工作区和类型组织文档。活跃的 issue 和 report 保持�
 
 - Issue 支持活跃状态筛选、搜索、工作区筛选、分组、排序和键盘导航。
 - Todo 聚合活跃 issue 中尚未勾选的任务。
-- Status 比较每个文档的 `reflects` commit 与当前 Git HEAD。
+- Status 展示持续维护的当前状态文档，不再比较 `reflects` 与 Git HEAD。
 - Report 使用按日期排列的时间线。
 - Misc 保持有意简洁。
 
@@ -197,7 +203,7 @@ Iris 不会通过解析 Agent 的终端文本来判断工作是否完成，而�
 - Agent 的编辑通过文件系统事件到达应用。
 - Renderer 重新扫描并投影当前磁盘状态。
 - 编辑器写入使用 compare-and-swap baseline，在替换文档内容前检测外部变化。
-- 视图切换、Git 操作、项目切换和关闭应用会先经过编辑器 flush 与冲突检查，再离开 dirty draft。这是安全机制，不是崩溃恢复保证；尚存的 beta 边界记录在[密集开发修改审计](./.iris/issue/2026-08-09-%E5%AF%86%E9%9B%86%E5%BC%80%E5%8F%91%E4%BF%AE%E6%94%B9%E5%AE%A1%E8%AE%A1.md)中。
+- 视图切换、Git 操作、项目切换和关闭应用会先经过编辑器 flush 与冲突检查，再离开 dirty draft。这不保证崩溃时能恢复尚未保存的草稿。
 - 项目操作携带 canonical root 和 generation，使旧项目的延迟事件无法影响新项目。
 - 离散的应用内 mutation 通过 FrontCPU 指令流水线按资源串行执行。跨窗口写入用户拥有的配置文件仍在继续加固。
 
@@ -209,7 +215,7 @@ Iris 不会通过解析 Agent 的终端文本来判断工作是否完成，而�
 
 主进程持有 PTY 池。一个 headless xterm 镜像持续跟踪完整终端状态，包括 alternate-screen TUI。Renderer 重新挂载终端时，Iris 会序列化状态并恢复实时输出，同时避免在 replay 边界重复写入。
 
-只要所属窗口仍然打开，会话就能跨 renderer reload 和界面切换继续存在。应用退出、窗口关闭或项目被替换后，会话不会持久化。文档是长期记忆，会话是可丢弃的工作记忆。
+只要所属窗口仍然打开，外部 CLI／shell 的 PTY 会话就能跨 renderer reload 和界面切换继续存在。应用退出、窗口关闭或项目被替换后，PTY 进程不会持久化。实验性 Iris Agent 另有本地会话历史和恢复机制，但不会恢复已经退出的终端进程。
 
 ## 文档资产
 
@@ -230,8 +236,7 @@ Iris 不会自动下载远程资产，也不会自动删除 orphan。删除文�
 
 内置 Git 视图有意保持精简和本地化：
 
-> [!NOTE]
-> `0.1.0-beta.7` 对现有 Git 基础闭环做了集中加固：重命名与复制、同一文件的已暂存/未暂存双层状态、首次提交前仓库、嵌套项目与 linked worktree、提交失败恢复、跨窗口串行化和 watcher reconciliation 均已进入自动化覆盖。Git 视图仍有意只提供本地基础操作，极端规模、跨平台和安装环境矩阵仍在继续验证；关键操作后仍建议用 Git CLI 复核。实现与验收记录见 [Git 基础工作流可靠性缺陷](./.iris/issue/2026-08-09-Git%E5%9F%BA%E7%A1%80%E5%B7%A5%E4%BD%9C%E6%B5%81%E5%8F%AF%E9%9D%A0%E6%80%A7%E7%BC%BA%E9%99%B7.md)。
+重命名、同一文件的已暂存／未暂存状态、首次提交前仓库、嵌套项目、linked worktree、提交失败恢复和跨窗口串行操作已有自动化覆盖。安装环境仍需实机验证。
 
 - 仓库状态和分支信息
 - Merge、已暂存、working tree 和未跟踪资源组
@@ -249,11 +254,13 @@ Iris 当前不提供 diff 编辑、fetch、pull、push、远程账户集成或 m
 - Windows 10 或 Windows 11，x64
 - 如需使用 Source Control，必须能够从 `PATH` 运行 Git
 - 至少安装并认证一个 Agent CLI，也可以只使用普通终端
-- 当前 zero-turn SessionStart hook 适配器需要 PowerShell
+- Windows 的 SessionStart hook 使用 PowerShell
+
+首版不提供 Linux 或 macOS 支持。
 
 ### 发布版本
 
-预发布版本在 [GitHub Releases](https://github.com/Liyue-Cheng/iris/releases) 页面提供两种形式：
+在 [GitHub Releases](https://github.com/Liyue-Cheng/iris/releases) 下载已发布的版本。Windows x64 打包配置提供两种形式：
 
 - `Iris-<version>-setup.exe`：每用户安装程序，支持开始菜单和可选桌面快捷方式
 - `Iris-<version>-portable.exe`：单文件 portable 版本
@@ -272,7 +279,7 @@ Iris 当前没有代码签名。Windows SmartScreen 可能显示“未知发布�
 6. 使用右侧启动器，在该文档上下文中打开 Agent。
 7. 给出具体指令，并审查 Agent 在磁盘和 Git 中产生的变更。
 
-初始化会创建四个 typed directory，并在 `AGENTS.md` 中添加或刷新 Iris 拥有的 `<iris-software>` block。`CLAUDE.md` 等已有 vendor entry file 只有在已经存在时才会同步；Iris 不会主动创建一组 vendor 文件。可选的 `<iris-project>` block 可以保存项目级指引，并在已有入口文件之间同步。
+初始化会创建四个 typed directory，并在 `AGENTS.md` 中添加或刷新 Iris 拥有的 `<iris-software>` block。项目提示词以 `.iris/settings.json` 中的 `prompts.project` 为源，通过设置页同步到参与管理的入口文件的 `<iris-project>` block。初始化可纳入当时已有的 vendor 入口文件；后来新增的文件需要显式加入。外部修改入口文件会显示漂移或冲突，Iris 不会默默将其覆盖回项目配置。
 
 ## Iris 不做什么
 
@@ -280,13 +287,13 @@ Iris 当前没有代码签名。Windows SmartScreen 可能显示“未知发布�
 
 - 不提供 Iris 托管的模型、模型账户或模型订阅；外部 CLI 和可选的 Iris Agent 供应商配置仍由用户管理
 - 不需要账户，不提供云端数据库、托管同步、权限系统或遥测
-- 不提供 headless Agent dispatch 或自主编排队列
+- 不提供独立于桌面应用的无人值守 Agent 调度服务；内置 Agent 可在会话内运行子任务
 - 不把 Agent 终端输出解析为业务状态
 - 不提供通用源代码编辑器
 - 所属窗口关闭后不保留 PTY 会话
 - 当前协议不支持自定义文档类型
 - 不是完整 Git 客户端
-- 尚未提供完整 POSIX 上下文注入适配器
+- 首版不支持 Linux 或 macOS
 
 Iris 协调本地工具，而不是取代它们。
 
@@ -294,29 +301,37 @@ Iris 协调本地工具，而不是取代它们。
 
 ### 前置条件
 
-- Node.js 22.19 或更高版本（CI 使用 Node.js 24）
+- Node.js 22 LTS（22.19+）或 24 及以上版本（CI 使用 Node.js 24）
 - npm
-- 能够运行 Electron 和内置 `node-pty` prebuild 的 Windows 构建环境
+- 能够运行 Electron 和 `node-pty` 的环境；Windows 发布产物应在 Windows 构建
 
 `front-cpu` 从 npm registry 安装，因此干净 checkout 不需要同级本地仓库。
 
 ### 命令
 
 ```powershell
-npm install
+npm ci
 npm run dev
 ```
 
 质量检查：
 
 ```powershell
-npm test -- --run
+npm test
 npm run typecheck
-npm run build
+npm run metadata:check
 npm run licenses:check
 ```
 
-创建 Windows x64 installer 和 portable 产物：
+生产构建及构建后的运行检查：
+
+```powershell
+npm run build
+npm run agent:worker-check
+npm run smoke
+```
+
+在 Windows 上创建 x64 installer 和 portable 产物：
 
 ```powershell
 npm run dist
@@ -330,13 +345,13 @@ dist/release/<version>/
 
 如果第三方声明已经过期，`npm run dist` 会拒绝打包。修改依赖后，运行 `npm run licenses:generate` 并审查生成的 diff。
 
-开发版使用独立的应用数据和 Electron single-instance profile，因此可以与安装版同时运行，不共享设置或锁。
+开发版使用独立的应用数据和 Electron single-instance profile，可与安装版同时运行。开发版与发布版共用 `~/.iris/` 下的上下文 hook 脚本和外部 CLI 配置。
 
 ## 架构
 
 ```text
 src/main/       Electron 生命周期、项目扫描、文件 watcher、PTY、
-                资产、Git、持久化、提示词治理和 IPC
+                资产、Git、持久化、提示词治理、Agent worker、工具运行时和 IPC
 src/preload/    狭窄且启用 context isolation 的 renderer bridge
 src/renderer/   React 界面、投影 store、编辑器、终端视图、
                 FrontCPU 指令定义和 interrupt
@@ -350,9 +365,9 @@ src/shared/     跨进程模型、IPC channel 名称、Markdown 工具、
 
 ## 当前状态
 
-Iris 是一个通过自身仓库持续 dogfooding 开发的 beta 软件。文件系统协议、项目 scope、文档工作流、终端状态恢复和本地 Git 基础闭环已经形成可用的桌面工作流。
+`0.1.0` 是首个正式版本的源码版本号，延续 beta 系列的 `.iris/` 文档、外部 Agent CLI、终端与本地 Git 工作流。`0.x` 阶段仍会继续调整协议和交互，不代表已冻结为 1.0 稳定接口。
 
-`0.1.0-beta.10` 首次提供可选的 Iris Agent 实验入口。它仍处于非常早期阶段并默认关闭；当前版本的成熟工作流仍是 `.iris/` 文档、外部 Agent CLI、终端与 Git 的组合。
+内置 Iris Agent 继续保持实验性、默认关闭。源码版本号不等于发布验收已经通过；本次检查结果与剩余验收项见[发布前检查](./.iris/issue/2026-09-28-发布前检查.md)。
 
 欢迎通过 [GitHub Issues](https://github.com/Liyue-Cheng/iris/issues) 提交 bug 和聚焦的设计讨论。
 
@@ -360,10 +375,10 @@ Iris 是一个通过自身仓库持续 dogfooding 开发的 beta 软件。文件
 
 - 项目产物以普通文件形式保留在项目仓库中。
 - 机器设置保存在本地 `~/.iris/` 下，开发版使用 `~/.iris-dev/`。
-- 外部 Agent CLI 的认证和计费由各 CLI 管理；可选 Iris Agent 的供应商 API Key 保存在本机 Iris 用户数据中。
+- 外部 Agent CLI 的认证和计费由各 CLI 管理；可选 Iris Agent 的供应商 API Key 以明文保存在本机供应商配置 JSON 中。内置 Agent 会向所配置的供应商发送模型请求和相关上下文。
 - Iris 不发送遥测。
 - 外部链接只有在使用允许的 Web 或邮件协议时才会在系统浏览器中打开。
-- 本地文档和资产操作会对 active project boundary 进行路径校验。Symlink 和 junction 加固仍是 beta 限制；不要让 `.iris/` 或 typed folder 通过链接指向项目之外的位置。
+- 本地文档和资产操作会对 active project boundary 进行路径校验。不要依赖 symlink 或 junction 绕过项目边界；外部文件应通过明确的关联索引访问。
 
 请像审查独立终端中的 Agent 变更一样审查 Iris 中的变更。Iris 改善上下文和可见性，但不会对本地 Agent 能够执行的命令提供沙箱。
 

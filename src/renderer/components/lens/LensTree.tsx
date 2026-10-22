@@ -391,7 +391,7 @@ function WorkspaceSection({
   depth: number;
 }): JSX.Element {
   const { t } = useTranslation();
-  const [sectionsOpen, setSectionsOpen] = useState(true);
+  const [sectionsOpen, setSectionsOpen] = useState(depth === 0);
   const { view, scope } = useProject();
   const projections = useSessionProjections();
   const isRoot = depth === 0;

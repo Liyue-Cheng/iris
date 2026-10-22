@@ -1,0 +1,94 @@
+.raw-tree {
+  padding: 0 4px 4px;
+}
+
+.raw-tree-row {
+  display: flex;
+  position: relative;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 3px;
+  color: var(--foreground);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: left;
+  cursor: default;
+}
+
+.raw-tree-root {
+  font-weight: 600;
+}
+
+.raw-tree-row:hover,
+.raw-tree-row[data-selected='true'] {
+  background: var(--muted);
+}
+
+.raw-tree-row[data-selected='true'] {
+  box-shadow: inset 2px 0 var(--primary);
+}
+
+.raw-tree:focus-within .raw-tree-row[data-selected='true'] {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.raw-tree-row:focus-visible {
+  outline: 1px solid var(--ring);
+  outline-offset: -1px;
+}
+
+.raw-tree-twistie,
+.raw-tree-icon,
+.raw-tree-connection {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+
+.raw-tree-twistie,
+.raw-tree-connection {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.raw-tree-twistie svg {
+  width: 12px;
+  height: 12px;
+}
+
+.raw-tree-connection {
+  color: var(--primary);
+}
+
+.raw-tree:focus-within .raw-tree-row[data-selected='true'] > .raw-tree-icon,
+.raw-tree:focus-within .raw-tree-row[data-selected='true'] > .raw-tree-twistie,
+.raw-tree:focus-within .raw-tree-row[data-selected='true'] > .raw-tree-connection {
+  color: inherit;
+}
+
+/* Each expanded directory draws one continuous guide through its descendants. */
+.raw-tree-children {
+  position: relative;
+}
+
+.raw-tree-children::before {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  bottom: 0;
+  left: var(--raw-tree-guide-left);
+  border-left: 1px solid var(--border-subtle);
+  pointer-events: none;
+}
+
+.raw-tree-children:hover::before,
+.raw-tree-children[data-active='true']::before {
+  border-color: var(--border);
+}

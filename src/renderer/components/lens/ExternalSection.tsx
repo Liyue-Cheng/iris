@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ChevronDown,
@@ -11,6 +11,7 @@ import {
   FolderOpen,
   FolderPlus,
   Link2,
+  Loader2,
   Plus,
   Trash2,
 } from 'lucide-react';
@@ -21,7 +22,7 @@ import { writeClipboardText } from '@renderer/lib/clipboard';
 import { editorStore } from '@renderer/stores/editor-store';
 import { useLensPrefs } from '@renderer/stores/lens-prefs';
 import { projectScopeState, sameProjectScope } from '@renderer/stores/project-scope-state';
-import { setExternalPathDragData } from '@renderer/lib/doc-drag';
+import { resolveSystemFilePaths, setExternalPathDragData } from '@renderer/lib/doc-drag';
 import {
   addExternalPath,
   externalIdentity,
@@ -50,27 +51,41 @@ export function ExternalSection({
   external,
 }: {
   external: WorkspaceExternalPaths;
-}): JSX.Element | null {
+}): JSX.Element {
   const { t } = useTranslation();
   const { filter } = useLensPrefs();
   const [inventory, setInventory] = useState(external);
   const [open, setOpen] = useState(true);
   const [busy, setBusy] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const dragDepth = useRef(0);
+  const adding = useRef(false);
+
+  const clearDrag = (): void => {
+    dragDepth.current = 0;
+    setDragging(false);
+  };
+
+  useEffect(() => {
+    window.addEventListener('drop', clearDrag);
+    window.addEventListener('dragend', clearDrag);
+    window.addEventListener('blur', clearDrag);
+    return () => {
+      window.removeEventListener('drop', clearDrag);
+      window.removeEventListener('dragend', clearDrag);
+      window.removeEventListener('blur', clearDrag);
+    };
+  }, []);
 
   useEffect(() => setInventory(external), [external]);
   const refresh = async (): Promise<void> => {
-    setBusy(true);
-    try {
-      setInventory(await listExternalPaths(external.workspacePath));
-    } finally {
-      setBusy(false);
-    }
+    setInventory(await listExternalPaths(external.workspacePath));
   };
 
   const add = async (kind: 'file' | 'directory'): Promise<void> => {
     const scope = projectScopeState.get();
-    if (!scope) return;
+    if (!scope || adding.current) return;
+    adding.current = true;
     setBusy(true);
     try {
       await runUserAction(
@@ -83,6 +98,45 @@ export function ExternalSection({
         },
       );
     } finally {
+      adding.current = false;
+      setBusy(false);
+    }
+  };
+
+  const acceptsFiles = (event: DragEvent<HTMLDivElement>): boolean =>
+    event.dataTransfer.types.includes('Files') || event.dataTransfer.files.length > 0;
+
+  const dropFiles = async (files: File[]): Promise<void> => {
+    const scope = projectScopeState.get();
+    if (!scope || adding.current) return;
+    adding.current = true;
+    setBusy(true);
+    setOpen(true);
+    try {
+      await runUserAction(
+        { title: t('external.addFailed'), dedupeKey: `external:add:${external.workspacePath}` },
+        async () => {
+          const resolved = resolveSystemFilePaths(files, window.api.getPathForFile);
+          const failures: string[] = [];
+          if (resolved.length < files.length || files.length === 0) {
+            failures.push(t('external.dropPathFailed'));
+          }
+          // Serialize writes to the same manifest and keep valid files in a mixed drop.
+          for (const target of new Set(resolved)) {
+            if (!sameProjectScope(scope, projectScopeState.get())) return;
+            try {
+              await addExternalPath(external.workspacePath, target);
+            } catch (error) {
+              failures.push(`${target}: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
+          if (!sameProjectScope(scope, projectScopeState.get())) return;
+          await refresh();
+          if (failures.length > 0) throw new Error(failures.join('\n'));
+        },
+      );
+    } finally {
+      adding.current = false;
       setBusy(false);
     }
   };
@@ -92,10 +146,43 @@ export function ExternalSection({
     const query = filter.toLowerCase();
     return entry.name.toLowerCase().includes(query) || entry.storedPath.toLowerCase().includes(query);
   });
-  if (!inventory.exists && inventory.entries.length === 0) return null;
 
   return (
-    <div ref={rootRef} className="group/section">
+    <div
+      role="region"
+      aria-label="External"
+      aria-busy={busy}
+      className={cn(
+        'group/section relative rounded-md transition-colors',
+        dragging && 'bg-accent/50 ring-1 ring-inset ring-primary',
+      )}
+      onDragEnter={(event) => {
+        if (!acceptsFiles(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        dragDepth.current += 1;
+        if (!adding.current) setDragging(true);
+      }}
+      onDragOver={(event) => {
+        if (!acceptsFiles(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = adding.current ? 'none' : 'copy';
+      }}
+      onDragLeave={(event) => {
+        event.stopPropagation();
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setDragging(false);
+      }}
+      onDrop={(event) => {
+        clearDrag();
+        if (!acceptsFiles(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        // Snapshot FileList before the browser clears the drag data store.
+        void dropFiles(Array.from(event.dataTransfer.files)).catch(() => undefined);
+      }}
+    >
       <div className="flex items-center gap-1 pr-1">
         <button
           type="button"
@@ -113,6 +200,7 @@ export function ExternalSection({
           <Link2 className="h-3.5 w-3.5" />
           External
           <span className="ml-1 font-normal text-muted-foreground/60">{visible.length}</span>
+          {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-label={t('external.adding')} />}
         </button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -120,7 +208,7 @@ export function ExternalSection({
               type="button"
               disabled={busy}
               aria-label={t('external.add')}
-              className="rounded-sm p-0.5 text-muted-foreground/0 hover:bg-muted hover:!text-foreground group-hover/section:text-muted-foreground"
+              className="rounded-sm p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
             >
               <Plus className="h-3.5 w-3.5" />
             </button>
@@ -146,8 +234,16 @@ export function ExternalSection({
             />
           ))}
           {visible.length === 0 && (
-            <div className="px-7 py-0.5 text-xs text-muted-foreground/50">{t('common.empty')}</div>
+            <div className="mx-1 mb-1 rounded-md border border-dashed border-border px-3 py-3 text-center text-xs text-muted-foreground">
+              {t(inventory.entries.length === 0 ? 'external.dropHint' : 'common.empty')}
+            </div>
           )}
+        </div>
+      )}
+      {dragging && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-md border border-dashed border-primary bg-background/95 px-3 py-1 text-xs font-medium text-primary" role="status">
+          <Link2 className="h-4 w-4 shrink-0" />
+          <span>{t('external.dropRelease')}</span>
         </div>
       )}
     </div>

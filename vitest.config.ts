@@ -13,7 +13,6 @@ export default defineConfig({
     environment: 'node',
     // Bound simultaneous TypeScript transforms, filesystem fixtures and native
     // processes so machines with many logical CPUs do not exhaust memory/I/O.
-    minWorkers: 1,
     maxWorkers: 4,
     // The suite includes real Git/PTY processes and durable filesystem writes.
     // Keep a bounded timeout without assuming they finish within five seconds.

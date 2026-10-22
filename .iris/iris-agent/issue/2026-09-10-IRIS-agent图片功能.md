@@ -93,7 +93,7 @@ pi-ai 侧（`node_modules/@earendil-works/pi-ai/dist/`）：
 
 ### 4. 之前为什么没做（这是有记录的决策，不是遗漏）
 
-`.iris/issue/2026-09-07-最近一次的agent执行记录检查.md` 明确写过：
+`.iris/iris-agent/issue/2026-09-07-最近一次的agent执行记录检查.md` 明确写过：
 
 > `read` 仍由 Iris 以 base64 在 worker/host 间传输，图片附件暂不纳入现有协议
 > （当前协议只有文本文件结果），该差异已明确保留，不会静默伪装成图片支持。
@@ -101,7 +101,7 @@ pi-ai 侧（`node_modules/@earendil-works/pi-ai/dist/`）：
 > 原因是现有 Iris 协议只承载文本/终端结果……本轮先完成不会改变协议形状的核心契约对齐，
 > 避免引入新的图片或日志架构。
 
-而 `.iris/issue/2026-09-06-工具列表.md` 也把 `read_image` / `view_image` /
+而 `.iris/iris-agent/issue/2026-09-06-工具列表.md` 也把 `read_image` / `view_image` /
 Image generation 列为“其他产品的按需能力”，Iris 当前 8 个工具里没有它们。
 
 所以现状 = 有意的协议边界，不是 bug。要支持，就必须动协议形状和会话模型。

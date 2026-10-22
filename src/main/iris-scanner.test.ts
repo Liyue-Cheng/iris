@@ -173,6 +173,15 @@ describe('scanProject on the sample fixture', () => {
 });
 
 describe('scanRawTree', () => {
+  it('includes filesystem modification times for folders and ordinary files', async () => {
+    const tree = await scanRawTree(FIXTURE);
+    const iris = tree?.children?.find((node) => node.name === '.iris');
+    const misc = iris?.children?.find((node) => node.name === 'misc');
+    const file = misc?.children?.find((node) => node.name === 'not-markdown.txt');
+    expect(iris?.mtimeMs).toBe((await fs.stat(join(FIXTURE, '.iris'))).mtimeMs);
+    expect(file?.mtimeMs).toBe((await fs.stat(join(FIXTURE, '.iris', 'misc', 'not-markdown.txt'))).mtimeMs);
+  });
+
   it('exposes everything, including non-md files', async () => {
     const tree = await scanRawTree(FIXTURE);
     expect(tree).not.toBeNull();

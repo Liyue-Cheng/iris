@@ -47,10 +47,10 @@ is not recognized as a name of a cmdlet, function, script file, or executable pr
 
 * 本机 Cursor 自带 `C:\Program Files\cursor\resources\app\node_modules\@vscode\ripgrep\bin\rg.exe`
   （4.2 MB）；VS Code / Claude Code 同样各自携带一份，不依赖 PATH。
-* `.iris/issue/2026-09-09-iris上下文水位指示器没生效.md` 里那些成功的 `rg -n ...` 是 Claude Code
+* `.iris/iris-agent/issue/2026-09-09-iris上下文水位指示器没生效.md` 里那些成功的 `rg -n ...` 是 Claude Code
   会话的 transcript，`rg` 来自它自己带的二进制——这条很容易被读成「Iris 终端以前支持 rg」。
 * Iris Agent 现在是四工具小核心（`read`/`edit`/`write`/`terminal`），没有独立搜索工具，搜索全靠
-  terminal 完成，见 `.iris/issue/2026-09-06-工具列表.md` §12.5。
+  terminal 完成，见 `.iris/iris-agent/issue/2026-09-06-工具列表.md` §12.5。
 
 **5. 两个容易被误判成「不支持」的细节。**
 
@@ -74,7 +74,7 @@ is not recognized as a name of a cmdlet, function, script file, or executable pr
   两类终端的 spawn env PATH——这就是 VS Code / Cursor / Claude Code 的做法。一次安装人人可用；
   成本是每平台一份二进制、体积、许可证与 `THIRD_PARTY_NOTICES.txt` 更新、打包脚本改动。
 * **C. 把搜索升级成一等工具。** 新增 `grep`/`glob` 工具（内置 ripgrep，返回结构化匹配、路径、行号），
-  让模型不再靠 shell 搜索。工作量最大，但和 `.iris/issue/2026-09-06-工具列表.md` §12.5 以及
+  让模型不再靠 shell 搜索。工作量最大，但和 `.iris/iris-agent/issue/2026-09-06-工具列表.md` §12.5 以及
   「未来专用 search/grep 工具」（`2026-08-20-iris-agent显示效果优化.md:178`）的路线一致。
 
 建议顺序：A 先解掉当下的阻塞（不改代码），B/C 作为产品决策；若选 C，可以顺手做 B 的 PATH 注入，
@@ -117,7 +117,7 @@ winget install --id BurntSushi.ripgrep.MSVC --scope user --accept-source-agreeme
 
 （一个与本次安装无关的 Windows 使用提醒：`rg -n foo .iris/status/*.md` 这种写法会报
 `os error 123`，因为 rg 不自己展开 `*`；写成 `rg -n foo .iris/status` 或加 `--glob '*.md'` 即可。
-之前 `.iris/issue/2026-09-09-iris上下文水位指示器没生效.md` 里记的同类报错就是这个原因，不是安装问题。）
+之前 `.iris/iris-agent/issue/2026-09-09-iris上下文水位指示器没生效.md` 里记的同类报错就是这个原因，不是安装问题。）
 
 ### 还需要你做一件事：重启 Iris
 

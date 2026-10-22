@@ -2433,7 +2433,7 @@ describe('IrisAgentSessionManager context compaction', () => {
   type SummarizeContext = NonNullable<IrisAgentSessionManagerOptions['summarizeContext']>;
 
   function summarizer(text: string) {
-    return vi.fn<Parameters<SummarizeContext>, ReturnType<SummarizeContext>>(async () => text);
+    return vi.fn<SummarizeContext>(async () => text);
   }
 
   /** Runs one Intent to completion so the Session accumulates settled history. */

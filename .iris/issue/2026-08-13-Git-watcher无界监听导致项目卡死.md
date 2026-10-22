@@ -88,7 +88,7 @@ const GIT_WATCHER_ENABLED = false;
 
 ## 关联
 
-* 阻塞来源：[第一轮手工测试流程](./2026-08-13-第一轮手工测试流程.md)
+* 阻塞来源：[第一轮手工测试流程](../iris-agent/issue/2026-08-13-第一轮手工测试流程.md)
 * 相关实现：`src/main/git-manager.ts`
 
 ## 方案设计（2026-08-13）

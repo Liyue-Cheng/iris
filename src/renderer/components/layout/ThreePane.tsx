@@ -158,19 +158,19 @@ export function ThreePane(): JSX.Element {
     return (
       <ResizablePanelGroup direction="horizontal" autoSaveId="iris-shell" className="bg-card">
         <ResizablePanel defaultSize={25} minSize={12} maxSize={40} className="p-0">
-          <div className="h-full overflow-hidden rounded-xl bg-background shadow-sm">
+          <div className="h-full overflow-hidden rounded-lg bg-background shadow-sm">
             <LeftPane />
           </div>
         </ResizablePanel>
         <ResizableHandle />
         <ResizablePanel id="doc-editor" order={2} defaultSize={48} minSize={24} className="p-0">
-          <div className="h-full overflow-hidden rounded-xl bg-background shadow-sm">
+          <div className="h-full overflow-hidden rounded-lg bg-background shadow-sm">
             <MiddlePane />
           </div>
         </ResizablePanel>
         <ResizableHandle />
         <ResizablePanel id="doc-terminal" order={3} defaultSize={27} minSize={18} className="p-0">
-          <div className="h-full overflow-hidden rounded-xl bg-background shadow-sm">
+          <div className="h-full overflow-hidden rounded-lg bg-background shadow-sm">
             <RightPane />
           </div>
         </ResizablePanel>
@@ -181,13 +181,13 @@ export function ThreePane(): JSX.Element {
   return (
     <ResizablePanelGroup direction="horizontal" autoSaveId="iris-shell" className="bg-card">
       <ResizablePanel defaultSize={25} minSize={12} maxSize={40} className="p-0">
-        <div className="h-full overflow-hidden rounded-xl bg-background shadow-sm">
+        <div className="h-full overflow-hidden rounded-lg bg-background shadow-sm">
         <LeftPane />
         </div>
       </ResizablePanel>
       <ResizableHandle />
       <ResizablePanel defaultSize={75} minSize={30} className="p-0">
-        <div className="h-full overflow-hidden rounded-xl bg-background shadow-sm">
+        <div className="h-full overflow-hidden rounded-lg bg-background shadow-sm">
           <RightArea view={view} />
         </div>
       </ResizablePanel>

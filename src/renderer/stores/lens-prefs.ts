@@ -1,6 +1,6 @@
 /**
  * @file stores/lens-prefs.ts
- * @purpose Left-pane view preferences: document sort and name/title filter.
+ * @purpose Shared left-pane controls: Lens uses document titles; Files uses names/paths.
  */
 import { useSyncExternalStore } from 'react';
 

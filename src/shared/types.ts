@@ -540,6 +540,8 @@ export interface RawTreeNode {
   /** Canonical scan-time OS path used only for local tree/external matching. */
   absolutePath: string;
   kind: 'dir' | 'file';
+  /** Filesystem modification time; 0 if metadata could not be read. */
+  mtimeMs: number;
   children?: RawTreeNode[];
 }
 

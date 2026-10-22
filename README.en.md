@@ -14,7 +14,7 @@ Iris brings project documents, agents, Git state, and human attention into one d
 
 Your project state stays in ordinary Markdown under `.iris/`. External agents run in real PTYs at the project root. Git remains the collaboration and delivery layer. There is no Iris account, cloud database, or proprietary project format.
 
-> Current version: `0.1.0-beta.24`. The experimental Iris Agent remains very early and is disabled by default; the existing external agent CLI workflow is unchanged. Iris is Windows-first and currently ships for Windows x64.
+> Current source version: `0.1.0`, the first version without a prerelease suffix. The first release supports Windows x64 only; see [GitHub Releases](https://github.com/Liyue-Cheng/iris/releases) for available downloads. The embedded Iris Agent remains experimental and disabled by default.
 
 > This is the English product overview. Active development records and maintainer discussions are currently written primarily in Simplified Chinese. English bug reports and pull requests are welcome, but contributors may need translation support when following the live `.iris/` project record.
 
@@ -79,6 +79,8 @@ The protocol is a filesystem convention plus agent guidance. It can be read and 
 my-project/
 |-- AGENTS.md
 |-- .iris/
+|   |-- settings.json
+|   |-- external.txt
 |   |-- status/
 |   |   `-- architecture.md
 |   |-- issue/
@@ -98,12 +100,12 @@ Four folder names have built-in meaning wherever they appear inside `.iris/`:
 
 | Folder | Time orientation | Purpose |
 | --- | --- | --- |
-| `status/` | Now | A current mirror of the codebase, stamped with the Git commit it reflects |
+| `status/` | Now | Maintained descriptions of the current codebase |
 | `issue/` | Future and active work | Problems, tasks, decisions, and their working record |
 | `report/` | Dated past | Reviews, analyses, summaries, and other deliverables |
 | `misc/` | Outside the workflow | Human scratch space with no freshness contract |
 
-The nearest typed folder decides a document's type. Any directory that directly contains a typed folder is inferred as a workspace. There is no workspace manifest or database.
+The nearest typed folder decides a document's type. Any directory that directly contains a typed folder is inferred as a workspace. There is no workspace manifest or database. A workspace under `report/` is not automatically archived; activity depends on each document's status. The project root's `.iris/settings.json` stores project prompts and toolbar configuration. Each workspace may have an optional `external.txt` association index.
 
 Frontmatter keys are literal interfaces, while values remain flexible:
 
@@ -114,13 +116,13 @@ status: In Progress
 ---
 ```
 
-Issue states default to `Todo`, `In Progress`, `In Review`, `Blocked`, `On Hold`, `Done`, or `Canceled`. Reports use `Active` and `Backlog`. `On Hold` means inactive but unresolved. Iris preserves exceptional values instead of rejecting the document.
+Issue states default to `Todo`, `In Progress`, `In Review`, `Blocked`, `On Hold`, `Done`, or `Canceled`. Status, report, and misc documents use `Active` and `Backlog`. `On Hold` means inactive but unresolved; `Done` and `Canceled` mean resolved. Iris preserves exceptional values instead of rejecting the document. Transitions to inactive states through the UI first settle linked sessions; completing an issue can optionally check its remaining tasks, according to settings.
 
 The `labels:` frontmatter field is reserved but not currently enabled. Iris
 preserves valid legacy metadata, but the application and its managed agent
 guidance do not create, edit, display, group, or filter by labels.
 
-Every GFM task item in an active issue is also projected into the Todo panel:
+Unchecked GFM task items in active issues are projected into the Todo panel:
 
 ```markdown
 - [ ] Reproduce the failure in the packaged build
@@ -134,6 +136,7 @@ Checking a task in the panel writes back to that exact line in the source docume
 The Electron app is the reference implementation and operational control plane for the protocol. It provides:
 
 - Recursive `.iris/` scanning and live filesystem projection
+- A document lens, a project file tree, and workspace external file associations
 - Project initialization and inferred sub-workspaces
 - Type-specific collection views
 - WYSIWYG Markdown editing with a source-mode escape hatch
@@ -143,6 +146,7 @@ The Electron app is the reference implementation and operational control plane f
 - Git status, staging, unstaging, commits, and local branch switching
 - Multiple project windows with isolated session and watcher state
 - Machine-level themes, editor behavior, terminal behavior, and agent configuration
+- Simplified Chinese and English UI, project prompt management, and configurable project toolbar commands
 
 The protocol preserves portability. The app adds workflow efficiency, safety checks, and explicit concurrency boundaries.
 
@@ -150,7 +154,7 @@ The protocol preserves portability. The app adds workflow efficiency, safety che
 
 By default, Iris runs agent commands that are already installed and authenticated on your machine. Default entries include Claude Code, Codex, Gemini, and a plain terminal; the list and command lines are editable.
 
-`0.1.0-beta.10` also includes an experimental Iris Agent that is disabled by default. Once enabled, you can configure a model provider and open an embedded session from the current document or workspace. It is still very early, intended for testing and feedback rather than as a stable replacement for external agent CLIs.
+The embedded Iris Agent is disabled by default and requires your own model provider, API key, and model configuration. It supports streaming conversations, image attachments, file operations, managed terminals, subtasks, MCP tools, context compaction, and local session history and recovery. These features remain experimental and are intended for testing and feedback.
 
 A document session receives:
 
@@ -160,7 +164,7 @@ FOCUS_DOC=.iris/issue/2026-08-08-fix-auth.md
 
 A workspace hub session receives `IRIS_WORKSPACE_PATH` and deliberately has no focused document.
 
-On Windows, Iris can install a generated SessionStart context script at `~/.iris/focus-context.ps1` and, after explicit confirmation, connect supported CLI hook configurations. The current hook adapter recognizes Claude Code, Codex CLI, Gemini CLI, Qwen Code, and Cursor CLI. CLIs without hook support can still read the environment pointer and project guidance directly.
+Iris can generate a SessionStart context script at `~/.iris/focus-context.ps1`. After confirmation, it can connect hook configurations for Claude Code, Codex CLI, Gemini CLI, Qwen Code, and Cursor CLI; behavior depends on the installed CLI's hook support. The script injects document or workspace context; documents larger than 32 KiB receive a read instruction instead of inline contents. CLIs without hook support can still read the environment pointer and project guidance directly.
 
 Static project rules live in entry files such as `AGENTS.md`. Dynamic focus lives in the session environment. The two have different lifetimes and are intentionally kept separate.
 
@@ -168,7 +172,9 @@ Static project rules live in entry files such as `AGENTS.md`. Dynamic focus live
 
 ### Left: work and attention
 
-The lens tree groups documents by workspace and type. Active issues and reports remain prominent, while resolved work leaves the default lens. Session state dots show whether an anchored terminal is producing output, quiet and possibly waiting, or exited.
+The lens tree groups documents by workspace and type, emphasizing active documents. Inactive issues with linked sessions can remain accessible, including exited terminals that have not been closed. Session state dots show whether an anchored terminal is producing output, quiet and possibly waiting, or exited. A quiet terminal does not establish that work is complete.
+
+Switch to the file tree to browse project files, sort by name or modification time, and filter by filename or relative path. Clicking a file opens it in the system default application; use the document lens or collection views to edit Iris documents. The tree also supports copying paths, dragging files, and managing workspace external associations.
 
 The left pane also provides project switching, recent projects, new windows, workspace creation, search, sorting, the Todo panel, and Git source control.
 
@@ -180,7 +186,7 @@ Each document type has a different collection view:
 
 - Issues support activity filters, search, workspace filters, grouping, sorting, and keyboard navigation.
 - Todo aggregates unchecked tasks from active issues.
-- Status compares each document's `reflects` commit with the current Git HEAD.
+- Status lists maintained descriptions of the current system, without comparing `reflects` against Git HEAD.
 - Reports are arranged as a dated timeline.
 - Misc stays intentionally simple.
 
@@ -199,7 +205,7 @@ Iris never interprets an agent's prose output to decide whether work is complete
 - Agent edits arrive through filesystem events.
 - The renderer rescans and projects the current disk state.
 - Editor writes use compare-and-swap baselines to detect external changes before replacing document content.
-- View changes, Git actions, project switches, and application close pass through editor flush and conflict checks before leaving a dirty draft. This is a safety mechanism rather than a crash-recovery guarantee; remaining beta edge cases are tracked in the [development audit](./.iris/issue/2026-08-09-%E5%AF%86%E9%9B%86%E5%BC%80%E5%8F%91%E4%BF%AE%E6%94%B9%E5%AE%A1%E8%AE%A1.md).
+- View changes, Git actions, project switches, and application close pass through editor flush and conflict checks before leaving a dirty draft. This does not guarantee recovery of unsaved drafts after a crash.
 - Project operations carry a canonical root and generation so late events from an old project cannot affect the new one.
 - Discrete in-app mutations are serialized by resource through the FrontCPU instruction pipeline. Cross-window writes to user-owned configuration files are still being hardened.
 
@@ -207,11 +213,11 @@ These safeguards make plain files practical in a human-agent workflow, but Iris 
 
 ## Sessions as Working Memory
 
-Sessions are anchored when created. One document can have several sessions, while root and nested workspaces can have unfocused hub sessions. Iris does not continuously retarget a running agent.
+Sessions are anchored when created. One document can have several sessions, while root and nested workspaces can have unfocused hub sessions. If a document is deleted externally, Iris moves its running terminals to the workspace or root hub and shows a warning. This does not retarget the running agent's context.
 
 The main process owns the PTY pool. A headless xterm mirror tracks the complete terminal state, including alternate-screen TUIs. When a renderer remounts a terminal, Iris serializes that state and then resumes live output without double-writing the replay boundary.
 
-Sessions survive renderer reloads and interface switches while the owning window remains open. They are intentionally not durable across application exit, window close, or project replacement. Documents are long-term memory; sessions are disposable working memory.
+External CLI and shell PTY sessions survive renderer reloads and interface switches while the owning window remains open. PTY processes do not persist across application exit, window close, or project replacement. The experimental Iris Agent separately supports local session history and recovery; it does not restore terminated terminal processes.
 
 ## Document Assets
 
@@ -232,8 +238,7 @@ Iris does not automatically download remote assets or delete orphans. Deleting a
 
 The built-in Git view is deliberately small and local:
 
-> [!NOTE]
-> `0.1.0-beta.7` substantially hardens the existing Git loop. Rename and copy records, simultaneous staged and unstaged changes, unborn repositories, nested projects and linked worktrees, commit-failure recovery, cross-window serialization, and watcher reconciliation now have automated coverage. The Git view remains deliberately limited to local foundational operations, while extreme scale, cross-platform behavior, and packaged-environment matrices still need broader validation. Continue to verify critical operations with Git CLI. Implementation and validation details are recorded in [Git basic workflow reliability](./.iris/issue/2026-08-09-Git%E5%9F%BA%E7%A1%80%E5%B7%A5%E4%BD%9C%E6%B5%81%E5%8F%AF%E9%9D%A0%E6%80%A7%E7%BC%BA%E9%99%B7.md).
+Renames, simultaneous staged and unstaged changes, unborn repositories, nested projects, linked worktrees, commit-failure recovery, and cross-window serialization have automated coverage. Installed builds still require testing on the target machines.
 
 - Repository status and branch information
 - Merge, staged, working-tree, and untracked groups
@@ -251,11 +256,13 @@ Iris currently does not provide diff editing, fetch, pull, push, remote account 
 - Windows 10 or Windows 11, x64
 - Git available on `PATH` for source control features
 - At least one agent CLI installed and authenticated, or use the plain terminal
-- PowerShell for the current zero-turn SessionStart hook adapter
+- PowerShell for the Windows SessionStart hook
+
+The first release does not support Linux or macOS.
 
 ### Release builds
 
-Pre-release builds are published on the [GitHub Releases](https://github.com/Liyue-Cheng/iris/releases) page in two forms:
+Download published builds from [GitHub Releases](https://github.com/Liyue-Cheng/iris/releases). The Windows x64 packaging configuration provides two forms:
 
 - `Iris-<version>-setup.exe`: per-user installer with Start menu and optional desktop shortcuts
 - `Iris-<version>-portable.exe`: single-file portable build
@@ -274,7 +281,7 @@ The installer and portable build share machine-level settings under `~/.iris/`. 
 6. Use the right-pane launcher to open an agent under that document.
 7. Give the agent a concrete instruction and review its changes on disk and in Git.
 
-Initialization creates the four typed directories and adds or refreshes an Iris-owned `<iris-software>` block in `AGENTS.md`. Existing vendor entry files such as `CLAUDE.md` are synchronized only when they already exist; Iris does not create a collection of vendor files. An optional `<iris-project>` block can hold project-specific guidance and is synchronized across existing entry files.
+Initialization creates the four typed directories and adds or refreshes an Iris-owned `<iris-software>` block in `AGENTS.md`. Project prompts are sourced from `prompts.project` in `.iris/settings.json` and synchronized through settings into the `<iris-project>` blocks of managed entry files. Initialization can enroll existing vendor entry files; files added later require explicit enrollment. External edits to entry files appear as drift or conflicts instead of silently replacing the project configuration.
 
 ## What Iris Does Not Do
 
@@ -282,13 +289,13 @@ These are current product boundaries, not hidden roadmap promises:
 
 - No Iris-hosted model, model account, or model subscription; users still manage external CLIs and optional Iris Agent provider configuration
 - No account, cloud database, hosted sync, permission system, or telemetry
-- No headless agent dispatch or autonomous orchestration queue
+- No unattended agent scheduling service independent of the desktop app; the embedded agent can run subtasks within a session
 - No parsing of agent terminal output as business state
 - No built-in code editor
 - No persistent PTY sessions after the owning window closes
 - No custom document types in the current protocol
 - No complete Git client
-- No full POSIX context-injection adapter yet
+- No Linux or macOS support in the first release
 
 Iris coordinates local tools instead of replacing them.
 
@@ -296,29 +303,37 @@ Iris coordinates local tools instead of replacing them.
 
 ### Prerequisites
 
-- Node.js 22.19 or newer (CI uses Node.js 24)
+- Node.js 22 LTS (22.19+) or 24 and newer (CI uses Node.js 24)
 - npm
-- Windows build environment capable of running Electron and the bundled `node-pty` prebuild
+- An environment capable of running Electron and `node-pty`; build Windows release artifacts on Windows
 
 `front-cpu` is installed from the npm registry, so a clean checkout does not require a sibling repository.
 
 ### Commands
 
 ```powershell
-npm install
+npm ci
 npm run dev
 ```
 
 Quality checks:
 
 ```powershell
-npm test -- --run
+npm test
 npm run typecheck
-npm run build
+npm run metadata:check
 npm run licenses:check
 ```
 
-Create Windows x64 installer and portable artifacts:
+Production build and checks that require its output:
+
+```powershell
+npm run build
+npm run agent:worker-check
+npm run smoke
+```
+
+Create x64 installer and portable artifacts on Windows:
 
 ```powershell
 npm run dist
@@ -332,13 +347,13 @@ dist/release/<version>/
 
 `npm run dist` refuses to package a stale third-party notice file. After changing dependencies, run `npm run licenses:generate` and review the generated diff.
 
-The development build uses separate app data and a separate Electron single-instance profile, so it can run alongside an installed build without sharing settings or locks.
+The development build uses separate app data and a separate Electron single-instance profile, so it can run alongside an installed build. Development and release builds share context hook scripts under `~/.iris/` and external CLI configuration.
 
 ## Architecture
 
 ```text
 src/main/       Electron lifecycle, project scanning, file watchers, PTYs,
-                assets, Git, persistence, prompt governance, IPC
+                assets, Git, persistence, prompts, Agent worker, tool runtime, IPC
 src/preload/    Narrow context-isolated renderer bridge
 src/renderer/   React interface, projection stores, editors, terminal view,
                 FrontCPU instruction definitions and interrupts
@@ -352,9 +367,9 @@ Key technologies include Electron, TypeScript, React 18, Tailwind CSS, Radix UI,
 
 ## Current Status
 
-Iris is beta software developed through daily dogfooding on its own repository. The filesystem protocol, project scoping, document workflow, terminal state recovery, and local Git fundamentals now form a usable desktop workflow.
+`0.1.0` is the source version selected for the first release without a prerelease suffix, continuing the beta series' workflow of `.iris/` documents, external agent CLIs, terminals, and local Git. Protocols and interactions may continue to evolve during `0.x`; this is not a frozen 1.0 interface.
 
-`0.1.0-beta.10` introduces an optional Iris Agent experiment. It remains very early and disabled by default; the mature workflow in this release is still the combination of `.iris/` documents, external agent CLIs, terminals, and Git.
+The embedded Iris Agent remains experimental and disabled by default. A source version number does not establish release readiness; see the [release review](./.iris/issue/2026-09-28-发布前检查.md) for findings and outstanding verification.
 
 Bug reports and focused design discussions are welcome through [GitHub Issues](https://github.com/Liyue-Cheng/iris/issues).
 
@@ -362,10 +377,10 @@ Bug reports and focused design discussions are welcome through [GitHub Issues](h
 
 - Project artifacts remain in the project repository as ordinary files.
 - Machine settings are stored locally under `~/.iris/` (`~/.iris-dev/` for development builds).
-- External agent authentication and billing remain with each CLI; API keys for the optional Iris Agent are stored in local Iris user data.
+- External agent authentication and billing remain with each CLI. API keys for the optional Iris Agent are stored as plaintext in local provider configuration JSON. The embedded agent sends model requests and relevant context to the configured provider.
 - Iris does not send telemetry.
 - External links open in the system browser only for allowed web and mail protocols.
-- Local document and asset operations validate paths against the active project boundary. Symlink and junction hardening remains a beta limitation; do not place `.iris/` or typed folders behind links to locations outside the project.
+- Local document and asset operations validate paths against the active project boundary. Do not rely on symlinks or junctions to bypass that boundary; use explicit association indexes for external files.
 
 Review agent-generated changes with the same care you would use in a standalone terminal. Iris improves context and visibility; it does not sandbox the commands your local agents can run.
 
