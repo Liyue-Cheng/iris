@@ -309,7 +309,10 @@ describe('JtpNativeExecution', () => {
       expect(terminal.update.state).toBe('completed');
       expect(terminal.result).toMatchObject({ kind: 'terminal', exitCode: 0, success: true });
       if (terminal.result.kind === 'terminal') {
-        expect(terminal.result.outputText).toContain(join(await fs.realpath(projectRoot), 'linked'));
+        // The PTY wraps the runner's long temporary path at its column limit.
+        expect(terminal.result.outputText.replace(/[\r\n]/g, '')).toContain(
+          join(await fs.realpath(projectRoot), 'linked'),
+        );
       }
     } finally {
       await removeTempDataDir(projectRoot);
