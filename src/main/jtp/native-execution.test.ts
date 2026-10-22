@@ -308,7 +308,9 @@ describe('JtpNativeExecution', () => {
       );
       expect(terminal.update.state).toBe('completed');
       expect(terminal.result).toMatchObject({ kind: 'terminal', exitCode: 0, success: true });
-      if (terminal.result.kind === 'terminal') expect(terminal.result.outputText).toContain(linkedDirectory);
+      if (terminal.result.kind === 'terminal') {
+        expect(terminal.result.outputText).toContain(join(await fs.realpath(projectRoot), 'linked'));
+      }
     } finally {
       await removeTempDataDir(projectRoot);
       await removeTempDataDir(outsideRoot);

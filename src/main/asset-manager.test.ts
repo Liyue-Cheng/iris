@@ -22,6 +22,26 @@ afterEach(async () => {
 });
 
 describe('AssetManager', () => {
+  it('accepts a project root alias while checking document containment by real path', async () => {
+    const alias = join(dir, 'project-alias');
+    await fs.symlink(dir, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const imported = await assets.import(alias, { docPath, name: 'image.png', mimeType: 'image/png', bytes: png });
+    expect((await assets.list(alias, docPath)).assets[0]?.path).toBe(imported.path);
+  });
+
+  it('rejects a document reached through a directory link outside the project', async () => {
+    const outside = await createTempDataDir('iris-assets-outside-');
+    try {
+      await fs.writeFile(join(outside, 'outside.md'), 'outside');
+      await fs.symlink(outside, join(dir, '.iris', 'issue', 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
+      await expect(assets.import(dir, {
+        docPath: '.iris/issue/escape/outside.md', name: 'image.png', mimeType: 'image/png', bytes: png,
+      })).rejects.toMatchObject({ code: 'InvalidPayload' });
+    } finally {
+      await removeTempDataDir(outside);
+    }
+  });
+
   it('imports with the original readable name and allocates a simple unique suffix', async () => {
     const first = await assets.import(dir, {
       docPath,

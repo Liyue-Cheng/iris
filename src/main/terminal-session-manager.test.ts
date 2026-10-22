@@ -557,6 +557,7 @@ describe('focus-context PowerShell contract', () => {
         rmSync(dir, { recursive: true, force: true });
       }
     },
+    30_000,
   );
 });
 

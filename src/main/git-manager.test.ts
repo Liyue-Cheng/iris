@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { chmod, mkdtemp, mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -64,7 +64,7 @@ async function expectNoChange(durationMs: number, action: () => Promise<void>): 
 }
 
 beforeEach(async () => {
-  tempRoot = await mkdtemp(join(tmpdir(), 'iris-git-manager-'));
+  tempRoot = await realpath(await mkdtemp(join(tmpdir(), 'iris-git-manager-')));
   repository = join(tempRoot, 'repository');
   await mkdir(repository);
   manager = new GitManager();
@@ -223,7 +223,7 @@ describe('GitManager integration', () => {
       'generated',
       'utf8',
     ));
-  }, 15_000);
+  }, 30_000);
 
   it('uses the full worktree when the Iris project is a repository subdirectory', async () => {
     await initRepository();

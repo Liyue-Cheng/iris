@@ -272,7 +272,7 @@ export class AssetManager {
     }
     const real = await fs.realpath(abs).catch(() => null);
     if (!real) throw new AssetError('ReadFailed', mainT('error.assetDocumentResolve', { path: docPath }));
-    resolveInside(projectRoot, real);
+    resolveInside(await fs.realpath(projectRoot), real);
     return { abs };
   }
 }
@@ -448,7 +448,7 @@ async function requireSafeDirectoryIfPresent(projectRoot: string, path: string):
   if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) {
     throw new AssetError('InvalidPayload', mainT('error.assetDirectoryNotRegular', { path }));
   }
-  if (stat) resolveInside(projectRoot, await fs.realpath(path));
+  if (stat) resolveInside(await fs.realpath(projectRoot), await fs.realpath(path));
 }
 
 function messageFor(prefix: string, error: unknown): string {
