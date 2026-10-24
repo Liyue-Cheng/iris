@@ -568,10 +568,10 @@ export class TerminalSessionManager extends EventEmitter {
     if (!managed.pty || managed.processState !== 'running') {
       return { accepted: false, reason: 'pty-exited' };
     }
-    const text = Buffer.from(base64Data, 'base64').toString('utf8');
-    managed.activity.noteInput(text);
+    const bytes = Buffer.from(base64Data, 'base64');
+    managed.activity.noteInput(bytes.toString('utf8'));
     try {
-      managed.pty.write(text);
+      managed.pty.write(bytes);
     } catch (err) {
       // ConPTY half-closed race: surface instead of silently failing keys.
       logger.warn('session', `pty.write failed sid=${sessionId}`, err);

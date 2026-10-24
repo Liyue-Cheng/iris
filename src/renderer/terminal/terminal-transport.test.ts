@@ -1,10 +1,41 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EVENTS, CHANNELS } from '@shared/protocol';
-import { IrisAgentTerminalTransport } from './terminal-transport';
+import { ElectronTerminalTransport, IrisAgentTerminalTransport } from './terminal-transport';
+import { sendSessionInput } from '@renderer/lib/session-io';
+
+vi.mock('@renderer/lib/session-io', () => ({ sendSessionInput: vi.fn(async () => true), sendSessionResize: vi.fn() }));
 
 describe('IrisAgentTerminalTransport', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it('preserves legacy mouse bytes and UTF-8 keyboard text in project-terminal IPC', async () => {
+    vi.stubGlobal('window', { api: { windowsBuild: 26100 } });
+    const scope = { root: 'C:/project', generation: 4 };
+    const transport = new ElectronTerminalTransport('terminal-1', scope);
+    const mouse = '\x1b[M \xc8\xff';
+    await transport.sendInput(mouse, 'binary');
+    await transport.sendInput('中文\r');
+    expect(sendSessionInput).toHaveBeenNthCalledWith(1, 'terminal-1', scope, Buffer.from(mouse, 'latin1').toString('base64'));
+    expect(sendSessionInput).toHaveBeenNthCalledWith(2, 'terminal-1', scope, Buffer.from('中文\r', 'utf8').toString('base64'));
+  });
+
+  it('marks Agent mouse input as binary without changing ordinary text input', async () => {
+    const invoke = vi.fn(async () => undefined);
+    vi.stubGlobal('window', { api: { windowsBuild: 26100, invoke } });
+    const scope = { root: 'C:/project', generation: 4 };
+    const transport = new IrisAgentTerminalTransport('agent-1', 'terminal-1', scope);
+    const mouse = '\x1b[M \xc8\xff';
+    await transport.sendInput(mouse, 'binary');
+    await transport.sendInput('中文\r');
+    expect(invoke).toHaveBeenNthCalledWith(1, CHANNELS.IRIS_AGENT_TERMINAL_INPUT, {
+      sessionId: 'agent-1', terminalId: 'terminal-1', expectedScope: scope, data: mouse, encoding: 'binary',
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, CHANNELS.IRIS_AGENT_TERMINAL_INPUT, {
+      sessionId: 'agent-1', terminalId: 'terminal-1', expectedScope: scope, data: '中文\r',
+    });
   });
 
   it('maps Agent cursor output and replay onto the shared terminal protocol', async () => {

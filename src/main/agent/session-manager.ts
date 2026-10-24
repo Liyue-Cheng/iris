@@ -1299,7 +1299,7 @@ export class IrisAgentSessionManager extends EventEmitter {
     scope: ProjectScope,
     sessionId: string,
     terminalId: string,
-    data: string,
+    data: string | Buffer,
   ): Promise<void> {
     const session = await this.requireSession(scope, sessionId);
     if (!terminalActivity(session, terminalId)) throw new Error('Iris Agent terminal was not found.');

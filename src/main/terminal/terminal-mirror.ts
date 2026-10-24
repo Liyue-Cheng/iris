@@ -84,10 +84,18 @@ export class TerminalMirror {
       this.terminal as unknown as {
         _core?: {
           coreService?: { isCursorHidden?: boolean };
+          mouseStateService?: { activeEncoding: string };
           buffer?: { scrollTop?: number; scrollBottom?: number };
         };
       }
     )._core;
+    // SerializeAddon restores mouse tracking, but omits its wire encoding.
+    // Replace any stale encoding in an existing view as well as restoring a
+    // fresh one; otherwise SGR reports fall back to the binary mouse channel.
+    ansi += '\x1b[?1006l\x1b[?1016l';
+    const mouseEncoding = core?.mouseStateService?.activeEncoding;
+    if (mouseEncoding === 'SGR') ansi += '\x1b[?1006h';
+    else if (mouseEncoding === 'SGR_PIXELS') ansi += '\x1b[?1016h';
     if (core?.coreService?.isCursorHidden) ansi += '\x1b[?25l';
     const top = core?.buffer?.scrollTop;
     const bottom = core?.buffer?.scrollBottom;

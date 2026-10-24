@@ -139,6 +139,7 @@ export const CHANNELS = {
    * resizes are continuous interaction inside one session, not discrete
    * world-changing verbs; routing every keypress through the pipeline would
    * only add latency and log noise. Documented CQRS deviation.
+   * `data` is base64 of raw input bytes, including non-UTF-8 mouse reports.
    */
   SESSION_INPUT: 'session:input',
   SESSION_RESIZE: 'session:resize',
@@ -181,6 +182,7 @@ export const CHANNELS = {
   IRIS_AGENT_TERMINAL_ATTACH: 'iris-agent:terminal-attach',
   IRIS_AGENT_TERMINAL_DETACH: 'iris-agent:terminal-detach',
   IRIS_AGENT_TERMINAL_ACK: 'iris-agent:terminal-ack',
+  /** `data` is text by default; `encoding: 'binary'` carries xterm byte-string input. */
   IRIS_AGENT_TERMINAL_INPUT: 'iris-agent:terminal-input',
   IRIS_AGENT_TERMINAL_RESIZE: 'iris-agent:terminal-resize',
   IRIS_AGENT_SUPERVISION_CONTINUE: 'iris-agent:supervision-continue',

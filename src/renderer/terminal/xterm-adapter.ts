@@ -24,7 +24,7 @@ const SYNCHRONIZED_REPLAY_BEGIN = [
   '\x1b[?45l',
   '\x1b[?1004l',
   '\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l',
-  '\x1b[?1005l\x1b[?1006l\x1b[?1015l',
+  '\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l',
   '\x1b[?7h\x1b[?25h',
   '\x1b[r\x1b[0m\x1b(B',
   '\x1b[2J\x1b[3J\x1b[H',
@@ -105,6 +105,18 @@ export class BrowserXtermAdapter {
 
   beginSynchronizedReplay(): void {
     this.terminal.write(SYNCHRONIZED_REPLAY_BEGIN);
+  }
+
+  /** xterm sends legacy mouse reports through onBinary, not onData. */
+  onInput(listener: (data: string, encoding: 'utf8' | 'binary') => void): { dispose(): void } {
+    const text = this.terminal.onData((data) => listener(data, 'utf8'));
+    const binary = this.terminal.onBinary((data) => listener(data, 'binary'));
+    return {
+      dispose: () => {
+        text.dispose();
+        binary.dispose();
+      },
+    };
   }
 
   endSynchronizedReplay(callback?: () => void): void {

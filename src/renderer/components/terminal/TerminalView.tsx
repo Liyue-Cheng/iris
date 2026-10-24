@@ -544,7 +544,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       }
     });
 
-    const dataDisposable = term.onData((data) => {
+    const dataDisposable = xtermAdapter.onInput((data, encoding) => {
       viewport.flushBeforeInput();
       if (
         runtime.state.phase === 'history-frozen' &&
@@ -555,7 +555,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
         term.scrollToBottom();
         void replayController.resumeFromHistory().catch(() => undefined);
       }
-      void transport.sendInput(data).catch(() => undefined);
+      void transport.sendInput(data, encoding).catch(() => undefined);
     });
     const scrollDisposable = term.onScroll(() => {
       if (term.buffer.active.type !== 'normal') return;

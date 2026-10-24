@@ -200,7 +200,7 @@ export class AgentCommandPty {
     if (this.settled) this.mirror.dispose();
   }
 
-  write(data: string): void {
+  write(data: string | Buffer): void {
     if (!this.settled) this.pty.write(data);
   }
 

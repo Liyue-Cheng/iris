@@ -113,6 +113,29 @@ async function spawnEnvFor(
   return capturedEnv;
 }
 
+describe('session input bytes', () => {
+  it('writes high-bit legacy mouse coordinates and UTF-8 text to the PTY unchanged', async () => {
+    const pty = fakePty();
+    const manager = new TerminalSessionManager(fakeSettingsManager(), {
+      spawnFn: () => pty, processTreeKillFn: null, ptyExitWaitMs: 0,
+    });
+    try {
+      const session = manager.createSession({
+        docPath: null, agentId: 'shell', projectRoot: process.cwd(),
+        projectGeneration: 1, cols: 220, rows: 40,
+      });
+      const mouse = Buffer.from([0x1b, 0x5b, 0x4d, 0x20, 0xc8, 0xff]);
+      const text = Buffer.from('中文\r', 'utf8');
+      expect(manager.sendInput(session.id, mouse.toString('base64'))).toEqual({ accepted: true });
+      expect(manager.sendInput(session.id, text.toString('base64'))).toEqual({ accepted: true });
+      expect(pty.write).toHaveBeenNthCalledWith(1, mouse);
+      expect(pty.write).toHaveBeenNthCalledWith(2, text);
+    } finally {
+      await manager.shutdown();
+    }
+  });
+});
+
 describe('session context environment', () => {
   it('runs an arbitrary custom launcher command without an injection mode', async () => {
     let capturedArgs: string[] = [];

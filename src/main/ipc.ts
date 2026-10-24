@@ -1470,11 +1470,14 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     CHANNELS.IRIS_AGENT_TERMINAL_INPUT,
     (
       event,
-      payload: { sessionId: string; terminalId: string; data: string } & ProjectScopedPayload,
+      payload: { sessionId: string; terminalId: string; data: string; encoding?: 'binary' } & ProjectScopedPayload,
     ): Promise<void> => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_TERMINAL_INPUT);
-      return ctx.agentSessionManager.writeTerminal(scope, payload.sessionId, payload.terminalId, payload.data);
+      return ctx.agentSessionManager.writeTerminal(
+        scope, payload.sessionId, payload.terminalId,
+        payload.encoding === 'binary' ? Buffer.from(payload.data, 'latin1') : payload.data,
+      );
     },
   );
 

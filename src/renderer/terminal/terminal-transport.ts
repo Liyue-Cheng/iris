@@ -18,7 +18,7 @@ export interface TerminalTransport {
   detach(): Promise<void>;
   acknowledge(seq: number): Promise<void>;
   requestReplay(cols: number, rows: number): Promise<SessionReplaySnapshot>;
-  sendInput(text: string): Promise<void>;
+  sendInput(text: string, encoding?: 'utf8' | 'binary'): Promise<void>;
   resize(cols: number, rows: number): Promise<void>;
   dispose(): void;
   readDocument(path: string): Promise<DocContent>;
@@ -81,8 +81,8 @@ export class ElectronTerminalTransport implements TerminalTransport {
     });
   }
 
-  async sendInput(text: string): Promise<void> {
-    await sendSessionInput(this.sessionId, this.scope, textToBase64(text));
+  async sendInput(text: string, encoding: 'utf8' | 'binary' = 'utf8'): Promise<void> {
+    await sendSessionInput(this.sessionId, this.scope, encoding === 'binary' ? btoa(text) : textToBase64(text));
   }
 
   async resize(cols: number, rows: number): Promise<void> {
@@ -163,9 +163,10 @@ export class IrisAgentTerminalTransport implements TerminalTransport {
     return { data: replay.data, lastSeq: replay.seq, cols, rows };
   }
 
-  sendInput(data: string): Promise<void> {
+  sendInput(data: string, encoding: 'utf8' | 'binary' = 'utf8'): Promise<void> {
     return window.api.invoke(CHANNELS.IRIS_AGENT_TERMINAL_INPUT, {
       sessionId: this.sessionId, terminalId: this.terminalId, data, expectedScope: this.scope,
+      ...(encoding === 'binary' ? { encoding } : {}),
     });
   }
 

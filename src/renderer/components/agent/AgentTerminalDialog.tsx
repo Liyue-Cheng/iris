@@ -121,9 +121,9 @@ function AgentTerminalPane({
     });
     viewport.observe(host);
     const unsubscribe = transport.onOutput((payload) => replayController.onOutput(payload));
-    const dataDisposable = term.onData((data) => {
+    const dataDisposable = adapter.onInput((data, encoding) => {
       viewport.flushBeforeInput();
-      void transport.sendInput(data).catch(() => undefined);
+      void transport.sendInput(data, encoding).catch(() => undefined);
     });
     const resizeDisposable = term.onResize(({ cols, rows }) => {
       if (cols < 20 || rows < 5) return;
