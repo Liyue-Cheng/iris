@@ -56,9 +56,10 @@ import { looksLikeShellStartupGarbage, sanitizeTerminalTitle } from './terminal/
 import { TerminalOutputPump } from './terminal/output-pump';
 import { TerminalMirror } from './terminal/terminal-mirror';
 import { TerminalProtocol } from './terminal/terminal-protocol';
+import { terminalShellKindFromExecutable } from '@shared/terminal/shell-quoting';
 import { TerminalFlowController } from './terminal/flow-controller';
 import { TerminalFlightRecorder } from './terminal/flight-recorder';
-import { terminalBaseColors } from '@shared/terminal/terminal-colors';
+import { terminalProtocolColors } from '@shared/terminal/terminal-palette';
 import { reduceTerminalProcess } from '@shared/terminal/process-reducer';
 import { ReplayCoordinator } from './terminal/replay-coordinator';
 import type { SessionRecord } from './terminal/session-record';
@@ -125,6 +126,7 @@ export class TerminalSessionError extends Error {
       | 'AgentNotFound'
       | 'CwdNotAccessible'
       | 'PtySpawnFailed'
+      | 'ManagerClosing'
       | 'NoShellAvailable',
     message: string,
     public readonly details?: Record<string, unknown>,
@@ -167,6 +169,7 @@ export class TerminalSessionManager extends EventEmitter {
   private readonly platform: PlatformServices;
   private readonly ptyExitWaitMs: number;
   private shutdownPromise: Promise<void> | null = null;
+  private shuttingDown = false;
 
   constructor(
     private readonly settingsManager: SettingsManager,
@@ -223,6 +226,9 @@ export class TerminalSessionManager extends EventEmitter {
   }
 
   private createConfiguredSession(input: CreateSessionInput, agent: AgentConfig): TerminalSessionInfo {
+    if (this.shuttingDown) {
+      throw new TerminalSessionError('ManagerClosing', 'Terminal manager is shutting down.');
+    }
     const dims = validateDimensions(input.cols, input.rows);
     const cwd = input.projectRoot;
     try {
@@ -293,6 +299,7 @@ export class TerminalSessionManager extends EventEmitter {
       agentId: agent.id,
       displayName: agent.label,
       terminalTitle: null,
+      shellKind: terminalShellKindFromExecutable(host.executable),
       projectRoot: cwd,
       projectGeneration: input.projectGeneration,
       cols: dims.cols,
@@ -364,9 +371,6 @@ export class TerminalSessionManager extends EventEmitter {
         ...flowLimits,
         setBlocked: (blocked) => flow.setBlocked('mirror', blocked),
       }),
-      protocol: new TerminalProtocol(() =>
-        terminalBaseColors(this.settingsManager.get().appearance.theme),
-      ),
       flow,
       outputAttachmentId: null,
       recorder,
@@ -376,6 +380,23 @@ export class TerminalSessionManager extends EventEmitter {
     this.sessions.set(sessionId, managed);
 
     managed.disposables.push(
+      new TerminalProtocol(
+        managed.mirror,
+        () => terminalProtocolColors(this.settingsManager.get().appearance?.theme),
+        (reply) => {
+          if (managed.processState !== 'running' || !managed.pty) return;
+          try {
+            managed.pty.write(reply);
+            managed.recorder.record('protocol-reply', { count: 1 });
+          } catch (error) {
+            logger.warn('session', `terminal protocol reply failed sid=${sessionId}`, error);
+          }
+        },
+        (listener) => {
+          this.settingsManager.on?.('settingsChanged', listener);
+          return { dispose: () => { this.settingsManager.off?.('settingsChanged', listener); } };
+        },
+      ),
       pty.onData((data) => this.handlePtyData(managed, data)),
       pty.onExit(({ exitCode, signal }) => this.handlePtyExit(managed, exitCode, signal)),
       // Live terminal title (OSC 0/2): the headless mirror parses every byte,
@@ -514,6 +535,7 @@ export class TerminalSessionManager extends EventEmitter {
   }
 
   shutdown(): Promise<void> {
+    this.shuttingDown = true;
     if (this.shutdownPromise) return this.shutdownPromise;
     this.shutdownPromise = Promise.all(
       [...this.sessions.values()].map((managed) => this.destroySession(managed, 'app-quit')),
@@ -704,21 +726,17 @@ export class TerminalSessionManager extends EventEmitter {
     }
 
     managed.output.flush();
-    // Freeze the replay boundary before inserting the parser fence. Any PTY
-    // bytes that arrive after this point are written behind the fence, so the
-    // snapshot below cannot contain them even if their IPC batch is emitted
-    // while we are waiting for the fence/serialize work.
+    // Serialize inside the parser callback, before later writes are parsed.
+    // The sequence and parser tail describe this exact checkpoint.
     const replayLastSeq = managed.output.replayBoundarySeq;
-    await mirror.fence(REPLAY_FENCE_CAP_MS, () => {
-      logger.warn('session', `replay fence capped sid=${sessionId} (callback dropped?)`);
-    });
-
-    const ansi = mirror.serialize(SCROLLBACK_LINES);
-    const data = Buffer.from(ansi, 'utf8').toString('base64');
+    const snapshot = await mirror.snapshot(SCROLLBACK_LINES, REPLAY_FENCE_CAP_MS);
+    const data = Buffer.from(snapshot.data, 'utf8').toString('base64');
 
     return {
       data,
       lastSeq: replayLastSeq,
+      parserTail: snapshot.parserTail,
+      continuationState: snapshot.continuationState,
       cols: dims.cols,
       rows: dims.rows,
     };
@@ -819,18 +837,7 @@ export class TerminalSessionManager extends EventEmitter {
     ) {
       return;
     }
-    const protocol = managed.protocol.consume(data);
-    if (protocol.replies.length > 0) {
-      managed.recorder.record('protocol-reply', { count: protocol.replies.length });
-    }
-    for (const reply of protocol.replies) {
-      try {
-        managed.pty.write(reply);
-      } catch (err) {
-        logger.warn('session', `terminal protocol reply failed sid=${managed.info.id}`, err);
-      }
-    }
-    const bytes = Buffer.from(protocol.display, 'utf8');
+    const bytes = Buffer.from(data, 'utf8');
     if (bytes.length === 0) {
       managed.activity.noteOutput();
       return;
@@ -839,7 +846,7 @@ export class TerminalSessionManager extends EventEmitter {
     managed.output.enqueue(bytes);
 
     // Feed the headless mirror (async parse; replay paths drain first).
-    managed.mirror.write(protocol.display);
+    managed.mirror.write(data);
 
     // State machine: bytes mean active — unless a quiet window says these
     // bytes are echo/banner/reflow, in which case the state stays put
@@ -856,7 +863,6 @@ export class TerminalSessionManager extends EventEmitter {
     if (managed.processState === 'exited' || managed.processState === 'disposed') return;
 
     // Causal order for the renderer: last output → exited, never reversed.
-    this.flushProtocolPending(managed);
     this.flushPendingEmitBeforeLifecycleChange(managed);
 
     const payload: SessionExitedPayload = {
@@ -921,6 +927,15 @@ export class TerminalSessionManager extends EventEmitter {
     }
   }
 
+  /** Retire a renderer document without discarding the sessions or mirrors. */
+  detachAllOutputs(): void {
+    for (const record of this.sessions.values()) {
+      record.outputAttachmentId = null;
+      record.output.setDeliveryEnabled(false);
+      record.recorder.record('renderer-detached');
+    }
+  }
+
   acknowledgeOutput(sessionId: string, attachmentId: string, seq: number): void {
     const record = this.sessions.get(sessionId);
     if (!record || record.outputAttachmentId !== attachmentId) return;
@@ -953,7 +968,6 @@ export class TerminalSessionManager extends EventEmitter {
   ): Promise<void> {
     const sid = managed.info.id;
 
-    this.flushProtocolPending(managed);
     this.flushPendingEmitBeforeLifecycleChange(managed);
     managed.activity.dispose();
 
@@ -1030,13 +1044,6 @@ export class TerminalSessionManager extends EventEmitter {
         disposable = null;
       },
     };
-  }
-
-  private flushProtocolPending(managed: SessionRecord): void {
-    const trailing = managed.protocol.reset();
-    if (!trailing) return;
-    managed.output.enqueue(Buffer.from(trailing, 'utf8'));
-    managed.mirror.write(trailing);
   }
 
   /**

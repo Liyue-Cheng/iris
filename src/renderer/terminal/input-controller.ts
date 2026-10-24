@@ -1,4 +1,5 @@
 import { droppedPathPlan, pasteConfirmationPlan, type PasteConfirmation } from '@shared/terminal/input-policy';
+import { ShellPathQuotingError, type ShellPathRejection, type TerminalShellKind } from '@shared/terminal/shell-quoting';
 import { TerminalSessionRuntime } from './terminal-runtime';
 
 export interface TerminalInputPort {
@@ -8,8 +9,10 @@ export interface TerminalInputPort {
   sendInput(text: string): Promise<void>;
   readClipboard(): Promise<string | null>;
   readDocument(docPath: string): Promise<string>;
-  confirm(request: PasteConfirmation | { kind: 'shell-meta'; paths: string[] }): Promise<boolean>;
+  confirm(request: PasteConfirmation): Promise<boolean>;
   docDropMode(): 'path' | 'content';
+  shellKind(): TerminalShellKind;
+  rejectPath(reason: ShellPathRejection): void;
 }
 
 export class TerminalInputController {
@@ -44,12 +47,15 @@ export class TerminalInputController {
   async dropPaths(paths: readonly string[]): Promise<void> {
     const epoch = this.runtime.capture();
     if (paths.length === 0 || !this.runtime.isCurrent(epoch)) return;
-    const plan = droppedPathPlan(paths);
-    if (plan.dangerousPaths.length > 0) {
-      const accepted = await this.port.confirm({ kind: 'shell-meta', paths: plan.dangerousPaths });
-      if (!accepted || !this.runtime.isCurrent(epoch)) return;
+    let text: string;
+    try {
+      text = droppedPathPlan(paths, this.port.shellKind()).text;
+    } catch (error) {
+      if (!(error instanceof ShellPathQuotingError)) throw error;
+      this.port.rejectPath(error.reason);
+      return;
     }
-    await this.port.sendInput(plan.text);
+    await this.port.sendInput(text);
     if (this.runtime.isCurrent(epoch)) this.port.focus();
   }
 

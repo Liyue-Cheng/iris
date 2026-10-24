@@ -8,20 +8,23 @@ import { base64ToBytes } from './terminal-codec';
 import { TerminalSessionRuntime } from './terminal-runtime';
 import type { TerminalTransport } from './terminal-transport';
 import type { TerminalViewportController } from './viewport-controller';
+import type { XtermSnapshotState } from '@shared/terminal/xterm-snapshot-state';
 
 export interface ReplayTerminalPort {
   readonly cols: number;
   readonly rows: number;
-  write(data: Uint8Array, callback?: () => void): void;
+  write(data: Uint8Array | string, callback?: () => void): void;
   scrollToBottom(): void;
   beginSynchronizedReplay(): void;
   endSynchronizedReplay(callback?: () => void): void;
+  restoreState?(state: XtermSnapshotState): void;
 }
 
 export class TerminalReplayController {
   private readonly ordering = createReplayOrdering<SessionOutputPayload>();
   private resyncPromise: Promise<void> | null = null;
   private synchronizedReplay = false;
+  private needsSnapshot = false;
 
   constructor(
     private readonly runtime: TerminalSessionRuntime,
@@ -38,7 +41,10 @@ export class TerminalReplayController {
 
   onOutput(payload: SessionOutputPayload): void {
     if (!this.runtime.isCurrent(this.runtime.epoch)) return;
-    if (this.runtime.state.phase === 'history-frozen') {
+    if (
+      this.runtime.state.phase === 'history-frozen' ||
+      (this.needsSnapshot && this.runtime.state.phase === 'degraded')
+    ) {
       void this.transport.acknowledge(payload.seq).catch(() => undefined);
       return;
     }
@@ -89,7 +95,9 @@ export class TerminalReplayController {
       }
       this.assertDimensions(replay);
       await this.writeSnapshot(replay, epoch);
+      await this.restoreContinuation(replay, epoch);
       if (!this.runtime.isCurrent(epoch)) return;
+      this.needsSnapshot = false;
       for (const payload of releaseReplayQueue(this.ordering, replay.lastSeq)) {
         this.terminal.write(base64ToBytes(payload.data), () => {
           void this.transport.acknowledge(payload.seq).catch(() => undefined);
@@ -98,39 +106,37 @@ export class TerminalReplayController {
       this.runtime.transition({ type: 'REPLAY_DRAINED' });
       this.finish(epoch, replay.lastSeq);
     } catch (error) {
-      this.options.warn('[terminal] scrollback replay failed, going live', error);
+      this.options.warn('[terminal] scrollback replay failed; waiting for a fresh snapshot', error);
       if (!this.runtime.isCurrent(epoch)) return;
-      this.runtime.transition({ type: 'DEGRADE' });
-      for (const payload of releaseReplayQueue(this.ordering, this.ordering.lastSeq)) {
-        this.terminal.write(base64ToBytes(payload.data), () => {
-          void this.transport.acknowledge(payload.seq).catch(() => undefined);
-        });
-      }
-      this.finish(epoch, this.ordering.lastSeq);
+      this.holdForFreshSnapshot(epoch);
     }
   }
 
   private async requestReplay(epoch: number): Promise<SessionReplaySnapshot> {
     const request = this.transport.requestReplay(this.terminal.cols, this.terminal.rows);
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const removeOwner = this.runtime.own(() => {
-      if (timer !== null) clearTimeout(timer);
+    return new Promise((resolve, reject) => {
+      let done = false;
+      let release = (): void => undefined;
+      const finish = (error: unknown, snapshot?: SessionReplaySnapshot): void => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        release();
+        if (snapshot === undefined) reject(error);
+        else resolve(snapshot);
+      };
+      const timer = setTimeout(
+        () => finish(new Error(`terminal replay timed out after ${this.options.timeoutMs}ms`)),
+        this.options.timeoutMs,
+      );
+      release = this.runtime.own(() => finish(new Error('terminal view disposed during replay')));
+      // Observe both outcomes even if disposal or timeout has already won.
+      // async-boundary: handled - both outcomes settle the owned outer promise.
+      void request.then((snapshot) => {
+        if (!this.runtime.isCurrent(epoch)) finish(new Error('terminal view disposed during replay'));
+        else finish(undefined, snapshot);
+      }, (error: unknown) => finish(error));
     });
-    try {
-      return await Promise.race([
-        request,
-        new Promise<SessionReplaySnapshot>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error(`terminal replay timed out after ${this.options.timeoutMs}ms`)),
-            this.options.timeoutMs,
-          );
-        }),
-      ]);
-    } finally {
-      if (timer !== null) clearTimeout(timer);
-      removeOwner();
-      if (!this.runtime.isCurrent(epoch)) void request.catch(() => undefined);
-    }
   }
 
   private async resync(): Promise<void> {
@@ -140,13 +146,20 @@ export class TerminalReplayController {
     this.ordering.holding = true;
     this.ordering.queue.length = 0;
     try {
+      await this.transport.attach();
+      if (!this.runtime.isCurrent(epoch)) {
+        await this.transport.detach();
+        return;
+      }
       const replay = await this.requestReplay(epoch);
       if (!this.runtime.isCurrent(epoch)) return;
       this.assertDimensions(replay);
       this.synchronizedReplay = true;
       this.terminal.beginSynchronizedReplay();
       await this.writeSnapshot(replay, epoch);
+      await this.restoreContinuation(replay, epoch);
       if (!this.runtime.isCurrent(epoch)) return;
+      this.needsSnapshot = false;
       for (const payload of releaseReplayQueue(this.ordering, replay.lastSeq)) {
         this.terminal.write(base64ToBytes(payload.data), () => {
           void this.transport.acknowledge(payload.seq).catch(() => undefined);
@@ -155,20 +168,33 @@ export class TerminalReplayController {
       this.runtime.transition({ type: 'RESYNC_DONE' });
       this.finish(epoch, replay.lastSeq);
     } catch (error) {
-      this.options.warn('[terminal] history resync failed, returning to degraded live mode', error);
+      this.options.warn('[terminal] history resync failed; waiting for a fresh snapshot', error);
       if (!this.runtime.isCurrent(epoch)) return;
-      this.runtime.transition({ type: 'DEGRADE' });
-      for (const payload of releaseReplayQueue(this.ordering, this.ordering.lastSeq)) {
-        this.terminal.write(base64ToBytes(payload.data), () => {
-          void this.transport.acknowledge(payload.seq).catch(() => undefined);
-        });
-      }
-      this.viewport.finishReplay();
-      if (this.synchronizedReplay) {
-        this.synchronizedReplay = false;
-        this.terminal.endSynchronizedReplay();
-      }
+      this.holdForFreshSnapshot(epoch);
     }
+  }
+
+  /** A partially restored screen is never a valid baseline for live bytes. */
+  private holdForFreshSnapshot(epoch: number): void {
+    this.runtime.transition({ type: 'DEGRADE' });
+    this.needsSnapshot = true;
+    let discardedSeq = this.ordering.lastSeq;
+    for (const payload of this.ordering.queue) discardedSeq = Math.max(discardedSeq, payload.seq);
+    this.ordering.queue.length = 0;
+    this.ordering.holding = true;
+    if (discardedSeq >= 0) {
+      // The authoritative mirror retains these bytes; free the abandoned
+      // renderer backlog while waiting for a complete replacement snapshot.
+      void this.transport.acknowledge(discardedSeq).catch(() => undefined);
+    }
+    this.viewport.finishReplay();
+    if (this.synchronizedReplay) {
+      this.synchronizedReplay = false;
+      this.terminal.endSynchronizedReplay();
+    }
+    requestAnimationFrame(() => {
+      if (this.runtime.isCurrent(epoch) && this.runtime.state.phase === 'degraded') this.options.reveal();
+    });
   }
 
   private assertDimensions(replay: SessionReplaySnapshot): void {
@@ -190,6 +216,42 @@ export class TerminalReplayController {
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
     }
+  }
+
+  /** Host replay controls must finish before restoring parser continuation. */
+  private async restoreContinuation(replay: SessionReplaySnapshot, epoch: number): Promise<void> {
+    if (!this.runtime.isCurrent(epoch)) return;
+    await new Promise<void>((resolve, reject) => {
+      let done = false;
+      const finish = (error?: Error): void => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        release();
+        if (error) reject(error);
+        else resolve();
+      };
+      const timer = setTimeout(() => finish(new Error('terminal snapshot parse timed out')), this.options.timeoutMs);
+      const release = this.runtime.own(() => finish(new Error('terminal view disposed during replay')));
+      const restored = (): void => {
+        if (done) return;
+        if (!this.runtime.isCurrent(epoch)) { finish(); return; }
+        try {
+          if (replay.continuationState) {
+            if (!this.terminal.restoreState) throw new Error('Terminal cannot restore snapshot continuation state');
+            this.terminal.restoreState(replay.continuationState);
+          }
+          if (replay.parserTail) this.terminal.write(replay.parserTail);
+          finish();
+        } catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
+      };
+      if (this.synchronizedReplay) {
+        this.synchronizedReplay = false;
+        this.terminal.endSynchronizedReplay(restored);
+      } else {
+        this.terminal.write(new Uint8Array(0), restored);
+      }
+    });
   }
 
   private finish(epoch: number, acknowledgedSeq: number): void {

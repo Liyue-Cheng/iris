@@ -24,6 +24,9 @@ import {
   type IrisAgentSessionManagerOptions,
 } from './session-manager';
 import { IrisAgentSessionStore, agentSessionStorePath } from './session-store';
+import { TerminalMirror } from '../terminal/terminal-mirror';
+import { TerminalOutputBatcher } from '../terminal/output-pump';
+import type { AgentSessionAggregate } from './session-model';
 const catalog: IrisAgentModelCatalog = {
   models: [{
     provider: 'openai', modelId: 'gpt-test', name: 'GPT Test',
@@ -126,14 +129,12 @@ class FakeInteractiveTerminal {
     return { cursor: this.cursor, text: this.text, running: this.running };
   }
 
-  private emitOutput(value: string): void {
-    const cursor = this.cursor;
+  emitOutput(value: string): void {
     this.cursor += Buffer.byteLength(value);
     this.text += value;
     this.options.onEvent?.({
       type: 'output',
       terminalId: this.options.terminalId,
-      cursor,
       bytes: Buffer.from(value),
     });
   }
@@ -2257,6 +2258,28 @@ describe('IrisAgentSessionManager v2 timeline', () => {
         expect(Buffer.from(replay.data, 'base64').toString('utf8').match(/second:one/gu))
           .toHaveLength(3);
 
+        // A reload has no dialog cleanup. Retire every old attachment in main,
+        // release the abandoned backlog, and preserve output for a new dialog.
+        manager.attachTerminalOutput(scope, created.id, terminal.id, 'before-reload');
+        terminals[0]!.emitOutput('x'.repeat(400 * 1024));
+        await vi.waitFor(() => expect(terminals[0]!.flowBlocked.at(-1)).toBe(true));
+        manager.detachAllTerminalOutputs();
+        expect(terminals[0]!.flowBlocked.at(-1)).toBe(false);
+        const beforeReloadOutput = payloads.length;
+        terminals[0]!.emitOutput('after-reload');
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        expect(payloads).toHaveLength(beforeReloadOutput);
+        expect(manager.attachTerminalOutput(scope, created.id, terminal.id, 'after-reload')).toBe(true);
+        const afterReload = await manager.replayTerminal(scope, created.id, terminal.id, 80, 24);
+        expect(Buffer.from(afterReload.data, 'base64').toString('utf8')).toContain('after-reload');
+        terminals[0]!.emitOutput('y'.repeat(400 * 1024));
+        await vi.waitFor(() => expect(terminals[0]!.flowBlocked.at(-1)).toBe(true));
+        const lastSeq = payloads.at(-1)!.seq;
+        manager.acknowledgeTerminalOutput(scope, created.id, terminal.id, 'before-reload', lastSeq);
+        expect(terminals[0]!.flowBlocked.at(-1)).toBe(true);
+        manager.acknowledgeTerminalOutput(scope, created.id, terminal.id, 'after-reload', lastSeq);
+        expect(terminals[0]!.flowBlocked.at(-1)).toBe(false);
+
         await manager.writeTerminal(scope, created.id, terminal.id, 'two\r');
         await vi.waitFor(async () => {
           expect((await manager.list(scope)).sessions[0]?.terminals[0]?.state).toBe('exited');
@@ -2269,6 +2292,101 @@ describe('IrisAgentSessionManager v2 timeline', () => {
     15_000,
   );
 });
+describe('Iris Agent terminal replay boundaries', () => {
+  function fixture() {
+    const scope: ProjectScope = { root: process.cwd(), generation: 1 };
+    const manager = new IrisAgentSessionManager(process.cwd(), projectManager());
+    const mirror = new TerminalMirror(80, 24, 100);
+    const output = new TerminalOutputBatcher((seq, data) => ({ seq, data }), () => undefined, 8, undefined, false);
+    const owner = manager as unknown as {
+      requireSession(scope: ProjectScope, sessionId: string): Promise<AgentSessionAggregate>;
+      terminals: Map<string, unknown>;
+    };
+    vi.spyOn(owner, 'requireSession').mockResolvedValue({
+      timeline: [{ kind: 'tool', tool: 'terminal', terminalId: 'terminal-replay' }],
+    } as AgentSessionAggregate);
+    const snapshot = async () => {
+      const captured = await mirror.snapshot(100, 1000);
+      return { ...captured, data: Buffer.from(captured.data, 'utf8').toString('base64') };
+    };
+    const terminal = {
+      resize: vi.fn((cols: number, rows: number) => mirror.resize(cols, rows)),
+      replay: vi.fn(snapshot),
+    };
+    owner.terminals.set('terminal-replay', { sessionId: 'session-replay', terminal, output });
+    return {
+      scope, manager, mirror, output, terminal, owner, snapshot,
+      emit(text: string) { mirror.write(text); output.enqueue(Buffer.from(text)); },
+      async dispose() {
+        owner.terminals.clear();
+        output.dispose({ flush: false });
+        mirror.dispose();
+        await manager.shutdown();
+      },
+    };
+  }
+
+  it('serializes concurrent Agent replays and live resize requests for one terminal', async () => {
+    const test = fixture();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    test.terminal.replay.mockImplementationOnce(async () => { await gate; return test.snapshot(); });
+    try {
+      const first = test.manager.replayTerminal(test.scope, 'session-replay', 'terminal-replay', 80, 24);
+      await vi.waitFor(() => expect(test.terminal.replay).toHaveBeenCalledOnce());
+      const second = test.manager.replayTerminal(test.scope, 'session-replay', 'terminal-replay', 120, 30);
+      const resized = test.manager.resizeTerminal(test.scope, 'session-replay', 'terminal-replay', 90, 28);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(test.terminal.resize.mock.calls).toEqual([[80, 24]]);
+      release();
+      const [firstSnapshot, secondSnapshot] = await Promise.all([first, second, resized]);
+      expect(firstSnapshot.continuationState).toMatchObject({ cols: 80, rows: 24 });
+      expect(secondSnapshot.continuationState).toMatchObject({ cols: 120, rows: 30 });
+      expect(test.terminal.resize.mock.calls).toEqual([[80, 24], [120, 30], [90, 28]]);
+    } finally { release(); await test.dispose(); }
+  });
+
+  it('rechecks the terminal owner after a queued replay waits for a failed predecessor', async () => {
+    const test = fixture();
+    let reject!: (error: Error) => void;
+    const gate = new Promise<never>((_resolve, fail) => { reject = fail; });
+    test.terminal.replay.mockImplementationOnce(() => gate);
+    try {
+      const first = test.manager.replayTerminal(test.scope, 'session-replay', 'terminal-replay', 80, 24);
+      const firstFailure = expect(first).rejects.toThrow('stalled');
+      await vi.waitFor(() => expect(test.terminal.replay).toHaveBeenCalledOnce());
+      const second = test.manager.replayTerminal(test.scope, 'session-replay', 'terminal-replay', 120, 30);
+      const secondFailure = expect(second).rejects.toThrow('no longer persisted');
+      test.owner.terminals.clear();
+      reject(new Error('stalled'));
+      await Promise.all([firstFailure, secondFailure]);
+      expect(test.terminal.replay).toHaveBeenCalledOnce();
+      expect(test.terminal.resize.mock.calls).toEqual([[80, 24]]);
+    } finally { reject(new Error('stalled')); await test.dispose(); }
+  });
+
+  it('captures Agent output emitted by resize and excludes chunks arriving after the snapshot boundary', async () => {
+    const test = fixture();
+    try {
+      test.emit('A');
+      test.terminal.resize.mockImplementation((cols, rows) => { test.mirror.resize(cols, rows); test.emit('B'); });
+      test.terminal.replay.mockImplementation(() => {
+        const snapshot = test.snapshot();
+        test.emit('C');
+        return snapshot;
+      });
+      const replay = await test.manager.replayTerminal(test.scope, 'session-replay', 'terminal-replay', 80, 24);
+      expect(replay.seq).toBe(1);
+      expect(Buffer.from(replay.data, 'base64').toString('utf8')).toContain('AB');
+      expect(Buffer.from(replay.data, 'base64').toString('utf8')).not.toContain('ABC');
+      expect(test.output.replayBoundarySeq).toBe(2);
+      await test.mirror.fence(1000, () => { throw new Error('fence timed out'); });
+      expect(test.mirror.plainText(100)).toBe('ABC');
+    } finally { await test.dispose(); }
+  });
+});
+
 describe('Iris Agent model catalog startup', () => {
   it('creates a session without starting model discovery', async () => {
     const userData = await createTempDataDir('iris-agent-manager-open-fast-');

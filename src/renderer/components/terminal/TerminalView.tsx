@@ -170,8 +170,8 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
    * paths to the PTY, space-separated — Windows Terminal behavior. Goes
    * straight to SESSION_INPUT, not through term.paste: a dropped path is a
    * command argument the user is composing, not clipboard content. NTFS
-   * allows shell metacharacters in filenames (`foo;rm -rf x`), so a path
-   * with any is confirmed first (Marina SEC-5).
+   * allows shell metacharacters in filenames, so every path is quoted for
+   * the launch shell; unsupported arguments are rejected before sending.
    */
   const handleFileDrop = useCallback(
     async (paths: string[]) => {
@@ -338,6 +338,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       transport,
       terminal: term,
       getTranslate: () => tRef.current,
+      getShellKind: () => sessionStore.get().sessions.find((session) => session.id === sessionId)?.shellKind ?? 'unknown',
     });
     inputControllerRef.current = inputController;
 
@@ -498,6 +499,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
         write: (data, callback) => term.write(data, callback),
         scrollToBottom: () => term.scrollToBottom(),
         beginSynchronizedReplay: () => xtermAdapter.beginSynchronizedReplay(),
+        restoreState: (state) => xtermAdapter.restoreState(state),
         endSynchronizedReplay: (callback) => xtermAdapter.endSynchronizedReplay(callback),
       },
       viewport,

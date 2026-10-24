@@ -702,7 +702,7 @@ describe('terminal scrollback compatibility', () => {
     await manager.shutdown();
   });
 
-  it('answers OSC color queries in main and removes them from renderer output', async () => {
+  it('answers OSC color queries in main while keeping queries out of snapshots', async () => {
     const controlled = controllablePty();
     vi.mocked(controlled.pty.kill).mockImplementation(() => controlled.emitExit());
     const manager = new TerminalSessionManager(fakeSettingsManager(), {
@@ -725,7 +725,7 @@ describe('terminal scrollback compatibility', () => {
     const ansi = Buffer.from(replay.data, 'base64').toString('utf8');
 
     expect(controlled.pty.write).toHaveBeenCalledWith(
-      '\x1b]10;rgb:e0e0/dede/f4f4\x07',
+      '\x1b]10;rgb:e0e0/dede/f4f4\x1b\\',
     );
     expect(ansi).toContain('beforeafter');
     expect(ansi).not.toContain(']10;?');

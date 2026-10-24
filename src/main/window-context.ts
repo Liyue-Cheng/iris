@@ -39,12 +39,18 @@ export interface WindowContext {
   projectSwitching: boolean;
   /** Main-side serialization survives renderer timeout/retry and direct IPC. */
   projectSwitchTail: Promise<void>;
+  /** Navigation retires old document requests even when project scope is unchanged. */
+  rendererEpoch: number;
+  rendererNavigating: boolean;
+  /** Irreversible backend cleanup has started. */
+  closing: boolean;
   outputAttachment: TerminalOutputAttachment | null;
   /** Detach this window's manager → renderer broadcasts (from wireBroadcasts). */
   readonly unwire: () => void;
 }
 
 const contexts = new Map<number, WindowContext>();
+const requestLifetimes = new WeakMap<IpcMainInvokeEvent, { ctx: WindowContext; epoch: number }>();
 
 export function registerContext(ctx: WindowContext): void {
   contexts.set(ctx.win.id, ctx);
@@ -64,6 +70,16 @@ export function requireContext(event: IpcMainInvokeEvent): WindowContext {
   if (!ctx) {
     throw new Error('[ipc] no WindowContext for sender — window gone?');
   }
+  const lifetime = requestLifetimes.get(event);
+  if (
+    ctx.closing || ctx.rendererNavigating ||
+    !event.senderFrame || event.senderFrame.detached ||
+    event.senderFrame !== event.sender.mainFrame ||
+    (lifetime && (lifetime.ctx !== ctx || lifetime.epoch !== ctx.rendererEpoch))
+  ) {
+    throw new Error('[ipc] renderer document is no longer active');
+  }
+  if (!lifetime) requestLifetimes.set(event, { ctx, epoch: ctx.rendererEpoch });
   return ctx;
 }
 

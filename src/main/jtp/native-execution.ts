@@ -45,6 +45,8 @@ export interface JtpNativeExecutionOptions {
   projectRoot: string;
   commandShell: AgentCommandShell;
   displayThresholdMs?: number;
+  terminalColors?: AgentCommandPtyOptions['colors'];
+  onTerminalColorsChanged?: AgentCommandPtyOptions['onColorsChanged'];
   terminalFactory?: (options: AgentCommandPtyOptions) => AgentCommandPty;
   onTerminalCreated?: (
     terminal: AgentCommandPty,
@@ -232,6 +234,8 @@ export class JtpNativeExecution {
       outputPath,
       env: sanitizeEnv(input.env),
       commandShell: this.options.commandShell,
+      ...(this.options.terminalColors ? { colors: this.options.terminalColors } : {}),
+      ...(this.options.onTerminalColorsChanged ? { onColorsChanged: this.options.onTerminalColorsChanged } : {}),
       processTreeKillFn: createPlatformServices().processTree.kill,
       displayThresholdMs: this.options.displayThresholdMs ?? 3000,
       timeoutMs: timeoutSeconds * 1000,

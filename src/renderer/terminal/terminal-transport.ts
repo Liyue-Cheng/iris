@@ -160,7 +160,11 @@ export class IrisAgentTerminalTransport implements TerminalTransport {
     }, IrisAgentTerminalReplay>(CHANNELS.IRIS_AGENT_TERMINAL_REPLAY, {
       sessionId: this.sessionId, terminalId: this.terminalId, cols, rows, expectedScope: this.scope,
     });
-    return { data: replay.data, lastSeq: replay.seq, cols, rows };
+    return {
+      data: replay.data, lastSeq: replay.seq, cols, rows,
+      ...(replay.parserTail !== undefined ? { parserTail: replay.parserTail } : {}),
+      ...(replay.continuationState !== undefined ? { continuationState: replay.continuationState } : {}),
+    };
   }
 
   sendInput(data: string, encoding: 'utf8' | 'binary' = 'utf8'): Promise<void> {

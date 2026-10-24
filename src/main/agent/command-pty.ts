@@ -2,11 +2,14 @@ import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { spawn, type IDisposable, type IPty } from 'node-pty';
-import { applyNonInteractiveEnv, buildSpawnEnv } from '../pty-utils';
+import { applyNonInteractiveEnv, buildSpawnEnv, validateDimensions } from '../pty-utils';
 import { TerminalMirror } from '../terminal/terminal-mirror';
 import { TerminalFlowController } from '../terminal/flow-controller';
 import { createPlatformServices } from '../platform';
 import type { AgentCommandShell } from '@shared/agent-protocol';
+import { TerminalProtocol, type TerminalColorsChanged } from '../terminal/terminal-protocol';
+import { terminalProtocolColors, type TerminalProtocolColors } from '@shared/terminal/terminal-palette';
+import type { XtermSnapshotState } from '@shared/terminal/xterm-snapshot-state';
 
 export type ProcessTreeKillFn = (pid: number) => Promise<void>;
 
@@ -27,11 +30,9 @@ export interface AgentCommandPtyResult {
 export interface AgentCommandPtyEvent {
   type: 'output' | 'shown' | 'completed';
   terminalId: string;
-  /** Byte offset of the first byte in `bytes` within the process output. */
-  cursor?: number;
   /**
-   * Raw PTY bytes. The owner batches them for an attached terminal dialog and
-   * encodes once per IPC window, so this stays a Buffer instead of base64.
+   * Display bytes after streaming UTF-8 decode, matching the mirror exactly.
+   * The raw artifact retains the original PTY bytes separately.
    */
   bytes?: Buffer;
   result?: AgentCommandPtyResult;
@@ -48,6 +49,8 @@ export interface AgentCommandPtyOptions {
   outputPath: string;
   env?: NodeJS.ProcessEnv;
   commandShell?: AgentCommandShell;
+  colors?: () => TerminalProtocolColors;
+  onColorsChanged?: TerminalColorsChanged;
   displayThresholdMs?: number;
   /** Hard foreground deadline in milliseconds. Omit only for legacy callers. */
   timeoutMs?: number;
@@ -92,12 +95,16 @@ export class AgentCommandPty {
     () => this.applyPtyPause(false),
   );
   private readonly mirror: TerminalMirror;
+  private readonly protocol: TerminalProtocol;
   private readonly outputDecoder = new StringDecoder('utf8');
   private outputChain = Promise.resolve();
   private cursor = 0;
   private outputLineCount = 1;
   private shown = false;
   private settled = false;
+  private finishCompleted = false;
+  private disposalRequested = false;
+  private disposed = false;
   private aborting = false;
   private termination: 'natural' | 'timeout' | 'aborted' = 'natural';
   private cleanupPromise: Promise<void> = Promise.resolve();
@@ -138,6 +145,7 @@ export class AgentCommandPty {
       cwd: options.cwd,
       env,
       encoding: null,
+      ...(platform.capabilities.supportsConpty ? { useConpty: true, useConptyDll: true } : {}),
     });
     this.displayTimer = setTimeout(
       () => this.show(),
@@ -153,6 +161,10 @@ export class AgentCommandPty {
           setBlocked: (blocked) => this.flow.setBlocked('mirror', blocked),
         })
       : new TerminalMirror(80, 24, 5000);
+    this.protocol = new TerminalProtocol(this.mirror, options.colors ?? (() => terminalProtocolColors(undefined)), (reply) => {
+        if (this.settled) return;
+        try { this.pty.write(reply); } catch { /* Process exit raced the parser. */ }
+      }, options.onColorsChanged);
     this.disposables.push(
       this.pty.onData((data) => this.acceptOutput(Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8'))),
       this.pty.onExit((event) => void this.finish(event.exitCode, event.signal)),
@@ -197,7 +209,13 @@ export class AgentCommandPty {
   }
 
   dispose(): void {
-    if (this.settled) this.mirror.dispose();
+    this.disposalRequested = true;
+    // `settled` only closes admission; finish still needs the mirror while
+    // draining the final decoder bytes, artifact writes and result preview.
+    if (!this.finishCompleted || this.disposed) return;
+    this.disposed = true;
+    this.protocol.dispose();
+    this.mirror.dispose();
   }
 
   write(data: string | Buffer): void {
@@ -205,9 +223,9 @@ export class AgentCommandPty {
   }
 
   resize(cols: number, rows: number): void {
-    if (this.settled || cols < 20 || rows < 5) return;
-    this.pty.resize(cols, rows);
-    this.mirror.resize(cols, rows);
+    const dims = validateDimensions(cols, rows);
+    if (!this.settled) this.pty.resize(dims.cols, dims.rows);
+    this.mirror.resize(dims.cols, dims.rows);
   }
 
   /**
@@ -215,10 +233,12 @@ export class AgentCommandPty {
    * order is owned by the owner's output batcher, which flushes and freezes its
    * boundary before asking for this snapshot.
    */
-  async replay(): Promise<{ data: string }> {
-    await this.mirror.fence(250, () => undefined);
+  async replay(): Promise<{ data: string; parserTail: string; continuationState: XtermSnapshotState }> {
+    const snapshot = await this.mirror.snapshot(5000, 250);
     return {
-      data: Buffer.from(this.mirror.serialize(5000), 'utf8').toString('base64'),
+      data: Buffer.from(snapshot.data, 'utf8').toString('base64'),
+      parserTail: snapshot.parserTail,
+      continuationState: snapshot.continuationState,
     };
   }
 
@@ -229,20 +249,22 @@ export class AgentCommandPty {
 
   private acceptOutput(bytes: Buffer): void {
     if (this.settled) return;
-    const startCursor = this.cursor;
     this.cursor += bytes.length;
     const plainChunk = this.outputDecoder.write(bytes);
     if (plainChunk) {
-      this.outputLineCount += countNewlines(plainChunk);
-      this.mirror.write(plainChunk);
+      this.acceptDisplay(plainChunk);
     }
     const store = this.options.outputStore ?? fileOutputStore;
     this.outputChain = this.outputChain.then(() => store.append(this.options.outputPath, bytes));
+  }
+
+  private acceptDisplay(text: string): void {
+    this.outputLineCount += countNewlines(text);
+    this.mirror.write(text);
     this.options.onEvent?.({
       type: 'output',
       terminalId: this.options.terminalId,
-      cursor: startCursor,
-      bytes,
+      bytes: Buffer.from(text, 'utf8'),
     });
   }
 
@@ -257,34 +279,35 @@ export class AgentCommandPty {
     this.settled = true;
     clearTimeout(this.displayTimer);
     if (this.timeoutTimer) clearTimeout(this.timeoutTimer);
-    for (const disposable of this.disposables) disposable.dispose();
     try {
+      for (const disposable of this.disposables) disposable.dispose();
       await this.cleanupPromise;
       await this.outputChain;
       const finalChunk = this.outputDecoder.end();
       if (finalChunk) {
-        this.outputLineCount += countNewlines(finalChunk);
-        this.mirror.write(finalChunk);
+        this.acceptDisplay(finalChunk);
       }
       await this.mirror.fence(250, () => undefined);
+      const result: AgentCommandPtyResult = {
+        terminalId: this.options.terminalId,
+        exitCode,
+        ...(signal === undefined ? {} : { signal }),
+        outputPath: this.options.outputPath,
+        outputBytes: this.cursor,
+        finalCursor: this.cursor,
+        shown: this.shown,
+        plainText: this.mirror.plainText(5000),
+        outputTruncated: this.outputLineCount > 5000,
+        ...(this.termination === 'natural' ? {} : { termination: this.termination }),
+      };
+      this.options.onEvent?.({ type: 'completed', terminalId: this.options.terminalId, result });
+      this.resolveResult(result);
     } catch (error) {
       this.rejectResult(error instanceof Error ? error : new Error(String(error)));
-      return;
+    } finally {
+      this.finishCompleted = true;
+      if (this.disposalRequested) this.dispose();
     }
-    const result: AgentCommandPtyResult = {
-      terminalId: this.options.terminalId,
-      exitCode,
-      ...(signal === undefined ? {} : { signal }),
-      outputPath: this.options.outputPath,
-      outputBytes: this.cursor,
-      finalCursor: this.cursor,
-      shown: this.shown,
-      plainText: this.mirror.plainText(5000),
-      outputTruncated: this.outputLineCount > 5000,
-      ...(this.termination === 'natural' ? {} : { termination: this.termination }),
-    };
-    this.options.onEvent?.({ type: 'completed', terminalId: this.options.terminalId, result });
-    this.resolveResult(result);
   }
 }
 

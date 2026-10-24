@@ -37,8 +37,17 @@ export function enqueueProjectSwitch(
   request: ProjectSwitchRequest,
   onCommitted: (scope: ProjectScope) => void,
   readProjectSettings: (scope: ProjectScope) => Promise<ProjectSettingsSnapshot>,
+  assertRequestCurrent: () => void = () => undefined,
 ): Promise<ProjectOpenResult> {
+  const epoch = ctx.rendererEpoch;
+  const assertCanSwitch = (): void => {
+    if (ctx.closing || ctx.rendererNavigating || ctx.rendererEpoch !== epoch) {
+      throw new Error('[project:open] window or renderer document is no longer active');
+    }
+    assertRequestCurrent();
+  };
   const run = ctx.projectSwitchTail.catch(() => undefined).then(async () => {
+    assertCanSwitch();
     if (!sameScope(request.expectedScope, ctx.projectScope)) {
       throw new Error('[project:open] stale project scope');
     }
@@ -61,6 +70,7 @@ export function enqueueProjectSwitch(
     ctx.projectSwitching = true;
     try {
       const prepared = await ctx.projectManager.prepareOpen(targetRoot);
+      assertCanSwitch();
       // realpath preflight collapses Windows casing, junction and symlink
       // aliases. Re-check identity before crossing the destructive boundary.
       if (current?.root === prepared.root && ctx.projectManager.getRoot() === prepared.root) {

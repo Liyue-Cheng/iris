@@ -48,6 +48,7 @@ import { CHANNELS, EVENTS } from '@shared/protocol';
 import { themeBaseColors } from '@shared/theme-colors';
 import { initializeMainI18n, mainT } from './i18n';
 import { serializeIpcError } from './ipc-error';
+import { beginRendererNavigation, beginWindowShutdown } from './window-lifecycle';
 import { externalUrl } from './app-info';
 import { createPlatformServices } from './platform';
 import type { ServiceHealthChangedEvent } from '@shared/app-error';
@@ -187,6 +188,9 @@ function createWindowContext(win: BrowserWindow, initialRoot: string | null): Wi
     projectScope: null,
     projectSwitching: false,
     projectSwitchTail: Promise.resolve(),
+    rendererEpoch: 0,
+    rendererNavigating: false,
+    closing: false,
     outputAttachment: null,
     unwire,
   };
@@ -224,6 +228,7 @@ function sessionParticipantsFor(ctx: WindowContext): readonly SessionLifecyclePa
 function shutdownWindowContext(ctx: WindowContext): Promise<void> {
   const existing = contextCleanupPromises.get(ctx.win.id);
   if (existing) return existing;
+  beginWindowShutdown(ctx);
   const cleanup = ctx.projectSwitchTail.catch(() => undefined).then(async () => {
     const participants = sessionParticipantsFor(ctx);
     const results = await Promise.allSettled([
@@ -390,6 +395,12 @@ function createWindow(initialRoot: string | null): BrowserWindow {
   // Per-window managers + broadcasts. The window owns these for its lifetime;
   // 'closed' tears them down (kills this window's PTYs, closes its watcher).
   const ctx = createWindowContext(win, initialRoot);
+  win.webContents.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) beginRendererNavigation(ctx);
+  });
+  win.webContents.on('did-navigate', () => {
+    ctx.rendererNavigating = false;
+  });
   win.on('unresponsive', () => {
     logger.error(
       'window',

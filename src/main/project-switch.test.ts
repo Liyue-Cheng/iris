@@ -87,7 +87,7 @@ function harness(initial: ProjectScope | null, sessions: TerminalSessionInfo[] =
   const gitOpen = vi.fn(async () => undefined);
   const gitManager = { open: gitOpen } as unknown as GitManager;
   const readProjectSettings = vi.fn(async () => projectSettings());
-  const ctx = {
+  const ctx: WindowContext = {
     win: {} as WindowContext['win'],
     projectManager,
     terminalSessionManager,
@@ -97,9 +97,12 @@ function harness(initial: ProjectScope | null, sessions: TerminalSessionInfo[] =
     projectScope: initial,
     projectSwitching: false,
     projectSwitchTail: Promise.resolve(),
+    rendererEpoch: 0,
+    rendererNavigating: false,
+    closing: false,
     outputAttachment: null,
     unwire: () => undefined,
-  } satisfies WindowContext;
+  };
   return {
     ctx,
     prepareOpen,
@@ -112,6 +115,35 @@ function harness(initial: ProjectScope | null, sessions: TerminalSessionInfo[] =
 }
 
 describe('window project switching', () => {
+  it.each(['closing', 'reload'] as const)('rejects queued switches after %s before touching backends', async (change) => {
+    const { ctx, prepareOpen, closeProject, readProjectSettings } = harness(null);
+    let release!: () => void;
+    ctx.projectSwitchTail = new Promise<void>((resolve) => { release = resolve; });
+    const result = enqueueProjectSwitch(ctx, { root: process.cwd(), expectedScope: null }, vi.fn(), readProjectSettings);
+    if (change === 'closing') ctx.closing = true;
+    else ctx.rendererEpoch += 1;
+    release();
+    await expect(result).rejects.toThrow('no longer active');
+    expect(prepareOpen).not.toHaveBeenCalled();
+    expect(closeProject).not.toHaveBeenCalled();
+  });
+
+  it('rechecks closing after preflight before draining the current project', async () => {
+    const initial = { root: resolve('project-before-close'), generation: 1 };
+    const { ctx, prepareOpen, closeProject, activatePrepared, readProjectSettings } = harness(initial);
+    prepareOpen.mockImplementationOnce(async (root) => {
+      ctx.closing = true;
+      return { root, scan: scan(root) };
+    });
+    await expect(enqueueProjectSwitch(ctx, {
+      root: resolve('project-after-close'), expectedScope: initial,
+    }, vi.fn(), readProjectSettings)).rejects.toThrow('no longer active');
+    expect(closeProject).not.toHaveBeenCalled();
+    expect(activatePrepared).not.toHaveBeenCalled();
+    expect(ctx.projectScope).toEqual(initial);
+    expect(ctx.projectSwitching).toBe(false);
+  });
+
   it('commits an initial project as generation 1', async () => {
     const h = harness(null);
     const committed = vi.fn();

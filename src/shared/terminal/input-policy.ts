@@ -1,4 +1,4 @@
-import { joinWindowsShellPaths } from './shell-quoting';
+import { joinShellPaths, type TerminalShellKind } from './shell-quoting';
 
 export const DEFAULT_LARGE_PASTE_BYTES = 1024 * 1024;
 
@@ -25,15 +25,11 @@ export function pasteConfirmationPlan(
   return plan;
 }
 
-const SHELL_METAS = /[;&`$|<>(){}\\!*?\n\r]/;
-
-export function droppedPathPlan(paths: readonly string[]): {
-  dangerousPaths: string[];
+export function droppedPathPlan(paths: readonly string[], shell: TerminalShellKind): {
   text: string;
 } {
   return {
-    dangerousPaths: paths.filter((path) => SHELL_METAS.test(path)),
-    text: joinWindowsShellPaths(paths),
+    text: joinShellPaths(paths, shell),
   };
 }
 

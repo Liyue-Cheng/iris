@@ -19,10 +19,9 @@ describe('terminal input policy', () => {
     expect(pasteConfirmationPlan('one\ntwo\n', { bracketedPasteMode: true })).toEqual([]);
   });
 
-  it('classifies shell metacharacters and quotes whitespace paths', () => {
-    expect(droppedPathPlan(['plain.txt', 'two words.md', 'unsafe;name.txt'])).toEqual({
-      dangerousPaths: ['unsafe;name.txt'],
-      text: 'plain.txt "two words.md" unsafe;name.txt',
+  it('quotes every dropped path as literal data for the declared shell', () => {
+    expect(droppedPathPlan(['plain.txt', 'two words.md', 'unsafe;name.txt'], 'powershell')).toEqual({
+      text: "'plain.txt' 'two words.md' 'unsafe;name.txt'",
     });
   });
 

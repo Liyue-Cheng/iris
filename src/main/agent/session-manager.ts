@@ -25,6 +25,8 @@ import {
 } from './session-domain';
 import { JtpNativeExecution, type JtpNativeExecutionResult } from '../jtp/native-execution';
 import { TerminalOutputBatcher } from '../terminal/output-pump';
+import { ReplayCoordinator } from '../terminal/replay-coordinator';
+import { terminalProtocolColors } from '@shared/terminal/terminal-palette';
 import {
   AgentCommandPty,
   AGENT_TERMINAL_HIGH_WATER_BYTES,
@@ -206,6 +208,8 @@ export class IrisAgentSessionManager extends EventEmitter {
   private readonly livePhases = new Map<string, IrisAgentPhaseChangedPayload>();
   private currentScope: ProjectScope | null = null;
   private readonly sessionMutationChains = new Map<string, Promise<void>>();
+  /** A terminal's resize and replay must share one immutable screen boundary. */
+  private readonly terminalReplays = new ReplayCoordinator();
   private modelCatalogCache: IrisAgentModelCatalog | null = null;
   private modelCatalogLoad: { generation: number; promise: Promise<IrisAgentModelCatalog> } | null = null;
   private modelCatalogGeneration = 0;
@@ -1215,24 +1219,23 @@ export class IrisAgentSessionManager extends EventEmitter {
     cols: number,
     rows: number,
   ): Promise<IrisAgentTerminalReplay> {
-    const session = await this.requireSession(scope, sessionId);
-    const activity = terminalActivity(session, terminalId);
-    if (!activity) throw new Error('Iris Agent terminal was not found.');
-    const live = this.terminals.get(terminalId);
-    if (live?.sessionId !== sessionId) {
-      throw new Error('Iris Agent terminal output is no longer persisted after the terminal exits.');
-    }
-    // Freeze the delivery boundary BEFORE inserting the mirror fence, and in the
-    // same tick: every chunk the snapshot below can contain is then also below
-    // the boundary the renderer dedupes against, while later chunks keep a
-    // higher sequence and are delivered live. Without this, a chunk arriving
-    // during the fence wait would be dropped as stale although the snapshot
-    // never saw it.
-    live.output.flush();
-    const lastSeq = live.output.replayBoundarySeq;
-    live.terminal.resize(cols, rows);
-    const snapshot = await live.terminal.replay();
-    return { data: snapshot.data, seq: lastSeq };
+    return this.terminalReplays.run(terminalId, async () => {
+      // Resolve the live owner after waiting: an earlier command may have closed it.
+      const session = await this.requireSession(scope, sessionId);
+      const activity = terminalActivity(session, terminalId);
+      if (!activity) throw new Error('Iris Agent terminal was not found.');
+      const live = this.terminals.get(terminalId);
+      if (live?.sessionId !== sessionId) {
+        throw new Error('Iris Agent terminal output is no longer persisted after the terminal exits.');
+      }
+      live.terminal.resize(cols, rows);
+      // Include output caused synchronously by resize before freezing the delivery
+      // sequence. The mirror captures this boundary inside its parser callback.
+      live.output.flush();
+      const lastSeq = live.output.replayBoundarySeq;
+      const snapshot = await live.terminal.replay();
+      return { data: snapshot.data, parserTail: snapshot.parserTail, continuationState: snapshot.continuationState, seq: lastSeq };
+    });
   }
 
   /**
@@ -1264,6 +1267,14 @@ export class IrisAgentSessionManager extends EventEmitter {
     if (!live || live.attachmentId !== attachmentId) return;
     live.attachmentId = null;
     live.output.setDeliveryEnabled(false);
+  }
+
+  /** A reloaded document cannot acknowledge any of its former dialogs. */
+  detachAllTerminalOutputs(): void {
+    for (const live of this.terminals.values()) {
+      live.attachmentId = null;
+      live.output.setDeliveryEnabled(false);
+    }
   }
 
   /** Consumer ack: releases in-flight bytes so a paused PTY can resume. */
@@ -1322,10 +1333,12 @@ export class IrisAgentSessionManager extends EventEmitter {
     cols: number,
     rows: number,
   ): Promise<void> {
-    const session = await this.requireSession(scope, sessionId);
-    if (!terminalActivity(session, terminalId)) throw new Error('Iris Agent terminal was not found.');
-    const live = this.terminals.get(terminalId);
-    if (live?.sessionId === sessionId) live.terminal.resize(cols, rows);
+    await this.terminalReplays.run(terminalId, async () => {
+      const session = await this.requireSession(scope, sessionId);
+      if (!terminalActivity(session, terminalId)) throw new Error('Iris Agent terminal was not found.');
+      const live = this.terminals.get(terminalId);
+      if (live?.sessionId === sessionId) live.terminal.resize(cols, rows);
+    });
   }
 
   async continueTerminalSupervision(
@@ -1445,7 +1458,7 @@ export class IrisAgentSessionManager extends EventEmitter {
     for (const terminal of this.terminals.values()) {
       terminal.output.dispose({ flush: false });
       if (terminal.running) terminal.terminal.abort();
-      else terminal.terminal.dispose();
+      terminal.terminal.dispose();
     }
     for (const pending of this.pendingSupervisions.values()) {
       pending.reject(new Error('Iris Agent manager shut down during terminal supervision.'));
@@ -1997,6 +2010,11 @@ export class IrisAgentSessionManager extends EventEmitter {
     const nativeExecution = new JtpNativeExecution({
       projectRoot: scope.root,
       commandShell: this.commandShell,
+      terminalColors: () => terminalProtocolColors(this.options.settingsManager?.get().appearance.theme),
+      onTerminalColorsChanged: (listener) => {
+        this.options.settingsManager?.on('settingsChanged', listener);
+        return { dispose: () => { this.options.settingsManager?.off('settingsChanged', listener); } };
+      },
       displayThresholdMs: this.options.terminalDisplayThresholdMs ?? 3_000,
       ...(this.options.terminalFactory ? { terminalFactory: this.options.terminalFactory } : {}),
       onTerminalCreated: (terminal, context) => {
@@ -2860,9 +2878,8 @@ export class IrisAgentSessionManager extends EventEmitter {
       if (terminal.running) {
         terminal.running = false;
         terminal.terminal.abort();
-      } else {
-        terminal.terminal.dispose();
       }
+      terminal.terminal.dispose();
       this.terminals.delete(terminalId);
     }
   }

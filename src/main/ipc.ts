@@ -178,6 +178,7 @@ function requireProjectScope(
   payload: ProjectScopedPayload,
   channel: string,
 ): ProjectScope {
+  if (ctx.closing) throw new Error(`[${channel}] window is closing`);
   if (ctx.projectSwitching) throw new Error(`[${channel}] project switch in progress`);
   if (!sameScope(payload.expectedScope, ctx.projectScope)) {
     throw new Error(`[${channel}] stale project scope`);
@@ -372,6 +373,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
           persistOpenRoots(settingsManager);
         },
         async (scope) => withProjectTrust(scope, await ctx.projectManager.projectSettings()),
+        () => { requireContext(event); },
       );
     },
   );
@@ -582,6 +584,8 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
         throw new Error(`[${CHANNELS.PROJECT_COMMAND_RUN}] invalid action index`);
       }
       const snapshot = await ctx.projectManager.projectSettings();
+      requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.PROJECT_COMMAND_RUN);
       if (snapshot.error) throw new Error(`[${CHANNELS.PROJECT_COMMAND_RUN}] ${snapshot.error}`);
       if (snapshot.revision !== payload.revision) {
         throw new Error(`[${CHANNELS.PROJECT_COMMAND_RUN}] stale project settings revision`);

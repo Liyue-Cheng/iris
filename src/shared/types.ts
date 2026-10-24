@@ -569,6 +569,8 @@ export type SessionState = 'active' | 'idle' | 'exited';
 
 export interface TerminalSessionInfo {
   id: string;
+  /** Launch shell grammar for literal path drops; absent means unknown. */
+  shellKind?: import('./terminal/shell-quoting').TerminalShellKind;
   /**
    * The current UI anchor (借鉴 Marina 的 path↔会话 → 文档↔会话): doc rel
    * path while the document exists. null = workspace-hub session (no
@@ -618,6 +620,9 @@ export interface SessionOutputPayload {
 /** Atomic main-process snapshot prepared for one renderer replay size. */
 export interface SessionReplaySnapshot {
   data: string;
+  /** Unfinished VT input, preserving UTF-16 decoder tails across IPC. */
+  parserTail?: string;
+  continuationState?: import('./terminal/xterm-snapshot-state').XtermSnapshotState;
   lastSeq: number;
   cols: number;
   rows: number;
@@ -902,6 +907,8 @@ export interface IrisAgentTerminalOutputPayload {
 
 export interface IrisAgentTerminalReplay {
   data: string;
+  parserTail?: string;
+  continuationState?: import('./terminal/xterm-snapshot-state').XtermSnapshotState;
   /** Last sequence already contained in `data`; live payloads above it follow. */
   seq: number;
 }

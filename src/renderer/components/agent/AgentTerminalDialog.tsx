@@ -7,9 +7,11 @@
  * replays the full output from the start.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { SquareTerminal } from 'lucide-react';
 import '@xterm/xterm/css/xterm.css';
 import type { IrisAgentTerminalView, ProjectScope } from '@shared/types';
+import { matchKeybinding } from '@shared/terminal-keybindings';
 import {
   AgentStatusBadge,
   AgentWorkbenchDialog,
@@ -20,13 +22,14 @@ import { IrisAgentTerminalTransport } from '@renderer/terminal/terminal-transpor
 import { TerminalReplayController } from '@renderer/terminal/replay-controller';
 import { TerminalSessionRuntime } from '@renderer/terminal/terminal-runtime';
 import { TerminalViewportController } from '@renderer/terminal/viewport-controller';
+import { createTerminalInputController } from '@renderer/terminal/input-operation';
+import type { TerminalInputController } from '@renderer/terminal/input-controller';
 import { TerminalContextMenu } from '@renderer/components/terminal/TerminalContextMenu';
 import { TerminalSurface } from '@renderer/components/terminal/TerminalSurface';
 import { TerminalSearchBar } from '@renderer/components/terminal/TerminalSearchBar';
-import { readClipboardText, writeClipboardText } from '@renderer/lib/clipboard';
+import { writeClipboardText } from '@renderer/lib/clipboard';
 import { getSettings, useSettings } from '@renderer/stores/settings-store';
 import { projectScopeState } from '@renderer/stores/project-scope-state';
-import { writeIrisAgentTerminal } from '@renderer/lib/iris-agent-actions';
 
 export function AgentTerminalDialog({
   sessionId,
@@ -62,6 +65,10 @@ function AgentTerminalPane({
 }): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const adapterRef = useRef<BrowserXtermAdapter | null>(null);
+  const inputControllerRef = useRef<TerminalInputController | null>(null);
+  const { t } = useTranslation();
+  const tRef = useRef(t);
+  tRef.current = t;
   const settings = useSettings();
   const [hostRevealed, setHostRevealed] = useState(false);
   const [contextHasSelection, setContextHasSelection] = useState(false);
@@ -70,6 +77,8 @@ function AgentTerminalPane({
   const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
   const [searchResults, setSearchResults] = useState({ matches: 0, current: 0 });
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const searchVisibleRef = useRef(searchVisible);
+  searchVisibleRef.current = searchVisible;
 
   const closeSearch = useCallback(() => {
     setSearchVisible(false);
@@ -106,6 +115,19 @@ function AgentTerminalPane({
     const runtime = new TerminalSessionRuntime(`${sessionId}:${terminal.id}`, scope);
     const viewport = new TerminalViewportController(adapter.fit, 150);
     const transport = new IrisAgentTerminalTransport(sessionId, terminal.id, scope);
+    const inputController = createTerminalInputController({
+      runtime, transport, terminal: term, getTranslate: () => tRef.current,
+    });
+    inputControllerRef.current = inputController;
+    const pasteInterceptor = (event: ClipboardEvent): void => {
+      event.stopImmediatePropagation();
+      event.preventDefault();
+      // async-boundary: handled - clipboard failures are reported by the helper.
+      void inputController.pasteClipboard().catch((error) => console.warn('Agent terminal paste failed', error));
+    };
+    const helper = host.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
+    host.addEventListener('paste', pasteInterceptor, true);
+    helper?.addEventListener('paste', pasteInterceptor, true);
     const replayController = new TerminalReplayController(runtime, transport, {
       get cols() { return term.cols; },
       get rows() { return term.rows; },
@@ -113,6 +135,7 @@ function AgentTerminalPane({
       scrollToBottom: () => term.scrollToBottom(),
       beginSynchronizedReplay: () => adapter.beginSynchronizedReplay(),
       endSynchronizedReplay: (callback) => adapter.endSynchronizedReplay(callback),
+      restoreState: (state) => adapter.restoreState(state),
     }, viewport, {
       chunkBytes: 16 * 1024,
       timeoutMs: 5000,
@@ -136,21 +159,43 @@ function AgentTerminalPane({
       setSearchResults({ matches, current: matches > 0 && index >= 0 ? index + 1 : 0 });
     });
     term.attachCustomKeyEventHandler((event) => {
-      if (event.type === 'keydown' && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
-        setSearchVisible(true);
-        requestAnimationFrame(() => searchInputRef.current?.focus());
-        return false;
+      if (event.type !== 'keydown' || event.isComposing || event.keyCode === 229) return true;
+      const binding = matchKeybinding(event, { searchVisible: searchVisibleRef.current });
+      if (!binding) return true;
+      switch (binding.action) {
+        case 'open-search':
+          setSearchVisible(true);
+          requestAnimationFrame(() => searchInputRef.current?.focus());
+          return false;
+        case 'close-search':
+          closeSearch();
+          return false;
+        case 'copy-or-sigint':
+          if (!term.getSelection()) return true;
+          // Selection copies; an unselected Ctrl+C still reaches the command.
+          void writeClipboardText(term.getSelection());
+          term.clearSelection();
+          return false;
+        case 'copy-and-clear':
+          if (term.getSelection()) void writeClipboardText(term.getSelection());
+          term.clearSelection();
+          return false;
+        case 'consume-for-paste':
+          // The subsequent native paste event is intercepted above exactly once.
+          return false;
       }
-      return true;
     });
     // async-boundary: handled - replay controller degrades and reveals on transport failure.
     void replayController.start().catch(() => undefined);
     return () => {
+      runtime.dispose();
+      inputControllerRef.current = null;
+      host.removeEventListener('paste', pasteInterceptor, true);
+      helper?.removeEventListener('paste', pasteInterceptor, true);
       unsubscribe();
       dataDisposable.dispose();
       resizeDisposable.dispose();
       searchDisposable?.dispose();
-      runtime.dispose();
       viewport.dispose();
       // async-boundary: handled - detach is best-effort during unmount.
       void transport.detach().catch(() => undefined);
@@ -158,7 +203,7 @@ function AgentTerminalPane({
       adapter.dispose();
       adapterRef.current = null;
     };
-  }, [sessionId, terminal.id]);
+  }, [closeSearch, sessionId, terminal.id]);
 
   useEffect(() => {
     const adapter = adapterRef.current;
@@ -192,12 +237,8 @@ function AgentTerminalPane({
   };
 
   const pasteClipboard = (): void => {
-    // async-boundary: handled - clipboard helper reports read failures and terminal input handles its rejection.
-    void readClipboardText().then((text) => {
-      if (text === null) return;
-      void writeIrisAgentTerminal(sessionId, terminal.id, text).catch(() => undefined);
-      adapterRef.current?.terminal.focus();
-    });
+    // async-boundary: handled - controller owns confirmations and the mount epoch.
+    void inputControllerRef.current?.pasteClipboard().catch((error) => console.warn('Agent terminal paste failed', error));
   };
 
   return (

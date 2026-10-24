@@ -17,6 +17,8 @@ function fixture(overrides: Partial<TerminalInputPort> = {}): {
     readDocument: vi.fn(async () => 'document'),
     confirm: vi.fn(async () => true),
     docDropMode: () => 'content',
+    shellKind: () => 'powershell',
+    rejectPath: vi.fn(),
     ...overrides,
   };
   return { runtime, controller: new TerminalInputController(runtime, port), port };
@@ -49,7 +51,7 @@ describe('TerminalInputController', () => {
     expect(port.paste).not.toHaveBeenCalled();
   });
 
-  it('checks the epoch after document reads and shell-meta confirmation', async () => {
+  it('checks the epoch after document reads and rejects path drops after disposal', async () => {
     let resolveDocument: (text: string) => void = () => undefined;
     const document = new Promise<string>((resolve) => {
       resolveDocument = resolve;
@@ -61,13 +63,31 @@ describe('TerminalInputController', () => {
     await operation;
     expect(first.port.paste).not.toHaveBeenCalled();
 
-    const second = fixture({
-      confirm: vi.fn(async () => {
-        second.runtime.dispose();
-        return true;
-      }),
-    });
+    const second = fixture();
+    second.runtime.dispose();
     await second.controller.dropPaths(['unsafe;name.txt']);
     expect(second.port.sendInput).not.toHaveBeenCalled();
+  });
+
+  it('sends literal path arguments for the launch shell without an unsafe confirmation override', async () => {
+    const { controller, port } = fixture();
+    await controller.dropPaths(["O'Brien.md", '$(echo hi).txt']);
+    expect(port.sendInput).toHaveBeenCalledWith("'O''Brien.md' '$(echo hi).txt'");
+    expect(port.confirm).not.toHaveBeenCalled();
+  });
+
+  it('rejects the whole path drop if cmd would expand any argument', async () => {
+    const { controller, port } = fixture({ shellKind: () => 'cmd' });
+    await controller.dropPaths(['safe.txt', '%IRIS_PATH%.md']);
+    expect(port.rejectPath).toHaveBeenCalledWith('cmd-expansion');
+    expect(port.sendInput).not.toHaveBeenCalled();
+    expect(port.confirm).not.toHaveBeenCalled();
+  });
+
+  it('does not guess a shell when metadata is unknown', async () => {
+    const { controller, port } = fixture({ shellKind: () => 'unknown', docDropMode: () => 'path' });
+    await controller.dropDocument('task.md');
+    expect(port.rejectPath).toHaveBeenCalledWith('unknown-shell');
+    expect(port.sendInput).not.toHaveBeenCalled();
   });
 });
