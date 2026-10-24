@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { AssetManager } from './asset-manager';
+import { ProjectManager } from './project-manager';
 import { createTempDataDir, removeTempDataDir } from './persistence';
 
 const docPath = '.iris/issue/测试 文档.md';
@@ -22,6 +23,24 @@ afterEach(async () => {
 });
 
 describe('AssetManager', () => {
+  it('reads an imported image from its persisted encoded Markdown URL after reopening', async () => {
+    const imported = await assets.import(dir, {
+      docPath, name: '图片.png', mimeType: 'image/png', bytes: png,
+    });
+    const markdown = `![1.00](${imported.markdownUrl})\n`;
+    await fs.writeFile(join(dir, docPath), markdown, 'utf8');
+    const manager = new ProjectManager();
+    try {
+      await manager.open(dir);
+      expect((await manager.readDoc(docPath)).body).toBe(markdown);
+      await expect(manager.readDocImage(docPath, imported.markdownUrl)).resolves.toEqual({
+        dataUrl: `data:image/png;base64,${Buffer.from(png).toString('base64')}`, error: null,
+      });
+    } finally {
+      await manager.close();
+    }
+  });
+
   it('accepts a project root alias while checking document containment by real path', async () => {
     const alias = join(dir, 'project-alias');
     await fs.symlink(dir, alias, process.platform === 'win32' ? 'junction' : 'dir');

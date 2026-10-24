@@ -2,9 +2,9 @@
 // Exercise the production entry, preload bridge and rendered UI in a hidden
 // window with isolated settings. Optionally pass an unpacked app's app.asar.
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { resolve, dirname, join, relative, isAbsolute } from 'node:path';
+import { resolve, dirname, join, relative, isAbsolute, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
@@ -16,6 +16,69 @@ if (!existsSync(appRoot.endsWith('.asar') ? appRoot : join(appRoot, 'out/main/in
 }
 const tempRoot = resolve(tmpdir());
 const profile = mkdtempSync(join(tempRoot, 'iris-smoke-'));
+// Optional third argument: verify a document using the real production editor.
+// Copy it and its internal assets into an isolated project; never open the source
+// workspace in the smoke instance or write to the user's document/settings.
+let documentCheck = null;
+if (process.argv[3]) {
+  const { remark } = await import('remark');
+  const { default: gfm } = await import('remark-gfm');
+  const { default: matter } = await import('gray-matter');
+  const sourcePath = resolve(process.argv[3]);
+  const fixtureRoot = join(profile, 'project');
+  const fixturePath = join(fixtureRoot, '.iris', 'issue', basename(sourcePath));
+  mkdirSync(dirname(fixturePath), { recursive: true });
+  cpSync(sourcePath, fixturePath);
+  const assets = sourcePath.replace(/\.md$/i, '.assets');
+  if (existsSync(assets)) cpSync(assets, fixturePath.replace(/\.md$/i, '.assets'), { recursive: true });
+  const expected = { spans: [], links: [], lists: 0, images: 0 };
+  const walk = (node) => {
+    if (node.type === 'text' || node.type === 'inlineCode') expected.spans.push(node.value);
+    if (node.type === 'listItem') expected.lists += 1;
+    if (node.type === 'image') expected.images += 1;
+    if (node.type === 'link') expected.links.push(node.url);
+    node.children?.forEach(walk);
+  };
+  walk(remark().use(gfm).parse(matter(readFileSync(sourcePath, 'utf8')).content));
+  documentCheck = { ...expected, path: `.iris/issue/${basename(sourcePath)}` };
+  // A development Electron executable uses .iris-dev even for app.asar.
+  for (const namespace of ['.iris', '.iris-dev']) {
+    mkdirSync(join(profile, namespace), { recursive: true });
+    writeFileSync(join(profile, namespace, 'settings.json'), JSON.stringify({
+      version: 1,
+      behavior: { restoreProjectsOnStartup: true },
+      project: { openRoots: [fixtureRoot] },
+    }));
+  }
+}
+const verifyDocument = async (expected) => {
+  const deadline = Date.now() + 20000;
+  let lastFailure = 'document navigation is not ready';
+  let opened = false;
+  while (Date.now() < deadline) {
+    const button = document.querySelector(`button[aria-label="${CSS.escape(expected.path)}"]`);
+    if (!opened && button) { button.click(); opened = true; }
+    const editor = document.querySelector('.crepe-host .ProseMirror');
+    if (editor) {
+      const text = editor.innerText;
+      const missing = expected.spans.filter((span) => !text.includes(span));
+      const lists = editor.querySelectorAll('.milkdown-list-item-block').length;
+      const links = [...editor.querySelectorAll('a[href]')].map((a) => a.getAttribute('href'));
+      const images = [...editor.querySelectorAll('img')];
+      const hidden = [...editor.querySelectorAll('.milkdown-list-item-block')].some((item) =>
+        !item.getClientRects().length || getComputedStyle(item).visibility === 'hidden');
+      if (!missing.length && lists === expected.lists && !hidden &&
+          expected.links.every((url) => links.includes(url)) &&
+          images.length >= expected.images && images.every((img) => img.complete && img.naturalWidth > 0)) {
+        return { textSpans: expected.spans.length, lists, links: expected.links.length, images: images.length };
+      }
+      lastFailure = JSON.stringify({ missing: missing.slice(0, 3), lists, expectedLists: expected.lists,
+        hidden, loadedImages: images.filter((img) => img.naturalWidth > 0).length });
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+  }
+  throw new Error('Document rendering verification failed: ' + lastFailure);
+};
 const launcher = join(profile, 'launch.cjs');
 writeFileSync(launcher, `
 const { app, BrowserWindow } = require('electron');
@@ -67,12 +130,19 @@ app.on('browser-window-created', (_event, win) => {
           'Boolean(window.api && document.getElementById("root")?.children.length)'
         );
         if (!ready) return finish(1, 'preload bridge or rendered UI missing');
+        const documentCheck = ${JSON.stringify(documentCheck)};
+        if (documentCheck) {
+          const result = await contents.executeJavaScript(
+            '(' + ${JSON.stringify(verifyDocument.toString())} + ')(' + JSON.stringify(documentCheck) + ')'
+          );
+          console.log('[smoke] document rendering verified ' + JSON.stringify(result));
+        }
         finish(0, 'production renderer and preload ready; survived 5 seconds');
       } catch (error) { finish(1, String(error)); }
     }, 5000);
   });
 });
-setTimeout(() => finish(1, 'startup exceeded 30 seconds'), 30000);
+setTimeout(() => finish(1, 'startup/rendering exceeded its deadline'), ${documentCheck ? 60000 : 30000});
 import(pathToFileURL(join(appRoot, 'out/main/index.js')).href).catch(error => finish(1, error.stack));
 `);
 
@@ -100,7 +170,7 @@ try {
     if (process.platform === 'win32') {
       spawn('taskkill', ['/pid', String(child.pid), '/f', '/t'], { stdio: 'ignore', windowsHide: true });
     } else child.kill('SIGKILL');
-  }, 40000);
+  }, documentCheck ? 70000 : 40000);
   try {
     const code = await new Promise((resolveExit, reject) => {
       child.once('error', reject);
