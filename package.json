@@ -1,7 +1,7 @@
 {
   "name": "iris-app",
   "productName": "Iris",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Iris — AI-native, document-centric, terminal-driven project management. The app is a reference implementation of the .iris/ protocol.",
   "author": {
