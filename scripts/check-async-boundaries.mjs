@@ -61,6 +61,7 @@ const SAFE_VOID_CALLEES = new Map([
   ['projectStore.openCollection', 'navigation functions return refusal outcomes'],
   ['projectStore.openCollectionDocInDefaultView', 'navigation functions return refusal outcomes'],
   ['projectStore.leaveCollection', 'navigation functions return refusal outcomes'],
+  ['projectStore.openTodos', 'navigation functions return refusal outcomes'],
   ['projectStore.selectCollectionDoc', 'navigation functions return refusal outcomes'],
   ['projectStore.selectDoc', 'navigation functions return refusal outcomes'],
   ['projectStore.selectRoot', 'navigation functions return refusal outcomes'],

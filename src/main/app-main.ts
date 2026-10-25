@@ -51,6 +51,7 @@ import { serializeIpcError } from './ipc-error';
 import { beginRendererNavigation, beginWindowShutdown } from './window-lifecycle';
 import { externalUrl } from './app-info';
 import { createPlatformServices } from './platform';
+import { guardPreviewNavigation, installHtmlDocProtocol, revokeHtmlPreview } from './html-doc-protocol';
 import type { ServiceHealthChangedEvent } from '@shared/app-error';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -256,6 +257,7 @@ function shutdownWindowContext(ctx: WindowContext): Promise<void> {
 function disposeWindowContext(id: number): void {
   const ctx = removeContext(id);
   if (!ctx) return;
+  revokeHtmlPreview(ctx);
   try {
     ctx.unwire();
   } catch {
@@ -374,6 +376,8 @@ function createWindow(initialRoot: string | null): BrowserWindow {
   win.webContents.on('will-navigate', (event) => {
     event.preventDefault();
   });
+  // The HTML document preview is the only subframe Iris embeds.
+  guardPreviewNavigation(win.webContents);
 
   // F12 / Ctrl+Shift+I toggle DevTools. Packed builds ship no application
   // menu, so Chromium never binds the shortcut itself — main must intercept
@@ -550,6 +554,10 @@ app.whenReady().then(async () => {
   }
 
   registerIpcHandlers(settingsManager);
+  installHtmlDocProtocol(() => {
+    const behavior = settingsManager.get().behavior;
+    return { scripts: behavior.htmlPreviewScripts, network: behavior.htmlPreviewNetwork };
+  });
 
   // "Open project in a new window" (VS Code-style). Lives here, not in ipc.ts,
   // because it creates a window. Optional root; with none, show the picker.

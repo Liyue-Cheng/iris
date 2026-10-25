@@ -74,7 +74,7 @@ let state: ProjectState = {
   rawTree: null,
   docLoading: false,
   docError: null,
-  view: { kind: 'doc', path: null },
+  view: { kind: 'root' },
 };
 
 const subscribers = new Set<() => void>();
@@ -395,7 +395,8 @@ export const projectStore = {
       scope,
       scan,
       rawTree: null,
-      view: { kind: 'doc', path: null },
+      // An opened folder starts at its hub; no document means no editor pane.
+      view: { kind: 'root' },
       docLoading: false,
       docError: null,
     });
@@ -768,9 +769,8 @@ export const projectStore = {
     return true;
   },
 
-  /** The special root node (E-4): middle shows the project README (or a
-   *  placeholder), right shows the project-root sessions (terminal-only view,
-   *  so focus goes to the terminal). */
+  /** The special root node (E-4): project-root sessions fill the area beside
+   *  the tree, with no document editor. */
   async selectRoot(): Promise<boolean> {
     return navigateToHub(beginNavigationIntent(), '.iris');
   },

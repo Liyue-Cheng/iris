@@ -114,6 +114,29 @@ describe('AssetManager', () => {
     expect(inventory.assets.some((asset) => asset.name === 'other.md')).toBe(false);
   });
 
+  it('counts src/href references from an HTML document', async () => {
+    const htmlPath = '.iris/report/页面.html';
+    await fs.mkdir(join(dir, '.iris', 'report'), { recursive: true });
+    await fs.writeFile(join(dir, htmlPath), '<html><head></head><body></body></html>', 'utf8');
+    const imported = await assets.import(dir, {
+      docPath: htmlPath,
+      name: 'chart.png',
+      mimeType: 'image/png',
+      bytes: png,
+    });
+    expect(imported.path).toBe('.iris/report/页面.assets/chart.png');
+    await fs.writeFile(
+      join(dir, htmlPath),
+      `<html><head></head><body><img src="${imported.markdownUrl}"><a href="${imported.markdownUrl}">x</a><!-- <img src="${imported.markdownUrl}"> --></body></html>`,
+      'utf8',
+    );
+
+    const inventory = await assets.list(dir, htmlPath);
+    expect(inventory.assets).toEqual([
+      expect.objectContaining({ path: imported.path, exists: true, referenceCount: 2, kind: 'image' }),
+    ]);
+  });
+
   it('stores external file and directory associations in links.txt without treating the index as an asset', async () => {
     const external = join(dir, 'release.zip');
     const folder = join(dir, 'html-output');

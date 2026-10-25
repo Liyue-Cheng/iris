@@ -7,6 +7,7 @@
 import { useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { DocType } from '@shared/types';
+import type { DocFormat } from '@shared/html-doc';
 import { pipeline } from '@renderer/cpu';
 import { projectStore } from '@renderer/stores/project-store';
 import { Button } from '@renderer/components/ui/button';
@@ -49,14 +50,19 @@ export function CreateDocDialog(): JSX.Element | null {
   const t = useTarget();
   const { t: tr } = useTranslation();
   const [title, setTitle] = useState('');
+  const [format, setFormat] = useState<DocFormat>('markdown');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   if (!t) return null;
+  // HTML pages are created only in report/ (issues and status docs stay
+  // Markdown); main enforces the same rule.
+  const formatChoice = t.type === 'report';
 
   const close = (): void => {
     target = null;
     setTitle('');
+    setFormat('markdown');
     setError(null);
     setBusy(false);
     subs.forEach((cb) => cb());
@@ -71,6 +77,7 @@ export function CreateDocDialog(): JSX.Element | null {
         workspacePath: t.workspacePath,
         type: t.type,
         title: title.trim(),
+        ...(formatChoice && format === 'html' ? { format } : {}),
       })) as { path: string };
       close();
       if (t.destination === 'collection') {
@@ -103,6 +110,23 @@ export function CreateDocDialog(): JSX.Element | null {
           onChange={(e) => setTitle(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && void create()}
         />
+        {formatChoice && (
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-muted-foreground">{tr('project.documentFormat')}</span>
+            {(['markdown', 'html'] as const).map((value) => (
+              <Button
+                key={value}
+                size="sm"
+                variant={format === value ? 'secondary' : 'ghost'}
+                className="h-7"
+                aria-pressed={format === value}
+                onClick={() => setFormat(value)}
+              >
+                {value === 'html' ? tr('project.formatHtml') : tr('project.formatMarkdown')}
+              </Button>
+            ))}
+          </div>
+        )}
         {error && <p className="text-xs text-destructive">{error}</p>}
         <DialogFooter>
           <Button variant="ghost" onClick={close}>

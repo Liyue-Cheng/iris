@@ -1,6 +1,6 @@
 ---
 title: 修复终端画面恢复后鼠标点击与滚动失效
-status: In Review
+status: Done
 ---
 
 ## 问题与调查证据

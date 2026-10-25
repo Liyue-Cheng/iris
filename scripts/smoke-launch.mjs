@@ -20,7 +20,11 @@ const profile = mkdtempSync(join(tempRoot, 'iris-smoke-'));
 // Copy it and its internal assets into an isolated project; never open the source
 // workspace in the smoke instance or write to the user's document/settings.
 let documentCheck = null;
-if (process.argv[3]) {
+const htmlCheck = process.argv[3] === '--html-preview';
+const htmlProbePath = join(projectRoot, 'scripts/smoke-html-preview.cjs');
+if (htmlCheck) {
+  documentCheck = require(htmlProbePath).prepare(profile);
+} else if (process.argv[3]) {
   const { remark } = await import('remark');
   const { default: gfm } = await import('remark-gfm');
   const { default: matter } = await import('gray-matter');
@@ -41,6 +45,9 @@ if (process.argv[3]) {
   };
   walk(remark().use(gfm).parse(matter(readFileSync(sourcePath, 'utf8')).content));
   documentCheck = { ...expected, path: `.iris/issue/${basename(sourcePath)}` };
+}
+if (documentCheck) {
+  const fixtureRoot = join(profile, 'project');
   // A development Electron executable uses .iris-dev even for app.asar.
   for (const namespace of ['.iris', '.iris-dev']) {
     mkdirSync(join(profile, namespace), { recursive: true });
@@ -120,6 +127,8 @@ app.on('browser-window-created', (_event, win) => {
     if (isMainFrame) finish(1, 'load failed ' + code + ': ' + description);
   });
   contents.on('console-message', details => {
+    // The HTML probe deliberately triggers CSP and sandbox violations.
+    if (${htmlCheck} && /Content Security Policy|sandboxed|Not allowed to load local resource/.test(details.message)) return;
     if (details.level === 'error') finish(1, details.message);
   });
   contents.once('did-finish-load', () => {
@@ -132,7 +141,9 @@ app.on('browser-window-created', (_event, win) => {
         if (!ready) return finish(1, 'preload bridge or rendered UI missing');
         const documentCheck = ${JSON.stringify(documentCheck)};
         if (documentCheck) {
-          const result = await contents.executeJavaScript(
+          const result = ${htmlCheck}
+            ? await require(${JSON.stringify(htmlProbePath)}).verify(contents, documentCheck)
+            : await contents.executeJavaScript(
             '(' + ${JSON.stringify(verifyDocument.toString())} + ')(' + JSON.stringify(documentCheck) + ')'
           );
           console.log('[smoke] document rendering verified ' + JSON.stringify(result));

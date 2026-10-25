@@ -20,7 +20,12 @@ export type ThemeId =
   | 'dracula'
   | 'tokyo-night'
   | 'catppuccin-mocha'
-  | 'catppuccin-latte';
+  | 'catppuccin-latte'
+  | 'paper';
+
+/** Main-window column framing: three equal cards on a backdrop, or one base
+ *  sheet with only the detail column raised. */
+export type PaneStyle = 'cards' | 'layered';
 
 export type EditorConflictPolicy = 'ask' | 'overwrite';
 export type LocalePreference = 'system' | 'zh-CN' | 'en-US';
@@ -31,6 +36,8 @@ export interface Settings {
   locale: LocalePreference;
   appearance: {
     theme: ThemeId;
+    /** Column framing of the main window; independent of the color theme. */
+    paneStyle: PaneStyle;
     /** UI font stack; LXGW WenKai inherited from the Marina design language. */
     uiFontFamily: string;
     /** Terminal font stack (consumed from M3 on, declared now for stability). */
@@ -80,6 +87,12 @@ export interface Settings {
     /** External disk change while dirty: ask blocks writes and shows recovery
      *  actions; overwrite preserves the historical last-writer-wins policy. */
     editorConflictPolicy: EditorConflictPolicy;
+    /** HTML document preview: run page scripts (always sandboxed, opaque
+     *  origin, no access to Iris). */
+    htmlPreviewScripts: boolean;
+    /** HTML document preview: allow remote resources (CDN scripts, styles,
+     *  images, fetch). Off keeps previews fully offline. */
+    htmlPreviewNetwork: boolean;
   };
   project: {
     /** @deprecated v1.0 single-window field. v1.1 restores from openRoots;

@@ -11,21 +11,33 @@
  * terminal full-width (root drops the README), so every workspace header
  * doubles as a terminal hub.
  */
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ChevronDown,
   ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   CircleDot,
+  Copy,
+  ExternalLink,
+  FilePlus,
   FileWarning,
+  FolderOpen,
+  FolderPlus,
   FolderRoot,
   Gauge,
+  ListChecks,
   NotebookPen,
   Plus,
   ScrollText,
+  SquareTerminal,
 } from 'lucide-react';
 import { openCreateDialog } from '@renderer/components/doc/CreateDocDialog';
 import { DocContextMenu } from '@renderer/components/doc/DocContextMenu';
+import { CreateWorkspaceDialog } from '@renderer/components/project/CreateWorkspaceDialog';
+import { writeClipboardText } from '@renderer/lib/clipboard';
+import { openProjectItem, revealProjectItem } from '@renderer/lib/shell-actions';
 import {
   workspaceAnchorKey,
 } from '@renderer/stores/session-store';
@@ -52,6 +64,11 @@ import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuLabel,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@renderer/components/ui/context-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip';
@@ -280,6 +297,122 @@ function NewWorkspaceSessionButton({
   );
 }
 
+/** Join a project-relative workspace path onto the absolute project root. */
+function absoluteWorkspacePath(root: string, path: string): string {
+  const sep = root.includes('\\') ? '\\' : '/';
+  return `${root.replace(/[\\/]+$/, '')}${sep}${path.split('/').join(sep)}`;
+}
+
+/**
+ * Right-click menu on a workspace header — root and sub-workspaces share it
+ * (子工作区平权). It gathers the hub's create gestures (session, document,
+ * child workspace), its views (todos, document fold), and the folder's file
+ * operations. No delete: removing a workspace is not a lens-tree gesture.
+ */
+function WorkspaceContextMenu({
+  workspacePath,
+  label,
+  isRoot,
+  sectionsOpen,
+  onToggleSections,
+  onCreateChild,
+  children,
+}: {
+  workspacePath: string;
+  label: string;
+  isRoot: boolean;
+  sectionsOpen: boolean;
+  onToggleSections: () => void;
+  onCreateChild: (parentPath: string) => void;
+  children: ReactNode;
+}): JSX.Element {
+  const { t } = useTranslation();
+  const settings = useSettings();
+  const { scope } = useProject();
+  const agents = settings?.agents ?? [];
+  const irisAgentEnabled = settings?.experimental.irisAgent ?? false;
+  const hasLaunchers = irisAgentEnabled || agents.length > 0;
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+      <ContextMenuContent className="w-56">
+        <ContextMenuLabel className="truncate">{label}</ContextMenuLabel>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger disabled={!hasLaunchers}>
+            <SquareTerminal /> {t('layout.newSession')}
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent className="max-h-80 w-56 overflow-y-auto">
+            {irisAgentEnabled && (
+              <ContextMenuItem
+                onClick={() => void openIrisAgent({ kind: 'workspace', path: workspacePath })}
+              >
+                {t('layout.openWith', { agent: t('settings.irisAgent') })}
+              </ContextMenuItem>
+            )}
+            {agents.map((agent) => (
+              <ContextMenuItem
+                key={agent.id}
+                onClick={() => void openWorkspaceSession(workspacePath, agent.id)}
+              >
+                <span className="truncate">{t('layout.openWith', { agent: agent.label })}</span>
+              </ContextMenuItem>
+            ))}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger>
+            <FilePlus /> {t('layout.newDocumentMenu')}
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent>
+            {TYPE_ORDER.map((type) => {
+              const { label: typeLabel, icon: Icon } = TYPE_META[type];
+              return (
+                <ContextMenuItem
+                  key={type}
+                  onClick={() => openCreateDialog({ workspacePath, type })}
+                >
+                  <Icon /> {typeLabel}
+                </ContextMenuItem>
+              );
+            })}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+        <ContextMenuItem onClick={() => onCreateChild(workspacePath)}>
+          <FolderPlus /> {t('layout.newSubWorkspace')}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          onClick={() => void projectStore.openTodos(isRoot ? null : workspacePath)}
+        >
+          <ListChecks /> {t('layout.workspaceTodos')}
+        </ContextMenuItem>
+        <ContextMenuItem onClick={onToggleSections}>
+          {sectionsOpen ? <ChevronsDownUp /> : <ChevronsUpDown />}
+          {sectionsOpen ? t('layout.collapseDocuments') : t('layout.expandDocuments')}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onClick={() => void writeClipboardText(workspacePath)}>
+          <Copy /> {t('common.copyPath')}
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={!scope}
+          onClick={() =>
+            scope && void writeClipboardText(absoluteWorkspacePath(scope.root, workspacePath))
+          }
+        >
+          <Copy /> {t('layout.copyAbsolutePath')}
+        </ContextMenuItem>
+        <ContextMenuItem onClick={() => void openProjectItem(workspacePath)}>
+          <FolderOpen /> {t('layout.openFolder')}
+        </ContextMenuItem>
+        <ContextMenuItem onClick={() => void revealProjectItem(workspacePath)}>
+          <ExternalLink /> {t('common.reveal')}
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
+
 /**
  * Hub session rows, listed directly under a workspace header (主页重设计 +
  * 平权): the left pane is the attention-scheduling panel, so a workspace's
@@ -376,6 +509,7 @@ function WorkspaceSessionList({
  *     the root's docs while keeping the sub-workspaces (its children) in view.
  *   - the name stages this hub's terminal full-width (selectRoot/selectWorkspace).
  *   - + spawns a hub session (no FOCUS_DOC).
+ *   - right-click opens WorkspaceContextMenu anywhere on the header row.
  * No indentation (平铺) — depth is read from the chevron + bold header, not a
  * rail. Only one selection shadow at a time: a staged hub session carries the
  * highlight and the header stays plain; the header highlights only when this
@@ -386,9 +520,11 @@ function WorkspaceSessionList({
 function WorkspaceSection({
   ws,
   depth,
+  onCreateChild,
 }: {
   ws: IrisWorkspace;
   depth: number;
+  onCreateChild: (parentPath: string) => void;
 }): JSX.Element {
   const { t } = useTranslation();
   const [sectionsOpen, setSectionsOpen] = useState(depth === 0);
@@ -407,40 +543,50 @@ function WorkspaceSection({
   const effectiveSelectedKey = selectedItemId ?? hubSessions.at(-1)?.key ?? null;
   const hubSessionStaged = isThisHubView && hubSessions.some((session) => session.key === effectiveSelectedKey);
   const headerSelected = isThisHubView && !hubSessionStaged;
+  const hubLabel = isRoot ? t('layout.projectRoot') : ws.name;
 
   return (
     <div>
-      <div
-        className={cn(
-          'group/hub flex items-center gap-1 rounded-sm pr-1',
-          headerSelected
-            ? 'bg-accent text-accent-foreground'
-            : 'hover:bg-muted text-foreground',
-        )}
+      <WorkspaceContextMenu
+        workspacePath={workspacePath}
+        label={hubLabel}
+        isRoot={isRoot}
+        sectionsOpen={sectionsOpen}
+        onToggleSections={() => setSectionsOpen(!sectionsOpen)}
+        onCreateChild={onCreateChild}
       >
-        <button
-          type="button"
-          aria-label={sectionsOpen ? t('layout.collapseDocuments') : t('layout.expandDocuments')}
-          onClick={() => setSectionsOpen(!sectionsOpen)}
-          className="shrink-0 px-1 py-1.5 text-muted-foreground hover:text-foreground"
-        >
-          {sectionsOpen ? (
-            <ChevronDown className="h-3.5 w-3.5" />
-          ) : (
-            <ChevronRight className="h-3.5 w-3.5" />
+        <div
+          className={cn(
+            'group/hub flex items-center gap-1 rounded-sm pr-1',
+            headerSelected
+              ? 'bg-accent text-accent-foreground'
+              : 'hover:bg-muted data-[state=open]:bg-muted text-foreground',
           )}
-        </button>
-        <button
-          type="button"
-          aria-label={isRoot ? t('layout.rootHubHint') : t('layout.workspaceHubHint')}
-          onClick={() => selectHub(workspacePath)}
-          className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-[13px] font-semibold"
         >
-          {isRoot && <FolderRoot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
-          <span className="truncate">{ws.name}</span>
-        </button>
-        <NewWorkspaceSessionButton workspacePath={workspacePath} label={isRoot ? t('layout.projectRoot') : ws.name} />
-      </div>
+          <button
+            type="button"
+            aria-label={sectionsOpen ? t('layout.collapseDocuments') : t('layout.expandDocuments')}
+            onClick={() => setSectionsOpen(!sectionsOpen)}
+            className="shrink-0 px-1 py-1.5 text-muted-foreground hover:text-foreground"
+          >
+            {sectionsOpen ? (
+              <ChevronDown className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5" />
+            )}
+          </button>
+          <button
+            type="button"
+            aria-label={isRoot ? t('layout.rootHubHint') : t('layout.workspaceHubHint')}
+            onClick={() => selectHub(workspacePath)}
+            className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-[13px] font-semibold"
+          >
+            {isRoot && <FolderRoot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+            <span className="truncate">{ws.name}</span>
+          </button>
+          <NewWorkspaceSessionButton workspacePath={workspacePath} label={hubLabel} />
+        </div>
+      </WorkspaceContextMenu>
       <div className="space-y-2 pt-1">
         <WorkspaceSessionList workspacePath={workspacePath} />
         {sectionsOpen && (
@@ -457,7 +603,7 @@ function WorkspaceSection({
           </>
         )}
         {ws.children.map((c) => (
-          <WorkspaceSection key={c.path} ws={c} depth={depth + 1} />
+          <WorkspaceSection key={c.path} ws={c} depth={depth + 1} onCreateChild={onCreateChild} />
         ))}
       </div>
     </div>
@@ -465,9 +611,15 @@ function WorkspaceSection({
 }
 
 export function LensTree({ root }: { root: IrisWorkspace }): JSX.Element {
+  const [childParent, setChildParent] = useState<string | null>(null);
   return (
     <div className="px-1 py-1">
-      <WorkspaceSection ws={root} depth={0} />
+      <WorkspaceSection ws={root} depth={0} onCreateChild={setChildParent} />
+      <CreateWorkspaceDialog
+        open={childParent !== null}
+        onClose={() => setChildParent(null)}
+        defaultParent={childParent ?? undefined}
+      />
     </div>
   );
 }

@@ -22,6 +22,7 @@ import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { CHANNELS, EVENTS, type WindowEditAction } from '@shared/protocol';
 import type { JtpBuiltinResult } from '@shared/agent-protocol';
 import { mainT } from './i18n';
+import { grantHtmlPreview } from './html-doc-protocol';
 import type {
   AssetImportPayload,
   AssetImportResult,
@@ -793,6 +794,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
         workspacePath: string;
         type: import('@shared/types').DocType;
         title: string;
+        format?: import('@shared/html-doc').DocFormat;
       } & ProjectScopedPayload,
     ): Promise<{ path: string }> => {
       const ctx = requireContext(event);
@@ -1062,6 +1064,18 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       const ctx = requireContext(event);
       requireProjectScope(ctx, payload, CHANNELS.DOC_IMAGE_READ);
       return ctx.projectManager.readDocImage(payload.docPath, payload.source);
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.DOC_PREVIEW_BASE,
+    (event, payload: ProjectScopedPayload): { baseUrl: string } => {
+      const ctx = requireContext(event);
+      const scope = requireProjectScope(ctx, payload, CHANNELS.DOC_PREVIEW_BASE);
+      const baseUrl = grantHtmlPreview(ctx, scope, () =>
+        ctx.closing || ctx.projectSwitching ? null : ctx.projectScope,
+      );
+      return { baseUrl };
     },
   );
 

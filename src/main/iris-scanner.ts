@@ -22,6 +22,7 @@ import { promises as fs } from 'node:fs';
 import { basename, join, sep } from 'node:path';
 import matter from 'gray-matter';
 import { extractTodos } from '@shared/markdown-utils';
+import { docFormatOf, isIrisDocFileName, readHtmlDocMetadata } from '@shared/html-doc';
 import {
   DOC_TYPES,
   type DocType,
@@ -133,8 +134,11 @@ async function readDocMeta(
   } catch (err) {
     logger.warn('scanner', `read failed for ${absPath}`, err);
   }
-  const { frontmatter, broken } = parseFrontmatter(text);
-  const todos = extractTodos(text);
+  const html = docFormatOf(absPath) === 'html';
+  const { frontmatter, broken } = html
+    ? { frontmatter: readHtmlDocMetadata(text), broken: false }
+    : parseFrontmatter(text);
+  const todos = html ? [] : extractTodos(text);
   const relPath = toRel(projectRoot, absPath);
   if (broken) warnBrokenFrontmatter(relPath, mtimeMs);
   return {
@@ -168,7 +172,7 @@ async function collectTypedDocs(
   const { dirs, files } = await listDir(typedDirAbs);
 
   for (const f of files) {
-    if (!f.name.toLowerCase().endsWith('.md')) continue;
+    if (!isIrisDocFileName(f.name)) continue;
     docs.push(await readDocMeta(projectRoot, f.abs, type, workspacePath));
   }
 

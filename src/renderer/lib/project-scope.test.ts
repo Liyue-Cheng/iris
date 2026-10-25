@@ -459,11 +459,11 @@ describe('todo view memory', () => {
     expect(sessionViewStore.selected(scope, doc.path)).toBe(terminalSessionKey('doc-terminal'));
   });
 
-  it('restores empty, root and workspace views and replaces the previous memory', async () => {
+  it('restores the initial hub, root and workspace views and replaces the previous memory', async () => {
     openProjectState();
     await projectStore.toggleTodos();
     await projectStore.toggleTodos();
-    expect(projectStore.get().view).toEqual({ kind: 'doc', path: null });
+    expect(projectStore.get().view).toEqual({ kind: 'root' });
 
     await projectStore.selectRoot();
     await projectStore.toggleTodos();
@@ -550,7 +550,7 @@ describe('todo view memory', () => {
     openProjectState();
     await projectStore.toggleTodos();
     await projectStore.toggleTodos();
-    expect(projectStore.get().view).toEqual({ kind: 'doc', path: null });
+    expect(projectStore.get().view).toEqual({ kind: 'root' });
   });
 
   it('falls back when the source document and then its workspace disappear', async () => {

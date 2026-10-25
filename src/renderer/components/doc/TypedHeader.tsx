@@ -33,6 +33,7 @@ import {
 import type { DocType } from '@shared/types';
 import { ISSUE_STATUSES, REPORT_STATUSES } from '@shared/document-status';
 import { splitFrontmatter } from '@shared/markdown-utils';
+import { docFormatOf, stripDocExtension } from '@shared/html-doc';
 import { cn } from '@renderer/lib/utils';
 import { editorStore, type EditorSession } from '@renderer/stores/editor-store';
 import { useSettings } from '@renderer/stores/settings-store';
@@ -177,10 +178,14 @@ export function TypedHeader({
   const type = typeOfPath(session.path);
   const title = editorStore.getFrontmatterField('title') ?? '';
   const status = editorStore.getFrontmatterField('status') ?? '';
+  const html = docFormatOf(session.path) === 'html';
   // A structurally broken frontmatter block is shown, never auto-edited.
+  // (HTML head metadata has no such state: a missing element is inserted.)
   const visibleFmBlock =
     session.mode === 'source' ? splitFrontmatter(session.sourceText).fmBlock : session.fmBlock;
-  const fmEditable = !looksBroken(visibleFmBlock);
+  const fmEditable = html || !looksBroken(visibleFmBlock);
+  // Rendered view: the WYSIWYG body for Markdown, the preview for HTML.
+  const rendered = html ? session.htmlPreview : session.mode === 'wysiwyg';
 
   // px-2.5 = the body's reserved 10px scrollbar gutter; the inner column
   // mirrors the body's reading column via the shared --editor-max-width var
@@ -213,7 +218,7 @@ export function TypedHeader({
               <span className="-ml-1.5 flex min-w-0 flex-1">
                 <FieldInput
                   value={title}
-                  placeholder={session.path.split('/').pop()?.replace(/\.md$/i, '') ?? ''}
+                  placeholder={stripDocExtension(session.path.split('/').pop() ?? '')}
                   disabled={!fmEditable}
                   onCommit={(v) => void editorStore.setFrontmatterField('title', v)}
                   className="min-w-0 flex-1 px-1.5 text-lg font-semibold"
@@ -310,7 +315,7 @@ export function TypedHeader({
                 className="h-6 w-6 shrink-0"
                 onClick={() => editorStore.toggleMode()}
               >
-                {session.mode === 'wysiwyg' ? (
+                {rendered ? (
                   <Code2 className="!size-3.5" />
                 ) : (
                   <Eye className="!size-3.5" />
@@ -318,7 +323,11 @@ export function TypedHeader({
               </Button>
             </TooltipTrigger>
             <TooltipContent>
-              {session.mode === 'wysiwyg' ? t('editor.sourceMode') : t('editor.visualMode')}
+              {rendered
+                ? t('editor.sourceMode')
+                : html
+                  ? t('editor.htmlPreviewMode')
+                  : t('editor.visualMode')}
             </TooltipContent>
           </Tooltip>
         </div>

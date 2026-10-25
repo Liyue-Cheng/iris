@@ -44,6 +44,7 @@ export const DEFAULT_SETTINGS: Settings = {
   locale: 'system',
   appearance: {
     theme: 'rose-pine',
+    paneStyle: 'cards',
     uiFontFamily: "'LXGW WenKai', system-ui, sans-serif",
     terminalFontFamily:
       "'Cascadia Mono', 'JetBrains Mono', 'Consolas', 'LXGW WenKai Mono', monospace",
@@ -65,6 +66,8 @@ export const DEFAULT_SETTINGS: Settings = {
     editorAutosaveDelayMs: 1500,
     editorSaveOnBlur: true,
     editorConflictPolicy: 'ask',
+    htmlPreviewScripts: true,
+    htmlPreviewNetwork: false,
   },
   project: {
     lastRoot: null,
@@ -105,6 +108,7 @@ const VALID_THEMES: ThemeId[] = [
   'tokyo-night',
   'catppuccin-mocha',
   'catppuccin-latte',
+  'paper',
 ];
 
 /** Themes removed after they shipped, mapped to their closest survivor. A
@@ -353,6 +357,13 @@ export function validateSettings(s: Settings): void {
       { field: 'appearance.theme', got: s.appearance.theme, allowed: VALID_THEMES },
     );
   }
+  if (!['cards', 'layered'].includes(s.appearance.paneStyle)) {
+    throw new SettingsError(
+      'InvalidSettings',
+      `appearance.paneStyle="${s.appearance.paneStyle}" must be cards or layered`,
+      { field: 'appearance.paneStyle', got: s.appearance.paneStyle, allowed: ['cards', 'layered'] },
+    );
+  }
   const size = s.appearance.terminalFontSize;
   if (typeof size !== 'number' || !Number.isFinite(size) || size < 8 || size > 24) {
     throw new SettingsError(
@@ -448,6 +459,12 @@ export function validateSettings(s: Settings): void {
       'InvalidSettings',
       `behavior.editorConflictPolicy="${s.behavior.editorConflictPolicy}" must be ask or overwrite`,
     );
+  }
+  if (typeof s.behavior.htmlPreviewScripts !== 'boolean') {
+    throw new SettingsError('InvalidSettings', 'behavior.htmlPreviewScripts must be a boolean');
+  }
+  if (typeof s.behavior.htmlPreviewNetwork !== 'boolean') {
+    throw new SettingsError('InvalidSettings', 'behavior.htmlPreviewNetwork must be a boolean');
   }
   if (typeof s.appearance.uiFontFamily !== 'string' || !s.appearance.uiFontFamily.trim()) {
     throw new SettingsError('InvalidSettings', 'appearance.uiFontFamily must be a non-empty string');

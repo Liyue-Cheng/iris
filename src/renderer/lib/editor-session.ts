@@ -1,5 +1,6 @@
 import type { DocContent, EditorConflictPolicy } from '@shared/types';
 import { splitFrontmatter } from '@shared/markdown-utils';
+import { docFormatOf } from '@shared/html-doc';
 
 export type EditorMode = 'wysiwyg' | 'source';
 
@@ -23,6 +24,21 @@ export type SaveDecision =
   | { kind: 'write'; content: string };
 
 export function createEditorDocument(content: DocContent): EditorDocumentState {
+  if (docFormatOf(content.path) === 'html') {
+    // HTML has no WYSIWYG body: the session is always a source buffer (the
+    // preview is a view over the saved file, see editor-store htmlPreview).
+    return {
+      path: content.path,
+      baselineRaw: content.raw,
+      fmBlock: '',
+      originalBody: content.raw,
+      bodyBaseline: null,
+      bodyCurrent: null,
+      mode: 'source',
+      sourceText: content.raw,
+      revision: 0,
+    };
+  }
   const { fmBlock, body } = splitFrontmatter(content.raw);
   return {
     path: content.path,

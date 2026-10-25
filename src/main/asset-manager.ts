@@ -14,6 +14,7 @@ import type {
   AssetInventory,
   AssetKind,
 } from '@shared/types';
+import { docFormatOf, extractHtmlReferences, isIrisDocFileName } from '@shared/html-doc';
 import { mainT } from './i18n';
 import { writeFileAtomic } from './atomic-write';
 export const ASSOCIATED_PATHS_FILE = 'links.txt';
@@ -262,7 +263,7 @@ export class AssetManager {
     docPath: string,
   ): Promise<{ abs: string }> {
     const portable = docPath.replace(/\\/g, '/');
-    if (!portable.startsWith('.iris/') || !portable.toLowerCase().endsWith('.md')) {
+    if (!portable.startsWith('.iris/') || !isIrisDocFileName(portable)) {
       throw new AssetError('InvalidPayload', mainT('error.assetNotIrisDocument', { path: docPath }));
     }
     const abs = resolveInside(projectRoot, docPath);
@@ -318,6 +319,12 @@ function associatedEntry(
 }
 
 function collectReferences(projectRoot: string, docPath: string, markdown: string): AssetReference[] {
+  if (docFormatOf(docPath) === 'html') {
+    return extractHtmlReferences(markdown).flatMap(({ source, kind }) => {
+      const target = resolveMarkdownTarget(projectRoot, docPath, source);
+      return target ? [{ source, kind, target }] : [];
+    });
+  }
   let tree: MarkdownNode;
   try {
     tree = remark().parse(markdown) as MarkdownNode;

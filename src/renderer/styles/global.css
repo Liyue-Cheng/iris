@@ -1371,6 +1371,28 @@ button:focus-visible .iris-status-badge {
   color-scheme: light;
 }
 
+/* Paper — near-neutral warm white, measured from the layered three-pane
+ * reference in issue 2026-10-22-优化界面: an off-white base sheet, pure white
+ * raised pane, hairline separators, clay accent. */
+[data-theme='paper'] {
+  --color-bg-primary: #ffffff;
+  --color-bg-secondary: #f6f5f1;
+  --color-bg-elevated: #f1f0ec;
+  --color-bg-hover: #f1f0eb;
+  --color-bg-active: #e2e0d9;
+  --color-bg-strong: #c5c2b9;
+  --color-text-primary: #2a2925;
+  --color-text-secondary: #5a5852;
+  --color-text-muted: #73716a;
+  --color-danger: #c0392b;
+  --color-warning: #a3620a;
+  --color-success: #3d7a37;
+  --color-info: #2f6f8f;
+  --color-accent-secondary: #d97757;
+  --color-accent-special: #b9573a;
+  color-scheme: light;
+}
+
 /* Shared Iris token adapter for the semantic-token palettes above. */
 [data-theme='saas-light'],
 [data-theme='saas-dark'],
@@ -1382,7 +1404,8 @@ button:focus-visible .iris-status-badge {
 [data-theme='dracula'],
 [data-theme='tokyo-night'],
 [data-theme='catppuccin-mocha'],
-[data-theme='catppuccin-latte'] {
+[data-theme='catppuccin-latte'],
+[data-theme='paper'] {
   --background: var(--color-bg-primary);
   --foreground: var(--color-text-primary);
   --card: var(--color-bg-secondary);
@@ -1421,6 +1444,49 @@ button:focus-visible .iris-status-badge {
   --rp-pine: var(--color-success);
   --rp-foam: var(--color-info);
   --rp-iris: var(--color-accent-special);
+}
+
+/* ──────────────────────────────────────────────────────────────────
+ * Shell layering (issue 2026-10-22-优化界面). The window is ONE base sheet
+ * (--shell) carrying the title bar, lens tree and document column, split
+ * only by hairlines; the detail column (terminal / collection document) is
+ * the single raised pane. The raised pane keeps --background so xterm's
+ * per-theme background (xterm-themes.ts) still matches without changes.
+ * Light sheets sit a shade below their white; dark sheets sink further so
+ * the raised pane reads lighter, per the usual dark elevation convention.
+ * ────────────────────────────────────────────────────────────────── */
+[data-theme] {
+  --shell: color-mix(in srgb, var(--background) 97%, black);
+  --border-raised: color-mix(in srgb, var(--foreground) 12%, transparent);
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.04), 0 2px 8px -2px rgb(0 0 0 / 0.06);
+}
+
+[data-theme='rose-pine'],
+[data-theme='rose-pine-moon'],
+[data-theme='saas-dark'],
+[data-theme='business'],
+[data-theme='ubuntu'],
+[data-theme='windows-terminal'],
+[data-theme='one-dark-pro'],
+[data-theme='dracula'],
+[data-theme='tokyo-night'],
+[data-theme='catppuccin-mocha'] {
+  --shell: color-mix(in srgb, var(--background) 84%, black);
+  --border-raised: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --shadow-raised: 0 1px 3px rgb(0 0 0 / 0.35);
+}
+
+[data-theme='paper'] {
+  --shell: #fafaf8;
+  --border-raised: #e5e4df;
+}
+
+.iris-raised-pane {
+  background: var(--background);
+  border: 1px solid var(--border-raised);
+  border-radius: calc(var(--radius) + 2px);
+  box-shadow: var(--shadow-raised);
+  overflow: hidden;
 }
 
 /* ──────────────────────────────────────────────────────────────────

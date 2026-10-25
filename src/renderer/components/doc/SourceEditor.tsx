@@ -7,6 +7,8 @@ import { useEffect, useRef } from 'react';
 import { EditorView, basicSetup } from 'codemirror';
 import { EditorState, Transaction } from '@codemirror/state';
 import { markdown } from '@codemirror/lang-markdown';
+import { html } from '@codemirror/lang-html';
+import { docFormatOf } from '@shared/html-doc';
 import { rosePineCodeMirror } from '@renderer/styles/codemirror-theme';
 import { editorStore } from '@renderer/stores/editor-store';
 import { attachScrollMemory } from '@renderer/lib/scroll-memory';
@@ -35,7 +37,7 @@ export function SourceEditor({
         doc: text,
         extensions: [
           basicSetup,
-          markdown(),
+          docFormatOf(path) === 'html' ? html() : markdown(),
           // After basicSetup → overrides the light defaultHighlightStyle with
           // Rose Pine (shared with the WYSIWYG code blocks). Also sets the mono
           // font, so only height/fontSize remain editor-specific below.

@@ -13,6 +13,7 @@ import {
   setFrontmatterKey,
   splitFrontmatter,
 } from '@shared/markdown-utils';
+import { docFormatOf, getHtmlDocField, setHtmlDocField } from '@shared/html-doc';
 import { pipeline } from '@renderer/cpu';
 import {
   composeEditorDocument,
@@ -41,6 +42,9 @@ export interface EditorSession extends EditorDocumentState {
   conflict: DocContent | null;
   generation: number;
   bodyHydrating: boolean;
+  /** HTML documents only: show the sandboxed preview of the SAVED file
+   *  instead of the source buffer (the session itself stays in source mode). */
+  htmlPreview: boolean;
 }
 
 export type SaveTrigger =
@@ -239,7 +243,9 @@ async function applyFmBlock(fmBlock: string): Promise<void> {
     const { body } = splitFrontmatter(session.sourceText);
     const next = updateSourceText(session, fmBlock + body);
     if (next === session) return;
-    replaceDocument({ ...next, fmBlock });
+    // SourceEditor owns its buffer until generation changes. Replace that
+    // buffer after a header edit so a later keystroke cannot restore old fields.
+    replaceDocument({ ...next, fmBlock }, { generation: session.generation + 1 });
     await editorStore.save('frontmatter-commit');
     return;
   }
@@ -256,7 +262,8 @@ export const editorStore = {
 
   openSession(content: DocContent): void {
     clearAutosave();
-    const generation = session?.path === content.path ? session.generation + 1 : 1;
+    const samePath = session?.path === content.path;
+    const generation = samePath && session ? session.generation + 1 : 1;
     const document = createEditorDocument(content);
     session = withDerived({
       ...document,
@@ -265,6 +272,8 @@ export const editorStore = {
       conflict: null,
       generation,
       bodyHydrating: true,
+      // A reload of the same HTML doc keeps the user's current view.
+      htmlPreview: docFormatOf(content.path) === 'html' && (samePath && session ? session.htmlPreview : true),
       dirty: false,
     });
     lastWritten.set(content.path, content.raw);
@@ -337,6 +346,15 @@ export const editorStore = {
 
   async setFrontmatterField(key: string, value: string): Promise<void> {
     if (!session) return;
+    if (docFormatOf(session.path) === 'html') {
+      const next = updateSourceText(session, setHtmlDocField(session.sourceText, key, value));
+      if (next === session) return;
+      // Remount a visible CodeMirror buffer so it shows the head edit instead
+      // of reverting it on the next keystroke.
+      replaceDocument(next, session.htmlPreview ? {} : { generation: session.generation + 1 });
+      await editorStore.save('frontmatter-commit');
+      return;
+    }
     const fmBlock =
       session.mode === 'source' ? splitFrontmatter(session.sourceText).fmBlock : session.fmBlock;
     await applyFmBlock(setFrontmatterKey(fmBlock, key, value));
@@ -344,6 +362,7 @@ export const editorStore = {
 
   getFrontmatterField(key: string): string | null {
     if (!session) return null;
+    if (docFormatOf(session.path) === 'html') return getHtmlDocField(session.sourceText, key);
     const fmBlock =
       session.mode === 'source' ? splitFrontmatter(session.sourceText).fmBlock : session.fmBlock;
     return getFrontmatterKey(fmBlock, key);
@@ -351,6 +370,23 @@ export const editorStore = {
 
   toggleMode(): void {
     if (!session) return;
+    if (docFormatOf(session.path) === 'html') {
+      if (session.htmlPreview) {
+        patch({ htmlPreview: false });
+        return;
+      }
+      // Keep the editable draft visible until the saved file is current.
+      // A failed/conflicted save or navigation must not open a stale preview.
+      const { path, generation, revision } = session;
+      void editorStore.save('view-switch').then((result) => {
+        if (
+          (result.status === 'noop' || result.status === 'saved') &&
+          session?.path === path && session.generation === generation &&
+          session.revision === revision && !session.dirty
+        ) patch({ htmlPreview: true });
+      });
+      return;
+    }
     clearAutosave();
     const next = toggleEditorMode(session);
     replaceDocument(next, {

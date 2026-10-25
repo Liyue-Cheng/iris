@@ -84,11 +84,9 @@ beforeEach(() => {
 });
 
 describe('openIrisAgent anchor navigation', () => {
-  it('navigates to the root hub before creating a workspace Agent session', async () => {
+  it('keeps the root hub selected when creating a workspace Agent session', async () => {
     const scope = openProjectState();
-    // Fresh project: the middle pane is still on the unfocused document view,
-    // whose anchor key is null — the state the reported bug started from.
-    expect(projectStore.get().view).toEqual({ kind: 'doc', path: null });
+    expect(projectStore.get().view).toEqual({ kind: 'root' });
     const session = agentSession(scope, 'agent-1');
     invoke.mockImplementation((channel: string) =>
       channel === CHANNELS.IRIS_AGENT_OPEN
@@ -114,7 +112,7 @@ describe('openIrisAgent anchor navigation', () => {
       openIrisAgent({ kind: 'workspace', path: '.iris' }),
     ).resolves.toBeNull();
 
-    expect(projectStore.get().view).toEqual({ kind: 'doc', path: null });
+    expect(projectStore.get().view).toEqual({ kind: 'root' });
     expect(invoke).not.toHaveBeenCalled();
     expect(irisAgentStore.get().sessions).toEqual([]);
   });

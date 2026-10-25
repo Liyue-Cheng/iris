@@ -3,7 +3,7 @@
  * Parent selector + name + template choice (standard four folders / empty
  * custom shaped later).
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { IrisWorkspace } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
@@ -33,17 +33,24 @@ function flattenWorkspaces(root: IrisWorkspace): { path: string; label: string }
 export function CreateWorkspaceDialog({
   open,
   onClose,
+  defaultParent,
 }: {
   open: boolean;
   onClose: () => void;
+  /** Preselect a parent (a workspace header's context menu); else keep the last choice. */
+  defaultParent?: string | undefined;
 }): JSX.Element | null {
   const { t } = useTranslation();
   const { scan } = useProject();
   const [name, setName] = useState('');
-  const [parent, setParent] = useState('.iris');
+  const [parent, setParent] = useState(defaultParent ?? '.iris');
   const [template, setTemplate] = useState<'standard' | 'empty'>('standard');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (open && defaultParent) setParent(defaultParent);
+  }, [open, defaultParent]);
 
   const parents = useMemo(
     () => (scan?.root ? flattenWorkspaces(scan.root) : [{ path: '.iris', label: '.iris' }]),

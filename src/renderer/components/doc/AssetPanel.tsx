@@ -87,7 +87,7 @@ export function AssetPanel({
       let lastMarkdown = '';
       for (const file of Array.from(files)) {
         const result = await importAsset(docPath, file);
-        lastMarkdown = markdownForAsset(result);
+        lastMarkdown = markdownForAsset(result, docPath);
       }
       if (files.length === 1 && lastMarkdown) await writeClipboardText(lastMarkdown);
       await refresh();
@@ -186,6 +186,7 @@ export function AssetPanel({
             {assets.map((asset) => (
               <AssetRow
                 key={`${asset.path}:${asset.markdownUrl}`}
+                docPath={docPath}
                 asset={asset}
               />
             ))}
@@ -218,8 +219,10 @@ export function AssetPanel({
 }
 
 function AssetRow({
+  docPath,
   asset,
 }: {
+  docPath: string;
   asset: AssetEntry;
 }): JSX.Element {
   const { t } = useTranslation();
@@ -247,7 +250,7 @@ function AssetRow({
         <IconAction
           label={t('editor.copyMarkdown')}
           disabled={!asset.exists}
-          onClick={() => void writeClipboardText(markdownForAsset(asset))}
+          onClick={() => void writeClipboardText(markdownForAsset(asset, docPath))}
         >
           <Copy />
         </IconAction>

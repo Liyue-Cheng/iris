@@ -10,7 +10,7 @@
  * projecting state onto the DOM is part of reflecting the world.
  */
 import { useSyncExternalStore } from 'react';
-import type { Settings, SettingsChangedEvent } from '@shared/types';
+import type { PaneStyle, Settings, SettingsChangedEvent } from '@shared/types';
 import { CHANNELS, EVENTS } from '@shared/protocol';
 import { initializeRendererI18n } from '@renderer/i18n';
 
@@ -66,4 +66,9 @@ export function useSettings(): Settings | null {
     },
     () => settings,
   );
+}
+
+/** Main-window column framing; 'cards' until settings have loaded. */
+export function usePaneStyle(): PaneStyle {
+  return useSettings()?.appearance.paneStyle ?? 'cards';
 }

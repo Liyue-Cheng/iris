@@ -1,8 +1,8 @@
 /**
  * A compact badge primitive with four visual variants:
  *   solid   — filled pill, base-colored text (strong emphasis: Done / urgent)
- *   soft    — tinted pill + leading dot (the workhorse status look)
- *   outline — hairline ring, transparent fill (muted / not-started)
+ *   soft    — tinted rounded rectangle, no dot (the workhorse status look)
+ *   outline — hairline ring + leading dot, transparent fill (muted / not-started)
  *   dot     — colored dot + plain text, no fill
  *
  * Color comes through CSS vars by inline style so palette and product-level
@@ -38,7 +38,7 @@ export function colorVar(color: BadgeColor): string {
 }
 
 function hasDot(t: BadgeTemplate): boolean {
-  return t.variant === 'soft' || t.variant === 'dot' || t.variant === 'outline';
+  return t.variant === 'dot' || t.variant === 'outline';
 }
 
 export function Badge({
@@ -58,7 +58,8 @@ export function Badge({
   return (
     <span
       className={cn(
-        'iris-badge inline-flex min-w-0 max-w-44 items-center gap-1 overflow-hidden rounded-full font-medium leading-none',
+        'iris-badge inline-flex min-w-0 max-w-44 items-center gap-1 overflow-hidden font-medium leading-none',
+        template.variant === 'soft' ? 'rounded-sm' : 'rounded-full',
         size === 'md' ? 'h-[22px] px-2 text-xs' : 'h-[19px] px-1.5 text-[11px]',
         className,
       )}

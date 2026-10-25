@@ -204,6 +204,24 @@ describe('recent project settings', () => {
     expect(() => validateSettings(invalid)).toThrow(/terminalDocDrop=.*path or content/);
   });
 
+  it('defaults older settings to the card pane style and accepts only known styles', () => {
+    const { paneStyle: _omitted, ...olderAppearance } = DEFAULT_SETTINGS.appearance;
+    const merged = deepMerge(DEFAULT_SETTINGS, {
+      appearance: olderAppearance,
+    } as DeepPartial<Settings>);
+    expect(merged.appearance.paneStyle).toBe('cards');
+
+    for (const style of ['cards', 'layered'] as const) {
+      const settings = structuredClone(DEFAULT_SETTINGS);
+      settings.appearance.paneStyle = style;
+      expect(() => validateSettings(settings)).not.toThrow();
+    }
+
+    const invalid = structuredClone(DEFAULT_SETTINGS);
+    invalid.appearance.paneStyle = 'grid' as Settings['appearance']['paneStyle'];
+    expect(() => validateSettings(invalid)).toThrow(/paneStyle=.*cards or layered/);
+  });
+
   it('requires the automatic Done checkbox setting to be boolean', () => {
     const invalid = structuredClone(DEFAULT_SETTINGS);
     invalid.behavior.autoCheckTodosOnDone = 'yes' as unknown as boolean;

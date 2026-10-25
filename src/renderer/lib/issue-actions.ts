@@ -5,11 +5,7 @@
  * session when the target doc happens to be open (otherwise the panel
  * write and the editor would race).
  */
-import {
-  checkAllTaskCheckboxes,
-  setFrontmatterKey,
-  splitFrontmatter,
-} from '@shared/markdown-utils';
+import { checkAllDocTaskCheckboxes, setDocField as withDocField } from '@shared/doc-fields';
 import { pipeline } from '@renderer/cpu';
 import { confirmDialog } from '@renderer/components/ui/confirm-dialog';
 import { editorStore, readDocFromDisk } from '@renderer/stores/editor-store';
@@ -31,12 +27,11 @@ export async function setDocField(path: string, key: string, value: string): Pro
     return;
   }
   const content = await readDocFromDisk(path);
-  const { fmBlock, body } = splitFrontmatter(content.raw);
-  const nextFm = setFrontmatterKey(fmBlock, key, value);
-  if (nextFm === fmBlock) return; // malformed block — refuse to guess
+  const nextRaw = withDocField(path, content.raw, key, value);
+  if (nextRaw === content.raw) return; // malformed block — refuse to guess
   await pipeline.dispatch('doc.save', {
     path,
-    content: nextFm + body,
+    content: nextRaw,
     expectedContent: content.raw,
   });
 }
@@ -83,9 +78,7 @@ async function setDocStatusField(
   }
   const content = await readDocFromDisk(path);
   if (content.frontmatterBroken) return;
-  const { fmBlock, body } = splitFrontmatter(content.raw);
-  const nextFm = setFrontmatterKey(fmBlock, 'status', status);
-  const nextRaw = checkAllTaskCheckboxes(nextFm + body);
+  const nextRaw = checkAllDocTaskCheckboxes(path, withDocField(path, content.raw, 'status', status));
   if (nextRaw === content.raw) return;
   await pipeline.dispatch('doc.save', {
     path,

@@ -187,6 +187,13 @@ describe('editorStore transaction coordinator', () => {
       expectedContent: raw,
     });
     expect(editorStore.get()).toMatchObject({ dirty: false, mode: 'source' });
+    const updated = editorStore.get()!;
+    expect(updated.generation).toBe(current.generation + 1);
+    // An update from the retired source editor must not undo the header edit.
+    editorStore.setSourceText(current.path, current.generation, 'stale buffer');
+    expect(editorStore.get()?.sourceText).toBe(updated.sourceText);
+    editorStore.setSourceText(updated.path, updated.generation, `${updated.sourceText}next\n`);
+    expect(editorStore.getFrontmatterField('status')).toBe('In Progress');
   });
 
   it('blocks conflict saves in ask mode and supports explicit overwrite', async () => {
@@ -237,5 +244,86 @@ describe('editorStore transaction coordinator', () => {
       saving: false,
       saveError: 'disk full',
     });
+  });
+
+  it('edits HTML head metadata surgically and saves the whole page', async () => {
+    const page = '<html>\n<head>\n  <title>Old</title>\n</head>\n<body><p>keep</p></body>\n</html>\n';
+    editorStore.openSession({ ...doc(page), path: '.iris/report/page.html' });
+    expect(editorStore.get()).toMatchObject({ mode: 'source', htmlPreview: true, dirty: false });
+    expect(editorStore.getFrontmatterField('title')).toBe('Old');
+
+    await editorStore.setFrontmatterField('status', 'Backlog');
+
+    const expected = page.replace('</head>', '  <meta name="iris:status" content="Backlog">\n</head>');
+    expect(mocks.dispatch).toHaveBeenCalledWith('doc.save', {
+      path: '.iris/report/page.html',
+      content: expected,
+      expectedContent: page,
+    });
+    expect(editorStore.get()).toMatchObject({ dirty: false, baselineRaw: expected });
+    expect(editorStore.getFrontmatterField('status')).toBe('Backlog');
+  });
+
+  it('toggles an HTML session between preview and source, flushing before preview', async () => {
+    mocks.behavior.editorAutosave = false;
+    const page = '<html><head><title>T</title></head><body></body></html>';
+    editorStore.openSession({ ...doc(page), path: '.iris/report/page.html' });
+
+    editorStore.toggleMode();
+    const source = editorStore.get()!;
+    expect(source).toMatchObject({ htmlPreview: false, mode: 'source' });
+    editorStore.setSourceText(source.path, source.generation, `${page}\n`);
+    expect(editorStore.get()?.dirty).toBe(true);
+
+    editorStore.toggleMode();
+    await vi.waitFor(() => expect(editorStore.get()?.htmlPreview).toBe(true));
+    await vi.waitFor(() =>
+      expect(mocks.dispatch).toHaveBeenCalledWith('doc.save', {
+        path: '.iris/report/page.html',
+        content: `${page}\n`,
+        expectedContent: page,
+      }),
+    );
+
+    // A reload of the same document keeps the chosen view.
+    editorStore.toggleMode();
+    editorStore.openSession({ ...doc('<p>external</p>'), path: '.iris/report/page.html' });
+    expect(editorStore.get()?.htmlPreview).toBe(false);
+  });
+
+  it('keeps the HTML draft visible while a save is pending or fails', async () => {
+    mocks.behavior.editorAutosave = false;
+    const page = '<head><title>T</title></head><body>old</body>';
+    editorStore.openSession({ ...doc(page), path: '.iris/report/page.html' });
+    editorStore.toggleMode();
+    const source = editorStore.get()!;
+    editorStore.setSourceText(source.path, source.generation, page.replace('old', 'draft'));
+    const save = deferred();
+    mocks.dispatch.mockReturnValueOnce(save.promise);
+
+    editorStore.toggleMode();
+    expect(editorStore.get()).toMatchObject({ htmlPreview: false, saving: true });
+    save.reject(new Error('disk full'));
+    await vi.waitFor(() => expect(editorStore.get()).toMatchObject({
+      htmlPreview: false, dirty: true, saveError: 'disk full',
+    }));
+  });
+
+  it('does not switch a different HTML document after an earlier save completes', async () => {
+    mocks.behavior.editorAutosave = false;
+    editorStore.openSession({ ...doc('<p>old</p>'), path: '.iris/report/first.html' });
+    editorStore.toggleMode();
+    const source = editorStore.get()!;
+    editorStore.setSourceText(source.path, source.generation, '<p>draft</p>');
+    const save = deferred();
+    mocks.dispatch.mockReturnValueOnce(save.promise);
+    editorStore.toggleMode();
+
+    editorStore.openSession({ ...doc('<p>other</p>'), path: '.iris/report/other.html' });
+    editorStore.toggleMode();
+    save.resolve();
+    await vi.waitFor(() => expect(editorStore.get()).toMatchObject({
+      path: '.iris/report/other.html', htmlPreview: false, saving: false,
+    }));
   });
 });

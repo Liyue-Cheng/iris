@@ -1,6 +1,8 @@
 /**
  * Single-doc view (M2): typed header + WYSIWYG body (Crepe) with the
  * CodeMirror source-mode escape hatch. Replaces M1's read-only DocPreview.
+ * HTML documents swap the WYSIWYG body for a sandboxed preview of the saved
+ * page; their editing surface is the same CodeMirror source mode.
  *
  * Save surfaces: Ctrl+S, window blur, doc switch (project-store flushes),
  * and immediate persist on header field edits.
@@ -35,6 +37,7 @@ import {
 import { TypedHeader } from './TypedHeader';
 import { CrepeEditor } from './CrepeEditor';
 import { SourceEditor } from './SourceEditor';
+import { HtmlPreview } from './HtmlPreview';
 import { runUserAction } from '@renderer/lib/action-runtime';
 
 export function DocView(): JSX.Element {
@@ -207,7 +210,9 @@ export function DocView(): JSX.Element {
               }
             }}
           >
-            {session.mode === 'wysiwyg' ? (
+            {session.htmlPreview ? (
+              <HtmlPreview path={session.path} savedText={session.baselineRaw} />
+            ) : session.mode === 'wysiwyg' ? (
               <CrepeEditor
                 path={session.path}
                 generation={session.generation}

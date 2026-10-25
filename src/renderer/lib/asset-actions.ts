@@ -1,5 +1,6 @@
 import type { AssetImportResult, AssetInventory, AssociatedPathEntry } from '@shared/types';
 import { CHANNELS } from '@shared/protocol';
+import { docFormatOf, htmlForAsset } from '@shared/html-doc';
 import { pipeline } from '@renderer/cpu';
 import { projectScopeState, sameProjectScope } from '@renderer/stores/project-scope-state';
 
@@ -46,7 +47,12 @@ export async function pickAssociatedPath(kind: 'file' | 'directory'): Promise<st
   return window.api.invoke<{ kind: typeof kind }, string | null>(CHANNELS.DIALOG_PICK_ASSET_PATH, { kind });
 }
 
-export function markdownForAsset(asset: AssetImportResult | AssetInventory['assets'][number]): string {
+/** Reference snippet for an asset, in the host document's own syntax. */
+export function markdownForAsset(
+  asset: AssetImportResult | AssetInventory['assets'][number],
+  docPath?: string,
+): string {
+  if (docPath && docFormatOf(docPath) === 'html') return htmlForAsset(asset);
   const label = asset.name.replace(/\.[^.]+$/, '');
   return asset.kind === 'image'
     ? `![${label}](${asset.markdownUrl})`

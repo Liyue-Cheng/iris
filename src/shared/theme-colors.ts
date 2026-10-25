@@ -21,6 +21,7 @@ export const THEME_BASE_COLORS: Record<ThemeId, ThemeBaseColors> = {
   'tokyo-night': { foreground: '#c0caf5', background: '#1a1b26' },
   'catppuccin-mocha': { foreground: '#cdd6f4', background: '#1e1e2e' },
   'catppuccin-latte': { foreground: '#4c4f69', background: '#eff1f5' },
+  paper: { foreground: '#2a2925', background: '#ffffff' },
 };
 
 export function themeBaseColors(theme: ThemeId | undefined): ThemeBaseColors {

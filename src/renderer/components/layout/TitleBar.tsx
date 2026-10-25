@@ -44,6 +44,7 @@ const THEME_LABELS: Record<ThemeId, { label: string; icon: typeof Moon }> = {
   'tokyo-night': { label: 'Tokyo Night', icon: Moon },
   'catppuccin-mocha': { label: 'Catppuccin Mocha', icon: Moon },
   'catppuccin-latte': { label: 'Catppuccin Latte', icon: Sun },
+  paper: { label: 'Paper', icon: Sun },
 };
 
 function ProjectCrumb(): JSX.Element | null {
@@ -123,6 +124,8 @@ export function TitleBar(): JSX.Element {
   const settings = useSettings();
 
   const theme = settings?.appearance.theme ?? 'rose-pine';
+  // The title bar shares the backdrop of the pane shell below it (ThreePane).
+  const layered = settings?.appearance.paneStyle === 'layered';
 
   function switchTheme(next: string): void {
     // Side effect → instruction. The store updates when the main process
@@ -135,7 +138,12 @@ export function TitleBar(): JSX.Element {
   }
 
   return (
-    <div className="app-region-drag flex h-10 shrink-0 items-center gap-2 bg-card pl-3">
+    <div
+      className={cn(
+        'app-region-drag flex h-10 shrink-0 items-center gap-2 pl-3',
+        layered ? 'bg-shell' : 'bg-card',
+      )}
+    >
       <span className="text-sm font-semibold tracking-wide text-primary">Iris</span>
       <ProjectCrumb />
       <div className="ml-auto min-w-0">

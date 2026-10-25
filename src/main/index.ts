@@ -20,6 +20,7 @@
  */
 import { app } from 'electron';
 import { logger } from './logger';
+import { registerHtmlDocScheme } from './html-doc-protocol';
 
 // smoke-launch.mjs pattern-matches this line as the bootstrap milestone.
 console.log('[main] bootstrap starting');
@@ -50,5 +51,9 @@ if (!app.requestSingleInstanceLock()) {
   // Winner: load and run the real main process. The dynamic import makes rollup
   // emit ./app-main as its own chunk, so the loser branch never touches it.
   logger.info('boot', `won single-instance lock — loading app-main pid=${process.pid}`);
+  // Privileged schemes must be registered before `ready`, and app-main loads
+  // asynchronously, so this cannot wait for it. Electron + node builtins only —
+  // no native backend.
+  registerHtmlDocScheme();
   void import('./app-main.js');
 }

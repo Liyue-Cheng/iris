@@ -101,6 +101,9 @@ export const CHANNELS = {
   /** Query: read an image referenced relative to a Markdown document. The
    *  main process confines the path to the project and returns a data URL. */
   DOC_IMAGE_READ: 'doc:image-read',
+  /** Query: `iris-doc://<token>/` base URL for the sandboxed HTML document
+   *  preview of the window's current project. */
+  DOC_PREVIEW_BASE: 'doc:preview-base',
   /** Verbs (instruction-backed): write a doc verbatim / create a typed doc /
    *  delete a doc (the software protocol's "do not delete" rule binds the
    *  agent's write-back, not the user's UI gesture). */

@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AgentConfig, IrisAgentAnchor } from '@shared/types';
+import { stripDocExtension } from '@shared/html-doc';
 import {
   workspaceAnchorKey,
 } from '@renderer/stores/session-store';
@@ -143,7 +144,7 @@ export function RightPane(): JSX.Element {
     : selectedPath
       ? anchorDoc
         ? docDisplayTitle(anchorDoc)
-        : (selectedPath.split('/').pop()?.replace(/\.md$/i, '') ?? selectedPath)
+        : stripDocExtension(selectedPath.split('/').pop() ?? selectedPath)
       : t('layout.projectRoot');
   const AnchorIcon = isHub ? FolderRoot : FileText;
   // The history dialog is anchor-scoped, exactly like the session list itself:

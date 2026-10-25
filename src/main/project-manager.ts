@@ -41,6 +41,14 @@ import type {
 } from '@shared/types';
 import { DOC_TYPES } from '@shared/types';
 import { slugify } from '@shared/markdown-utils';
+import {
+  docFormatOf,
+  htmlDocSkeleton,
+  isIrisDocFileName,
+  readHtmlDocMetadata,
+  type DocFormat,
+} from '@shared/html-doc';
+import { REPORT_STATUS } from '@shared/document-status';
 import { parseFrontmatter, scanProject, scanRawTree } from './iris-scanner';
 import { FOREIGN_AGENT_ENTRIES } from './iris-templates';
 import {
@@ -244,6 +252,10 @@ export class ProjectManager extends EventEmitter {
         }),
       );
     }
+    if (docFormatOf(relPath) === 'html') {
+      // HTML metadata lives in the head; the whole page is the body.
+      return { path: relPath, raw, body: raw, frontmatter: readHtmlDocMetadata(raw), frontmatterBroken: false };
+    }
     const { frontmatter, broken } = parseFrontmatter(raw);
     const body = broken || frontmatter !== null ? stripFrontmatter(raw) : raw;
     return { path: relPath, raw, body, frontmatter, frontmatterBroken: broken };
@@ -388,17 +400,27 @@ export class ProjectManager extends EventEmitter {
    * Create a doc in a typed folder (doc.create instruction body).
    * issue/report names get the protocol's date prefix (concurrent creation
    * by multiple humans/agents must not collide); collisions append -2, -3…
+   * HTML documents may live in any typed folder, but Iris only CREATES them
+   * in report/ — issues and status docs stay Markdown (append history, task
+   * checkboxes).
    */
   async createDoc(payload: {
     workspacePath: string;
     type: DocType;
     title: string;
+    format?: DocFormat;
   }): Promise<{ path: string }> {
     const root = this.requireRoot();
     const { workspacePath, type, title } = payload;
-    if (!workspacePath || !type || typeof title !== 'string') {
+    const format = payload.format ?? 'markdown';
+    if (
+      !workspacePath || !type || typeof title !== 'string' ||
+      (format !== 'markdown' && format !== 'html') ||
+      (format === 'html' && type !== 'report')
+    ) {
       throw new ProjectError('InvalidPayload', mainT('error.projectCreatePayload'));
     }
+    const extension = format === 'html' ? '.html' : '.md';
     const slug = slugify(title);
     const today = new Date();
     const datePrefix = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}-`;
@@ -407,19 +429,18 @@ export class ProjectManager extends EventEmitter {
     const dirAbs = this.resolveInside(root, `${workspacePath}/${type}`);
     await fs.mkdir(dirAbs, { recursive: true });
 
-    let fileName = `${baseName}.md`;
-    for (let n = 2; ; n++) {
-      try {
-        await fs.access(join(dirAbs, fileName));
-        fileName = `${baseName}-${n}.md`; // exists → try next
-      } catch {
-        break; // free
-      }
-    }
+    // A sibling of either format claims the shared `<name>.assets/` directory.
+    const taken = async (name: string): Promise<boolean> =>
+      (await Promise.all(['.md', '.html', '.htm'].map((ext) => exists(join(dirAbs, name + ext)))))
+        .some(Boolean);
+    let stem = baseName;
+    for (let n = 2; await taken(stem); n++) stem = `${baseName}-${n}`;
+    const fileName = stem + extension;
 
-    // No body H1: the typed header owns the title (frontmatter 不进正文编辑器);
-    // a scaffolded heading would render the title twice.
-    const content = docSkeleton(type, title);
+    // Markdown: no body H1 — the typed header owns the title (frontmatter 不进
+    // 正文编辑器); a scaffolded heading would render the title twice. HTML is a
+    // standalone page, so its skeleton carries its own visible heading.
+    const content = format === 'html' ? htmlDocSkeleton(title, REPORT_STATUS.active) : docSkeleton(type, title);
 
     const relPath = `${workspacePath}/${type}/${fileName}`;
     const abs = this.resolveInside(root, relPath);
@@ -441,7 +462,8 @@ export class ProjectManager extends EventEmitter {
   /**
    * Delete a doc (doc.delete instruction body — a HUMAN UI gesture; the
    * software prompt's "do not delete issues" binds agent write-back, not the
-   * user). Scoped to markdown files under .iris/ — the only files Iris owns.
+   * user). Scoped to Iris document files (.md/.html) under .iris/ — the only
+   * files Iris owns.
    */
   async deleteDoc(
     relPath: string,
@@ -449,7 +471,7 @@ export class ProjectManager extends EventEmitter {
       fs.rm(path, { recursive: true }),
   ): Promise<{ path: string; assetCount: number }> {
     const root = this.requireRoot();
-    if (!/\.md$/i.test(relPath) || !relPath.replace(/\\/g, '/').startsWith('.iris/')) {
+    if (!isIrisDocFileName(relPath) || !relPath.replace(/\\/g, '/').startsWith('.iris/')) {
       throw new ProjectError('InvalidPayload', mainT('error.projectDeleteRefused', { path: relPath }));
     }
     const abs = this.resolveInside(root, relPath);

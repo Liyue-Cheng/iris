@@ -1,3 +1,5 @@
+import { isIrisDocFileName } from '@shared/html-doc';
+
 export type MarkdownLinkTarget =
   | { kind: 'external'; url: string }
   | { kind: 'document'; path: string; fragment: string | null }
@@ -65,7 +67,7 @@ export function resolveMarkdownLink(currentPath: string, href: string): Markdown
     !decodedPath ||
     decodedPath.startsWith('/') ||
     decodedPath.includes('\\') ||
-    !decodedPath.toLowerCase().endsWith('.md')
+    !isIrisDocFileName(decodedPath)
   ) {
     return { kind: 'invalid' };
   }

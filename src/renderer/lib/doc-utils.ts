@@ -5,6 +5,7 @@ import {
   isInactiveOpenIssueStatus,
   isResolvedIssueStatus,
 } from '@shared/document-status';
+import { stripDocExtension } from '@shared/html-doc';
 
 /** Unknown/missing/deviant soft values stay visible by shared fallback policy. */
 export function isActiveIssue(doc: IrisDoc): boolean {
@@ -20,7 +21,7 @@ export function isResolvedIssue(doc: IrisDoc): boolean {
 }
 
 export function docDisplayTitle(doc: IrisDoc): string {
-  return doc.title ?? doc.name.replace(/\.md$/i, '');
+  return doc.title ?? stripDocExtension(doc.name);
 }
 
 /**

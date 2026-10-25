@@ -218,7 +218,7 @@ export function LeftPane(): JSX.Element {
   };
 
   return (
-    <div className="flex h-full flex-col bg-background">
+    <div className="flex h-full flex-col">
       {/*
         Header is a pure utility bar: project identity lives once in the lens
         tree's interactive root node (and always-visible in the title-bar crumb),

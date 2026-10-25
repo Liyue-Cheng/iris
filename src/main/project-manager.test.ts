@@ -94,3 +94,46 @@ describe('ProjectManager document aggregate deletion', () => {
     expect(await fs.readFile(join(companion, 'orphan--123456789abc.txt'), 'utf8')).toBe('asset');
   });
 });
+
+describe('ProjectManager HTML documents', () => {
+  it('creates HTML pages only in report/ and avoids companion-dir collisions', async () => {
+    const md = await manager.createDoc({ workspacePath: '.iris', type: 'report', title: '评审' });
+    const page = await manager.createDoc({
+      workspacePath: '.iris',
+      type: 'report',
+      title: '评审',
+      format: 'html',
+    });
+    expect(md.path).toMatch(/^\.iris\/report\/\d{4}-\d{2}-\d{2}-评审\.md$/);
+    // Same stem as the .md would share `<name>.assets/`, so the page gets -2.
+    expect(page.path).toBe(md.path.replace(/\.md$/, '-2.html'));
+
+    const content = await manager.readDoc(page.path);
+    expect(content.frontmatter).toEqual({ title: '评审', status: 'Active' });
+    expect(content.body).toBe(content.raw);
+    expect(content.frontmatterBroken).toBe(false);
+
+    await expect(
+      manager.createDoc({ workspacePath: '.iris', type: 'issue', title: 'x', format: 'html' }),
+    ).rejects.toMatchObject({ code: 'InvalidPayload' } satisfies Partial<ProjectError>);
+  });
+
+  it('scans and deletes HTML documents like Markdown ones', async () => {
+    const page = '.iris/issue/page.html';
+    await fs.writeFile(
+      join(dir, page),
+      '<html><head><title>Page</title><meta name="iris:status" content="Todo"></head><body>- [ ] not a task</body></html>',
+      'utf8',
+    );
+    const { root } = await manager.scan();
+    expect(root!.docs.find((doc) => doc.path === page)).toMatchObject({
+      title: 'Page',
+      status: 'Todo',
+      todos: [],
+      frontmatterBroken: false,
+    });
+
+    await expect(manager.deleteDoc(page)).resolves.toEqual({ path: page, assetCount: 0 });
+    await expect(fs.access(join(dir, page))).rejects.toThrow();
+  });
+});

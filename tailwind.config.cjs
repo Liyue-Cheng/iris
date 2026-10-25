@@ -18,6 +18,8 @@ module.exports = {
       colors: {
         background: 'var(--background)',
         foreground: 'var(--foreground)',
+        // Base sheet under the title bar / tree / document column.
+        shell: 'var(--shell)',
         card: {
           DEFAULT: 'var(--card)',
           foreground: 'var(--card-foreground)',

@@ -531,6 +531,7 @@ const THEMES: Array<{ id: ThemeId; label: string; icon: typeof Moon; toneKey: 's
   { id: 'tokyo-night', label: 'Tokyo Night', icon: Moon, toneKey: 'settings.dark' },
   { id: 'catppuccin-mocha', label: 'Catppuccin Mocha', icon: Moon, toneKey: 'settings.dark' },
   { id: 'catppuccin-latte', label: 'Catppuccin Latte', icon: Sun, toneKey: 'settings.light' },
+  { id: 'paper', label: 'Paper', icon: Sun, toneKey: 'settings.light' },
 ];
 
 // Hardcoded hex values for inactive-theme color previews (CSS vars only resolve
@@ -551,6 +552,7 @@ const THEME_COLORS: Record<ThemeId, [string, string, string, string, string]> = 
   'tokyo-night':      ['#1a1b26', '#16161e', '#bb9af7', '#7dcfff', '#ff9e64'],
   'catppuccin-mocha': ['#1e1e2e', '#181825', '#cba6f7', '#94e2d5', '#fab387'],
   'catppuccin-latte': ['#eff1f5', '#e6e9ef', '#8839ef', '#179299', '#fe640b'],
+  'paper':            ['#ffffff', '#fafaf8', '#b9573a', '#2f6f8f', '#d97757'],
 };
 
 function AppearancePanel({ setError }: { setError: (m: string | null) => void }): JSX.Element {
@@ -594,6 +596,17 @@ function AppearancePanel({ setError }: { setError: (m: string | null) => void })
               </button>
             ))}
           </div>
+        </SettingRow>
+
+        <SettingRow label={t('settings.paneStyle')} hint={t('settings.paneStyleHint')}>
+          <Segmented
+            value={settings?.appearance.paneStyle ?? 'cards'}
+            options={[
+              { value: 'cards', label: t('settings.paneStyleCards') },
+              { value: 'layered', label: t('settings.paneStyleLayered') },
+            ]}
+            onChange={(v) => void updateSettings({ appearance: { paneStyle: v } }, setError)}
+          />
         </SettingRow>
       </SettingGroup>
 
@@ -678,6 +691,26 @@ function AppearancePanel({ setError }: { setError: (m: string | null) => void })
           <ToggleSwitch
             checked={settings?.behavior.editorBlockEdit ?? false}
             onChange={(v) => void updateSettings({ behavior: { editorBlockEdit: v } }, setError)}
+          />
+        </SettingRow>
+
+        <SettingRow
+          label={t('settings.htmlPreviewScripts')}
+          hint={t('settings.htmlPreviewScriptsHint')}
+        >
+          <ToggleSwitch
+            checked={settings?.behavior.htmlPreviewScripts ?? true}
+            onChange={(v) => void updateSettings({ behavior: { htmlPreviewScripts: v } }, setError)}
+          />
+        </SettingRow>
+
+        <SettingRow
+          label={t('settings.htmlPreviewNetwork')}
+          hint={t('settings.htmlPreviewNetworkHint')}
+        >
+          <ToggleSwitch
+            checked={settings?.behavior.htmlPreviewNetwork ?? false}
+            onChange={(v) => void updateSettings({ behavior: { htmlPreviewNetwork: v } }, setError)}
           />
         </SettingRow>
 
