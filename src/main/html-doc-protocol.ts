@@ -19,7 +19,7 @@
 import { protocol, session, shell, type WebContents } from 'electron';
 import { promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { extname, relative, resolve, sep } from 'node:path';
+import { extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { HTML_DOC_SCHEME } from '@shared/html-doc';
 import { logger } from './logger';
 
@@ -113,7 +113,7 @@ export function resolvePreviewPath(root: string, pathname: string): string | nul
 
 function isInside(root: string, abs: string): boolean {
   const rel = relative(root, abs);
-  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !/^[a-z]:/i.test(rel);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
 /**

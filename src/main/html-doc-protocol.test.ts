@@ -1,16 +1,27 @@
 import { describe, expect, it, vi } from 'vitest';
 import { join, resolve } from 'node:path';
+import { promises as fs } from 'node:fs';
+import { session } from 'electron';
 
 vi.mock('electron', () => ({
   app: { getPath: () => process.cwd(), isPackaged: false },
   protocol: { registerSchemesAsPrivileged: vi.fn() },
-  session: {},
+  session: { defaultSession: {
+    protocol: { handle: vi.fn() },
+    setPermissionRequestHandler: vi.fn(),
+    setPermissionCheckHandler: vi.fn(),
+  } },
   shell: {},
+}));
+
+vi.mock('node:fs', () => ({
+  promises: { realpath: vi.fn(), stat: vi.fn(), readFile: vi.fn() },
 }));
 
 const {
   buildPreviewCsp,
   grantHtmlPreview,
+  installHtmlDocProtocol,
   previewMimeType,
   resolvePreviewPath,
   revokeHtmlPreview,
@@ -84,5 +95,27 @@ describe('previewMimeType', () => {
     expect(previewMimeType('a.HTML')).toBe('text/html; charset=utf-8');
     expect(previewMimeType('x.svg')).toBe('image/svg+xml');
     expect(previewMimeType('x.unknown')).toBe('application/octet-stream');
+  });
+});
+
+describe('preview request realpath boundary', () => {
+  it.skipIf(process.platform !== 'win32')('rejects a local link resolved onto a UNC share', async () => {
+    const owner = {};
+    const scope = { root: 'C:\\project', generation: 1 };
+    const base = grantHtmlPreview(owner, scope, () => scope);
+    installHtmlDocProtocol(() => ({ scripts: true, network: false }));
+    vi.mocked(fs.realpath).mockImplementation(async (file) =>
+      String(file) === scope.root ? scope.root : '\\\\server\\share\\secret.txt',
+    );
+    vi.mocked(fs.stat).mockResolvedValue({
+      isFile: () => true, size: 6,
+    } as Awaited<ReturnType<typeof fs.stat>>);
+    vi.mocked(fs.readFile).mockResolvedValue(Buffer.from('secret'));
+    vi.mocked(fs.readFile).mockClear();
+    const handler = vi.mocked(session.defaultSession.protocol.handle).mock.calls.at(-1)![1];
+    const response = await handler(new Request(base + 'linked/secret.txt'));
+    expect(response.status).toBe(404);
+    expect(fs.readFile).not.toHaveBeenCalled();
+    revokeHtmlPreview(owner);
   });
 });
