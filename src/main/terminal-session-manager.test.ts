@@ -11,6 +11,7 @@ vi.mock('node-pty', () => ({ spawn: vi.fn() }));
 import {
   ensureFocusScriptCurrent,
   FOCUS_CONTEXT_SCRIPT,
+  POSIX_FOCUS_CONTEXT_SCRIPT,
   removeIrisHookHandlers,
 } from './agent-injection';
 import { logger } from './logger';
@@ -168,7 +169,7 @@ describe('session context environment', () => {
     if (process.platform === 'win32') {
       expect(capturedArgs.includes('-NoExit') || capturedArgs.includes('/k')).toBe(true);
     } else {
-      expect(capturedArgs.some((arg) => arg.includes('exec'))).toBe(true);
+      expect(capturedArgs).toContain('-ilc');
     }
     expect(session.agentId).toBe('custom');
     expect(session.displayName).toBe('Custom agent');
@@ -631,7 +632,10 @@ describe('Iris hook config removal', () => {
 describe('focus-context script lifecycle', () => {
   it('creates missing scripts, updates stale scripts, and leaves current scripts untouched', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'iris-focus-script-sync-'));
-    const scriptPath = join(dir, 'focus-context.ps1');
+    const scriptPath = join(dir, process.platform === 'win32' ? 'focus-context.ps1' : 'focus-context.sh');
+    const expected = process.platform === 'win32'
+      ? `\uFEFF${FOCUS_CONTEXT_SCRIPT}`
+      : POSIX_FOCUS_CONTEXT_SCRIPT;
 
     try {
       await expect(ensureFocusScriptCurrent(scriptPath)).resolves.toEqual({
@@ -639,7 +643,7 @@ describe('focus-context script lifecycle', () => {
         action: 'created',
       });
       const current = readFileSync(scriptPath, 'utf8');
-      expect(current).toBe(`\uFEFF${FOCUS_CONTEXT_SCRIPT}`);
+      expect(current).toBe(expected);
 
       writeFileSync(scriptPath, '\uFEFF# stale Iris focus-context', 'utf8');
       await expect(ensureFocusScriptCurrent(scriptPath)).resolves.toEqual({

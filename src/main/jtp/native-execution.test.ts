@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createTempDataDir, removeTempDataDir } from '../persistence';
 import { AGENT_READ_IMAGE_MAX_BYTES, JtpNativeExecution } from './native-execution';
+import { createPlatformServices } from '../platform';
 
 /** A PNG header plus padding, so the byte count is stable and predictable. */
 function pngFixture(width: number, height: number): Buffer {
@@ -15,11 +16,11 @@ function pngFixture(width: number, height: number): Buffer {
   return Buffer.concat([header, Buffer.alloc(777)]);
 }
 
-const commandShell = {
-  kind: 'powershell' as const,
-  executable: 'pwsh.exe',
-  displayName: 'PowerShell 7',
-};
+const commandShell = createPlatformServices().capabilities.shell;
+
+function shellCommand(powershell: string, posix: string): string {
+  return commandShell.kind === 'powershell' ? powershell : posix;
+}
 
 const correlation = {
   sessionId: 'agent-1',
@@ -218,7 +219,10 @@ describe('JtpNativeExecution', () => {
         {
           tool: 'terminal',
           operation: 'exec',
-          command: "Write-Output 'tsconfig.node.json'",
+          command: shellCommand(
+            "Write-Output 'tsconfig.node.json'",
+            "printf '%s\\n' 'tsconfig.node.json'",
+          ),
           intent: 'information',
           timeout: 30,
           cwd: projectRoot,
@@ -299,7 +303,7 @@ describe('JtpNativeExecution', () => {
         {
           tool: 'terminal',
           operation: 'exec',
-          command: 'Write-Output (Get-Location).Path',
+          command: shellCommand('Write-Output (Get-Location).Path', 'pwd'),
           intent: 'information',
           timeout: 30,
           cwd: linkedDirectory,
@@ -328,7 +332,10 @@ describe('JtpNativeExecution', () => {
         {
           tool: 'terminal',
           operation: 'exec',
-          command: "Write-Output 'before failure'; exit 7",
+          command: shellCommand(
+            "Write-Output 'before failure'; exit 7",
+            "printf '%s\\n' 'before failure'; exit 7",
+          ),
           intent: 'operation',
           timeout: 30,
           cwd: projectRoot,

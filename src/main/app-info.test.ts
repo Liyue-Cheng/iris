@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { join } from 'node:path';
 import type { AppBuildType } from '@shared/types';
 import {
   buildAppInfo,
@@ -82,27 +83,29 @@ describe('About actions', () => {
   });
 
   it('resolves legal files from the app root in dev and resources when packaged', () => {
+    const appPath = join('root', 'repo');
+    const resourcesPath = join('root', 'resources');
     expect(
       legalDocumentPath(
-        { appPath: 'C:\\repo', resourcesPath: 'C:\\resources', packaged: false },
+        { appPath, resourcesPath, packaged: false },
         'license',
       ),
-    ).toBe('C:\\repo\\LICENSE');
+    ).toBe(join(appPath, 'LICENSE'));
     expect(
       legalDocumentPath(
-        { appPath: 'C:\\resources\\app.asar', resourcesPath: 'C:\\resources', packaged: true },
+        { appPath: join(resourcesPath, 'app.asar'), resourcesPath, packaged: true },
         'license',
       ),
-    ).toBe('C:\\resources\\LICENSE.txt');
+    ).toBe(join(resourcesPath, 'LICENSE.txt'));
     expect(
       legalDocumentPath(
-        { appPath: 'C:\\resources\\app.asar', resourcesPath: 'C:\\resources', packaged: true },
+        { appPath: join(resourcesPath, 'app.asar'), resourcesPath, packaged: true },
         'thirdPartyNotices',
       ),
-    ).toBe('C:\\resources\\THIRD_PARTY_NOTICES.txt');
+    ).toBe(join(resourcesPath, 'THIRD_PARTY_NOTICES.txt'));
     expect(() =>
       legalDocumentPath(
-        { appPath: 'C:\\repo', resourcesPath: 'C:\\resources', packaged: false },
+        { appPath, resourcesPath, packaged: false },
         'arbitrary',
       ),
     ).toThrow('unsupported document id');
