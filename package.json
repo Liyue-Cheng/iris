@@ -25,6 +25,7 @@
     "node": "^22.19.0 || >=24.0.0"
   },
   "scripts": {
+    "postinstall": "node scripts/fix-node-pty-permissions.mjs",
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
     "preview": "electron-vite preview",
