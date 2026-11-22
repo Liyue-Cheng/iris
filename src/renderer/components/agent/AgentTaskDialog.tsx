@@ -123,9 +123,11 @@ export function AgentTaskDialog({
               disabled={canceling}
               onClick={() => {
                 setCanceling(true);
-                // async-boundary: handled - the action reports its own failure,
-                // and the settled status clears the pending state.
-                void cancelIrisAgentTask(sessionId, task.taskId).catch(() => setCanceling(false));
+                // Keep success pending until the task settles; a refused request
+                // must immediately allow another cancellation attempt.
+                void cancelIrisAgentTask(sessionId, task.taskId).then((accepted) => {
+                  if (!accepted) setCanceling(false);
+                });
               }}
             >
               {canceling

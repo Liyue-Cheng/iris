@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   AlertTriangle,
@@ -12,13 +12,14 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
-import type { AssetEntry, AssetInventory, AssociatedPathEntry } from '@shared/types';
+import type { AssetEntry, AssetInventory, AssociatedPathEntry, ProjectScope } from '@shared/types';
 import { EVENTS } from '@shared/protocol';
 import { cn } from '@renderer/lib/utils';
 import { Button } from '@renderer/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@renderer/components/ui/dialog';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip';
 import { writeClipboardText } from '@renderer/lib/clipboard';
+import { projectScopeState, sameProjectScope } from '@renderer/stores/project-scope-state';
 import { openProjectItem, revealProjectItem } from '@renderer/lib/shell-actions';
 import {
   addAssociatedPath,
@@ -31,33 +32,65 @@ import {
   revealAssociatedPath,
 } from '@renderer/lib/asset-actions';
 
-export function AssetPanel({
-  docPath,
-  open,
-  onOpenChange,
-}: {
+interface AssetPanelProps {
   docPath: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-}): JSX.Element {
+}
+
+export function AssetPanel(props: AssetPanelProps): JSX.Element | null {
+  const scope = useSyncExternalStore(projectScopeState.subscribe, projectScopeState.get);
+  if (!props.open) return null;
+  return <AssetPanelContent key={JSON.stringify([scope?.root, scope?.generation, props.docPath])} {...props} scope={scope} />;
+}
+
+function AssetPanelContent({
+  docPath,
+  open,
+  onOpenChange,
+  scope,
+}: AssetPanelProps & { scope: ProjectScope | null }): JSX.Element {
   const { t } = useTranslation();
   const [inventory, setInventory] = useState<AssetInventory | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const lifetime = useRef({ active: false, epoch: 0 });
+  const refreshRequest = useRef(0);
+  const mutationPending = useRef(false);
+
+  useEffect(() => {
+    lifetime.current.active = true;
+    lifetime.current.epoch++;
+    return () => {
+      lifetime.current.active = false;
+      lifetime.current.epoch++;
+    };
+  }, []);
+
+  const ownRequest = useCallback((): (() => boolean) => {
+    const epoch = lifetime.current.epoch;
+    return () => lifetime.current.active && lifetime.current.epoch === epoch &&
+      sameProjectScope(scope, projectScopeState.get());
+  }, [scope]);
 
   const refresh = useCallback(async (): Promise<void> => {
+    const owned = ownRequest();
+    if (!owned()) return;
+    const request = ++refreshRequest.current;
+    const isCurrent = (): boolean => owned() && request === refreshRequest.current;
     setLoading(true);
     setError(null);
     try {
-      setInventory(await listAssets(docPath));
+      const next = await listAssets(docPath);
+      if (isCurrent()) setInventory(next);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (isCurrent()) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
-  }, [docPath]);
+  }, [docPath, ownRequest]);
 
   useEffect(() => {
     if (open) void refresh();
@@ -80,52 +113,72 @@ export function AssetPanel({
   }, [docPath, inventory?.directoryPath, open, refresh]);
 
   const importFiles = async (files: FileList | null): Promise<void> => {
-    if (!files || files.length === 0 || busy) return;
+    if (!files || files.length === 0 || mutationPending.current) return;
+    const isCurrent = ownRequest();
+    if (!isCurrent()) return;
+    mutationPending.current = true;
     setBusy(true);
     setError(null);
     try {
       let lastMarkdown = '';
       for (const file of Array.from(files)) {
-        const result = await importAsset(docPath, file);
+        if (!isCurrent()) return;
+        const result = await importAsset(docPath, file, isCurrent);
+        if (!isCurrent()) return;
         lastMarkdown = markdownForAsset(result, docPath);
       }
       if (files.length === 1 && lastMarkdown) await writeClipboardText(lastMarkdown);
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (isCurrent()) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
-      if (fileInput.current) fileInput.current.value = '';
+      if (isCurrent()) {
+        mutationPending.current = false;
+        setBusy(false);
+        if (fileInput.current) fileInput.current.value = '';
+      }
     }
   };
 
   const addAssociated = async (kind: 'file' | 'directory'): Promise<void> => {
-    if (busy) return;
-    const target = await pickAssociatedPath(kind);
-    if (!target) return;
+    if (mutationPending.current) return;
+    const isCurrent = ownRequest();
+    if (!isCurrent()) return;
+    mutationPending.current = true;
     setBusy(true);
     setError(null);
     try {
+      const target = await pickAssociatedPath(kind);
+      if (!target || !isCurrent()) return;
       await addAssociatedPath(docPath, target);
-      await refresh();
+      if (isCurrent()) await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (isCurrent()) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      if (isCurrent()) {
+        mutationPending.current = false;
+        setBusy(false);
+      }
     }
   };
 
   const removeAssociated = async (entry: AssociatedPathEntry): Promise<void> => {
-    if (busy) return;
+    if (mutationPending.current) return;
+    const isCurrent = ownRequest();
+    if (!isCurrent()) return;
+    mutationPending.current = true;
     setBusy(true);
     setError(null);
     try {
       await removeAssociatedPath(docPath, entry.path);
-      await refresh();
+      if (isCurrent()) await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (isCurrent()) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      if (isCurrent()) {
+        mutationPending.current = false;
+        setBusy(false);
+      }
     }
   };
 

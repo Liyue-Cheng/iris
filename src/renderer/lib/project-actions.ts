@@ -16,6 +16,10 @@ import type { SoftwarePromptState } from '@shared/types';
 import type { ProjectScope } from '@shared/types';
 import { healthStore } from '@renderer/stores/health-store';
 import { attemptAction, runUserAction } from './action-runtime';
+import { projectScopeState, sameProjectScope } from '@renderer/stores/project-scope-state';
+import { createProjectRequestTracker } from './project-request';
+
+const promptRequests = createProjectRequestTracker();
 
 async function loadPromptState(scope: ProjectScope): Promise<SoftwarePromptState> {
   return window.api.invoke<
@@ -25,6 +29,7 @@ async function loadPromptState(scope: ProjectScope): Promise<SoftwarePromptState
 }
 
 function recordPromptHealth(scope: ProjectScope, promptState: SoftwarePromptState): void {
+  if (!sameProjectScope(scope, projectScopeState.get())) return;
   const softwareDrift = promptState.entries.filter((entry) => entry.state !== 'ok');
   const projectDrift = promptState.project.entries.filter((entry) => entry.state !== 'synced');
   if (softwareDrift.length === 0 && projectDrift.length === 0) {
@@ -60,41 +65,45 @@ function recordPromptHealth(scope: ProjectScope, promptState: SoftwarePromptStat
     },
     ...(canAutoRepair ? {
       retry: async () => {
+        if (!sameProjectScope(scope, projectScopeState.get()) || projectScopeState.isSwitching()) return;
         await pipeline.dispatch('prompt.sync-all', {});
-        recordPromptHealth(scope, await loadPromptState(scope));
+        await checkPromptProjection(scope);
       },
     } : {}),
   });
 }
 
-export async function refreshPromptProjectionHealth(): Promise<void> {
-  const scope = projectStore.get().scope;
-  if (!scope) return;
+async function checkPromptProjection(scope: ProjectScope): Promise<SoftwarePromptState | null> {
+  if (!sameProjectScope(scope, projectScopeState.get())) return null;
+  const isCurrent = promptRequests.begin(scope);
   const outcome = await attemptAction(() => loadPromptState(scope));
+  if (!isCurrent()) return null;
   if (outcome.status === 'ok') {
     recordPromptHealth(scope, outcome.value);
+    return outcome.value;
   } else if (outcome.status === 'failed') {
     healthStore.degrade({
       key: 'prompt-projection',
       domain: 'prompt-projection',
       cause: outcome.error,
       scope,
-      retry: async () => recordPromptHealth(scope, await loadPromptState(scope)),
+      retry: async () => { await checkPromptProjection(scope); },
     });
   }
+  return null;
+}
+
+export async function refreshPromptProjectionHealth(): Promise<void> {
+  const scope = projectStore.get().scope;
+  if (scope) await checkPromptProjection(scope);
 }
 
 /** Audit both static projections after a project is active and offer one repair. */
 export async function offerPromptProjectionRepair(): Promise<void> {
   const scope = projectStore.get().scope;
   if (!scope) return;
-  const outcome = await attemptAction(() => loadPromptState(scope));
-  if (outcome.status !== 'ok') {
-    await refreshPromptProjectionHealth();
-    return;
-  }
-  const promptState = outcome.value;
-  recordPromptHealth(scope, promptState);
+  const promptState = await checkPromptProjection(scope);
+  if (!promptState) return;
   const softwareDrift = promptState.entries.filter((entry) => entry.state !== 'ok');
   const projectDrift = promptState.project.entries.filter((entry) => entry.state !== 'synced');
   const repairable =
@@ -114,15 +123,16 @@ export async function offerPromptProjectionRepair(): Promise<void> {
     }),
     confirmText: translate('settings.resyncAll'),
   });
-  if (confirmed) {
+  if (confirmed && sameProjectScope(scope, projectScopeState.get()) && !projectScopeState.isSwitching()) {
     await runUserAction(
       {
         title: translate('errors.promptSyncFailed'),
         dedupeKey: 'prompt:sync-all',
+        scope,
       },
       async () => {
         await pipeline.dispatch('prompt.sync-all', {});
-        recordPromptHealth(scope, await loadPromptState(scope));
+        await checkPromptProjection(scope);
       },
     );
   }

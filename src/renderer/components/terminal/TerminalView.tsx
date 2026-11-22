@@ -63,7 +63,8 @@ import { runUserAction } from '@renderer/lib/action-runtime';
 import { attachTerminalImeCompatibility } from '@renderer/terminal/xterm-compat';
 import { TerminalInputController } from '@renderer/terminal/input-controller';
 import { createTerminalInputController } from '@renderer/terminal/input-operation';
-import { TerminalReplayController } from '@renderer/terminal/replay-controller';
+import { TerminalRecoveryBanner } from '@renderer/components/terminal/TerminalRecoveryBanner';
+import { TerminalReplayController, type TerminalRecovery } from '@renderer/terminal/replay-controller';
 import { TerminalSessionRuntime } from '@renderer/terminal/terminal-runtime';
 import {
   ElectronTerminalTransport,
@@ -120,6 +121,8 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
   // the replay has anchored bottom and the renderer has painted the final
   // state. RightPane keys this component by sessionId, so every session switch
   // starts hidden again.
+  const replayRef = useRef<TerminalReplayController | null>(null);
+  const [recovery, setRecovery] = useState<TerminalRecovery | null>(null);
   const [hostRevealed, setHostRevealed] = useState(false);
   // P2: the terminal can hold keyboard focus the instant xterm opens (textarea
   // exists), BEFORE the scrollback replay finishes — keystrokes go straight to
@@ -187,6 +190,9 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
         {
           title: t('errors.terminalDropFailed'),
           dedupeKey: `terminal:doc-drop:${sessionId}`,
+          scope: scopeForSession(sessionId),
+          isCurrent: () => sessionStore.has(sessionId),
+          concurrency: 'independent',
         },
         async () => {
           await inputControllerRef.current?.dropDocument(docPath);
@@ -506,11 +512,14 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       {
         chunkBytes: REPLAY_CHUNK_BYTES,
         timeoutMs: REPLAY_FAILSAFE_MS,
+        recovery: setRecovery,
         reveal: () => setHostRevealed(true),
         warn: (message, error) => console.warn(message, error),
       });
 
     // Subscribe before requesting replay so the controller can close the live-output gap.
+    replayRef.current = replayController;
+    setRecovery(null);
     const unsubscribe = transport.onOutput((payload) => replayController.onOutput(payload));
 
     let alternateSelectionGesture = false;
@@ -518,7 +527,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     const resumeAlternateSelection = (): void => {
       if (!alternateSelectionFrozen) return;
       alternateSelectionFrozen = false;
-      void replayController.resumeFromHistory().catch(() => undefined);
+      if (runtime.state.phase === 'history-frozen') void replayController.resumeFromHistory().catch(() => undefined);
     };
     const beginAlternateSelection = (event: MouseEvent): void => {
       const selectsText = term.modes.mouseTrackingMode === 'none' || event.shiftKey;
@@ -547,6 +556,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
     });
 
     const dataDisposable = xtermAdapter.onInput((data, encoding) => {
+      if (!runtime.acceptsInput()) return;
       viewport.flushBeforeInput();
       if (
         runtime.state.phase === 'history-frozen' &&
@@ -563,7 +573,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
       if (term.buffer.active.type !== 'normal') return;
       const buffer = term.buffer.active;
       if (buffer.viewportY >= buffer.baseY) {
-        void replayController.resumeFromHistory().catch(() => undefined);
+        if (runtime.state.phase === 'history-frozen') void replayController.resumeFromHistory().catch(() => undefined);
       } else {
         replayController.freezeHistory();
       }
@@ -574,6 +584,7 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
 
     return () => {
       disposed = true;
+      replayRef.current = null;
       runtime.dispose();
       if (selectionTimer !== null) clearTimeout(selectionTimer);
       unsubscribe();
@@ -645,6 +656,10 @@ export function TerminalView({ sessionId }: { sessionId: string }): JSX.Element 
           {t('errors.sessionDisconnected')}
         </div>
       )}
+      {recovery && <TerminalRecoveryBanner recovery={recovery} retry={() => {
+        // async-boundary: handled - the replay controller reports recovery failures.
+        void replayRef.current?.retryRecovery();
+      }} />}
       <TerminalContextMenu
         hasSelection={ctxHasSelection}
         onCopy={handleCopy}

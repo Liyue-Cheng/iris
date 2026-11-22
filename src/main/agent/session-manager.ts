@@ -60,6 +60,7 @@ import type { AgentStoredToolResult } from './session-model';
 import type { AgentWorkerPort } from './worker-host';
 import type {
   IrisAgentAnchor,
+  DocumentSessionTarget,
   IrisAgentAttachment,
   IrisAgentAttachmentData,
   IrisAgentAttachmentUpload,
@@ -245,6 +246,7 @@ export class IrisAgentSessionManager extends EventEmitter {
   /** In-flight summary requests, so Stop and shutdown can cancel them. */
   private readonly compactionAborts = new Map<string, AbortController>();
   /** Runtime callbacks are ignored while an instance is being archived. */
+  private readonly reopenedRevisions = new Map<string, number>();
   private readonly archivingSessions = new Set<string>();
   private shuttingDown = false;
 
@@ -414,6 +416,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       const session = await this.requireSession(scope, sessionId);
       if (session.closedAt === undefined) return projectAgentSession(session, scope.generation);
       const saved = await this.commitAndEmit(scope, store, reopenAgentSession(session));
+      this.reopenedRevisions.set(sessionId, saved.revision);
       return projectAgentSession(saved, scope.generation);
     });
   }
@@ -1389,34 +1392,26 @@ export class IrisAgentSessionManager extends EventEmitter {
     });
   }
 
-  /**
-   * Authoritative bulk close for a Done/On Hold transition. The renderer sends
-   * document paths, while main re-enumerates the latest live projection and
-   * serializes each archival against that Session's mutation queue.
-   */
-  async countDocumentSessions(scope: ProjectScope, documentPaths: readonly string[]): Promise<number> {
-    this.currentScope = scope;
+  async documentSessions(scope: ProjectScope, paths: ReadonlySet<string>): Promise<DocumentSessionTarget[]> {
     const store = await this.ensureStore(scope.root);
-    const paths = new Set(documentPaths);
-    return store.list().filter((session) =>
-      session.anchor.kind === 'document' && paths.has(session.anchor.path) && session.intents.length > 0).length;
+    return store.list().flatMap((session) =>
+      session.anchor.kind === 'document' && paths.has(session.anchor.path)
+        ? [{ kind: 'iris-agent' as const, id: session.id, label: session.displayName,
+            documentPath: session.anchor.path, openedRevision: this.reopenedRevisions.get(session.id) ?? 0 }]
+        : []);
   }
 
-  async archiveDocumentSessions(scope: ProjectScope, documentPaths: readonly string[]): Promise<number> {
-    this.currentScope = scope;
-    const store = await this.ensureStore(scope.root);
-    const paths = new Set(documentPaths);
-    const ids = store.list().flatMap((session) =>
-      session.anchor.kind === 'document' && paths.has(session.anchor.path) ? [session.id] : []);
-    const archived = await Promise.all(ids.map((sessionId) => this.runSessionCommand(sessionId, () =>
-      this.archiveSessionNow(
-        scope,
-        store,
-        sessionId,
-        'user',
-        'Paused because the linked document left the active lens.',
-      ))));
-    return archived.filter(Boolean).length;
+  async archiveLinkedSession(scope: ProjectScope, target: DocumentSessionTarget, assertCurrent: () => void): Promise<boolean> {
+    return this.runSessionCommand(target.id, async () => {
+      assertCurrent();
+      const store = await this.ensureStore(scope.root);
+      assertCurrent();
+      const session = store.get(target.id);
+      if (session?.projectRoot !== scope.root || session.anchor.kind !== 'document' ||
+          session.anchor.path !== target.documentPath || (this.reopenedRevisions.get(target.id) ?? 0) !== target.openedRevision) return false;
+      return this.archiveSessionNow(scope, store, target.id, 'user',
+        'Paused because the linked document left the active lens.');
+    });
   }
 
   async closeProject(scope: ProjectScope): Promise<void> {
@@ -1540,6 +1535,7 @@ export class IrisAgentSessionManager extends EventEmitter {
       const latest = store.get(sessionId) ?? initial;
       await store.commit(this.prepareSessionForArchive(latest, pauseReason, pauseMessage, tasks));
       this.emittedProjections.delete(sessionId);
+      this.reopenedRevisions.delete(sessionId);
       this.emit('sessionDestroyed', { scope, sessionId } satisfies IrisAgentSessionDestroyedPayload);
       return true;
     } finally {

@@ -195,10 +195,8 @@ export const CHANNELS = {
   IRIS_AGENT_REOPEN: 'iris-agent:reopen',
   /** Open a new live Session inheriting the selected history Session's Trace. */
   IRIS_AGENT_RESTORE: 'iris-agent:restore',
-  /** Count live Agent Sessions anchored to the supplied documents. */
-  IRIS_AGENT_COUNT_DOCUMENTS: 'iris-agent:count-documents',
-  /** Archive every live Agent Session anchored to the supplied documents. */
-  IRIS_AGENT_ARCHIVE_DOCUMENTS: 'iris-agent:archive-documents',
+  DOCUMENT_SESSIONS_LIST: 'doc:linked-sessions',
+  DOCUMENT_SESSIONS_CLOSE: 'doc:close-linked-sessions',
   IRIS_AGENT_CLOSE: 'iris-agent:close',
   IRIS_AGENT_LIST: 'iris-agent:list',
   IRIS_AGENT_TASK_GET: 'iris-agent:task-get',
@@ -226,6 +224,7 @@ export const EVENTS = {
   GIT_CHANGED: 'evt:git:changed',
   SERVICE_HEALTH_CHANGED: 'evt:service:health-changed',
   SESSION_OUTPUT: 'evt:session:output',
+  SESSION_CREATED: 'evt:session:created',
   SESSION_STATE_CHANGED: 'evt:session:state-changed',
   SESSION_EXITED: 'evt:session:exited',
   SESSION_DESTROYED: 'evt:session:destroyed',

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EVENTS, CHANNELS } from '@shared/protocol';
 import { ElectronTerminalTransport, IrisAgentTerminalTransport } from './terminal-transport';
-import { sendSessionInput } from '@renderer/lib/session-io';
+import { sendSessionInput, sendSessionResize } from '@renderer/lib/session-io';
 
-vi.mock('@renderer/lib/session-io', () => ({ sendSessionInput: vi.fn(async () => true), sendSessionResize: vi.fn() }));
+vi.mock('@renderer/lib/session-io', () => ({ sendSessionInput: vi.fn(async () => undefined), sendSessionResize: vi.fn() }));
 
 describe('IrisAgentTerminalTransport', () => {
   afterEach(() => {
@@ -36,6 +36,18 @@ describe('IrisAgentTerminalTransport', () => {
     expect(invoke).toHaveBeenNthCalledWith(2, CHANNELS.IRIS_AGENT_TERMINAL_INPUT, {
       sessionId: 'agent-1', terminalId: 'terminal-1', expectedScope: scope, data: '中文\r',
     });
+  });
+
+  it('propagates input and resize failures without retrying or resolving success', async () => {
+    vi.stubGlobal('window', { api: { windowsBuild: 26100 } });
+    const transport = new ElectronTerminalTransport('terminal-1', { root: 'C:/project', generation: 4 });
+    const failure = new Error('I/O rejected');
+    vi.mocked(sendSessionInput).mockRejectedValueOnce(failure);
+    vi.mocked(sendSessionResize).mockRejectedValueOnce(failure);
+    await expect(transport.sendInput('a')).rejects.toBe(failure);
+    await expect(transport.resize(80, 24)).rejects.toBe(failure);
+    expect(sendSessionInput).toHaveBeenCalledOnce();
+    expect(sendSessionResize).toHaveBeenCalledOnce();
   });
 
   it('maps Agent cursor output and replay onto the shared terminal protocol', async () => {

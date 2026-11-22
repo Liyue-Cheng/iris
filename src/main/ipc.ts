@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { CHANNELS, EVENTS, type WindowEditAction } from '@shared/protocol';
 import type { JtpBuiltinResult } from '@shared/agent-protocol';
+import { describeDocumentSession } from '@shared/document-status';
 import { mainT } from './i18n';
 import { grantHtmlPreview } from './html-doc-protocol';
 import type {
@@ -32,6 +33,7 @@ import type {
   AppLegalDocumentId,
   DeepPartial,
   DocContent,
+  DocumentSessionTarget,
   ExternalPathEntry,
   ExternalPathIdentity,
   FsIrisChangedEvent,
@@ -120,6 +122,7 @@ import type {
   ServiceHealthChangedEvent,
 } from '@shared/app-error';
 import { serializeIpcError } from './ipc-error';
+import { AppError } from '@shared/app-error';
 import { JTP_BUILTIN_DESCRIPTORS } from './jtp/builtin-descriptors';
 import type { JtpEvent } from './jtp/protocol';
 import { JtpMcpProvider, discoverMcpDescriptors } from './agent/mcp-provider';
@@ -154,8 +157,9 @@ export function registerIpcHandler(channel: string, handler: RawIpcHandler): voi
       const serialized = serializeIpcError(channel, error, request.meta, randomUUID());
       logger.error(
         'ipc',
-        `${channel} failed request=${serialized.requestId} incident=${serialized.incidentId}` +
-          (serialized.correlationId ? ` correlation=${serialized.correlationId}` : ''),
+        `${channel} failed code=${serialized.code} request=${serialized.requestId} incident=${serialized.incidentId}` +
+          (serialized.correlationId ? ` correlation=${serialized.correlationId}` : '') +
+          (channel.startsWith('session:') && serialized.details ? ' ' + JSON.stringify(serialized.details) : ''),
         error,
       );
       return { ok: false, error: serialized };
@@ -179,10 +183,10 @@ function requireProjectScope(
   payload: ProjectScopedPayload,
   channel: string,
 ): ProjectScope {
-  if (ctx.closing) throw new Error(`[${channel}] window is closing`);
-  if (ctx.projectSwitching) throw new Error(`[${channel}] project switch in progress`);
+  if (ctx.closing) throw new AppError('ipc', 'WindowClosing', `[${channel}] window is closing`);
+  if (ctx.projectSwitching) throw new AppError('project', 'ProjectSwitchInProgress', `[${channel}] project switch in progress`);
   if (!sameScope(payload.expectedScope, ctx.projectScope)) {
-    throw new Error(`[${channel}] stale project scope`);
+    throw new AppError('project', 'StaleProjectScope', `[${channel}] stale project scope`);
   }
   const scope = ctx.projectScope;
   if (!scope || ctx.projectManager.getRoot() !== scope.root) {
@@ -220,12 +224,16 @@ function requireSessionInScope(
   channel: string,
 ): TerminalSessionInfo {
   const session = ctx.terminalSessionManager.get(sessionId);
-  if (
-    !session ||
-    session.projectRoot !== scope.root ||
-    session.projectGeneration !== scope.generation
-  ) {
-    throw new Error(`[${channel}] session is outside the active project scope`);
+  if (!session || session.projectRoot !== scope.root || session.projectGeneration !== scope.generation) {
+    const code = !session ? 'SessionNotFound' : session.projectRoot !== scope.root
+      ? 'SessionProjectMismatch' : 'SessionGenerationMismatch';
+    const closure = !session ? ctx.terminalSessionManager.lastClosure(sessionId) : undefined;
+    const details = {
+      ...(closure && sameScope(closure.scope, scope) ? { lastClosure: closure } : {}),
+      channel, sessionId, windowId: ctx.win.id, requestScope: scope, activeScope: ctx.projectScope,
+      sessionScope: session ? { root: session.projectRoot, generation: session.projectGeneration } : null,
+    };
+    throw new AppError('session', code, !session ? mainT('errors.sessionClosed') : mainT('errors.sessionScopeChanged'), { details });
   }
   return session;
 }
@@ -955,11 +963,12 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
 
   ipcMain.handle(
     CHANNELS.SESSION_CLOSE,
-    (event, payload: { sessionId: string } & ProjectScopedPayload): Promise<void> => {
+    async (event, payload: { sessionId: string } & ProjectScopedPayload) => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_CLOSE);
       requireSessionInScope(ctx, payload.sessionId, scope, CHANNELS.SESSION_CLOSE);
-      return ctx.terminalSessionManager.closeSession(payload.sessionId);
+      await ctx.terminalSessionManager.closeSession(payload.sessionId);
+      return ctx.terminalSessionManager.lastClosure(payload.sessionId);
     },
   );
 
@@ -990,7 +999,15 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_INPUT);
       requireSessionInScope(ctx, payload.sessionId, scope, CHANNELS.SESSION_INPUT);
-      return ctx.terminalSessionManager.sendInput(payload.sessionId, payload.data);
+      const result = ctx.terminalSessionManager.sendInput(payload.sessionId, payload.data);
+      if (!result.accepted) {
+        const exited = result.reason === 'pty-exited';
+        throw new AppError('session', exited ? 'SessionExited' : 'SessionInputRejected',
+          exited ? mainT('errors.sessionExited') : `[session:input] ${result.reason}`, {
+          details: { reason: result.reason, sessionId: payload.sessionId, windowId: ctx.win.id, scope },
+        });
+      }
+      return result;
     },
   );
 
@@ -1003,7 +1020,15 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_RESIZE);
       requireSessionInScope(ctx, payload.sessionId, scope, CHANNELS.SESSION_RESIZE);
-      return ctx.terminalSessionManager.resize(payload.sessionId, payload.cols, payload.rows);
+      const result = ctx.terminalSessionManager.resize(payload.sessionId, payload.cols, payload.rows);
+      if (!result.accepted) {
+        const exited = result.reason === 'pty-exited';
+        throw new AppError('session', exited ? 'SessionExited' : 'SessionResizeRejected',
+          exited ? mainT('errors.sessionExited') : `[session:resize] ${result.reason}`, {
+          details: { reason: result.reason, sessionId: payload.sessionId, windowId: ctx.win.id, scope },
+        });
+      }
+      return result;
     },
   );
 
@@ -1084,7 +1109,7 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     (event, payload: ProjectScopedPayload): SessionListSnapshot => {
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_LIST);
-      return { scope, sessions: sessionsForScope(ctx, scope) };
+      return { scope, revision: ctx.terminalSessionManager.projectionRevision, sessions: sessionsForScope(ctx, scope) };
     },
   );
 
@@ -1527,29 +1552,67 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
     },
   );
 
-  ipcMain.handle(
-    CHANNELS.IRIS_AGENT_COUNT_DOCUMENTS,
-    (
-      event,
-      payload: { documentPaths: string[] } & ProjectScopedPayload,
-    ): Promise<number> => {
-      const ctx = requireContext(event);
-      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_COUNT_DOCUMENTS);
-      return ctx.agentSessionManager.countDocumentSessions(scope, payload.documentPaths);
-    },
-  );
+  type LinkedRequest = ProjectScopedPayload & { documentPaths: string[] };
+  async function linkedSessions(ctx: WindowContext, scope: ProjectScope, paths: Set<string>): Promise<DocumentSessionTarget[]> {
+    const agents = await ctx.agentSessionManager.documentSessions(scope, paths);
+    const terminals = sessionsForScope(ctx, scope).flatMap((session) =>
+      session.docPath && paths.has(session.docPath)
+        ? [{ kind: 'terminal' as const, id: session.id, label: session.displayName, documentPath: session.docPath }]
+        : []);
+    return [...terminals, ...agents];
+  }
 
-  ipcMain.handle(
-    CHANNELS.IRIS_AGENT_ARCHIVE_DOCUMENTS,
-    (
-      event,
-      payload: { documentPaths: string[] } & ProjectScopedPayload,
-    ): Promise<number> => {
-      const ctx = requireContext(event);
-      const scope = requireProjectScope(ctx, payload, CHANNELS.IRIS_AGENT_ARCHIVE_DOCUMENTS);
-      return ctx.agentSessionManager.archiveDocumentSessions(scope, payload.documentPaths);
-    },
-  );
+  ipcMain.handle(CHANNELS.DOCUMENT_SESSIONS_LIST, (event, payload: LinkedRequest) => {
+    const ctx = requireContext(event);
+    const scope = requireProjectScope(ctx, payload, CHANNELS.DOCUMENT_SESSIONS_LIST);
+    return linkedSessions(ctx, scope, new Set(payload.documentPaths));
+  });
+
+  ipcMain.handle(CHANNELS.DOCUMENT_SESSIONS_CLOSE, async (event, payload: LinkedRequest & {
+    confirmed: DocumentSessionTarget[];
+  }) => {
+    const ctx = requireContext(event);
+    const assertCurrent = () => requireProjectScope(requireContext(event), payload, CHANNELS.DOCUMENT_SESSIONS_CLOSE);
+    const scope = assertCurrent();
+    const paths = new Set(payload.documentPaths);
+    const current = await linkedSessions(ctx, scope, paths);
+    assertCurrent();
+    const confirmed = new Map(payload.confirmed.map(target => [target.id, target]));
+    const matchesConfirmation = (target: DocumentSessionTarget): boolean => {
+      const original = confirmed.get(target.id);
+      return original?.kind === target.kind && original.documentPath === target.documentPath &&
+        original.openedRevision === target.openedRevision;
+    };
+    if (current.some(target => !matchesConfirmation(target))) {
+      throw new AppError('session', 'LinkedSessionsChanged', mainT('collection.linkedChanged'));
+    }
+    const results = await Promise.allSettled(current.map(async target => {
+      if (target.kind === 'iris-agent') return ctx.agentSessionManager.archiveLinkedSession(scope, target, assertCurrent);
+      const session = ctx.terminalSessionManager.get(target.id);
+      if (session?.docPath !== target.documentPath || session.projectRoot !== scope.root ||
+          session.projectGeneration !== scope.generation) return false;
+      await ctx.terminalSessionManager.closeSession(target.id, 'document-status');
+      return true;
+    }));
+    const closed = current.filter((_target, i) => {
+      const result = results[i]!;
+      return result.status === 'fulfilled' && result.value;
+    });
+    const failures = results.flatMap((result, i) =>
+      result.status === 'rejected' ? [current[i]!.id + ' (' + String(result.reason) + ')'] : []);
+    const partialError = (code: string, reason: string) => {
+      const summary = mainT('collection.linkedPartial', { count: closed.length, reason });
+      return new AppError('session', code, [summary, ...closed.map(describeDocumentSession)].join('\n'), {
+        details: { closed },
+      });
+    };
+    if (failures.length) throw partialError('LinkedCloseFailed', failures.join(', '));
+    assertCurrent();
+    const remaining = await linkedSessions(ctx, scope, paths);
+    assertCurrent();
+    if (remaining.length) throw partialError('LinkedSessionsChanged', mainT('collection.linkedChanged'));
+    return closed;
+  });
 
   ipcMain.handle(
     CHANNELS.IRIS_AGENT_CLOSE,
@@ -1769,6 +1832,7 @@ export function wireBroadcasts(
     if (!shouldForwardTerminalOutput(attachment, e)) return;
     send(EVENTS.SESSION_OUTPUT, e);
   };
+  const onCreated = (info: TerminalSessionInfo): void => send(EVENTS.SESSION_CREATED, info);
   const onState = (e: SessionStateChangedPayload): void => send(EVENTS.SESSION_STATE_CHANGED, e);
   const onExited = (e: SessionExitedPayload): void => send(EVENTS.SESSION_EXITED, e);
   const onDestroyed = (e: SessionDestroyedPayload): void => send(EVENTS.SESSION_DESTROYED, e);
@@ -1793,6 +1857,7 @@ export function wireBroadcasts(
   gitManager.on('changed', onGitChanged);
   gitManager.on('healthChanged', onHealthChanged);
   projectManager.on('healthChanged', onHealthChanged);
+  terminalSessionManager.on('sessionCreated', onCreated);
   terminalSessionManager.on('sessionOutput', onOutput);
   terminalSessionManager.on('sessionStateChanged', onState);
   terminalSessionManager.on('sessionExited', onExited);
@@ -1812,7 +1877,8 @@ export function wireBroadcasts(
     gitManager.off('changed', onGitChanged);
     gitManager.off('healthChanged', onHealthChanged);
     projectManager.off('healthChanged', onHealthChanged);
-    terminalSessionManager.off('sessionOutput', onOutput);
+    terminalSessionManager.off('sessionCreated', onCreated);
+  terminalSessionManager.off('sessionOutput', onOutput);
     terminalSessionManager.off('sessionStateChanged', onState);
     terminalSessionManager.off('sessionExited', onExited);
     terminalSessionManager.off('sessionDestroyed', onDestroyed);

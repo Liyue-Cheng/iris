@@ -3223,6 +3223,26 @@ describe('Iris Agent instance lifecycle', () => {
     });
   }
 
+  it('limits document status archival to the confirmed Agent instance and anchor, including empty sessions', async () => {
+    const root = await createTempDataDir('iris-linked-agent-');
+    const scope = { root, generation: 1 };
+    const manager = new IrisAgentSessionManager(root, projectManager(), { modelCatalogLoader: async () => catalog });
+    const path = '.iris/issue/task.md';
+    try {
+      const created = await manager.createSession({ scope, anchor: { kind: 'document', path } });
+      const [target] = await manager.documentSessions(scope, new Set([path]));
+      expect(target?.id).toBe(created.id);
+      expect(await manager.archiveLinkedSession(scope, { ...target!, documentPath: 'other.md' }, () => {})).toBe(false);
+      expect(await manager.archiveLinkedSession(scope, target!, () => {})).toBe(true);
+      await manager.reopen(scope, created.id);
+      expect(await manager.archiveLinkedSession(scope, target!, () => {})).toBe(false);
+      expect((await manager.list(scope)).sessions.map(session => session.id)).toContain(created.id);
+    } finally {
+      await manager.shutdown();
+      await removeTempDataDir(root);
+    }
+  });
+
   it('archives a closed instance instead of deleting its conversation', async () => {
     const userData = await createTempDataDir('iris-agent-close-archive-');
     const scope: ProjectScope = { root: userData, generation: 1 };

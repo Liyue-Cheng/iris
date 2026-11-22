@@ -1,3 +1,9 @@
+import type { DocumentSessionTarget } from './types';
+
+export function describeDocumentSession(target: DocumentSessionTarget): string {
+  return target.label + ' · ' + target.documentPath + ' (' + target.id.slice(0, 8) + ')';
+}
+
 /** Canonical document statuses and their product-owned behavior. */
 export const ISSUE_STATUS = {
   todo: 'Todo',

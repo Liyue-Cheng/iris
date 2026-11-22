@@ -9,24 +9,34 @@ import { checkAllDocTaskCheckboxes, setDocField as withDocField } from '@shared/
 import { pipeline } from '@renderer/cpu';
 import { confirmDialog } from '@renderer/components/ui/confirm-dialog';
 import { editorStore, readDocFromDisk } from '@renderer/stores/editor-store';
-import { sessionStore } from '@renderer/stores/session-store';
-import { archiveIrisAgentDocuments, countIrisAgentDocuments } from './iris-agent-actions';
+import { CHANNELS } from '@shared/protocol';
+import type { DocumentSessionTarget } from '@shared/types';
 import {
+  describeDocumentSession,
   planDocumentStatusTransition,
   type StatusDocumentType,
   type StatusTransitionPlan,
 } from '@shared/document-status';
 import { translate } from '@renderer/i18n';
 import { getSettings } from '@renderer/stores/settings-store';
-import { runUserAction } from './action-runtime';
+import { runProjectAction } from './action-runtime';
+import { AppError } from '@shared/app-error';
+import { projectScopeState, sameProjectScope } from '@renderer/stores/project-scope-state';
 
 export async function setDocField(path: string, key: string, value: string): Promise<void> {
+  const scope = projectScopeState.get();
   const session = editorStore.get();
   if (session?.path === path) {
     await editorStore.setFrontmatterField(key, value);
+    const edited = editorStore.get();
+    if (edited?.path === path && (edited.saveError || edited.conflict)) {
+      throw new Error(edited.saveError ?? translate('collection.statusSaveConflict'));
+    }
     return;
   }
   const content = await readDocFromDisk(path);
+  if (!sameProjectScope(scope, projectScopeState.get())) throw new AppError('document', 'Cancelled', 'Document action retired');
+  if (content.frontmatterBroken) throw new Error(translate('collection.statusInvalidHeader'));
   const nextRaw = withDocField(path, content.raw, key, value);
   if (nextRaw === content.raw) return; // malformed block — refuse to guess
   await pipeline.dispatch('doc.save', {
@@ -55,7 +65,7 @@ export function planStatusTransition(
 }
 
 export async function setDocStatus(path: string, status: string): Promise<void> {
-  await runUserAction(
+  await runProjectAction(
     {
       title: translate('errors.statusUpdateFailed'),
       dedupeKey: `document:status:${path}`,
@@ -69,15 +79,17 @@ async function setDocStatusField(
   status: string,
   checkTodos: boolean,
 ): Promise<void> {
+  const scope = projectScopeState.get();
   if (!checkTodos) {
     await setDocField(path, 'status', status);
     return;
   }
   if (editorStore.get()?.path === path) {
-    if (!(await editorStore.flushBeforeSwitch('before-external-action'))) return;
+    if (!(await editorStore.flushBeforeSwitch('before-external-action'))) throw new Error(translate('collection.statusSaveConflict'));
   }
   const content = await readDocFromDisk(path);
-  if (content.frontmatterBroken) return;
+  if (!sameProjectScope(scope, projectScopeState.get())) throw new AppError('document', 'Cancelled', 'Document action retired');
+  if (content.frontmatterBroken) throw new Error(translate('collection.statusInvalidHeader'));
   const nextRaw = checkAllDocTaskCheckboxes(path, withDocField(path, content.raw, 'status', status));
   if (nextRaw === content.raw) return;
   await pipeline.dispatch('doc.save', {
@@ -93,7 +105,9 @@ async function setDocStatusField(
  * alike — so a hidden issue/report never keeps inaccessible sessions alive.
  * One bulk action produces one confirmation.
  */
-export async function setDocsStatus(paths: readonly string[], status: string): Promise<void> {
+export async function setDocsStatus(paths: readonly string[], status: string): Promise<boolean> {
+  const scope = projectScopeState.get();
+  const isCurrent = (): boolean => sameProjectScope(scope, projectScopeState.get());
   const uniquePaths = [...new Set(paths)];
   const autoCheckTodosOnDone = getSettings()?.behavior.autoCheckTodosOnDone ?? false;
   const plans = new Map(
@@ -102,53 +116,40 @@ export async function setDocsStatus(paths: readonly string[], status: string): P
       planStatusTransition(path, status, autoCheckTodosOnDone),
     ]),
   );
-  const closingPaths = new Set(
-    uniquePaths.filter((path) => plans.get(path)?.closeSessions ?? false),
-  );
-  const anchored = sessionStore
-    .get()
-    .sessions.filter((session) => session.docPath !== null && closingPaths.has(session.docPath));
-  const anchoredAgentCount = await countIrisAgentDocuments([...closingPaths]);
-
-  if (anchored.length > 0 || anchoredAgentCount > 0) {
-    const documentCount = anchoredAgentCount > 0
-      ? closingPaths.size
-      : new Set(anchored.map((session) => session.docPath)).size;
-    const subject = documentCount === 1
-      ? translate('collection.oneDocument')
-      : translate('collection.manyDocuments', { count: documentCount });
-    const confirmed = await confirmDialog({
-      title: translate('collection.closeLinkedTitle'),
-      message: translate('collection.closeLinkedMessage', {
-        documents: subject,
-        sessions: anchored.length,
-        agents: anchoredAgentCount,
-        status,
-      }),
-      confirmText: translate('collection.closeAndChange'),
-      tone: 'destructive',
+  const documentPaths = uniquePaths.filter(path => plans.get(path)?.closeSessions);
+  let closed: DocumentSessionTarget[] = [];
+  if (documentPaths.length > 0) {
+    const query = { expectedScope: scope, documentPaths };
+    const targets = await window.api.invoke<typeof query, DocumentSessionTarget[]>(CHANNELS.DOCUMENT_SESSIONS_LIST, query);
+    if (!isCurrent()) return false;
+    if (targets.length) {
+      const documentCount = new Set(targets.map(target => target.documentPath)).size;
+      const sessions = targets.filter(target => target.kind === 'terminal').length;
+      const confirmed = await confirmDialog({
+        title: translate('collection.closeLinkedTitle'),
+        message: translate('collection.closeLinkedMessage', {
+          documents: documentCount === 1 ? translate('collection.oneDocument')
+            : translate('collection.manyDocuments', { count: documentCount }),
+          sessions, agents: targets.length - sessions, status,
+        }) + '\n\n' + targets.map(describeDocumentSession).join('\n'),
+        confirmText: translate('collection.closeAndChange'),
+        tone: 'destructive',
+      });
+      if (!confirmed || !isCurrent()) return false;
+    }
+    const request = { ...query, confirmed: targets };
+    closed = await window.api.invoke<typeof request, DocumentSessionTarget[]>(CHANNELS.DOCUMENT_SESSIONS_CLOSE, request);
+    if (!isCurrent()) return false;
+  }
+  const writes = await Promise.allSettled(uniquePaths.map(path =>
+    setDocStatusField(path, status, plans.get(path)?.checkTodos ?? false)));
+  const failed = writes.flatMap((result, i) => result.status === 'rejected'
+    ? [uniquePaths[i] + ' (' + String(result.reason) + ')'] : []);
+  if (failed.length) {
+    const summary = translate('collection.linkedPartial', { count: closed.length, reason: failed.join(', ') });
+    throw new AppError('document', 'StatusSaveFailed', [summary, ...closed.map(describeDocumentSession)].join('\n'), {
+      details: { closed },
     });
-    if (!confirmed) return;
-
   }
-
-  if (closingPaths.size > 0) {
-    // Re-read after the dialog: sessions may have been opened or closed while
-    // it was visible. Main also re-enumerates Agent anchors authoritatively.
-    const currentAnchored = sessionStore
-      .get()
-      .sessions.filter((session) => session.docPath !== null && closingPaths.has(session.docPath));
-    await Promise.all([
-      ...currentAnchored.map((session) =>
-        pipeline.dispatch('session.close', { sessionId: session.id }),
-      ),
-      archiveIrisAgentDocuments([...closingPaths]),
-    ]);
-  }
-
-  await Promise.all(
-    uniquePaths.map((path) =>
-      setDocStatusField(path, status, plans.get(path)?.checkTodos ?? false),
-    ),
-  );
+  return true;
 }

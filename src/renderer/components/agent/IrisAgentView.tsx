@@ -17,8 +17,7 @@ import {
   Undo2,
   X,
 } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { AgentReplyMarkdown } from './AgentReplyMarkdown';
 import type {
   IrisAgentAttachment,
   IrisAgentCardState,
@@ -1202,9 +1201,9 @@ function BackgroundTaskCard({
           disabled={canceling}
           onClick={() => {
             setCanceling(true);
-            // async-boundary: handled - the action reports its own failure and
-            // resets the pending label.
-            void cancelIrisAgentTask(sessionId, card.taskId).catch(() => setCanceling(false));
+            void cancelIrisAgentTask(sessionId, card.taskId).then((accepted) => {
+              if (!accepted) setCanceling(false);
+            });
           }}
         >
           {canceling
@@ -1253,7 +1252,7 @@ function AgentReplyCard({
     <div className="min-w-0 max-w-[760px] text-left">
       <div className="markdown-body min-w-0 px-1 py-2 text-[13px] leading-relaxed">
         {card.content
-          ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{card.content}</ReactMarkdown>
+          ? <AgentReplyMarkdown content={card.content} />
           : <span className="text-muted-foreground">{placeholder}</span>}
       </div>
       {card.error && (

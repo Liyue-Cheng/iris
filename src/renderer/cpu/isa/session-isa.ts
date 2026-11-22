@@ -9,8 +9,8 @@
  */
 import type { InstructionDefinition } from 'front-cpu';
 import { CHANNELS } from '@shared/protocol';
-import type { TerminalSessionInfo } from '@shared/types';
-import { sessionStore } from '@renderer/stores/session-store';
+import type { SessionDestroyedPayload, TerminalSessionInfo } from '@shared/types';
+import { acceptSessionClosure, acceptSessionRecord, hydrateSessions } from '@renderer/stores/session-store';
 import { projectScopeRead } from './project-resources';
 
 export const sessionISA: Record<string, InstructionDefinition> = {
@@ -27,7 +27,7 @@ export const sessionISA: Record<string, InstructionDefinition> = {
     executor: 'ipc',
     config: { channel: CHANNELS.SESSION_OPEN, projectScoped: true },
     commit: async (result: TerminalSessionInfo) => {
-      sessionStore.handleCreated(result);
+      acceptSessionRecord(result);
     },
   },
 
@@ -46,15 +46,7 @@ export const sessionISA: Record<string, InstructionDefinition> = {
     executor: 'ipc',
     config: { channel: CHANNELS.SESSION_REANCHOR, projectScoped: true },
     commit: async (result: TerminalSessionInfo) => {
-      // The state-changed broadcast carries the same patch; applying the
-      // authoritative result here just removes the visible lag.
-      sessionStore.handlePatch(result.id, {
-        docPath: result.docPath,
-        workspacePath: result.workspacePath,
-        ...(result.orphanedDocPath === undefined
-          ? {}
-          : { orphanedDocPath: result.orphanedDocPath }),
-      });
+      acceptSessionRecord(result);
     },
   },
 
@@ -72,8 +64,9 @@ export const sessionISA: Record<string, InstructionDefinition> = {
     },
     executor: 'ipc',
     config: { channel: CHANNELS.SESSION_CLOSE, projectScoped: true },
-    commit: async (_result: unknown, payload: { sessionId: string }) => {
-      sessionStore.handleDestroyed(payload.sessionId);
+    commit: async (receipt: SessionDestroyedPayload | undefined) => {
+      if (receipt) acceptSessionClosure(receipt);
+      else await hydrateSessions();
     },
   },
 };

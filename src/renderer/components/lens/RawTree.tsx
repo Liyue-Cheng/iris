@@ -41,7 +41,7 @@ import {
   externalIdentity,
   removeExternalPath,
 } from '@renderer/lib/external-actions';
-import { runUserAction } from '@renderer/lib/action-runtime';
+import { runProjectAction } from '@renderer/lib/action-runtime';
 import {
   collectExternalWorkspaces,
   externalTargetKey,
@@ -51,6 +51,7 @@ import {
 import './raw-tree.css';
 import { useLensPrefs } from '@renderer/stores/lens-prefs';
 import { normalizeFileFilter, projectRawTree } from '@renderer/lib/raw-tree-view';
+import { leftPanePrefs, useLeftPanePrefs } from '@renderer/lib/left-pane-prefs';
 
 function ItemContextMenu({
   node,
@@ -72,7 +73,7 @@ function ItemContextMenu({
   };
   const connect = async (workspacePath: string): Promise<void> => {
     if (!absolutePath) return;
-    await runUserAction(
+    await runProjectAction(
       { title: t('external.addFailed'), dedupeKey: `raw-tree:external:add:${workspacePath}:${node.path}` },
       async () => {
         await addExternalPath(workspacePath, absolutePath);
@@ -81,7 +82,7 @@ function ItemContextMenu({
     );
   };
   const disconnect = async (connection: RawTreeExternalConnection): Promise<void> => {
-    await runUserAction(
+    await runProjectAction(
       {
         title: t('external.removeFailed'),
         dedupeKey: `raw-tree:external:remove:${connection.workspacePath}:${connection.entry.line}`,
@@ -250,19 +251,23 @@ function Node({
 
 export function RawTree({ root }: { root: RawTreeNode }): JSX.Element {
   const { t, i18n } = useTranslation();
-  const { scan } = useProject();
+  const { scan, scope } = useProject();
+  const prefs = useLeftPanePrefs(scope?.root ?? null);
   const { sort, filter } = useLensPrefs();
   const query = normalizeFileFilter(filter);
   const visibleRoot = useMemo(() => projectRawTree(root, sort, query), [root, sort, query, i18n.resolvedLanguage]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [expandedPaths, setExpandedPaths] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  const expandedPaths = useMemo(
+    () => new Map(Object.entries(prefs.directories)),
+    [prefs.directories],
+  );
   const [filterExpansion, setFilterExpansion] = useState({ query, paths: new Map<string, boolean>() });
   const filteredPaths = filterExpansion.query === query ? filterExpansion.paths : new Map<string, boolean>();
   // Reset search-only collapse overrides when the query changes; ordinary expansion is preserved.
   if (filterExpansion.query !== query) setFilterExpansion({ query, paths: filteredPaths });
   const onToggle = (path: string, open: boolean): void => {
     if (query) setFilterExpansion({ query, paths: new Map(filteredPaths).set(path, open) });
-    else setExpandedPaths((previous) => new Map(previous).set(path, open));
+    else if (scope) leftPanePrefs.setDirectoryOpen(scope.root, path, path === root.path, open);
   };
   const workspaces = collectExternalWorkspaces(scan?.root ?? null);
   const connectionsByPath = indexExternalConnections(workspaces);

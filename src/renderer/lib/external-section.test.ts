@@ -7,11 +7,14 @@ import { ExternalSection } from '@renderer/components/lens/ExternalSection';
 import { projectScopeState } from '@renderer/stores/project-scope-state';
 import { lensPrefs } from '@renderer/stores/lens-prefs';
 import { addExternalPath, listExternalPaths } from './external-actions';
-import { notify } from '@renderer/stores/notification-store';
+import { clearNotifications, notify } from '@renderer/stores/notification-store';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@renderer/i18n', () => ({ translate: (key: string) => key }));
-vi.mock('@renderer/stores/notification-store', () => ({ notify: vi.fn() }));
+vi.mock('@renderer/stores/notification-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@renderer/stores/notification-store')>();
+  return { ...actual, notify: vi.fn(actual.notify) };
+});
 vi.mock('@renderer/stores/editor-store', () => ({ editorStore: {} }));
 vi.mock('./external-actions', () => ({
   addExternalPath: vi.fn(), listExternalPaths: vi.fn(), externalIdentity: vi.fn(),
@@ -50,6 +53,7 @@ function drag(type: string, dt: DataTransfer, target: EventTarget = region()): E
 beforeEach(async () => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   vi.clearAllMocks();
+  clearNotifications();
   resolvePath.mockImplementation((file) => `C:/${file.name}`);
   vi.stubGlobal('api', { getPathForFile: resolvePath });
   projectScopeState.set({ root: 'C:/project', generation: 1 });
@@ -65,6 +69,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
+  clearNotifications();
   projectScopeState.set(null);
   vi.unstubAllGlobals();
 });

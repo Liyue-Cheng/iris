@@ -10,6 +10,8 @@ let nextEpoch = 1;
 
 export class TerminalSessionRuntime {
   readonly epoch = nextEpoch++;
+  private inputGeneration = 0;
+  private recovering = false;
   private stateValue: TerminalRuntimeState = initialTerminalRuntimeState(this.epoch);
   private readonly disposables = new Set<() => void>();
 
@@ -26,6 +28,19 @@ export class TerminalSessionRuntime {
     const transition = reduceTerminalRuntime(this.stateValue, event);
     this.stateValue = transition.state;
     return transition.accepted;
+  }
+
+  suspendInput(): void {
+    if (!this.recovering) this.inputGeneration++;
+    this.recovering = true;
+  }
+
+  resumeInput(): void { this.recovering = false; }
+
+  captureInput(): number { return this.inputGeneration; }
+
+  acceptsInput(generation = this.inputGeneration): boolean {
+    return !this.recovering && generation === this.inputGeneration && this.state.phase !== 'disposed';
   }
 
   capture(): number {

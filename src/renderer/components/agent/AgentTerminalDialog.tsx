@@ -19,7 +19,8 @@ import {
 import { terminalStatusLabel, terminalStatusTone } from '@renderer/lib/agent-status';
 import { BrowserXtermAdapter } from '@renderer/terminal/xterm-adapter';
 import { IrisAgentTerminalTransport } from '@renderer/terminal/terminal-transport';
-import { TerminalReplayController } from '@renderer/terminal/replay-controller';
+import { TerminalRecoveryBanner } from '@renderer/components/terminal/TerminalRecoveryBanner';
+import { TerminalReplayController, type TerminalRecovery } from '@renderer/terminal/replay-controller';
 import { TerminalSessionRuntime } from '@renderer/terminal/terminal-runtime';
 import { TerminalViewportController } from '@renderer/terminal/viewport-controller';
 import { createTerminalInputController } from '@renderer/terminal/input-operation';
@@ -70,6 +71,8 @@ function AgentTerminalPane({
   const tRef = useRef(t);
   tRef.current = t;
   const settings = useSettings();
+  const replayRef = useRef<TerminalReplayController | null>(null);
+  const [recovery, setRecovery] = useState<TerminalRecovery | null>(null);
   const [hostRevealed, setHostRevealed] = useState(false);
   const [contextHasSelection, setContextHasSelection] = useState(false);
   const [searchVisible, setSearchVisible] = useState(false);
@@ -113,6 +116,7 @@ function AgentTerminalPane({
     adapter.open(host);
     const term = adapter.terminal;
     const runtime = new TerminalSessionRuntime(`${sessionId}:${terminal.id}`, scope);
+    runtime.transition({ type: 'ATTACH' });
     const viewport = new TerminalViewportController(adapter.fit, 150);
     const transport = new IrisAgentTerminalTransport(sessionId, terminal.id, scope);
     const inputController = createTerminalInputController({
@@ -139,12 +143,16 @@ function AgentTerminalPane({
     }, viewport, {
       chunkBytes: 16 * 1024,
       timeoutMs: 5000,
+      recovery: setRecovery,
       reveal: () => setHostRevealed(true),
       warn: (message, error) => console.warn(message, error),
     });
     viewport.observe(host);
+    replayRef.current = replayController;
+    setRecovery(null);
     const unsubscribe = transport.onOutput((payload) => replayController.onOutput(payload));
     const dataDisposable = adapter.onInput((data, encoding) => {
+      if (!runtime.acceptsInput()) return;
       viewport.flushBeforeInput();
       void transport.sendInput(data, encoding).catch(() => undefined);
     });
@@ -188,6 +196,7 @@ function AgentTerminalPane({
     // async-boundary: handled - replay controller degrades and reveals on transport failure.
     void replayController.start().catch(() => undefined);
     return () => {
+      replayRef.current = null;
       runtime.dispose();
       inputControllerRef.current = null;
       host.removeEventListener('paste', pasteInterceptor, true);
@@ -243,6 +252,10 @@ function AgentTerminalPane({
 
   return (
     <div className="relative h-full min-h-0 bg-background">
+      {recovery && <TerminalRecoveryBanner recovery={recovery} retry={() => {
+        // async-boundary: handled - the replay controller reports recovery failures.
+        void replayRef.current?.retryRecovery();
+      }} />}
       <TerminalContextMenu
         hasSelection={contextHasSelection}
         onCopy={copySelection}

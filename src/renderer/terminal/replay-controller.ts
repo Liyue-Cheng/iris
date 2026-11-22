@@ -20,7 +20,19 @@ export interface ReplayTerminalPort {
   restoreState?(state: XtermSnapshotState): void;
 }
 
+export interface TerminalRecovery {
+  exhausted: boolean;
+  reason: string;
+}
+
+const RETRY_DELAYS_MS = [250, 1000];
+
 export class TerminalReplayController {
+  private retries = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private ackTimer: ReturnType<typeof setTimeout> | null = null;
+  private latestAck = -1;
+  private confirmedAck = -1;
   private readonly ordering = createReplayOrdering<SessionOutputPayload>();
   private resyncPromise: Promise<void> | null = null;
   private synchronizedReplay = false;
@@ -35,9 +47,48 @@ export class TerminalReplayController {
       chunkBytes: number;
       timeoutMs: number;
       reveal: () => void;
+      recovery?: (state: TerminalRecovery | null) => void;
       warn: (message: string, error?: unknown) => void;
     },
-  ) {}
+  ) {
+    runtime.own(() => {
+      this.cancelRetry();
+      if (this.ackTimer !== null) clearTimeout(this.ackTimer);
+    });
+  }
+
+  private cancelRetry(): void {
+    if (this.retryTimer !== null) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+  }
+
+  /** Cumulative ACKs are safe to retry even if the original reply was lost. */
+  private acknowledge(seq: number, retry = false): void {
+    const epoch = this.runtime.capture();
+    if (!this.runtime.isCurrent(epoch) || seq <= this.confirmedAck) return;
+    this.latestAck = Math.max(this.latestAck, seq);
+    void this.transport.acknowledge(seq).then(() => {
+      this.confirmedAck = Math.max(this.confirmedAck, seq);
+      if (this.confirmedAck >= this.latestAck && this.ackTimer !== null) {
+        clearTimeout(this.ackTimer);
+        this.ackTimer = null;
+      }
+    }).catch(() => {
+      // One watchdog covers rejected and lost replies, including the final ACK of a paused PTY.
+    });
+    if (this.ackTimer !== null) return;
+    this.ackTimer = setTimeout(() => {
+      this.ackTimer = null;
+      if (this.confirmedAck >= this.latestAck) return;
+      if (retry && this.confirmedAck < seq) {
+        if (this.runtime.state.phase === 'live' || this.runtime.state.phase === 'history-frozen') {
+          this.holdForFreshSnapshot(epoch, new Error('Terminal output acknowledgement timed out'));
+        }
+        return;
+      }
+      this.acknowledge(this.latestAck, true);
+    }, this.options.timeoutMs);
+  }
 
   onOutput(payload: SessionOutputPayload): void {
     if (!this.runtime.isCurrent(this.runtime.epoch)) return;
@@ -45,13 +96,13 @@ export class TerminalReplayController {
       this.runtime.state.phase === 'history-frozen' ||
       (this.needsSnapshot && this.runtime.state.phase === 'degraded')
     ) {
-      void this.transport.acknowledge(payload.seq).catch(() => undefined);
+      this.acknowledge(payload.seq);
       return;
     }
     const accepted = acceptTerminalPayload(this.ordering, payload);
     if (accepted) {
       this.terminal.write(base64ToBytes(accepted.data), () => {
-        void this.transport.acknowledge(accepted.seq).catch(() => undefined);
+        this.acknowledge(accepted.seq);
       });
     }
   }
@@ -67,6 +118,7 @@ export class TerminalReplayController {
       return Promise.resolve();
     }
     if (this.resyncPromise) return this.resyncPromise;
+    this.cancelRetry();
     // async-boundary: handled - the shared promise is returned to every caller.
     this.resyncPromise = this.resync().finally(() => {
       this.resyncPromise = null;
@@ -74,15 +126,19 @@ export class TerminalReplayController {
     return this.resyncPromise;
   }
 
+  retryRecovery(): Promise<void> {
+    if (this.runtime.state.phase !== 'degraded') return Promise.resolve();
+    this.retries = 0;
+    this.options.recovery?.({ exhausted: false, reason: '' });
+    return this.resumeFromHistory();
+  }
+
   async start(): Promise<void> {
     const epoch = this.runtime.capture();
     this.viewport.requestFit(true);
     try {
-      await this.transport.attach();
-      if (!this.runtime.isCurrent(epoch)) {
-        await this.transport.detach();
-        return;
-      }
+      await this.attach(epoch);
+      if (!this.runtime.isCurrent(epoch)) return;
       let replay = await this.requestReplay(epoch);
       if (!this.runtime.isCurrent(epoch)) return;
       this.runtime.transition({ type: 'SNAPSHOT_RECEIVED' });
@@ -100,7 +156,7 @@ export class TerminalReplayController {
       this.needsSnapshot = false;
       for (const payload of releaseReplayQueue(this.ordering, replay.lastSeq)) {
         this.terminal.write(base64ToBytes(payload.data), () => {
-          void this.transport.acknowledge(payload.seq).catch(() => undefined);
+          this.acknowledge(payload.seq);
         });
       }
       this.runtime.transition({ type: 'REPLAY_DRAINED' });
@@ -108,34 +164,40 @@ export class TerminalReplayController {
     } catch (error) {
       this.options.warn('[terminal] scrollback replay failed; waiting for a fresh snapshot', error);
       if (!this.runtime.isCurrent(epoch)) return;
-      this.holdForFreshSnapshot(epoch);
+      this.holdForFreshSnapshot(epoch, error);
     }
   }
 
+  private attach(epoch: number): Promise<void> {
+    const request = this.transport.attach().then(async () => {
+      // IPC may finish after our timeout or after this mount was replaced.
+      if (!this.runtime.isCurrent(epoch)) await this.transport.detach();
+    });
+    return this.waitForReply(request, epoch, 'attachment');
+  }
+
   private async requestReplay(epoch: number): Promise<SessionReplaySnapshot> {
-    const request = this.transport.requestReplay(this.terminal.cols, this.terminal.rows);
-    return new Promise((resolve, reject) => {
-      let done = false;
+    return this.waitForReply(this.transport.requestReplay(this.terminal.cols, this.terminal.rows), epoch, 'replay');
+  }
+
+  private waitForReply<T>(request: Promise<T>, epoch: number, operation: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
       let release = (): void => undefined;
-      const finish = (error: unknown, snapshot?: SessionReplaySnapshot): void => {
-        if (done) return;
-        done = true;
+      const finish = (complete: () => void): void => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         release();
-        if (snapshot === undefined) reject(error);
-        else resolve(snapshot);
+        complete();
       };
-      const timer = setTimeout(
-        () => finish(new Error(`terminal replay timed out after ${this.options.timeoutMs}ms`)),
-        this.options.timeoutMs,
-      );
-      release = this.runtime.own(() => finish(new Error('terminal view disposed during replay')));
-      // Observe both outcomes even if disposal or timeout has already won.
-      // async-boundary: handled - both outcomes settle the owned outer promise.
-      void request.then((snapshot) => {
-        if (!this.runtime.isCurrent(epoch)) finish(new Error('terminal view disposed during replay'));
-        else finish(undefined, snapshot);
-      }, (error: unknown) => finish(error));
+      const timer = setTimeout(() => finish(() => reject(new Error('Terminal ' + operation + ' timed out'))), this.options.timeoutMs);
+      release = this.runtime.own(() => finish(() => reject(new Error('Terminal view disposed'))));
+      // Both outcomes stay observed after disposal or timeout.
+      void request.then(value => {
+        if (this.runtime.isCurrent(epoch)) finish(() => resolve(value));
+        else finish(() => reject(new Error('Terminal view disposed')));
+      }).catch(error => finish(() => reject(error)));
     });
   }
 
@@ -146,11 +208,8 @@ export class TerminalReplayController {
     this.ordering.holding = true;
     this.ordering.queue.length = 0;
     try {
-      await this.transport.attach();
-      if (!this.runtime.isCurrent(epoch)) {
-        await this.transport.detach();
-        return;
-      }
+      await this.attach(epoch);
+      if (!this.runtime.isCurrent(epoch)) return;
       const replay = await this.requestReplay(epoch);
       if (!this.runtime.isCurrent(epoch)) return;
       this.assertDimensions(replay);
@@ -159,10 +218,15 @@ export class TerminalReplayController {
       await this.writeSnapshot(replay, epoch);
       await this.restoreContinuation(replay, epoch);
       if (!this.runtime.isCurrent(epoch)) return;
+      if (this.needsSnapshot && replay.lastSeq >= 0) {
+        await this.waitForReply(this.transport.acknowledge(replay.lastSeq), epoch, 'output acknowledgement');
+        if (!this.runtime.isCurrent(epoch)) return;
+        this.confirmedAck = Math.max(this.confirmedAck, replay.lastSeq);
+      }
       this.needsSnapshot = false;
       for (const payload of releaseReplayQueue(this.ordering, replay.lastSeq)) {
         this.terminal.write(base64ToBytes(payload.data), () => {
-          void this.transport.acknowledge(payload.seq).catch(() => undefined);
+          this.acknowledge(payload.seq);
         });
       }
       this.runtime.transition({ type: 'RESYNC_DONE' });
@@ -170,12 +234,25 @@ export class TerminalReplayController {
     } catch (error) {
       this.options.warn('[terminal] history resync failed; waiting for a fresh snapshot', error);
       if (!this.runtime.isCurrent(epoch)) return;
-      this.holdForFreshSnapshot(epoch);
+      this.holdForFreshSnapshot(epoch, error);
     }
   }
 
   /** A partially restored screen is never a valid baseline for live bytes. */
-  private holdForFreshSnapshot(epoch: number): void {
+  private holdForFreshSnapshot(epoch: number, error: unknown): void {
+    this.cancelRetry();
+    this.runtime.suspendInput();
+    const delay = RETRY_DELAYS_MS[this.retries];
+    const reason = error instanceof Error ? error.message : String(error);
+    this.options.recovery?.({ exhausted: delay === undefined, reason });
+    if (delay !== undefined) {
+      this.retries++;
+      this.retryTimer = setTimeout(() => {
+        this.retryTimer = null;
+        // async-boundary: handled - resync reports failure via holdForFreshSnapshot.
+        void this.resumeFromHistory();
+      }, delay);
+    }
     this.runtime.transition({ type: 'DEGRADE' });
     this.needsSnapshot = true;
     let discardedSeq = this.ordering.lastSeq;
@@ -185,7 +262,7 @@ export class TerminalReplayController {
     if (discardedSeq >= 0) {
       // The authoritative mirror retains these bytes; free the abandoned
       // renderer backlog while waiting for a complete replacement snapshot.
-      void this.transport.acknowledge(discardedSeq).catch(() => undefined);
+      this.acknowledge(discardedSeq);
     }
     this.viewport.finishReplay();
     if (this.synchronizedReplay) {
@@ -269,13 +346,23 @@ export class TerminalReplayController {
       this.viewport.finishReplay();
       if (!bottomAnchored) this.terminal.scrollToBottom();
       if (acknowledgedSeq >= 0) {
-        void this.transport.acknowledge(acknowledgedSeq).catch(() => undefined);
+        this.acknowledge(acknowledgedSeq);
       }
       requestAnimationFrame(() => {
-        if (this.runtime.isCurrent(epoch)) this.options.reveal();
+        if (!this.runtime.isCurrent(epoch) || this.needsSnapshot) return;
+        this.runtime.resumeInput();
+        this.retries = 0;
+        this.options.recovery?.(null);
+        this.options.reveal();
       });
     };
     fallback = setTimeout(() => {
+      if (!this.runtime.acceptsInput()) {
+        revealed = true;
+        removeOwner();
+        this.holdForFreshSnapshot(epoch, new Error('Terminal display did not finish parsing the replay'));
+        return;
+      }
       this.options.warn('[terminal] replay fence timed out; revealing fallback');
       if (this.synchronizedReplay) {
         this.synchronizedReplay = false;

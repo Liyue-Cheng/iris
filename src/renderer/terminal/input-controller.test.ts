@@ -25,6 +25,24 @@ function fixture(overrides: Partial<TerminalInputPort> = {}): {
 }
 
 describe('TerminalInputController', () => {
+  it('drops pending clipboard input across display recovery and refuses new writes while paused', async () => {
+    let release!: (value: string) => void;
+    const { controller, runtime, port } = fixture({
+      readClipboard: () => new Promise(resolve => { release = resolve; }),
+    });
+    const paste = controller.pasteClipboard();
+    runtime.suspendInput();
+    await controller.dropPaths(['file.txt']);
+    await controller.dropDocument('issue.md');
+    await controller.pasteText('must not execute');
+    runtime.resumeInput();
+    release('late');
+    await paste;
+    expect(port.readDocument).not.toHaveBeenCalled();
+    expect(port.paste).not.toHaveBeenCalled();
+    expect(port.sendInput).not.toHaveBeenCalled();
+  });
+
   it('does not paste a clipboard result that arrives after runtime disposal', async () => {
     let resolveClipboard: (text: string) => void = () => undefined;
     const clipboard = new Promise<string>((resolve) => {

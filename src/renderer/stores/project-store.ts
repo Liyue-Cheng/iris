@@ -24,8 +24,15 @@ import { projectScopeState, sameProjectScope } from './project-scope-state';
 import { sessionViewStore } from './session-view-store';
 import { terminalSessionKey } from '@renderer/lib/session-projection';
 import { healthStore } from './health-store';
+import { createProjectRequestTracker } from '@renderer/lib/project-request';
 import { findDocByPath } from '@renderer/lib/doc-utils';
 import { documentNavigationStore } from './document-navigation-store';
+import {
+  leftPanePrefs,
+  reconcileDirectoryPrefs,
+  reconcileLensPrefs,
+  type LeftPaneMode,
+} from '@renderer/lib/left-pane-prefs';
 
 export type ProjectPhase = 'idle' | 'opening' | 'ready' | 'error';
 
@@ -58,7 +65,6 @@ export interface ProjectState {
   error: string | null;
   scope: ProjectScope | null;
   scan: IrisScanResult | null;
-  rawMode: boolean;
   rawTree: RawTreeNode | null;
   docLoading: boolean;
   docError: string | null;
@@ -70,7 +76,6 @@ let state: ProjectState = {
   error: null,
   scope: null,
   scan: null,
-  rawMode: false,
   rawTree: null,
   docLoading: false,
   docError: null,
@@ -142,24 +147,51 @@ function fallbackWorkspacePath(
   return '.iris';
 }
 
-async function refreshScanProjection(scope: ProjectScope): Promise<void> {
-  const scan = await window.api.invoke<
-    { expectedScope: ProjectScope },
-    IrisScanResult
-  >(CHANNELS.PROJECT_SCAN, { expectedScope: scope });
-  if (!sameProjectScope(scope, projectScopeState.get())) return;
-  setState({ scan });
-  healthStore.resolve('project-projection', scope);
+const scanRequests = createProjectRequestTracker();
+const rawRequests = createProjectRequestTracker();
+
+async function refreshScanProjection(scope: ProjectScope): Promise<boolean> {
+  if (!sameProjectScope(scope, projectScopeState.get())) return false;
+  const isCurrent = scanRequests.begin(scope);
+  try {
+    const scan = await window.api.invoke<
+      { expectedScope: ProjectScope },
+      IrisScanResult
+    >(CHANNELS.PROJECT_SCAN, { expectedScope: scope });
+    if (!isCurrent()) return false;
+    reconcileLensPrefs(scope.root, scan.root);
+    setState({ scan });
+    healthStore.resolve('project-projection', scope);
+    return true;
+  } catch (cause) {
+    if (isCurrent()) healthStore.degrade({
+      key: 'project-projection', domain: 'project-projection', cause, scope,
+      retry: async () => { await refreshScanProjection(scope); },
+    });
+    return false;
+  }
 }
 
-async function refreshRawProjection(scope: ProjectScope): Promise<void> {
-  const rawTree = await window.api.invoke<
-    { expectedScope: ProjectScope },
-    RawTreeNode | null
-  >(CHANNELS.PROJECT_RAW_TREE, { expectedScope: scope });
-  if (!sameProjectScope(scope, projectScopeState.get())) return;
-  setState({ rawTree });
-  healthStore.resolve('project-raw-tree', scope);
+async function refreshRawProjection(scope: ProjectScope): Promise<boolean> {
+  if (!sameProjectScope(scope, projectScopeState.get())) return false;
+  const isCurrent = rawRequests.begin(scope);
+  try {
+    const rawTree = await window.api.invoke<
+      { expectedScope: ProjectScope },
+      RawTreeNode | null
+    >(CHANNELS.PROJECT_RAW_TREE, { expectedScope: scope });
+    if (!isCurrent()) return false;
+    reconcileDirectoryPrefs(scope.root, rawTree);
+    setState({ rawTree });
+    healthStore.resolve('project-raw-tree', scope);
+    return true;
+  } catch (cause) {
+    if (isCurrent()) healthStore.degrade({
+      key: 'project-raw-tree', domain: 'project-projection', cause, scope,
+      retry: async () => { await refreshRawProjection(scope); },
+    });
+    return false;
+  }
 }
 
 /** A view change may discard the only mounted draft, so it waits for the
@@ -246,6 +278,7 @@ async function commitDocNavigation(
 
   const scope = state.scope;
   if (!scope) return false;
+  revealDocumentInLeftPane(path);
   setState({ docLoading: true, docError: null, view: { kind: 'doc', path } });
   try {
     const content = await window.api.invoke<
@@ -286,10 +319,20 @@ async function navigateToDoc(
   sessionId?: string,
 ): Promise<boolean> {
   if (state.view.kind === 'doc' && state.view.path === path && state.docError === null) {
-    return isCurrentIntent(intent) && selectPreparedSession(sessionId, path);
+    const selected = isCurrentIntent(intent) && selectPreparedSession(sessionId, path);
+    if (selected) revealDocumentInLeftPane(path);
+    return selected;
   }
   if (!(await mayCommitNavigation(intent))) return false;
   return commitDocNavigation(intent, path, sessionId);
+}
+
+function revealDocumentInLeftPane(path: string): void {
+  const scope = state.scope;
+  const root = state.scan?.root;
+  if (!scope || !root) return;
+  const doc = findDocByPath(root, path);
+  if (doc) leftPanePrefs.revealDocument(scope.root, doc.workspacePath, doc.type);
 }
 
 async function loadCollectionDoc(intent: number, path: string): Promise<boolean> {
@@ -374,6 +417,7 @@ export const projectStore = {
   /** Commit hook of project.open. */
   handleOpened(result: Omit<ProjectOpenResult, 'projectSettings'>): void {
     const { scan, scope } = result;
+    reconcileLensPrefs(scope.root, scan.root);
     const idempotent = sameProjectScope(scope, state.scope);
     healthStore.resetForScope(scope);
     if (idempotent) {
@@ -400,7 +444,7 @@ export const projectStore = {
       docLoading: false,
       docError: null,
     });
-    if (state.rawMode) void this.refreshRawTree();
+    if (leftPanePrefs.getMode(scope.root) === 'files') void this.refreshRawTree();
   },
 
   handleOpenFailed(message: string): void {
@@ -421,6 +465,7 @@ export const projectStore = {
       if (!sameProjectScope(scope, projectScopeState.get())) return;
       this.handleOpened({ scope, scan, sessions: [] });
     } catch (err) {
+      if (!sameProjectScope(scope, projectScopeState.get())) return;
       this.handleOpenFailed(err instanceof Error ? err.message : String(err));
     }
   },
@@ -467,20 +512,14 @@ export const projectStore = {
       do {
         scanDirty = false;
         await refreshScanProjection(scope);
-        if (state.rawMode) await this.refreshRawTree();
+        if (!sameProjectScope(scope, projectScopeState.get())) return;
+        if (leftPanePrefs.getMode(scope.root) === 'files') await this.refreshRawTree();
       } while (scanDirty);
-    } catch (err) {
-      console.warn('[project-store] rescan failed', err);
-      healthStore.degrade({
-        key: 'project-projection',
-        domain: 'project-projection',
-        cause: err,
-        scope,
-        retry: () => refreshScanProjection(scope),
-      });
     } finally {
       scanInFlight = false;
     }
+
+    if (!sameProjectScope(scope, projectScopeState.get())) return;
 
     // Editor-side reaction to changes of the open doc (echo dedup, live
     // reload, conflict flag, unlink) is handled by editorStore via the ISR
@@ -649,6 +688,7 @@ export const projectStore = {
     beginNavigationIntent();
     const selectedPath = state.view.selectedPath;
     editorStore.prepareForRemount();
+    revealDocumentInLeftPane(selectedPath);
     setState({ view: { kind: 'doc', path: selectedPath }, docLoading: false, docError: null });
     return true;
   },
@@ -807,18 +847,8 @@ export const projectStore = {
     if (state.phase !== 'ready') return;
     const scope = state.scope;
     if (!scope) return;
-    try {
-      await refreshScanProjection(scope);
-      if (state.rawMode) await this.refreshRawTree();
-    } catch (err) {
-      console.warn('[project-store] rescan failed', err);
-      healthStore.degrade({
-        key: 'project-projection',
-        domain: 'project-projection',
-        cause: err,
-        scope,
-        retry: () => refreshScanProjection(scope),
-      });
+    if (await refreshScanProjection(scope)) {
+      if (leftPanePrefs.getMode(scope.root) === 'files') await this.refreshRawTree();
     }
   },
 
@@ -838,33 +868,19 @@ export const projectStore = {
     return true;
   },
 
-  async toggleRawMode(): Promise<void> {
-    const next = !state.rawMode;
-    setState({ rawMode: next });
-    if (next && state.phase === 'ready') {
+  async setLeftPaneMode(mode: LeftPaneMode): Promise<void> {
+    const scope = state.scope;
+    if (!scope) return;
+    leftPanePrefs.setMode(scope.root, mode);
+    if (mode === 'files' && state.phase === 'ready') {
       await this.refreshRawTree();
     }
-  },
-
-  showLens(): void {
-    setState({ rawMode: false });
   },
 
   async refreshRawTree(): Promise<void> {
     const scope = state.scope;
     if (!scope) return;
-    try {
-      await refreshRawProjection(scope);
-    } catch (err) {
-      console.warn('[project-store] raw tree failed', err);
-      healthStore.degrade({
-        key: 'project-raw-tree',
-        domain: 'project-projection',
-        cause: err,
-        scope,
-        retry: () => refreshRawProjection(scope),
-      });
-    }
+    await refreshRawProjection(scope);
   },
 };
 

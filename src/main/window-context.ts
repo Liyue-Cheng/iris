@@ -21,6 +21,7 @@ import type { SettingsManager } from './settings-manager';
 import type { GitManager } from './git-manager';
 import type { ProjectScope } from '@shared/types';
 import type { TerminalOutputAttachment } from './terminal/output-attachment';
+import { AppError } from '@shared/app-error';
 
 export interface WindowContext {
   readonly win: BrowserWindow;
@@ -39,9 +40,8 @@ export interface WindowContext {
   projectSwitching: boolean;
   /** Main-side serialization survives renderer timeout/retry and direct IPC. */
   projectSwitchTail: Promise<void>;
-  /** Navigation retires old document requests even when project scope is unchanged. */
+  /** Committing a new document retires requests even when project scope is unchanged. */
   rendererEpoch: number;
-  rendererNavigating: boolean;
   /** Irreversible backend cleanup has started. */
   closing: boolean;
   outputAttachment: TerminalOutputAttachment | null;
@@ -68,16 +68,25 @@ export function contextForWebContents(sender: WebContents): WindowContext | unde
 export function requireContext(event: IpcMainInvokeEvent): WindowContext {
   const ctx = contextForWebContents(event.sender);
   if (!ctx) {
-    throw new Error('[ipc] no WindowContext for sender — window gone?');
+    throw new AppError('ipc', 'WindowClosed', '[ipc] no WindowContext for sender — window gone?');
   }
   const lifetime = requestLifetimes.get(event);
-  if (
-    ctx.closing || ctx.rendererNavigating ||
-    !event.senderFrame || event.senderFrame.detached ||
-    event.senderFrame !== event.sender.mainFrame ||
-    (lifetime && (lifetime.ctx !== ctx || lifetime.epoch !== ctx.rendererEpoch))
-  ) {
-    throw new Error('[ipc] renderer document is no longer active');
+  let reason = ctx.closing ? 'window-closing'
+    : lifetime && (lifetime.ctx !== ctx || lifetime.epoch !== ctx.rendererEpoch) ? 'document-replaced'
+    : null;
+  if (!reason) {
+    // Electron's senderFrame getter itself warns after its document is gone.
+    // Known retired requests must be rejected before touching that getter.
+    const frame = event.senderFrame;
+    reason = !frame || frame.detached ? 'frame-detached'
+      : frame !== event.sender.mainFrame ? 'non-main-frame'
+      : null;
+  }
+  if (reason) {
+    throw new AppError('ipc', ctx.closing ? 'WindowClosing' : 'RendererDocumentInactive',
+      `[ipc] renderer document is no longer active (${reason})`, {
+        details: { reason, windowId: ctx.win.id, rendererEpoch: ctx.rendererEpoch },
+      });
   }
   if (!lifetime) requestLifetimes.set(event, { ctx, epoch: ctx.rendererEpoch });
   return ctx;

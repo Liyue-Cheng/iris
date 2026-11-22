@@ -7,6 +7,7 @@ import { TerminalViewportController } from './viewport-controller';
 import xtermHeadless from '@xterm/headless';
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -64,16 +65,81 @@ function fixture(requestReplay: () => Promise<SessionReplaySnapshot>) {
   };
   const viewport = new TerminalViewportController({ fit: vi.fn() }, 150);
   const reveal = vi.fn();
+  const recovery = vi.fn();
   const controller = new TerminalReplayController(runtime, transport, terminal, viewport, {
     chunkBytes: 16,
     timeoutMs: 100,
     reveal,
+    recovery,
     warn: vi.fn(),
   });
-  return { runtime, controller, writes, replayEvents, reveal, transport, terminal };
+  return { runtime, recovery, controller, writes, replayEvents, reveal, transport, terminal };
 }
 
 describe('TerminalReplayController', () => {
+  it('bounds recovery attempts, blocks blind input and manually recovers the original attachment', async () => {
+    vi.useFakeTimers();
+    const request = vi.fn().mockRejectedValue(new Error('snapshot unavailable'));
+    const { controller, runtime, recovery, transport } = fixture(request);
+    try {
+      const beforeFailure = runtime.captureInput();
+      await controller.start();
+      expect(runtime.acceptsInput()).toBe(false);
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(request).toHaveBeenCalledTimes(3);
+      expect(recovery).toHaveBeenLastCalledWith({ exhausted: true, reason: 'snapshot unavailable' });
+      request.mockResolvedValue({ cols: 80, rows: 24, lastSeq: 10, data: btoa('restored') });
+      await controller.retryRecovery();
+      expect(runtime.acceptsInput()).toBe(true);
+      expect(runtime.acceptsInput(beforeFailure)).toBe(false);
+      expect(recovery).toHaveBeenLastCalledWith(null);
+      expect(transport.sendInput).not.toHaveBeenCalled();
+    } finally { runtime.dispose(); }
+  });
+
+  it.each(['rejected', 'unanswered'])('retries a %s cumulative ACK when no more output arrives', async kind => {
+    vi.useFakeTimers();
+    const { controller, runtime, transport } = fixture(async () => ({ cols: 80, rows: 24, data: '', lastSeq: -1 }));
+    try {
+      await controller.start();
+      if (kind === 'rejected') vi.mocked(transport.acknowledge).mockRejectedValueOnce(new Error('lost'));
+      else vi.mocked(transport.acknowledge).mockReturnValueOnce(new Promise(() => {}));
+      controller.onOutput(output(4, 'burst'));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(transport.acknowledge).toHaveBeenCalledTimes(2);
+      expect(transport.acknowledge).toHaveBeenLastCalledWith(4);
+      expect(runtime.state.phase).toBe('live');
+    } finally { runtime.dispose(); }
+  });
+
+  it('does not release blind input when ACKs still fail after a fresh snapshot', async () => {
+    vi.useFakeTimers();
+    const { controller, runtime, recovery, transport } = fixture(async () => ({
+      cols: 80, rows: 24, data: btoa('screen'), lastSeq: 3,
+    }));
+    vi.mocked(transport.acknowledge).mockRejectedValue(new Error('no ACK'));
+    try {
+      await controller.start();
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(recovery).toHaveBeenLastCalledWith({ exhausted: true, reason: 'no ACK' });
+      expect(runtime.acceptsInput()).toBe(false);
+      vi.mocked(transport.acknowledge).mockResolvedValue(undefined);
+      await controller.retryRecovery();
+      expect(runtime.acceptsInput()).toBe(true);
+    } finally { runtime.dispose(); }
+  });
+
+  it('releases a late attachment owned by a disposed view', async () => {
+    const { controller, runtime, transport } = fixture(async () => ({ cols: 80, rows: 24, data: '', lastSeq: -1 }));
+    let attached!: () => void;
+    vi.mocked(transport.attach).mockReturnValueOnce(new Promise(resolve => { attached = resolve; }));
+    const start = controller.start();
+    runtime.dispose();
+    await start;
+    attached();
+    await vi.waitFor(() => expect(transport.detach).toHaveBeenCalledOnce());
+  });
+
   it('holds unsafe output after a real parser timeout and replaces the screen on retry', async () => {
     const target = new xtermHeadless.Terminal({ cols: 80, rows: 24, allowProposedApi: true });
     let releaseParser: (() => void) | undefined;

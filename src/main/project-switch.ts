@@ -7,6 +7,7 @@ import type {
 } from '@shared/types';
 import type { WindowContext } from './window-context';
 import { logger } from './logger';
+import { AppError } from '@shared/app-error';
 
 export interface ProjectSwitchRequest {
   root: string;
@@ -41,8 +42,9 @@ export function enqueueProjectSwitch(
 ): Promise<ProjectOpenResult> {
   const epoch = ctx.rendererEpoch;
   const assertCanSwitch = (): void => {
-    if (ctx.closing || ctx.rendererNavigating || ctx.rendererEpoch !== epoch) {
-      throw new Error('[project:open] window or renderer document is no longer active');
+    if (ctx.closing || ctx.rendererEpoch !== epoch) {
+      throw new AppError('ipc', ctx.closing ? 'WindowClosing' : 'RendererDocumentInactive',
+        '[project:open] window or renderer document is no longer active');
     }
     assertRequestCurrent();
   };
@@ -62,6 +64,7 @@ export function enqueueProjectSwitch(
       return {
         scope: current,
         scan,
+        sessionRevision: ctx.terminalSessionManager.projectionRevision,
         sessions: sessionsForScope(ctx, current),
         projectSettings,
       };
@@ -78,6 +81,7 @@ export function enqueueProjectSwitch(
         return {
           scope: current,
           scan: prepared.scan,
+          sessionRevision: ctx.terminalSessionManager.projectionRevision,
           sessions: sessionsForScope(ctx, current),
           projectSettings,
         };
@@ -119,7 +123,11 @@ export function enqueueProjectSwitch(
         logger.warn('project', `post-commit persistence failed for ${scope.root}`, err);
       }
       const projectSettings = await readProjectSettings(scope);
-      return { scope, scan, sessions: [], projectSettings };
+      return {
+        scope, scan, projectSettings,
+        sessionRevision: ctx.terminalSessionManager.projectionRevision,
+        sessions: sessionsForScope(ctx, scope),
+      };
     } finally {
       ctx.projectSwitching = false;
     }

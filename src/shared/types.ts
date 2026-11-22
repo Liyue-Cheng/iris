@@ -581,6 +581,8 @@ export interface DocContent {
 export type SessionState = 'active' | 'idle' | 'exited';
 
 export interface TerminalSessionInfo {
+  /** Window-local ordering of the last lifecycle mutation. */
+  revision?: number;
   id: string;
   /** Launch shell grammar for literal path drops; absent means unknown. */
   shellKind?: import('./terminal/shell-quoting').TerminalShellKind;
@@ -642,6 +644,7 @@ export interface SessionReplaySnapshot {
 }
 
 export interface SessionStateChangedPayload {
+  revision: number;
   scope: ProjectScope;
   sessionId: string;
   patch: Partial<TerminalSessionInfo>;
@@ -655,12 +658,24 @@ export interface SessionExitedPayload {
 }
 
 export interface SessionDestroyedPayload {
+  revision: number;
+  destroyedAt: number;
   scope: ProjectScope;
   sessionId: string;
-  reason: 'user-closed' | 'project-switched' | 'app-quit';
+  reason: 'user-closed' | 'document-status' | 'project-switched' | 'app-quit';
+}
+
+export interface DocumentSessionTarget {
+  label: string;
+  /** Agent history entries can reopen with the same id. */
+  openedRevision?: number;
+  kind: 'terminal' | 'iris-agent';
+  id: string;
+  documentPath: string;
 }
 
 export interface SessionListSnapshot {
+  revision: number;
   scope: ProjectScope;
   sessions: TerminalSessionInfo[];
 }
@@ -1180,6 +1195,7 @@ export interface IrisAgentSessionDestroyedPayload {
 
 /** One main-process commit result for initial open, same-root refresh, or switch. */
 export interface ProjectOpenResult {
+  sessionRevision?: number;
   scope: ProjectScope;
   scan: IrisScanResult;
   sessions: TerminalSessionInfo[];

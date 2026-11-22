@@ -8,9 +8,14 @@ export function detachWindowRenderer(ctx: WindowContext): void {
   ctx.agentSessionManager.detachAllTerminalOutputs();
 }
 
-export function beginRendererNavigation(ctx: WindowContext): void {
-  ctx.rendererNavigating = true;
-  detachWindowRenderer(ctx);
+/**
+ * did-navigate is a committed, cross-document main-frame navigation. A start
+ * event can be followed by preventDefault, stop, or a download with no commit;
+ * those attempts must leave the existing document and its consumers intact.
+ * Commit fires before the new document's preload IPC is dispatched.
+ */
+export function wireRendererLifecycle(ctx: WindowContext): void {
+  ctx.win.webContents.on('did-navigate', () => detachWindowRenderer(ctx));
 }
 
 /** Set before waiting for project-switch or backend cleanup promises. */

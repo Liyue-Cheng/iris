@@ -4,11 +4,12 @@ import type {
   ServiceHealthChangedEvent,
 } from '@shared/app-error';
 import type { ProjectScope } from '@shared/types';
-import { normalizeUiError, type UiAppError } from '@renderer/lib/action-runtime';
-import { sameProjectScope } from './project-scope-state';
+import { isRetiredRequestError, normalizeUiError, type UiAppError } from '@renderer/lib/action-runtime';
+import { projectScopeState, sameProjectScope } from './project-scope-state';
 
 export interface HealthIssue {
   key: string;
+  sourceKey: string;
   domain: HealthDomain;
   state: 'degraded' | 'recovering';
   error: UiAppError;
@@ -44,14 +45,17 @@ export const healthStore = {
   },
 
   degrade(input: DegradeInput): void {
+    if (input.scope && !sameProjectScope(input.scope, projectScopeState.get())) return;
+    if (isRetiredRequestError(input.cause)) return;
     const key = scopedKey(input.key, input.scope);
     const now = Date.now();
     const existingIndex = issues.findIndex((issue) => issue.key === key);
     const error = normalizeUiError(input.cause);
     if (existingIndex >= 0) {
       const existing = issues[existingIndex]!;
+      const { retry: _previousRetry, ...previous } = existing;
       const updated: HealthIssue = {
-        ...existing,
+        ...previous,
         state: 'degraded',
         error,
         lastSeenAt: now,
@@ -66,6 +70,7 @@ export const healthStore = {
     } else {
       issues = [...issues, {
         key,
+        sourceKey: input.key,
         domain: input.domain,
         state: 'degraded',
         error,
@@ -88,7 +93,7 @@ export const healthStore = {
   },
 
   resetForScope(scope: ProjectScope | null): void {
-    const next = issues.filter((issue) => sameProjectScope(issue.scope, scope));
+    const next = issues.filter((issue) => !issue.scope || sameProjectScope(issue.scope, scope));
     if (next.length === issues.length) return;
     issues = next;
     emit();
@@ -115,18 +120,30 @@ export const healthStore = {
   },
 
   async retry(issue: HealthIssue): Promise<void> {
-    if (!issue.retry || issue.state === 'recovering') return;
+    if (!issue.retry || issue.state === 'recovering' || !issues.includes(issue)) return;
+    if (issue.scope && !sameProjectScope(issue.scope, projectScopeState.get())) return;
+    const recovering: HealthIssue = { ...issue, state: 'recovering' };
     issues = issues.map((candidate) =>
-      candidate.key === issue.key ? { ...candidate, state: 'recovering' } : candidate,
+      candidate === issue ? recovering : candidate,
     );
     emit();
     try {
       await issue.retry();
-      issues = issues.filter((candidate) => candidate.key !== issue.key);
-      emit();
+      // The read or service event must explicitly resolve health. A callback
+      // finishing alone does not prove recovery, nor supersede a newer failure.
+      if (issues.includes(recovering)) {
+        issues = issues.map((candidate) => candidate === recovering ? { ...candidate, state: 'degraded' } : candidate);
+        emit();
+      }
     } catch (cause) {
+      if (!issues.includes(recovering)) return;
+      if (isRetiredRequestError(cause)) {
+        issues = issues.map((candidate) => candidate === recovering ? { ...candidate, state: 'degraded' } : candidate);
+        emit();
+        return;
+      }
       this.degrade({
-        key: issue.domain,
+        key: issue.sourceKey,
         domain: issue.domain,
         cause,
         scope: issue.scope,
@@ -135,6 +152,8 @@ export const healthStore = {
     }
   },
 };
+
+projectScopeState.subscribe(() => healthStore.resetForScope(projectScopeState.get()));
 
 export function useHealthIssues(): readonly HealthIssue[] {
   return useSyncExternalStore(

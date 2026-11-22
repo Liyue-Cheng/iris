@@ -82,6 +82,11 @@ import {
   sessionProjectionAnchorKey,
   useSessionProjections,
 } from '@renderer/lib/session-projection';
+import {
+  leftPanePrefs,
+  leftPaneTypeKey,
+  useLeftPanePrefs,
+} from '@renderer/lib/left-pane-prefs';
 
 const TYPE_ORDER: DocType[] = ['status', 'issue', 'report', 'misc'];
 
@@ -162,7 +167,9 @@ function TypeSection({
   workspacePath: string;
 }): JSX.Element | null {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(true);
+  const { scope } = useProject();
+  const prefs = useLeftPanePrefs(scope?.root ?? null);
+  const open = prefs.types[leftPaneTypeKey(workspacePath, type)] ?? true;
   const { sort, filter } = useLensPrefs();
   const projections = useSessionProjections();
   const { label, icon: Icon } = TYPE_META[type];
@@ -193,7 +200,12 @@ function TypeSection({
         <button
           type="button"
           aria-label={open ? t('layout.collapse') : t('layout.expand')}
-          onClick={() => setOpen(!open)}
+          disabled={filter !== ''}
+          onClick={() => {
+            if (scope && filter === '') {
+              leftPanePrefs.setTypeOpen(scope.root, workspacePath, type, !open);
+            }
+          }}
           className="shrink-0 px-1 py-0.5 text-muted-foreground hover:text-foreground"
         >
           {sectionOpen ? (
@@ -527,11 +539,15 @@ function WorkspaceSection({
   onCreateChild: (parentPath: string) => void;
 }): JSX.Element {
   const { t } = useTranslation();
-  const [sectionsOpen, setSectionsOpen] = useState(depth === 0);
   const { view, scope } = useProject();
+  const prefs = useLeftPanePrefs(scope?.root ?? null);
   const projections = useSessionProjections();
   const isRoot = depth === 0;
   const workspacePath = isRoot ? ROOT_WS_PATH : ws.path;
+  const sectionsOpen = prefs.workspaces[workspacePath] ?? isRoot;
+  const toggleSections = (): void => {
+    if (scope) leftPanePrefs.setWorkspaceOpen(scope.root, workspacePath, isRoot, !sectionsOpen);
+  };
   const byType = (t: DocType): IrisDoc[] => ws.docs.filter((d) => d.type === t);
 
   const isThisHubView = isRoot
@@ -552,7 +568,7 @@ function WorkspaceSection({
         label={hubLabel}
         isRoot={isRoot}
         sectionsOpen={sectionsOpen}
-        onToggleSections={() => setSectionsOpen(!sectionsOpen)}
+        onToggleSections={toggleSections}
         onCreateChild={onCreateChild}
       >
         <div
@@ -566,7 +582,7 @@ function WorkspaceSection({
           <button
             type="button"
             aria-label={sectionsOpen ? t('layout.collapseDocuments') : t('layout.expandDocuments')}
-            onClick={() => setSectionsOpen(!sectionsOpen)}
+            onClick={toggleSections}
             className="shrink-0 px-1 py-1.5 text-muted-foreground hover:text-foreground"
           >
             {sectionsOpen ? (

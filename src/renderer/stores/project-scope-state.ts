@@ -2,6 +2,7 @@ import type { ProjectScope } from '@shared/types';
 
 let activeScope: ProjectScope | null = null;
 let switching = false;
+const subscribers = new Set<() => void>();
 
 export function sameProjectScope(
   a: ProjectScope | null | undefined,
@@ -10,14 +11,21 @@ export function sameProjectScope(
   return a?.root === b?.root && a?.generation === b?.generation;
 }
 
-/** Lightweight, non-reactive authority shared by the CPU transport and stores. */
+/** Project identity shared by transport, stores and owners of pending UI work. */
 export const projectScopeState = {
+  subscribe(listener: () => void): () => void {
+    subscribers.add(listener);
+    return () => subscribers.delete(listener);
+  },
+
   get(): ProjectScope | null {
     return activeScope;
   },
 
   set(scope: ProjectScope | null): void {
+    if (sameProjectScope(activeScope, scope)) return;
     activeScope = scope;
+    subscribers.forEach((listener) => listener());
   },
 
   isSwitching(): boolean {

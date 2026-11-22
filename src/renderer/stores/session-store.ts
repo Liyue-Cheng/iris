@@ -12,12 +12,14 @@ import { useSyncExternalStore } from 'react';
 import type {
   ProjectScope,
   TerminalSessionInfo,
+  SessionDestroyedPayload,
   SessionListSnapshot,
   SessionState,
 } from '@shared/types';
 import { CHANNELS } from '@shared/protocol';
 import { projectScopeState, sameProjectScope } from './project-scope-state';
 import { healthStore } from './health-store';
+import { createProjectRequestTracker } from '@renderer/lib/project-request';
 
 export interface SessionStoreState {
   scope: ProjectScope | null;
@@ -32,6 +34,52 @@ let state: SessionStoreState = {
   sessions: [],
   disconnectedSessionIds: new Set(),
 };
+let appliedRevision = 0;
+const pendingChanges = new Map<number, () => void>();
+let gapRead: { revision: number } | null = null;
+
+function drainChanges(): void {
+  for (let change = pendingChanges.get(appliedRevision + 1); change; change = pendingChanges.get(appliedRevision + 1)) {
+    pendingChanges.delete(++appliedRevision);
+    change();
+  }
+}
+
+/** A snapshot covers every mutation through its revision. Later deltas wait for missing predecessors. */
+export function applySessionChange(scope: ProjectScope, revision: number, change: () => void): void {
+  if (!sameProjectScope(scope, projectScopeState.get())) return;
+  if (!sameProjectScope(scope, state.scope)) sessionStore.reset([], scope);
+  if (revision <= appliedRevision) return;
+  pendingChanges.set(revision, change);
+  drainChanges();
+  if (pendingChanges.size) requestMissingChanges(scope, revision);
+}
+
+function requestMissingChanges(scope: ProjectScope, revision: number): void {
+  if (gapRead) return;
+  const read = { revision };
+  gapRead = read;
+  // async-boundary: handled - pullSessions reports failures through projection health.
+  void pullSessions(scope).then(ok => {
+    if (gapRead !== read) return;
+    gapRead = null;
+    // Another gap may have arrived after main captured this read's snapshot.
+    if (ok && pendingChanges.size) {
+      const latest = Math.max(...pendingChanges.keys());
+      if (latest > revision) requestMissingChanges(scope, latest);
+    }
+  });
+}
+
+export function acceptSessionRecord(info: TerminalSessionInfo): void {
+  const scope = { root: info.projectRoot, generation: info.projectGeneration };
+  if (info.revision !== undefined) applySessionChange(scope, info.revision, () => sessionStore.handleCreated(info));
+}
+
+export function acceptSessionClosure(event: SessionDestroyedPayload): void {
+  applySessionChange(event.scope, event.revision, () => sessionStore.handleDestroyed(event.sessionId));
+}
+
 const subscribers = new Set<() => void>();
 
 function emit(): void {
@@ -44,6 +92,11 @@ function setState(patch: Partial<SessionStoreState>): void {
 }
 
 export const sessionStore = {
+  subscribe(listener: () => void): () => void {
+    subscribers.add(listener);
+    return () => subscribers.delete(listener);
+  },
+
   get(): SessionStoreState {
     return state;
   },
@@ -57,7 +110,9 @@ export const sessionStore = {
     ) {
       return;
     }
-    const sessions = [...state.sessions.filter((s) => s.id !== info.id), info];
+    const sessions = state.sessions.some(session => session.id === info.id)
+      ? state.sessions.map(session => session.id === info.id ? info : session)
+      : [...state.sessions, info];
     setState({ scope, sessions });
   },
 
@@ -81,7 +136,15 @@ export const sessionStore = {
   reset(
     sessions: TerminalSessionInfo[] = [],
     scope: ProjectScope | null = projectScopeState.get(),
+    revision = 0,
   ): void {
+    pendingChanges.clear();
+    appliedRevision = revision;
+    gapRead = null;
+    this.replaceSessions(sessions, scope);
+  },
+
+  replaceSessions(sessions: TerminalSessionInfo[], scope: ProjectScope | null): void {
     const filtered = scope
       ? sessions.filter(
           (session) =>
@@ -142,15 +205,39 @@ export function workspaceAnchorKey(workspacePath: string): string {
  * 会话投影丢失). Terminal content needs no extra care: TerminalView
  * replays from main's headless mirror on mount.
  */
-async function pullSessions(scope: ProjectScope): Promise<void> {
-  const snapshot = await window.api.invoke<
-    { expectedScope: ProjectScope },
-    SessionListSnapshot
-  >(CHANNELS.SESSION_LIST, { expectedScope: scope });
-  if (!sameProjectScope(scope, projectScopeState.get())) return;
-  if (!sameProjectScope(snapshot.scope, scope)) return;
-  sessionStore.reset(snapshot.sessions, snapshot.scope);
-  healthStore.resolve('session-projection', scope);
+const sessionRequests = createProjectRequestTracker();
+
+async function pullSessions(scope: ProjectScope): Promise<boolean> {
+  if (!sameProjectScope(scope, projectScopeState.get())) return false;
+  const isCurrent = sessionRequests.begin(scope);
+  try {
+    const snapshot = await window.api.invoke<
+      { expectedScope: ProjectScope },
+      SessionListSnapshot
+    >(CHANNELS.SESSION_LIST, { expectedScope: scope });
+    if (!isCurrent() || !sameProjectScope(snapshot.scope, scope)) return false;
+    if (!sameProjectScope(snapshot.scope, state.scope)) sessionStore.reset([], snapshot.scope);
+    const revision = snapshot.revision ?? 0;
+    if (revision >= appliedRevision) {
+      appliedRevision = revision;
+      for (const rev of pendingChanges.keys()) if (rev <= revision) pendingChanges.delete(rev);
+      sessionStore.replaceSessions(snapshot.sessions, snapshot.scope);
+      drainChanges();
+    }
+    healthStore.resolve('session-projection', scope);
+    return true;
+  } catch (err) {
+    if (!isCurrent()) return false;
+    console.warn('[session-store] hydrate from main failed', err);
+    healthStore.degrade({
+      key: 'session-projection',
+      domain: 'session-projection',
+      cause: err,
+      scope,
+      retry: async () => { await pullSessions(scope); },
+    });
+    return false;
+  }
 }
 
 export async function hydrateSessions(): Promise<boolean> {
@@ -159,20 +246,7 @@ export async function hydrateSessions(): Promise<boolean> {
     sessionStore.reset([], null);
     return true;
   }
-  try {
-    await pullSessions(scope);
-    return true;
-  } catch (err) {
-    console.warn('[session-store] hydrate from main failed', err);
-    healthStore.degrade({
-      key: 'session-projection',
-      domain: 'session-projection',
-      cause: err,
-      scope,
-      retry: () => pullSessions(scope),
-    });
-    return false;
-  }
+  return pullSessions(scope);
 }
 
 export interface TerminalDims {
@@ -237,12 +311,7 @@ export function getLastTerminalDims(
 
 export function useSessions(): SessionStoreState {
   return useSyncExternalStore(
-    (onStoreChange) => {
-      subscribers.add(onStoreChange);
-      return () => {
-        subscribers.delete(onStoreChange);
-      };
-    },
+    sessionStore.subscribe,
     () => state,
   );
 }

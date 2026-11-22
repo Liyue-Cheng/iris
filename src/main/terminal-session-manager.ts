@@ -37,6 +37,7 @@ import { spawn as defaultSpawnPty, type IPty, type IDisposable } from 'node-pty'
 import type {
   AgentConfig,
   ProjectScope,
+  SessionDestroyedPayload,
   SessionExitedPayload,
   TerminalSessionInfo,
   SessionOutputPayload,
@@ -163,8 +164,17 @@ export interface CreateCommandSessionInput
  * cmd, probed on PATH via the spawn env. POSIX: $SHELL → /bin/bash.
  */
 export class TerminalSessionManager extends EventEmitter {
+  private revision = 0;
+  get projectionRevision(): number { return this.revision; }
+
   private readonly sessions = new Map<string, SessionRecord>();
+  private readonly recentClosures = new Map<string, SessionDestroyedPayload>();
+
+  lastClosure(sessionId: string): SessionDestroyedPayload | undefined {
+    return this.recentClosures.get(sessionId);
+  }
   private readonly replayCoordinator = new ReplayCoordinator();
+  private readonly windowId: number | undefined;
   private readonly spawnFn: PtySpawnFn;
   private readonly platform: PlatformServices;
   private readonly ptyExitWaitMs: number;
@@ -174,6 +184,7 @@ export class TerminalSessionManager extends EventEmitter {
   constructor(
     private readonly settingsManager: SettingsManager,
     options?: {
+      windowId?: number;
       spawnFn?: PtySpawnFn;
       platform?: PlatformServices;
       processTreeKillFn?: ((pid: number) => Promise<void>) | null;
@@ -181,6 +192,7 @@ export class TerminalSessionManager extends EventEmitter {
     },
   ) {
     super();
+    this.windowId = options?.windowId;
     this.spawnFn = options?.spawnFn ?? (defaultSpawnPty as PtySpawnFn);
     this.platform = options?.platform ?? createPlatformServices();
     if (options?.processTreeKillFn !== undefined) {
@@ -406,12 +418,13 @@ export class TerminalSessionManager extends EventEmitter {
       managed.mirror.onTitleChange((title) => this.handleTitle(managed, title)),
     );
 
+    info.revision = ++this.revision;
     this.emit('sessionCreated', { ...info });
     return { ...info };
   }
 
   /** Close & destroy (user gesture or app quit) — the only removal path. */
-  closeSession(sessionId: string): Promise<void> {
+  closeSession(sessionId: string, reason: 'user-closed' | 'document-status' = 'user-closed'): Promise<void> {
     const managed = this.sessions.get(sessionId);
     if (!managed) {
       return Promise.reject(new TerminalSessionError(
@@ -419,7 +432,7 @@ export class TerminalSessionManager extends EventEmitter {
         `Terminal session ${sessionId} does not exist.`,
       ));
     }
-    return this.destroySession(managed, 'user-closed');
+    return this.destroySession(managed, reason);
   }
 
   /**
@@ -877,6 +890,7 @@ export class TerminalSessionManager extends EventEmitter {
     managed.processState = reduceTerminalProcess(managed.processState, { type: 'EXITED' });
     managed.info.exitCode = exitCode;
     managed.info.exitedAt = Date.now();
+    logger.info('session', 'exited ' + JSON.stringify({ windowId: this.windowId, ...payload }));
     managed.recorder.record('exited', { exitCode, signal: signal ?? null });
     managed.activity.dispose();
     managed.pty = null;
@@ -891,14 +905,17 @@ export class TerminalSessionManager extends EventEmitter {
 
   private destroySession(
     managed: SessionRecord,
-    reason: 'user-closed' | 'project-switched' | 'app-quit',
+    reason: SessionDestroyedPayload['reason'],
   ): Promise<void> {
     const sid = managed.info.id;
     if (!this.sessions.has(sid)) return Promise.resolve();
     if (managed.closePromise) return managed.closePromise;
 
     managed.processState = reduceTerminalProcess(managed.processState, { type: 'CLOSE' });
-    managed.recorder.record('closing');
+    managed.recorder.record('closing', { reason });
+    logger.info('session', 'closing ' + JSON.stringify({
+      windowId: this.windowId, sessionId: sid, scope: this.scopeOf(managed), reason,
+    }));
     managed.closePromise = this.destroySessionNow(managed, reason);
     return managed.closePromise;
   }
@@ -964,7 +981,7 @@ export class TerminalSessionManager extends EventEmitter {
 
   private async destroySessionNow(
     managed: SessionRecord,
-    reason: 'user-closed' | 'project-switched' | 'app-quit',
+    reason: SessionDestroyedPayload['reason'],
   ): Promise<void> {
     const sid = managed.info.id;
 
@@ -1015,7 +1032,13 @@ export class TerminalSessionManager extends EventEmitter {
     managed.processState = reduceTerminalProcess(managed.processState, { type: 'DISPOSE' });
     managed.recorder.record('disposed');
     this.sessions.delete(sid);
-    this.emit('sessionDestroyed', { scope: this.scopeOf(managed), sessionId: sid, reason });
+    const event: SessionDestroyedPayload = {
+      revision: ++this.revision, destroyedAt: Date.now(), scope: this.scopeOf(managed), sessionId: sid, reason,
+    };
+    this.recentClosures.set(sid, event);
+    if (this.recentClosures.size > 128) this.recentClosures.delete(this.recentClosures.keys().next().value!);
+    logger.info('session', 'destroyed ' + JSON.stringify({ windowId: this.windowId, ...event }));
+    this.emit('sessionDestroyed', event);
   }
 
   private waitForPtyExit(pty: IPty): { promise: Promise<boolean>; dispose: () => void } {
@@ -1067,7 +1090,10 @@ export class TerminalSessionManager extends EventEmitter {
   }
 
   private emitStateChanged(managed: SessionRecord, patch: Partial<TerminalSessionInfo>): void {
+    const revision = ++this.revision;
+    Object.assign(managed.info, patch, { revision });
     const payload: SessionStateChangedPayload = {
+      revision,
       scope: this.scopeOf(managed),
       sessionId: managed.info.id,
       patch,

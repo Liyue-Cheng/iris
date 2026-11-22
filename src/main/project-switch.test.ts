@@ -98,7 +98,6 @@ function harness(initial: ProjectScope | null, sessions: TerminalSessionInfo[] =
     projectSwitching: false,
     projectSwitchTail: Promise.resolve(),
     rendererEpoch: 0,
-    rendererNavigating: false,
     closing: false,
     outputAttachment: null,
     unwire: () => undefined,

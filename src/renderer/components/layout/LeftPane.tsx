@@ -57,6 +57,7 @@ import {
 } from '@renderer/components/ui/lucide-dynamic-icon';
 import { runProjectToolbarAction } from '@renderer/lib/project-command-actions';
 import { alertDialog } from '@renderer/components/ui/confirm-dialog';
+import { useLeftPanePrefs } from '@renderer/lib/left-pane-prefs';
 
 function EmptyState({ children }: { children: React.ReactNode }): JSX.Element {
   return (
@@ -172,15 +173,18 @@ export function ProjectToolbarActions(): JSX.Element | null {
 
 export function LeftPane(): JSX.Element {
   const { t } = useTranslation();
-  const { phase, error, scan, view, rawMode, rawTree } = useProject();
+  const { phase, error, scope, scan, view, rawTree } = useProject();
+  const leftPanePrefs = useLeftPanePrefs(scope?.root ?? null);
+  const mode = leftPanePrefs.mode ?? 'documents';
+  const filesOpen = mode === 'files';
+  const gitOpen = mode === 'git';
   const { sort, filter, filterOpen } = useLensPrefs();
-  const sortLabel = t(rawMode
+  const sortLabel = t(filesOpen
     ? (sort === 'mtime' ? 'layout.fileSortMtime' : 'layout.fileSortAlpha')
     : (sort === 'mtime' ? 'layout.sortMtime' : 'layout.sortAlpha'));
-  const filterLabel = t(rawMode ? 'layout.filterFiles' : 'layout.filterDocuments');
+  const filterLabel = t(filesOpen ? 'layout.filterFiles' : 'layout.filterDocuments');
   const [initOpen, setInitOpen] = useState(false);
   const [wsOpen, setWsOpen] = useState(false);
-  const [gitOpen, setGitOpen] = useState(false);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
   const [recentLoading, setRecentLoading] = useState(false);
   const [recentError, setRecentError] = useState<string | null>(null);
@@ -189,8 +193,6 @@ export function LeftPane(): JSX.Element {
   useEffect(() => {
     if (phase === 'ready') {
       void gitStore.refresh();
-    } else {
-      setGitOpen(false);
     }
   }, [phase]);
 
@@ -355,13 +357,11 @@ export function LeftPane(): JSX.Element {
                       <Button
                         variant="ghost"
                         size="icon"
-                        className={cn('h-7 w-7', rawMode && !gitOpen && 'bg-accent text-accent-foreground')}
+                        className={cn('h-7 w-7', filesOpen && 'bg-accent text-accent-foreground')}
                         aria-label={t('layout.fileTree')}
-                        aria-pressed={rawMode && !gitOpen}
+                        aria-pressed={filesOpen}
                         onClick={() => {
-                          setGitOpen(false);
-                          if (gitOpen && rawMode) return;
-                          void projectStore.toggleRawMode().catch((err) => {
+                          void projectStore.setLeftPaneMode(filesOpen ? 'documents' : 'files').catch((err) => {
                             console.warn('[left-pane] file tree refresh failed', err);
                           });
                         }}
@@ -411,7 +411,11 @@ export function LeftPane(): JSX.Element {
                     )}
                     aria-label={t('layout.gitAria', { branch: gitBranch })}
                     aria-busy={gitLoading || !!gitPending}
-                    onClick={() => setGitOpen((open) => !open)}
+                    onClick={() => {
+                      void projectStore.setLeftPaneMode(gitOpen ? 'documents' : 'git').catch((err) => {
+                        console.warn('[left-pane] git view refresh failed', err);
+                      });
+                    }}
                   >
                     <GitBranch
                       className={cn(
@@ -444,7 +448,7 @@ export function LeftPane(): JSX.Element {
           <input
             autoFocus
             value={filter}
-            placeholder={t(rawMode ? 'layout.fileFilterPlaceholder' : 'layout.filterPlaceholder')}
+            placeholder={t(filesOpen ? 'layout.fileFilterPlaceholder' : 'layout.filterPlaceholder')}
             aria-label={filterLabel}
             onChange={(e) => lensPrefs.setFilter(e.target.value.toLowerCase())}
             onKeyDown={(e) => {
@@ -509,10 +513,10 @@ export function LeftPane(): JSX.Element {
             </EmptyState>
           )}
 
-          {phase === 'ready' && scan?.hasIris && rawMode && rawTree && (
+          {phase === 'ready' && scan?.hasIris && filesOpen && rawTree && (
             <RawTree key={rawTree.absolutePath} root={rawTree} />
           )}
-          {phase === 'ready' && scan?.hasIris && !rawMode && scan.root && (
+          {phase === 'ready' && scan?.hasIris && mode === 'documents' && scan.root && (
             <LensTree root={scan.root} />
           )}
         </div>

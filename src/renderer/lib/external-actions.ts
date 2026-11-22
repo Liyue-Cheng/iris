@@ -6,7 +6,7 @@ import type {
 import { CHANNELS } from '@shared/protocol';
 import { pipeline } from '@renderer/cpu';
 import { projectScopeState, sameProjectScope } from '@renderer/stores/project-scope-state';
-import { runUserAction } from './action-runtime';
+import { runProjectAction } from './action-runtime';
 import { translate } from '@renderer/i18n';
 
 export function externalIdentity(
@@ -41,14 +41,14 @@ export async function removeExternalPath(identity: ExternalPathIdentity): Promis
 }
 
 export async function openExternalPath(identity: ExternalPathIdentity): Promise<void> {
-  await runUserAction(
+  await runProjectAction(
     { title: translate('errors.shellOpenFailed'), dedupeKey: `external:open:${identity.workspacePath}:${identity.line}` },
     () => pipeline.dispatch('shell.open-workspace-external', identity),
   );
 }
 
 export async function revealExternalPath(identity: ExternalPathIdentity): Promise<void> {
-  await runUserAction(
+  await runProjectAction(
     { title: translate('errors.shellRevealFailed'), dedupeKey: `external:reveal:${identity.workspacePath}:${identity.line}` },
     () => pipeline.dispatch('shell.reveal-workspace-external', identity),
   );

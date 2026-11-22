@@ -22,31 +22,32 @@ export class TerminalInputController {
   ) {}
 
   async pasteClipboard(): Promise<void> {
-    const epoch = this.runtime.capture();
+    const epoch = this.runtime.captureInput();
+    if (!this.runtime.acceptsInput(epoch)) return;
     const text = await this.port.readClipboard();
-    if (!this.runtime.isCurrent(epoch) || text === null) return;
+    if (!this.runtime.acceptsInput(epoch) || text === null) return;
     await this.pasteText(text, epoch);
   }
 
-  async pasteText(text: string, operationEpoch = this.runtime.capture()): Promise<void> {
-    if (!text || !this.runtime.isCurrent(operationEpoch)) return;
+  async pasteText(text: string, operationEpoch = this.runtime.captureInput()): Promise<void> {
+    if (!text || !this.runtime.acceptsInput(operationEpoch)) return;
     try {
       const confirmations = pasteConfirmationPlan(text, {
         bracketedPasteMode: this.port.bracketedPasteMode(),
       });
       for (const confirmation of confirmations) {
         const accepted = await this.port.confirm(confirmation);
-        if (!accepted || !this.runtime.isCurrent(operationEpoch)) return;
+        if (!accepted || !this.runtime.acceptsInput(operationEpoch)) return;
       }
       this.port.paste(text);
     } finally {
-      if (this.runtime.isCurrent(operationEpoch)) this.port.focus();
+      if (this.runtime.acceptsInput(operationEpoch)) this.port.focus();
     }
   }
 
   async dropPaths(paths: readonly string[]): Promise<void> {
-    const epoch = this.runtime.capture();
-    if (paths.length === 0 || !this.runtime.isCurrent(epoch)) return;
+    const epoch = this.runtime.captureInput();
+    if (paths.length === 0 || !this.runtime.acceptsInput(epoch)) return;
     let text: string;
     try {
       text = droppedPathPlan(paths, this.port.shellKind()).text;
@@ -56,17 +57,18 @@ export class TerminalInputController {
       return;
     }
     await this.port.sendInput(text);
-    if (this.runtime.isCurrent(epoch)) this.port.focus();
+    if (this.runtime.acceptsInput(epoch)) this.port.focus();
   }
 
   async dropDocument(docPath: string): Promise<void> {
-    const epoch = this.runtime.capture();
+    const epoch = this.runtime.captureInput();
+    if (!this.runtime.acceptsInput(epoch)) return;
     if (this.port.docDropMode() === 'path') {
       await this.dropPaths([docPath]);
       return;
     }
     const text = await this.port.readDocument(docPath);
-    if (!this.runtime.isCurrent(epoch)) return;
+    if (!this.runtime.acceptsInput(epoch)) return;
     await this.pasteText(text, epoch);
   }
 }

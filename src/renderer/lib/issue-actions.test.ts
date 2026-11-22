@@ -1,14 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { DocContent } from '@shared/types';
+import { CHANNELS } from '@shared/protocol';
+import type { DocContent, DocumentSessionTarget } from '@shared/types';
 
 const mocks = vi.hoisted(() => ({
   dispatch: vi.fn(),
   confirm: vi.fn(),
   editorGet: vi.fn(),
   readDoc: vi.fn(),
-  sessionGet: vi.fn(),
-  countDocuments: vi.fn(),
-  archiveDocuments: vi.fn(),
+  invoke: vi.fn(),
   getSettings: vi.fn(),
 }));
 
@@ -24,17 +23,11 @@ vi.mock('@renderer/stores/editor-store', () => ({
   },
   readDocFromDisk: mocks.readDoc,
 }));
-vi.mock('@renderer/stores/session-store', () => ({
-  sessionStore: { get: mocks.sessionGet },
-}));
-vi.mock('./iris-agent-actions', () => ({
-  countIrisAgentDocuments: mocks.countDocuments,
-  archiveIrisAgentDocuments: mocks.archiveDocuments,
-}));
 vi.mock('@renderer/i18n', () => ({ translate: (key: string) => key }));
 vi.mock('@renderer/stores/settings-store', () => ({ getSettings: mocks.getSettings }));
 
 import { setDocsStatus } from './issue-actions';
+import { projectScopeState } from '@renderer/stores/project-scope-state';
 
 const ISSUE_PATH = '.iris/issue/example.md';
 
@@ -49,41 +42,54 @@ function content(status = 'In Progress'): DocContent {
   };
 }
 
+const linked: DocumentSessionTarget = { kind: 'terminal', label: 'Shell', id: 'linked', documentPath: ISSUE_PATH };
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.dispatch.mockResolvedValue(undefined);
   mocks.confirm.mockResolvedValue(true);
   mocks.editorGet.mockReturnValue(null);
   mocks.readDoc.mockResolvedValue(content());
-  mocks.sessionGet.mockReturnValue({
-    sessions: [{ id: 'linked', docPath: ISSUE_PATH }, { id: 'other', docPath: '.iris/issue/other.md' }],
-  });
-  mocks.countDocuments.mockResolvedValue(0);
-  mocks.archiveDocuments.mockResolvedValue(0);
+  mocks.invoke.mockReset().mockResolvedValue([linked]);
+  vi.stubGlobal('window', { api: { invoke: mocks.invoke } });
   mocks.getSettings.mockReturnValue({ behavior: { autoCheckTodosOnDone: true } });
 });
 
 describe('issue status actions', () => {
+  it('retires a confirmation from the previous project before closing sessions or saving', async () => {
+    projectScopeState.set({ root: 'C:/a', generation: 1 });
+    let confirm!: (accepted: boolean) => void;
+    mocks.confirm.mockReturnValueOnce(new Promise<boolean>((resolve) => { confirm = resolve; }));
+    const work = setDocsStatus([ISSUE_PATH], 'On Hold');
+    await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+    projectScopeState.set({ root: 'C:/b', generation: 2 });
+    confirm(true);
+    expect(await work).toBe(false);
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+    projectScopeState.set(null);
+  });
   it('closes every linked terminal before saving On Hold', async () => {
     await setDocsStatus([ISSUE_PATH], 'On Hold');
 
     expect(mocks.confirm).toHaveBeenCalledOnce();
-    expect(mocks.archiveDocuments).toHaveBeenCalledWith([ISSUE_PATH]);
-    expect(mocks.dispatch).toHaveBeenNthCalledWith(1, 'session.close', { sessionId: 'linked' });
+    expect(mocks.invoke).toHaveBeenCalledWith(CHANNELS.DOCUMENT_SESSIONS_CLOSE, {
+      expectedScope: null, documentPaths: [ISSUE_PATH], confirmed: [linked],
+    });
     expect(mocks.dispatch).toHaveBeenNthCalledWith(
-      2,
+      1,
       'doc.save',
       expect.objectContaining({
         path: ISSUE_PATH,
         content: expect.stringContaining('status: On Hold'),
       }),
     );
-    const saved = mocks.dispatch.mock.calls[1]![1] as { content: string };
+    const saved = mocks.dispatch.mock.calls[0]![1] as { content: string };
     expect(saved.content).toContain('- [ ] Verify');
   });
 
   it('keeps automatic checkbox completion exclusive to Done', async () => {
-    mocks.sessionGet.mockReturnValue({ sessions: [] });
+    mocks.invoke.mockResolvedValue([]);
 
     await setDocsStatus([ISSUE_PATH], 'Done');
 
@@ -101,9 +107,8 @@ describe('issue status actions', () => {
   });
 
   it('does not write Done when authoritative Agent archival fails', async () => {
-    mocks.sessionGet.mockReturnValue({ sessions: [] });
-    mocks.countDocuments.mockResolvedValue(1);
-    mocks.archiveDocuments.mockRejectedValue(new Error('archive failed'));
+    mocks.invoke.mockResolvedValue([]);
+    mocks.invoke.mockResolvedValueOnce([{ ...linked, kind: 'iris-agent' }]).mockRejectedValueOnce(new Error('archive failed'));
 
     await expect(setDocsStatus([ISSUE_PATH], 'Done')).rejects.toThrow('archive failed');
 
@@ -112,4 +117,14 @@ describe('issue status actions', () => {
       expect.objectContaining({ path: ISSUE_PATH }),
     );
   });
+  it('keeps the approved set empty when a terminal appears after the preview', async () => {
+    mocks.invoke.mockResolvedValueOnce([]).mockRejectedValueOnce(new Error('LinkedSessionsChanged'));
+    await expect(setDocsStatus([ISSUE_PATH], 'Done')).rejects.toThrow('LinkedSessionsChanged');
+    expect(mocks.confirm).not.toHaveBeenCalled();
+    expect(mocks.invoke).toHaveBeenLastCalledWith(CHANNELS.DOCUMENT_SESSIONS_CLOSE, {
+      expectedScope: null, documentPaths: [ISSUE_PATH], confirmed: [],
+    });
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+  });
+
 });

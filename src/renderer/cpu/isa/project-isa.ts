@@ -13,7 +13,7 @@ import type {
   ProjectToolbarAction,
 } from '@shared/types';
 import { projectStore } from '@renderer/stores/project-store';
-import { sessionStore } from '@renderer/stores/session-store';
+import { acceptSessionRecord, sessionStore } from '@renderer/stores/session-store';
 import { sameProjectScope } from '@renderer/stores/project-scope-state';
 import { projectScopeRead, projectScopeWrite } from './project-resources';
 import { projectSettingsStore } from '@renderer/stores/project-settings-store';
@@ -34,7 +34,7 @@ export const projectISA: Record<string, InstructionDefinition> = {
       const idempotent = sameProjectScope(projectStore.get().scope, result.scope);
       projectSettingsStore.install(result.projectSettings, result.scope);
       projectStore.handleOpened(result);
-      if (!idempotent) sessionStore.reset(result.sessions, result.scope);
+      if (!idempotent) sessionStore.reset(result.sessions, result.scope, result.sessionRevision);
     },
   },
 
@@ -135,7 +135,7 @@ export const projectISA: Record<string, InstructionDefinition> = {
     config: { channel: CHANNELS.PROJECT_COMMAND_RUN, projectScoped: true },
     commit: async (result: ProjectCommandRunResult) => {
       projectSettingsStore.markTrusted();
-      if (result.kind === 'iris') sessionStore.handleCreated(result.session);
+      if (result.kind === 'iris') acceptSessionRecord(result.session);
     },
   },
 };

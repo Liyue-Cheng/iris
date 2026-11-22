@@ -1,4 +1,5 @@
 import { CHANNELS } from '@shared/protocol';
+import { AppError } from '@shared/app-error';
 import type {
   IrisAgentAnchor,
   IrisAgentAttachmentData,
@@ -16,8 +17,8 @@ import { projectStore } from '@renderer/stores/project-store';
 import { irisAgentAnchorKey, irisAgentStore } from '@renderer/stores/iris-agent-store';
 import { sessionViewStore } from '@renderer/stores/session-view-store';
 import { irisAgentSessionKey } from './session-projection';
-import { attemptAction, runUserAction, type ActionOutcome } from './action-runtime';
-import { notify } from '@renderer/stores/notification-store';
+import { runProjectAction, type ActionOutcome } from './action-runtime';
+import { projectScopeState, sameProjectScope } from '@renderer/stores/project-scope-state';
 import { confirmDialog } from '@renderer/components/ui/confirm-dialog';
 import { sessionCloseOutcome, type SessionCloseOutcome } from './session-close-outcome';
 
@@ -64,28 +65,23 @@ async function navigateToAnchor(anchor: IrisAgentAnchor): Promise<boolean> {
 }
 
 export async function openIrisAgent(anchor: IrisAgentAnchor): Promise<IrisAgentSessionInfo | null> {
-  const outcome = await attemptAction(async () => {
+  const outcome = await runProjectAction({
+    title: 'Iris Agent 打开失败', dedupeKey: `iris-agent:open:${anchor.kind}:${anchor.path}`, concurrency: 'independent',
+  }, async (isCurrent) => {
     if (!(await editorStore.flushBeforeSwitch('before-external-action'))) return null;
+    if (!isCurrent()) return null;
     if (!(await navigateToAnchor(anchor))) return null;
+    if (!isCurrent()) return null;
     const scope = scopeOrThrow();
     const session = await window.api.invoke<
       { anchor: IrisAgentAnchor; expectedScope: ProjectScope },
       IrisAgentSessionInfo
     >(CHANNELS.IRIS_AGENT_OPEN, projectScoped(scope, { anchor }));
     irisAgentStore.handleChanged(session);
-    sessionViewStore.select(scope, irisAgentAnchorKey(session.anchor), irisAgentSessionKey(session.id));
+    if (isCurrent()) sessionViewStore.select(scope, irisAgentAnchorKey(session.anchor), irisAgentSessionKey(session.id));
     return session;
   });
   if (outcome.status === 'ok') return outcome.value;
-  if (outcome.status === 'failed') {
-    notify({
-      dedupeKey: 'iris-agent:open',
-      title: 'Iris Agent 打开失败',
-      message: outcome.error.message,
-      domain: outcome.error.domain,
-      ...(outcome.error.incidentId ? { incidentId: outcome.error.incidentId } : {}),
-    });
-  }
   return null;
 }
 
@@ -98,13 +94,16 @@ export async function sendIrisAgentMessage(
   const session = irisAgentStore.get().sessions.find((candidate) => candidate.id === sessionId);
   const canStartFromDocument = session?.anchor.kind === 'document' && session.intents.length === 0;
   if (!trimmed && !canStartFromDocument) return false;
-  const outcome = await runUserAction(
+  const outcome = await runProjectAction(
     {
       title: 'Iris Agent 发送失败',
       dedupeKey: 'iris-agent:send:' + sessionId,
+      isRelevant: () => irisAgentStore.has(sessionId),
+      concurrency: 'independent',
     },
-    async () => {
+    async (isCurrent) => {
       if (!(await editorStore.flushBeforeSwitch('before-external-action'))) return false;
+      if (!isCurrent()) return false;
       const scope = scopeOrThrow();
       const precondition = commandPrecondition(sessionId);
       const session = await window.api.invoke<
@@ -131,10 +130,11 @@ export async function sendIrisAgentMessage(
 }
 
 export async function stopIrisAgent(sessionId: string): Promise<void> {
-  await runUserAction(
+  await runProjectAction(
     {
       title: 'Iris Agent 停止失败',
       dedupeKey: 'iris-agent:stop:' + sessionId,
+      isRelevant: () => irisAgentStore.has(sessionId),
     },
     async () => {
       const scope = scopeOrThrow();
@@ -178,9 +178,12 @@ export async function readIrisAgentTaskLog(
   }));
 }
 
-export async function cancelIrisAgentTask(sessionId: string, taskId: string): Promise<void> {
-  await runUserAction(
-    { title: '后台任务取消失败', dedupeKey: `iris-agent:task-cancel:${taskId}` },
+export async function cancelIrisAgentTask(sessionId: string, taskId: string): Promise<boolean> {
+  const outcome = await runProjectAction(
+    {
+      title: '后台任务取消失败', dedupeKey: `iris-agent:task-cancel:${sessionId}:${taskId}`,
+      isRelevant: () => irisAgentStore.has(sessionId),
+    },
     async () => {
       const scope = scopeOrThrow();
       const session = await window.api.invoke<{
@@ -191,16 +194,19 @@ export async function cancelIrisAgentTask(sessionId: string, taskId: string): Pr
       irisAgentStore.handleChanged(session);
     },
   );
+  return outcome.status === 'ok';
 }
 
 export async function resumeIrisAgent(sessionId: string): Promise<void> {
-  await runUserAction(
+  await runProjectAction(
     {
       title: 'Iris Agent 恢复失败',
       dedupeKey: 'iris-agent:resume:' + sessionId,
+      isRelevant: () => irisAgentStore.has(sessionId),
     },
-    async () => {
+    async (isCurrent) => {
       if (!(await editorStore.flushBeforeSwitch('before-external-action'))) return;
+      if (!isCurrent()) return;
       const scope = scopeOrThrow();
       const precondition = commandPrecondition(sessionId);
       const session = await window.api.invoke<
@@ -218,17 +224,19 @@ export async function resumeIrisAgent(sessionId: string): Promise<void> {
 }
 
 export async function rewindIrisAgent(sessionId: string): Promise<void> {
+  const origin = projectScopeState.get();
   const confirmed = await confirmDialog({
     title: '回退 Iris Agent 上一项意图？',
     message: '将移除最后一项意图并回滚仍可安全还原的文件改动；终端命令和外部副作用会保留。',
     confirmText: '回退意图',
     tone: 'destructive',
   });
-  if (!confirmed) return;
-  await runUserAction(
+  if (!confirmed || !sameProjectScope(origin, projectScopeState.get())) return;
+  await runProjectAction(
     {
       title: 'Iris Agent 回退失败',
       dedupeKey: 'iris-agent:rewind:' + sessionId,
+      isRelevant: () => irisAgentStore.has(sessionId),
     },
     async () => {
       const scope = scopeOrThrow();
@@ -252,7 +260,12 @@ export async function branchIrisAgent(
   throughIntentId: string,
   fromInput = false,
 ): Promise<IrisAgentSessionInfo | null> {
-  const outcome = await attemptAction(async () => {
+  const outcome = await runProjectAction({
+    title: 'Iris Agent 分支失败',
+    dedupeKey: `iris-agent:branch:${fromInput ? 'input' : 'reply'}:${sessionId}:${throughIntentId}`,
+    isRelevant: () => irisAgentStore.has(sessionId),
+    concurrency: 'independent',
+  }, async (isCurrent) => {
     const scope = scopeOrThrow();
     const precondition = commandPrecondition(sessionId);
     const session = await window.api.invoke<
@@ -270,19 +283,10 @@ export async function branchIrisAgent(
       ...precondition,
     }));
     irisAgentStore.handleChanged(session);
-    sessionViewStore.select(scope, irisAgentAnchorKey(session.anchor), irisAgentSessionKey(session.id));
+    if (isCurrent()) sessionViewStore.select(scope, irisAgentAnchorKey(session.anchor), irisAgentSessionKey(session.id));
     return session;
   });
   if (outcome.status === 'ok') return outcome.value;
-  if (outcome.status === 'failed') {
-    notify({
-      dedupeKey: `iris-agent:branch:${fromInput ? 'input' : 'reply'}:${sessionId}:${throughIntentId}`,
-      title: 'Iris Agent 分支失败',
-      message: outcome.error.message,
-      domain: outcome.error.domain,
-      ...(outcome.error.incidentId ? { incidentId: outcome.error.incidentId } : {}),
-    });
-  }
   return null;
 }
 
@@ -290,10 +294,11 @@ export async function setIrisAgentModel(
   sessionId: string,
   model: IrisAgentModelRef,
 ): Promise<void> {
-  await runUserAction(
+  await runProjectAction(
     {
       title: 'Iris Agent 模型切换失败',
       dedupeKey: `iris-agent:model:${sessionId}`,
+      isRelevant: () => irisAgentStore.has(sessionId),
     },
     async () => {
       const scope = scopeOrThrow();
@@ -336,16 +341,18 @@ export async function listIrisAgentHistory(
  * user's click.
  */
 export async function reopenIrisAgent(sessionId: string): Promise<IrisAgentSessionInfo | null> {
-  return selectAfter(await attemptAction(async () => {
+  return selectAfter(await runProjectAction({
+    title: 'Iris Agent 历史会话恢复失败', dedupeKey: 'iris-agent:reopen:' + sessionId,
+  }, async (isCurrent) => {
     const scope = scopeOrThrow();
     const session = await window.api.invoke<
       { sessionId: string; expectedScope: ProjectScope },
       IrisAgentSessionInfo
     >(CHANNELS.IRIS_AGENT_REOPEN, projectScoped(scope, { sessionId }));
     irisAgentStore.handleChanged(session);
-    sessionViewStore.select(scope, irisAgentAnchorKey(session.anchor), irisAgentSessionKey(session.id));
+    if (isCurrent()) sessionViewStore.select(scope, irisAgentAnchorKey(session.anchor), irisAgentSessionKey(session.id));
     return session;
-  }), 'iris-agent:reopen:' + sessionId, 'Iris Agent 历史会话恢复失败');
+  }));
 }
 
 /**
@@ -353,47 +360,18 @@ export async function reopenIrisAgent(sessionId: string): Promise<IrisAgentSessi
  * The source Session is untouched; the new one anchors to the same document.
  */
 export async function restoreIrisAgent(sessionId: string): Promise<IrisAgentSessionInfo | null> {
-  return selectAfter(await attemptAction(async () => {
+  return selectAfter(await runProjectAction({
+    title: 'Iris Agent 新实例创建失败', dedupeKey: 'iris-agent:restore:' + sessionId, concurrency: 'independent',
+  }, async (isCurrent) => {
     const scope = scopeOrThrow();
     const session = await window.api.invoke<
       { sessionId: string; expectedScope: ProjectScope },
       IrisAgentSessionInfo
     >(CHANNELS.IRIS_AGENT_RESTORE, projectScoped(scope, { sessionId }));
     irisAgentStore.handleChanged(session);
-    sessionViewStore.select(scope, irisAgentAnchorKey(session.anchor), irisAgentSessionKey(session.id));
+    if (isCurrent()) sessionViewStore.select(scope, irisAgentAnchorKey(session.anchor), irisAgentSessionKey(session.id));
     return session;
-  }), 'iris-agent:restore:' + sessionId, 'Iris Agent 新实例创建失败');
-}
-
-/** Main-authoritative count used by the single bulk status confirmation. */
-export async function countIrisAgentDocuments(documentPaths: readonly string[]): Promise<number> {
-  if (documentPaths.length === 0) return 0;
-  const scope = scopeOrThrow();
-  return window.api.invoke<
-    { documentPaths: string[]; expectedScope: ProjectScope },
-    number
-  >(
-    CHANNELS.IRIS_AGENT_COUNT_DOCUMENTS,
-    projectScoped(scope, { documentPaths: [...new Set(documentPaths)] }),
-  );
-}
-
-/**
- * Main-authoritative archival used by document status transitions. Main
- * re-enumerates the latest Sessions for these anchors, so a stale renderer
- * revision cannot let Done silently leave an Agent instance open.
- */
-export async function archiveIrisAgentDocuments(documentPaths: readonly string[]): Promise<number> {
-  if (documentPaths.length === 0) return 0;
-  const scope = scopeOrThrow();
-  const archived = await window.api.invoke<
-    { documentPaths: string[]; expectedScope: ProjectScope },
-    number
-  >(
-    CHANNELS.IRIS_AGENT_ARCHIVE_DOCUMENTS,
-    projectScoped(scope, { documentPaths: [...new Set(documentPaths)] }),
-  );
-  return archived;
+  }));
 }
 
 /**
@@ -430,19 +408,8 @@ export async function closeIrisAgentInstance(sessionId: string): Promise<void> {
 
 async function selectAfter(
   outcome: ActionOutcome<IrisAgentSessionInfo>,
-  dedupeKey: string,
-  title: string,
 ): Promise<IrisAgentSessionInfo | null> {
   if (outcome.status === 'ok') return outcome.value;
-  if (outcome.status === 'failed') {
-    notify({
-      dedupeKey,
-      title,
-      message: outcome.error.message,
-      domain: outcome.error.domain,
-      ...(outcome.error.incidentId ? { incidentId: outcome.error.incidentId } : {}),
-    });
-  }
   return null;
 }
 
@@ -455,7 +422,7 @@ export async function listIrisAgentModels(forceRefresh = false): Promise<IrisAge
 }
 
 export async function openIrisAgentContext(sessionId: string, intentId: string): Promise<void> {
-  await runUserAction(
+  await runProjectAction(
     {
       title: '上下文 artifact 打开失败',
       dedupeKey: `iris-agent:context:${sessionId}:${intentId}`,
@@ -560,12 +527,13 @@ export async function continueIrisAgentTerminalSupervision(
 
 export async function closeIrisAgent(sessionId: string): Promise<SessionCloseOutcome> {
   let userCancelled = false;
-  const outcome = await runUserAction(
+  const outcome = await runProjectAction(
     {
       title: 'Iris Agent 关闭失败',
       dedupeKey: 'iris-agent:close:' + sessionId,
+      isRelevant: () => irisAgentStore.has(sessionId),
     },
-    async () => {
+    async (isCurrent) => {
       const current = irisAgentStore.get().sessions.find((session) => session.id === sessionId);
       if (!current) throw new Error('The Iris Agent session is no longer available.');
       const running = current.state === 'starting' ||
@@ -583,10 +551,11 @@ export async function closeIrisAgent(sessionId: string): Promise<SessionCloseOut
         });
         if (!confirmed) {
           userCancelled = true;
-          return;
+          throw new AppError('session', 'Cancelled', 'Agent close cancelled');
         }
         confirmBusy = true;
       }
+      if (!isCurrent()) return;
       const scope = scopeOrThrow();
       const precondition = commandPrecondition(sessionId);
       await window.api.invoke<{

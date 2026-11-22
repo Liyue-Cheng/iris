@@ -10,6 +10,7 @@ import type {
 } from '@shared/types';
 import { projectScopeState, sameProjectScope } from './project-scope-state';
 import { healthStore } from './health-store';
+import { createProjectRequestTracker } from '@renderer/lib/project-request';
 
 export interface IrisAgentStoreState {
   scope: ProjectScope | null;
@@ -23,7 +24,7 @@ let state: IrisAgentStoreState = {
   phases: {},
 };
 const subscribers = new Set<() => void>();
-let hydrationRequest = 0;
+const hydrationRequests = createProjectRequestTracker();
 
 function emit(): void {
   subscribers.forEach((cb) => cb());
@@ -156,33 +157,46 @@ function upsertAt<T>(items: T[], index: number, value: T): T[] {
   return next;
 }
 
-async function pullIrisAgentSessions(scope: ProjectScope): Promise<void> {
-  const request = ++hydrationRequest;
+async function pullIrisAgentSessions(scope: ProjectScope): Promise<boolean> {
+  if (!sameProjectScope(scope, projectScopeState.get())) return false;
+  const isCurrent = hydrationRequests.begin(scope);
   const before = new Map(state.sessions.map((session) => [session.id, session]));
-  const snapshot = await window.api.invoke<
-    { expectedScope: ProjectScope },
-    IrisAgentListSnapshot
-  >(CHANNELS.IRIS_AGENT_LIST, { expectedScope: scope });
-  if (request !== hydrationRequest) return;
-  if (!sameProjectScope(scope, projectScopeState.get())) return;
-  if (!sameProjectScope(snapshot.scope, scope)) return;
-  // IPC events can advance a session while the list request is in flight.
-  // In particular, an older list may contain the failed reply but not the
-  // subsequent pause: blindly resetting hides the only Continue control.
-  const current = new Map(state.sessions.map((session) => [session.id, session]));
-  const listed = new Set(snapshot.sessions.map((session) => session.id));
-  const sessions = snapshot.sessions.flatMap((session) => {
-    const latest = current.get(session.id);
-    if (!latest && before.has(session.id)) return []; // Closed while loading.
-    return [latest && latest.revision > session.revision ? latest : session];
-  });
-  for (const session of current.values()) {
-    if (listed.has(session.id)) continue;
-    const previous = before.get(session.id);
-    if (!previous || session.revision > previous.revision) sessions.push(session);
+  try {
+    const snapshot = await window.api.invoke<
+      { expectedScope: ProjectScope },
+      IrisAgentListSnapshot
+    >(CHANNELS.IRIS_AGENT_LIST, { expectedScope: scope });
+    if (!isCurrent() || !sameProjectScope(snapshot.scope, scope)) return false;
+    // IPC events can advance a session while the list request is in flight.
+    // In particular, an older list may contain the failed reply but not the
+    // subsequent pause: blindly resetting hides the only Continue control.
+    const current = new Map(state.sessions.map((session) => [session.id, session]));
+    const listed = new Set(snapshot.sessions.map((session) => session.id));
+    const sessions = snapshot.sessions.flatMap((session) => {
+      const latest = current.get(session.id);
+      if (!latest && before.has(session.id)) return []; // Closed while loading.
+      return [latest && latest.revision > session.revision ? latest : session];
+    });
+    for (const session of current.values()) {
+      if (listed.has(session.id)) continue;
+      const previous = before.get(session.id);
+      if (!previous || session.revision > previous.revision) sessions.push(session);
+    }
+    irisAgentStore.reset(sessions, snapshot.scope);
+    healthStore.resolve('iris-agent-projection', scope);
+    return true;
+  } catch (err) {
+    if (!isCurrent()) return false;
+    console.warn('[iris-agent-store] hydrate from main failed', err);
+    healthStore.degrade({
+      key: 'iris-agent-projection',
+      domain: 'session-projection',
+      cause: err,
+      scope,
+      retry: async () => { await pullIrisAgentSessions(scope); },
+    });
+    return false;
   }
-  irisAgentStore.reset(sessions, snapshot.scope);
-  healthStore.resolve('iris-agent-projection', scope);
 }
 
 export async function hydrateIrisAgentSessions(): Promise<boolean> {
@@ -191,20 +205,7 @@ export async function hydrateIrisAgentSessions(): Promise<boolean> {
     irisAgentStore.reset([], null);
     return true;
   }
-  try {
-    await pullIrisAgentSessions(scope);
-    return true;
-  } catch (err) {
-    console.warn('[iris-agent-store] hydrate from main failed', err);
-    healthStore.degrade({
-      key: 'iris-agent-projection',
-      domain: 'session-projection',
-      cause: err,
-      scope,
-      retry: () => pullIrisAgentSessions(scope),
-    });
-    return false;
-  }
+  return pullIrisAgentSessions(scope);
 }
 
 export function irisAgentAnchorKey(anchor: IrisAgentAnchor): string {

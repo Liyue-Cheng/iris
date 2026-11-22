@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import type { AppErrorDomain } from '@shared/app-error';
+import type { ProjectScope } from '@shared/types';
+import { projectScopeState, sameProjectScope } from './project-scope-state';
 
 export interface NotificationAction {
   label: string;
@@ -18,6 +20,7 @@ export interface AppNotification {
   incidentId?: string;
   domain?: AppErrorDomain;
   action?: NotificationAction;
+  scope?: ProjectScope | null;
 }
 
 export interface NotificationInput {
@@ -29,6 +32,7 @@ export interface NotificationInput {
   incidentId?: string;
   domain?: AppErrorDomain;
   action?: NotificationAction;
+  scope?: ProjectScope | null;
 }
 
 let notifications: AppNotification[] = [];
@@ -43,6 +47,7 @@ function emit(): void {
 function scheduleDismiss(notification: AppNotification): void {
   const existing = dismissTimers.get(notification.id);
   if (existing) clearTimeout(existing);
+  dismissTimers.delete(notification.id);
   if (notification.sticky) return;
   dismissTimers.set(notification.id, setTimeout(() => {
     dismissTimers.delete(notification.id);
@@ -57,15 +62,18 @@ export function notify(input: NotificationInput): string {
   if (existingIndex >= 0) {
     const existing = notifications[existingIndex]!;
     const updated: AppNotification = {
-      ...existing,
-      level: input.level ?? existing.level,
+      id: existing.id,
+      dedupeKey: input.dedupeKey,
+      createdAt: existing.createdAt,
+      level: input.level ?? 'error',
       title: input.title,
       message: input.message,
-      sticky: input.sticky ?? existing.sticky,
+      sticky: input.sticky ?? false,
       occurrences: existing.occurrences + 1,
       ...(input.incidentId !== undefined ? { incidentId: input.incidentId } : {}),
       ...(input.domain !== undefined ? { domain: input.domain } : {}),
       ...(input.action !== undefined ? { action: input.action } : {}),
+      ...(input.scope !== undefined ? { scope: input.scope } : {}),
     };
     notifications = [
       ...notifications.slice(0, existingIndex),
@@ -89,6 +97,7 @@ export function notify(input: NotificationInput): string {
     ...(input.incidentId !== undefined ? { incidentId: input.incidentId } : {}),
     ...(input.domain !== undefined ? { domain: input.domain } : {}),
     ...(input.action !== undefined ? { action: input.action } : {}),
+    ...(input.scope !== undefined ? { scope: input.scope } : {}),
   };
   notifications = [...notifications, notification];
   scheduleDismiss(notification);
@@ -116,6 +125,14 @@ export function clearNotifications(): void {
 export function getNotifications(): readonly AppNotification[] {
   return notifications;
 }
+
+projectScopeState.subscribe(() => {
+  for (const notification of notifications) {
+    if (notification.scope !== undefined && !sameProjectScope(notification.scope, projectScopeState.get())) {
+      dismissNotification(notification.id);
+    }
+  }
+});
 
 export function useNotifications(): readonly AppNotification[] {
   return useSyncExternalStore(

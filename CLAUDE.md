@@ -24,7 +24,7 @@ Treat documents under \`report/\` as historical unless the user asks to change t
 
 <iris-software>
 This project is managed with Iris — an AI-native, document-centric PM tool.
-All PM artifacts are plain markdown files under `.iris/`, in typed folders.
+All PM artifacts are plain Markdown (or HTML) files under `.iris/`, in typed folders.
 The rules below are Iris's invariant protocol: they ship with the app and do
 not vary per project. Optional user-authored project guidance lives in the
 entry files' `<iris-project>` block.
@@ -64,9 +64,10 @@ workspace or document deletion never deletes an external target.
 
 ## Document assets
 
-Each Markdown document may have a sibling `<name>.assets/` directory. Files
-inside that directory are internal document files and may be referenced with
-ordinary relative Markdown links such as `./<name>.assets/image.png`.
+Each document may have a sibling `<name>.assets/` directory. Files inside that
+directory are internal document files and may be referenced with ordinary
+relative links such as `./<name>.assets/image.png` (Markdown links, or
+`src`/`href` attributes in HTML documents).
 
 The same directory may contain a `links.txt` file. Each non-empty line is an
 external file or directory associated with the document; these paths are shown
@@ -102,6 +103,21 @@ When an item requires human review, verification, approval, or follow-up,
 represent it with one GFM task checkbox (`- [ ] …`) per discrete item rather
 than only mentioning it in prose. Use prose for explanations and context.
 
+## HTML documents
+
+Iris also recognizes `.html` documents in typed folders. They carry the same
+fields in the page head instead of frontmatter: `<title>` is `title:`, and
+`<meta name="iris:status" content="…">` is `status:` (likewise
+`iris:labels` for the reserved `labels:` field). Edit those elements in place
+and leave the rest of the page unchanged.
+
+Markdown is the default format for every Iris document. Write an HTML document
+only when the user explicitly asks for HTML; never choose HTML on your own,
+convert an existing Markdown document to HTML, or append to an issue in HTML.
+When the user does ask for one, keep it self-contained (inline CSS and scripts,
+local files in the companion directory): Iris previews HTML in a sandbox that
+may block network access.
+
 ## How context reaches you
 
 Iris may provide context in an injected snapshot or through environment
@@ -136,7 +152,7 @@ changed or the user asks for a fresh read.
    changes, checks actually run, and remaining assumptions or unverified items.
    Do not present an inference as a verified fact.
 
-Write standard Markdown and preserve the document's existing formatting where
-practical. Follow the entry file's `<iris-project>` block when it contains
+Write standard Markdown (or well-formed HTML in HTML documents) and preserve the
+document's existing formatting where practical. Follow the entry file's `<iris-project>` block when it contains
 user guidance, unless it conflicts with this software protocol.
 </iris-software>

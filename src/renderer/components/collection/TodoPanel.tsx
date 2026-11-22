@@ -14,7 +14,7 @@ import { collectTodos, docDate, type CollectedTodo } from '@renderer/lib/collect
 import { docDisplayTitle } from '@renderer/lib/doc-utils';
 import { checkTodo } from '@renderer/lib/todo-actions';
 import { projectStore } from '@renderer/stores/project-store';
-import { runUserAction } from '@renderer/lib/action-runtime';
+import { runProjectAction } from '@renderer/lib/action-runtime';
 
 interface TodoGroup {
   docPath: string;
@@ -64,7 +64,7 @@ export function TodoPanel({
   const onCheck = async (item: CollectedTodo): Promise<void> => {
     const key = `${item.doc.path}#${item.todo.line}`;
     setPending((p) => new Set(p).add(key));
-    const outcome = await runUserAction(
+    const outcome = await runProjectAction(
       {
         title: t('errors.todoUpdateFailed'),
         dedupeKey: `todo:update:${key}`,

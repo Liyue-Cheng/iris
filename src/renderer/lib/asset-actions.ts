@@ -1,5 +1,6 @@
 import type { AssetImportResult, AssetInventory, AssociatedPathEntry } from '@shared/types';
 import { CHANNELS } from '@shared/protocol';
+import { AppError } from '@shared/app-error';
 import { docFormatOf, htmlForAsset } from '@shared/html-doc';
 import { pipeline } from '@renderer/cpu';
 import { projectScopeState, sameProjectScope } from '@renderer/stores/project-scope-state';
@@ -17,8 +18,12 @@ export async function listAssets(docPath: string): Promise<AssetInventory> {
   return result;
 }
 
-export async function importAsset(docPath: string, file: File): Promise<AssetImportResult> {
+export async function importAsset(docPath: string, file: File, isCurrent: () => boolean = () => true): Promise<AssetImportResult> {
+  const scope = projectScopeState.get();
   const bytes = new Uint8Array(await file.arrayBuffer());
+  if (!isCurrent() || !sameProjectScope(scope, projectScopeState.get())) {
+    throw new AppError('asset', 'Cancelled', 'Asset import belongs to an inactive document');
+  }
   return pipeline.dispatch('asset.import', {
     docPath,
     name: file.name,

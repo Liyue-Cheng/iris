@@ -8,12 +8,17 @@ import { TooltipProvider } from '@renderer/components/ui/tooltip';
 import { openProjectItem } from './shell-actions';
 import { IRIS_DOC_MIME } from './doc-drag';
 import { lensPrefs } from '@renderer/stores/lens-prefs';
+import { leftPanePrefs } from './left-pane-prefs';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key, i18n: { resolvedLanguage: 'en-US' } }),
 }));
 vi.mock('@renderer/stores/project-store', () => ({
-  useProject: () => ({ scan: null, view: { kind: 'doc', path: 'README.md' } }),
+  useProject: () => ({
+    scan: null,
+    scope: { root: 'C:/project', generation: 1 },
+    view: { kind: 'doc', path: 'README.md' },
+  }),
   projectStore: { rescan: vi.fn() },
 }));
 vi.mock('@renderer/stores/editor-store', () => ({
@@ -27,7 +32,7 @@ vi.mock('./clipboard', () => ({ writeClipboardText: vi.fn() }));
 vi.mock('./external-actions', () => ({
   addExternalPath: vi.fn(), removeExternalPath: vi.fn(), externalIdentity: vi.fn(),
 }));
-vi.mock('./action-runtime', () => ({ runUserAction: vi.fn() }));
+vi.mock('./action-runtime', () => ({ runProjectAction: vi.fn() }));
 
 const tree: RawTreeNode = {
   name: 'project', path: '', absolutePath: 'C:/project', kind: 'dir', mtimeMs: 10,
@@ -54,6 +59,7 @@ beforeEach(async () => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   vi.clearAllMocks();
   lensPrefs.setFilter('');
+  leftPanePrefs.setDirectoryOpen('C:/project', 'src', false, false);
   if (lensPrefs.get().sort !== 'mtime') lensPrefs.toggleSort();
   host = document.createElement('div');
   document.body.append(host);

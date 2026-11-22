@@ -48,7 +48,7 @@ import { CHANNELS, EVENTS } from '@shared/protocol';
 import { themeBaseColors } from '@shared/theme-colors';
 import { initializeMainI18n, mainT } from './i18n';
 import { serializeIpcError } from './ipc-error';
-import { beginRendererNavigation, beginWindowShutdown } from './window-lifecycle';
+import { wireRendererLifecycle, beginWindowShutdown } from './window-lifecycle';
 import { externalUrl } from './app-info';
 import { createPlatformServices } from './platform';
 import { guardPreviewNavigation, installHtmlDocProtocol, revokeHtmlPreview } from './html-doc-protocol';
@@ -138,7 +138,7 @@ const settingsManager = new SettingsManager(new JsonStore(settingsFilePath()));
 function createWindowContext(win: BrowserWindow, initialRoot: string | null): WindowContext {
   const projectManager = new ProjectManager();
   const gitManager = new GitManager();
-  const terminalSessionManager = new TerminalSessionManager(settingsManager);
+  const terminalSessionManager = new TerminalSessionManager(settingsManager, { windowId: win.id });
   const agentSessionManager = new IrisAgentSessionManager(app.getPath('userData'), projectManager, {
     appVersion: app.getVersion(),
     providerProfileRoot: appDataDir(),
@@ -190,7 +190,6 @@ function createWindowContext(win: BrowserWindow, initialRoot: string | null): Wi
     projectSwitching: false,
     projectSwitchTail: Promise.resolve(),
     rendererEpoch: 0,
-    rendererNavigating: false,
     closing: false,
     outputAttachment: null,
     unwire,
@@ -399,12 +398,7 @@ function createWindow(initialRoot: string | null): BrowserWindow {
   // Per-window managers + broadcasts. The window owns these for its lifetime;
   // 'closed' tears them down (kills this window's PTYs, closes its watcher).
   const ctx = createWindowContext(win, initialRoot);
-  win.webContents.on('did-start-navigation', (details) => {
-    if (details.isMainFrame && !details.isSameDocument) beginRendererNavigation(ctx);
-  });
-  win.webContents.on('did-navigate', () => {
-    ctx.rendererNavigating = false;
-  });
+  wireRendererLifecycle(ctx);
   win.on('unresponsive', () => {
     logger.error(
       'window',

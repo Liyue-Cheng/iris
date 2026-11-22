@@ -1,7 +1,7 @@
 {
   "name": "iris-app",
   "productName": "Iris",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "Iris — AI-native, document-centric, terminal-driven project management. The app is a reference implementation of the .iris/ protocol.",
   "author": {
@@ -30,6 +30,7 @@
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.preload.json && tsc --noEmit -p tsconfig.web.json && npm run check:async",
     "check:async": "node scripts/check-async-boundaries.mjs",
+    "check:renderer-lifecycle": "node scripts/check-renderer-lifecycle.mjs",
     "smoke": "node scripts/smoke-launch.mjs",
     "metadata:check": "node scripts/check-product-metadata.mjs",
     "agent:worker-check": "node scripts/check-agent-worker.mjs",

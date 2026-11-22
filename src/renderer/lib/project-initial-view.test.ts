@@ -4,6 +4,7 @@ import { CHANNELS } from '@shared/protocol';
 
 let projectStore: typeof import('@renderer/stores/project-store').projectStore;
 let editorStore: typeof import('@renderer/stores/editor-store').editorStore;
+let leftPanePrefs: typeof import('./left-pane-prefs').leftPanePrefs;
 const invoke = vi.fn();
 const scope: ProjectScope = { root: 'E:\\project-a', generation: 1 };
 
@@ -35,6 +36,7 @@ beforeEach(async () => {
   vi.stubGlobal('window', { setInterval, clearInterval, api: { invoke, on: vi.fn() } });
   ({ projectStore } = await import('@renderer/stores/project-store'));
   ({ editorStore } = await import('@renderer/stores/editor-store'));
+  ({ leftPanePrefs } = await import('./left-pane-prefs'));
 });
 
 describe('folder entry view', () => {
@@ -89,5 +91,37 @@ describe('folder entry view', () => {
 
     expect(projectStore.get()).toMatchObject({ phase: 'ready', scope: nextScope, view: { kind: 'root' } });
     expect(editorStore.get()).toBeNull();
+  });
+
+  it('reveals the selected document in collapsed left-pane sections', async () => {
+    const projectScan = scan(true);
+    const docPath = '.iris/issue/a.md';
+    projectScan.root!.docs.push({
+      path: docPath,
+      name: 'a.md',
+      type: 'issue',
+      workspacePath: '.iris',
+      title: null,
+      status: 'Todo',
+      frontmatter: null,
+      frontmatterBroken: false,
+      todos: [],
+      mtimeMs: 1,
+    });
+    projectStore.handleOpened({ scope, scan: projectScan, sessions: [] });
+    leftPanePrefs.setWorkspaceOpen(scope.root, '.iris', true, false);
+    leftPanePrefs.setTypeOpen(scope.root, '.iris', 'issue', false);
+    invoke.mockResolvedValue({
+      path: docPath,
+      raw: '# a\n',
+      body: '# a\n',
+      frontmatter: null,
+      frontmatterBroken: false,
+    } satisfies DocContent);
+
+    await expect(projectStore.selectDoc(docPath)).resolves.toBe(true);
+
+    expect(leftPanePrefs.workspaceOpen(scope.root, '.iris', true)).toBe(true);
+    expect(leftPanePrefs.typeOpen(scope.root, '.iris', 'issue')).toBe(true);
   });
 });

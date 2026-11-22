@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import type { ExternalPathEntry, WorkspaceExternalPaths } from '@shared/types';
 import { cn } from '@renderer/lib/utils';
-import { runUserAction } from '@renderer/lib/action-runtime';
+import { runProjectAction } from '@renderer/lib/action-runtime';
 import { writeClipboardText } from '@renderer/lib/clipboard';
 import { editorStore } from '@renderer/stores/editor-store';
 import { useLensPrefs } from '@renderer/stores/lens-prefs';
@@ -88,8 +88,8 @@ export function ExternalSection({
     adding.current = true;
     setBusy(true);
     try {
-      await runUserAction(
-        { title: t('external.addFailed'), dedupeKey: `external:add:${external.workspacePath}` },
+      await runProjectAction(
+        { title: t('external.addFailed'), dedupeKey: `external:add:${external.workspacePath}`, concurrency: 'independent' },
         async () => {
           const target = await pickExternalPath(kind);
           if (!target || !sameProjectScope(scope, projectScopeState.get())) return;
@@ -113,8 +113,8 @@ export function ExternalSection({
     setBusy(true);
     setOpen(true);
     try {
-      await runUserAction(
-        { title: t('external.addFailed'), dedupeKey: `external:add:${external.workspacePath}` },
+      await runProjectAction(
+        { title: t('external.addFailed'), dedupeKey: `external:add:${external.workspacePath}`, concurrency: 'independent' },
         async () => {
           const resolved = resolveSystemFilePaths(files, window.api.getPathForFile);
           const failures: string[] = [];
@@ -268,7 +268,7 @@ function ExternalRow({
     });
   };
   const remove = async (): Promise<void> => {
-    await runUserAction(
+    await runProjectAction(
       { title: t('external.removeFailed'), dedupeKey: `external:remove:${workspacePath}:${entry.line}` },
       async () => {
         await removeExternalPath(identity);
