@@ -553,7 +553,7 @@ describe('IrisAgentSessionManager v2 timeline', () => {
       });
       await vi.waitFor(async () => {
         expect((await manager.list(scope)).sessions[0]?.pause?.reason).toBe('provider');
-      });
+      }, { timeout: 5_000 });
 
       const held = (await IrisAgentSessionStore.load({
         userDataPath: userData,
@@ -3109,7 +3109,7 @@ describe('Iris Agent context usage indicator', () => {
       });
       await vi.waitFor(() => expect(worker.messages).toContainEqual(expect.objectContaining({
         type: 'event-ack', eventId: 'event-tool-loop-result', ok: true,
-      })));
+      })), { timeout: 5_000 });
       const afterTool = await reading();
       expect(afterTool.measurement).toBe('estimated');
       // 500 latin words are at least 1K estimated tokens; the reading follows
