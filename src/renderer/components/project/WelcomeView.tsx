@@ -24,85 +24,343 @@ import {
   pickAndOpenProject,
 } from '@renderer/lib/project-actions';
 
+const PIXEL_RAIN = [
+  { x: 18, height: 3, delay: 0 },
+  { x: 23, height: 3, delay: -0.15 },
+  { x: 29, height: 4, delay: -0.3 },
+  { x: 34, height: 3, delay: -0.45 },
+  { x: 40, height: 3, delay: -0.6 },
+  { x: 45, height: 4, delay: -0.75 },
+  { x: 51, height: 3, delay: -0.9 },
+  { x: 57, height: 3, delay: -1.05 },
+  { x: 62, height: 4, delay: -1.2 },
+  { x: 66, height: 3, delay: -1.35 },
+];
+
+const PIXEL_TYPED_DELAYS = [0.6, 0.8, 1, 1.2, 1.4];
+
 function PixelStudio(): JSX.Element {
   return (
     <div className="iris-pixel-scene" aria-hidden="true">
-      <div className="iris-pixel-backdrop">
-        <span className="iris-pixel-star iris-pixel-star-one" />
-        <span className="iris-pixel-star iris-pixel-star-two" />
-        <span className="iris-pixel-star iris-pixel-star-three" />
-        <span className="iris-pixel-moon" />
+      <svg className="iris-pixel-art" viewBox="0 0 160 110">
+        <defs>
+          <clipPath id="iris-pixel-win-clip">
+            <rect x={16} y={12} width={52} height={40} />
+          </clipPath>
+          <clipPath id="iris-pixel-scene-clip">
+            <rect x={0} y={0} width={160} height={110} />
+          </clipPath>
+        </defs>
+        <g clipPath="url(#iris-pixel-scene-clip)">
+          {/* 墙 */}
+          <rect x={0} y={0} width={160} height={96} fill="var(--pixel-wall)" />
+          <g fill="var(--pixel-wall-dot)">
+            <rect x={6} y={6} width={1} height={1} />
+            <rect x={24} y={3} width={1} height={1} />
+            <rect x={47} y={6} width={1} height={1} />
+            <rect x={82} y={4} width={1} height={1} />
+            <rect x={92} y={34} width={1} height={1} />
+            <rect x={88} y={62} width={1} height={1} />
+            <rect x={114} y={6} width={1} height={1} />
+            <rect x={150} y={10} width={1} height={1} />
+            <rect x={146} y={46} width={1} height={1} />
+            <rect x={142} y={66} width={1} height={1} />
+            <rect x={30} y={72} width={1} height={1} />
+            <rect x={8} y={46} width={1} height={1} />
+          </g>
+          <rect x={0} y={94} width={160} height={2} fill="var(--pixel-wood-dark)" opacity={0.5} />
 
-        <div className="iris-pixel-window">
-          <span className="iris-pixel-building iris-pixel-building-one" />
-          <span className="iris-pixel-building iris-pixel-building-two" />
-          <span className="iris-pixel-building iris-pixel-building-three" />
-          {[8, 18, 30, 43, 55, 68, 80, 91].map((left, index) => (
-            <span
-              key={left}
-              className="iris-pixel-rain"
-              style={{ left: `${left}%`, animationDelay: `${index * -0.17}s` }}
+          {/* 窗户 */}
+          <rect x={12} y={8} width={60} height={48} fill="var(--pixel-wood-dark)" />
+          <rect x={16} y={12} width={52} height={40} fill="var(--pixel-sky)" />
+          <g clipPath="url(#iris-pixel-win-clip)">
+            <rect className="iris-pixel-star-a" x={21} y={17} width={1} height={1} fill="var(--pixel-cream)" />
+            <rect className="iris-pixel-star-b" x={58} y={15} width={1} height={1} fill="var(--pixel-cream)" />
+            <rect x={33} y={22} width={1} height={1} fill="var(--pixel-cream)" opacity={0.7} />
+            <rect x={64} y={28} width={1} height={1} fill="var(--pixel-cream)" opacity={0.55} />
+            <rect x={26} y={27} width={1} height={1} fill="var(--pixel-cream)" opacity={0.4} />
+            <rect x={52} y={14} width={7} height={7} fill="var(--pixel-gold)" />
+            <rect x={56} y={13} width={5} height={6} fill="var(--pixel-sky)" />
+            <rect x={16} y={36} width={14} height={16} fill="var(--pixel-city)" />
+            <rect x={30} y={41} width={8} height={11} fill="var(--pixel-city)" />
+            <rect x={38} y={37} width={12} height={15} fill="var(--pixel-city)" />
+            <rect x={50} y={42} width={13} height={10} fill="var(--pixel-city)" />
+            <rect x={63} y={38} width={5} height={14} fill="var(--pixel-city)" />
+            <rect x={19} y={39} width={1} height={1} fill="var(--pixel-gold)" opacity={0.85} />
+            <rect x={25} y={45} width={1} height={1} fill="var(--pixel-gold)" opacity={0.8} />
+            <rect x={34} y={44} width={1} height={1} fill="var(--pixel-gold)" opacity={0.7} />
+            <rect x={41} y={40} width={1} height={1} fill="var(--pixel-gold)" opacity={0.85} />
+            <rect className="iris-pixel-city-win" x={46} y={47} width={1} height={1} fill="var(--pixel-gold)" />
+            <rect x={55} y={45} width={1} height={1} fill="var(--pixel-gold)" opacity={0.75} />
+            <rect x={66} y={41} width={1} height={1} fill="var(--pixel-gold)" opacity={0.8} />
+            <rect x={65} y={48} width={1} height={1} fill="var(--pixel-gold)" opacity={0.55} />
+            <g fill="var(--pixel-blue)" opacity={0.55}>
+              {PIXEL_RAIN.map((drop) => (
+                <rect
+                  key={drop.x}
+                  className="iris-pixel-rain"
+                  x={drop.x}
+                  y={6}
+                  width={1}
+                  height={drop.height}
+                  style={{ animationDelay: `${drop.delay}s` }}
+                />
+              ))}
+            </g>
+          </g>
+          <rect x={42} y={12} width={2} height={40} fill="var(--pixel-wood-dark)" />
+          <rect x={16} y={30} width={52} height={2} fill="var(--pixel-wood-dark)" />
+          <rect x={10} y={56} width={64} height={3} fill="var(--pixel-wood-face)" />
+          <rect x={10} y={59} width={64} height={1} fill="var(--pixel-ink)" opacity={0.45} />
+
+          {/* 窗光的冷色溢出 */}
+          <polygon points="18,60 66,60 62,82 22,82" fill="var(--pixel-sky)" opacity={0.06} />
+
+          {/* 画框（鸢尾花） */}
+          <rect x={96} y={14} width={18} height={16} fill="var(--pixel-wood-dark)" />
+          <rect x={98} y={16} width={14} height={12} fill="var(--pixel-sky)" />
+          <g fill="var(--pixel-iris)">
+            <rect x={104} y={18} width={2} height={2} />
+            <rect x={104} y={24} width={2} height={2} />
+            <rect x={101} y={21} width={2} height={2} />
+            <rect x={107} y={21} width={2} height={2} />
+            <rect x={102} y={19} width={1} height={1} />
+            <rect x={107} y={19} width={1} height={1} />
+            <rect x={102} y={24} width={1} height={1} />
+            <rect x={107} y={24} width={1} height={1} />
+          </g>
+          <rect x={104} y={21} width={2} height={2} fill="var(--pixel-gold)" />
+
+          {/* 书架 */}
+          <rect x={118} y={28} width={40} height={3} fill="var(--pixel-wood-face)" />
+          <rect x={118} y={31} width={40} height={1} fill="var(--pixel-ink)" opacity={0.4} />
+          <rect x={122} y={16} width={4} height={12} fill="var(--pixel-rose)" />
+          <rect x={128} y={14} width={5} height={14} fill="var(--pixel-blue)" />
+          <rect x={135} y={18} width={3} height={10} fill="var(--pixel-gold)" />
+          <rect x={140} y={21} width={9} height={7} fill="var(--pixel-wood-dark)" />
+          <rect x={140} y={21} width={9} height={1} fill="var(--pixel-wood-top)" />
+
+          {/* 台灯光锥（墙面） */}
+          <polygon points="15,63 39,63 48,82 6,82" fill="var(--pixel-gold)" opacity={0.05} />
+          <polygon points="20,63 35,63 40,82 15,82" fill="var(--pixel-gold)" opacity={0.06} />
+
+          {/* 书桌 */}
+          <rect x={4} y={82} width={152} height={1} fill="var(--pixel-wood-top)" />
+          <rect x={4} y={83} width={152} height={3} fill="var(--pixel-wood-face)" />
+          <rect x={4} y={86} width={152} height={10} fill="var(--pixel-wood-dark)" />
+          <rect x={4} y={86} width={152} height={1} fill="var(--pixel-ink)" opacity={0.35} />
+          <rect x={14} y={88} width={52} height={6} fill="var(--pixel-wood-face)" opacity={0.55} />
+          <rect x={34} y={90} width={12} height={1} fill="var(--pixel-gold)" opacity={0.6} />
+          <rect x={94} y={88} width={52} height={6} fill="var(--pixel-wood-face)" opacity={0.55} />
+          <rect x={114} y={90} width={12} height={1} fill="var(--pixel-gold)" opacity={0.6} />
+          <rect x={72} y={88} width={16} height={6} fill="var(--pixel-ink)" opacity={0.25} />
+
+          {/* 桌面暖光池 + 屏幕冷光 */}
+          <polygon points="18,83 44,83 40,85 22,85" fill="var(--pixel-gold)" opacity={0.16} />
+          <rect x={92} y={83} width={36} height={3} fill="var(--pixel-iris)" opacity={0.06} />
+
+          {/* 台灯 */}
+          <rect x={21} y={78} width={14} height={4} fill="var(--pixel-wood-dark)" />
+          <rect x={21} y={78} width={14} height={1} fill="var(--pixel-wood-top)" opacity={0.6} />
+          <rect x={27} y={61} width={2} height={18} fill="var(--pixel-wood-dark)" />
+          <rect x={27} y={61} width={1} height={18} fill="var(--pixel-wood-top)" opacity={0.45} />
+          <polygon points="20,54 36,54 39,62 17,62" fill="var(--pixel-gold)" />
+          <rect x={18} y={62} width={20} height={1} fill="var(--pixel-wood-dark)" />
+          <rect x={27} y={62} width={2} height={2} fill="var(--pixel-glow)" />
+
+          {/* 咖啡杯 */}
+          <rect x={46} y={75} width={8} height={7} fill="var(--pixel-cream)" />
+          <rect x={46} y={78} width={8} height={1} fill="var(--pixel-rose)" />
+          <rect x={54} y={76} width={2} height={1} fill="var(--pixel-cream)" />
+          <rect x={55} y={77} width={1} height={3} fill="var(--pixel-cream)" />
+          <rect x={54} y={80} width={2} height={1} fill="var(--pixel-cream)" />
+          <rect className="iris-pixel-steam" x={47} y={71} width={1} height={2} fill="var(--pixel-cream)" opacity={0} />
+          <rect
+            className="iris-pixel-steam"
+            x={51}
+            y={71}
+            width={1}
+            height={2}
+            fill="var(--pixel-cream)"
+            opacity={0}
+            style={{ animationDelay: '-1.5s' }}
+          />
+
+          {/* 绿植（虎皮兰） */}
+          <g fill="var(--pixel-mint-dark)">
+            <rect x={65} y={62} width={3} height={13} />
+            <rect x={65} y={60} width={2} height={2} />
+            <rect x={65} y={57} width={1} height={3} />
+            <rect x={73} y={64} width={3} height={11} />
+            <rect x={74} y={61} width={2} height={3} />
+            <rect x={75} y={59} width={1} height={2} />
+          </g>
+          <rect x={69} y={55} width={3} height={20} fill="var(--pixel-mint)" />
+          <rect x={69} y={52} width={2} height={3} fill="var(--pixel-mint)" />
+          <rect x={69} y={50} width={1} height={2} fill="var(--pixel-mint)" />
+          <rect x={65} y={62} width={1} height={13} fill="var(--pixel-mint)" opacity={0.5} />
+          <rect x={69} y={55} width={1} height={20} fill="var(--pixel-cream)" opacity={0.18} />
+          <rect x={63} y={74} width={16} height={2} fill="var(--pixel-rose)" />
+          <polygon points="64,76 78,76 75,82 67,82" fill="var(--pixel-rose)" />
+          <rect x={63} y={74} width={16} height={1} fill="var(--pixel-glow)" opacity={0.3} />
+
+          {/* 显示器 */}
+          <rect x={84} y={42} width={50} height={38} fill="var(--pixel-bezel)" />
+          <rect x={87} y={45} width={44} height={30} fill="var(--pixel-screen-bg)" />
+          <rect x={87} y={45} width={44} height={4} fill="var(--pixel-titlebar)" />
+          <rect x={89} y={46} width={1} height={1} fill="var(--pixel-rose)" />
+          <rect x={92} y={46} width={1} height={1} fill="var(--pixel-gold)" />
+          <rect x={95} y={46} width={1} height={1} fill="var(--pixel-mint)" />
+          <rect x={87} y={49} width={24} height={26} fill="var(--pixel-pane-doc)" />
+          <rect className="iris-pixel-line" x={90} y={53} width={14} height={2} fill="var(--pixel-iris)" />
+          <rect
+            className="iris-pixel-line"
+            x={90}
+            y={57}
+            width={17}
+            height={1}
+            fill="var(--pixel-cream)"
+            opacity={0.55}
+            style={{ animationDelay: '0.3s' }}
+          />
+          <rect
+            className="iris-pixel-line"
+            x={90}
+            y={60}
+            width={14}
+            height={1}
+            fill="var(--pixel-cream)"
+            opacity={0.55}
+            style={{ animationDelay: '0.55s' }}
+          />
+          <rect
+            className="iris-pixel-line"
+            x={90}
+            y={63}
+            width={16}
+            height={1}
+            fill="var(--pixel-cream)"
+            opacity={0.55}
+            style={{ animationDelay: '0.8s' }}
+          />
+          <rect
+            className="iris-pixel-line"
+            x={90}
+            y={66}
+            width={10}
+            height={1}
+            fill="var(--pixel-cream)"
+            opacity={0.55}
+            style={{ animationDelay: '1.05s' }}
+          />
+          <g className="iris-pixel-stamp" style={{ animationDelay: '1.9s' }}>
+            <rect x={104} y={58} width={5} height={5} fill="var(--pixel-gold)" />
+            <g fill="var(--pixel-ink)">
+              <rect x={104} y={59} width={1} height={1} />
+              <rect x={104} y={60} width={1} height={1} />
+              <rect x={105} y={61} width={1} height={1} />
+              <rect x={106} y={60} width={1} height={1} />
+              <rect x={107} y={59} width={1} height={1} />
+            </g>
+          </g>
+          <g>
+            <rect
+              className="iris-pixel-char"
+              x={90}
+              y={69}
+              width={4}
+              height={2}
+              fill="var(--pixel-mint)"
+              style={{ animationDelay: '1.5s' }}
             />
-          ))}
-          <span className="iris-pixel-window-bar iris-pixel-window-bar-x" />
-          <span className="iris-pixel-window-bar iris-pixel-window-bar-y" />
-        </div>
+            <rect
+              className="iris-pixel-char"
+              x={95}
+              y={69}
+              width={4}
+              height={2}
+              fill="var(--pixel-rose)"
+              style={{ animationDelay: '1.7s' }}
+            />
+            <rect
+              className="iris-pixel-char"
+              x={100}
+              y={69}
+              width={6}
+              height={2}
+              fill="var(--pixel-gold)"
+              style={{ animationDelay: '1.9s' }}
+            />
+          </g>
+          <rect x={111} y={49} width={1} height={26} fill="var(--pixel-ink)" opacity={0.6} />
+          <rect x={112} y={49} width={19} height={26} fill="var(--pixel-pane-term)" />
+          <g fill="var(--pixel-gold)">
+            <rect x={114} y={52} width={1} height={1} />
+            <rect x={115} y={53} width={1} height={1} />
+            <rect x={114} y={54} width={1} height={1} />
+          </g>
+          <g fill="var(--pixel-mint)">
+            {PIXEL_TYPED_DELAYS.map((delay, index) => (
+              <rect
+                key={delay}
+                className="iris-pixel-char"
+                x={117 + index * 2}
+                y={51}
+                width={1}
+                height={3}
+                style={{ animationDelay: `${delay}s` }}
+              />
+            ))}
+          </g>
+          <rect className="iris-pixel-cursor" x={127} y={50} width={2} height={5} fill="var(--pixel-gold)" />
+          <rect
+            className="iris-pixel-line"
+            x={114}
+            y={58}
+            width={13}
+            height={1}
+            fill="var(--pixel-mint)"
+            opacity={0.7}
+            style={{ animationDelay: '1.6s' }}
+          />
+          <rect
+            className="iris-pixel-line"
+            x={114}
+            y={61}
+            width={10}
+            height={1}
+            fill="var(--pixel-blue)"
+            opacity={0.7}
+            style={{ animationDelay: '1.8s' }}
+          />
+          <rect
+            className="iris-pixel-line"
+            x={114}
+            y={64}
+            width={12}
+            height={1}
+            fill="var(--pixel-cream)"
+            opacity={0.45}
+            style={{ animationDelay: '2s' }}
+          />
+          <rect x={104} y={78} width={6} height={2} fill="var(--pixel-bezel)" />
+          <rect x={96} y={80} width={18} height={2} fill="var(--pixel-bezel)" />
+          <rect x={96} y={80} width={18} height={1} fill="var(--pixel-body)" />
 
-        <div className="iris-pixel-shelf">
-          <span className="iris-pixel-book iris-pixel-book-one" />
-          <span className="iris-pixel-book iris-pixel-book-two" />
-          <span className="iris-pixel-book iris-pixel-book-three" />
-          <span className="iris-pixel-box" />
-        </div>
+          {/* 右侧文档堆 */}
+          <rect x={136} y={79} width={18} height={3} fill="var(--pixel-cream)" opacity={0.75} />
+          <rect x={137} y={76} width={16} height={3} fill="var(--pixel-cream)" opacity={0.9} />
+          <rect x={139} y={72} width={15} height={6} fill="var(--pixel-cream)" />
+          <rect x={149} y={69} width={5} height={3} fill="var(--pixel-gold)" />
+          <rect x={141} y={74} width={9} height={1} fill="var(--pixel-ink)" opacity={0.45} />
+          <rect x={141} y={76} width={6} height={1} fill="var(--pixel-ink)" opacity={0.35} />
+          <rect x={139} y={72} width={15} height={1} fill="var(--pixel-glow)" opacity={0.3} />
 
-        <div className="iris-pixel-plant">
-          <span className="iris-pixel-leaf iris-pixel-leaf-one" />
-          <span className="iris-pixel-leaf iris-pixel-leaf-two" />
-          <span className="iris-pixel-leaf iris-pixel-leaf-three" />
-          <span className="iris-pixel-pot" />
-        </div>
-      </div>
-
-      <div className="iris-pixel-light-cone" />
-      <div className="iris-pixel-desk">
-        <span className="iris-pixel-desk-edge" />
-        <span className="iris-pixel-desk-leg iris-pixel-desk-leg-left" />
-        <span className="iris-pixel-desk-leg iris-pixel-desk-leg-right" />
-      </div>
-
-      <div className="iris-pixel-lamp">
-        <span className="iris-pixel-lamp-shade" />
-        <span className="iris-pixel-lamp-neck" />
-        <span className="iris-pixel-lamp-base" />
-      </div>
-
-      <div className="iris-pixel-monitor">
-        <div className="iris-pixel-screen">
-          <span className="iris-pixel-screen-dot iris-pixel-screen-dot-one" />
-          <span className="iris-pixel-screen-dot iris-pixel-screen-dot-two" />
-          <span className="iris-pixel-screen-dot iris-pixel-screen-dot-three" />
-          <span className="iris-pixel-screen-rule iris-pixel-screen-rule-one" />
-          <span className="iris-pixel-screen-rule iris-pixel-screen-rule-two" />
-          <span className="iris-pixel-screen-rule iris-pixel-screen-rule-three" />
-          <span className="iris-pixel-screen-check">✓</span>
-          <span className="iris-pixel-screen-cursor" />
-        </div>
-        <span className="iris-pixel-monitor-light" />
-        <span className="iris-pixel-monitor-neck" />
-        <span className="iris-pixel-monitor-base" />
-      </div>
-
-      <div className="iris-pixel-pages">
-        <span className="iris-pixel-page iris-pixel-page-one" />
-        <span className="iris-pixel-page iris-pixel-page-two" />
-        <span className="iris-pixel-page-line iris-pixel-page-line-one" />
-        <span className="iris-pixel-page-line iris-pixel-page-line-two" />
-      </div>
-      <span className="iris-pixel-floating-page" />
-      <span className="iris-pixel-cup" />
-      <span className="iris-pixel-steam iris-pixel-steam-one" />
-      <span className="iris-pixel-steam iris-pixel-steam-two" />
-      <span className="iris-pixel-foreground" />
+          {/* 前景地面 */}
+          <rect x={0} y={96} width={160} height={14} fill="var(--pixel-floor)" />
+          <rect x={4} y={96} width={152} height={2} fill="var(--pixel-ink)" opacity={0.5} />
+        </g>
+      </svg>
     </div>
   );
 }

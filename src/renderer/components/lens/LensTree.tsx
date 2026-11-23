@@ -5,9 +5,9 @@
  *
  * Root and sub-workspaces are symmetric (子工作区平权): both render flat with
  * NO indentation — depth reads from the chevron + bold header, not a rail —
- * and both carry the collapse gesture. The header's chevron folds only the
- * document type sections; the hub's sessions and nested child workspaces stay
- * visible. Clicking the header NAME (not the chevron) stages that hub's
+ * and both carry the collapse gesture. The header's chevron folds the
+ * workspace's sessions and document type sections; nested child workspaces
+ * stay visible. Clicking the header NAME (not the chevron) stages that hub's
  * terminal full-width (root drops the README), so every workspace header
  * doubles as a terminal hub.
  */
@@ -516,9 +516,9 @@ function WorkspaceSessionList({
 /**
  * A workspace section — root and sub are now symmetric (子工作区平权). The
  * header is `[chevron | name | +]`:
- *   - chevron folds ONLY the document type sections; the hub's sessions and
- *     any nested child workspaces stay visible. This is what lets you collapse
- *     the root's docs while keeping the sub-workspaces (its children) in view.
+ *   - chevron folds this workspace's own content (hub sessions and document
+ *     type sections); nested child workspaces stay visible and keep a uniform
+ *     gap whether their parent is expanded or collapsed.
  *   - the name stages this hub's terminal full-width (selectRoot/selectWorkspace).
  *   - + spawns a hub session (no FOCUS_DOC).
  *   - right-click opens WorkspaceContextMenu anywhere on the header row.
@@ -603,25 +603,27 @@ function WorkspaceSection({
           <NewWorkspaceSessionButton workspacePath={workspacePath} label={hubLabel} />
         </div>
       </WorkspaceContextMenu>
-      <div className="space-y-2 pt-1">
-        <WorkspaceSessionList workspacePath={workspacePath} />
-        {sectionsOpen && (
-          <>
-            {TYPE_ORDER.map((t) => (
-              <TypeSection
-                key={t}
-                type={t}
-                docs={byType(t)}
-                workspacePath={ws.path}
-              />
-            ))}
-            <ExternalSection external={ws.external} />
-          </>
-        )}
-        {ws.children.map((c) => (
-          <WorkspaceSection key={c.path} ws={c} depth={depth + 1} onCreateChild={onCreateChild} />
-        ))}
-      </div>
+      {sectionsOpen && (
+        <div className="space-y-2 pt-1">
+          <WorkspaceSessionList workspacePath={workspacePath} />
+          {TYPE_ORDER.map((t) => (
+            <TypeSection
+              key={t}
+              type={t}
+              docs={byType(t)}
+              workspacePath={ws.path}
+            />
+          ))}
+          <ExternalSection external={ws.external} />
+        </div>
+      )}
+      {ws.children.length > 0 && (
+        <div className="space-y-2 pt-2">
+          {ws.children.map((c) => (
+            <WorkspaceSection key={c.path} ws={c} depth={depth + 1} onCreateChild={onCreateChild} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -32,9 +32,15 @@ vi.mock('@renderer/stores/session-view-store', () => ({
   useSelectedSessionView: () => null,
 }));
 vi.mock('@renderer/lib/session-projection', () => ({
-  useSessionProjections: () => [],
+  useSessionProjections: () => [{
+    key: 'terminal:root-session', kind: 'terminal', id: 'root-session',
+    anchor: { kind: 'workspace', path: '.iris' }, title: 'Root terminal',
+    subtitle: 'Shell', indicator: 'idle', busy: false, createdAt: 1, updatedAt: 1,
+    capabilities: { close: true, select: true },
+  }],
   aggregateProjectionState: () => null,
-  sessionProjectionAnchorKey: () => '',
+  sessionProjectionAnchorKey: (anchor: { kind: string; path: string }) =>
+    anchor.kind === 'document' ? anchor.path : `ws:${anchor.path}`,
 }));
 vi.mock('./session-actions', () => ({ openWorkspaceSession: vi.fn() }));
 vi.mock('./iris-agent-actions', () => ({ openIrisAgent: vi.fn() }));
@@ -158,12 +164,15 @@ describe('workspace header context menu', () => {
     expect(projectStore.openTodos).toHaveBeenCalledWith('.iris/spike');
   });
 
-  it('folds and unfolds the document sections', async () => {
+  it('folds and unfolds the workspace sessions and document sections together', async () => {
     const before = host.querySelectorAll('[data-collection-entry-type]').length;
     expect(before).toBe(4);
+    expect(host.textContent).toContain('Root terminal');
     await choose('layout.rootHubHint', 'layout.collapseDocuments');
     expect(host.querySelectorAll('[data-collection-entry-type]').length).toBe(0);
+    expect(host.textContent).not.toContain('Root terminal');
     await choose('layout.rootHubHint', 'layout.expandDocuments');
     expect(host.querySelectorAll('[data-collection-entry-type]').length).toBe(4);
+    expect(host.textContent).toContain('Root terminal');
   });
 });
