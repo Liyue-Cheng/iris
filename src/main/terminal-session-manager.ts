@@ -47,6 +47,7 @@ import type {
 import type { SettingsManager } from './settings-manager';
 import { createPlatformServices, type PlatformServices } from './platform';
 import { buildSpawnEnv, injectTerminalHintEnv, validateDimensions } from './pty-utils';
+import { childEnvironment } from './platform/child-env';
 import { logger } from './logger';
 import { mainT } from './i18n';
 import { normalizedIdleThresholdMs, SessionActivityController } from './terminal/session-activity';
@@ -178,6 +179,7 @@ export class TerminalSessionManager extends EventEmitter {
   private readonly spawnFn: PtySpawnFn;
   private readonly platform: PlatformServices;
   private readonly ptyExitWaitMs: number;
+  private readonly spawnEnvSource: () => Record<string, string | undefined>;
   private shutdownPromise: Promise<void> | null = null;
   private shuttingDown = false;
 
@@ -189,6 +191,9 @@ export class TerminalSessionManager extends EventEmitter {
       platform?: PlatformServices;
       processTreeKillFn?: ((pid: number) => Promise<void>) | null;
       ptyExitWaitMs?: number;
+      /** Base env for spawned shells. Default: process.env merged with the
+       *  current Windows registry environment (see platform/child-env.ts). */
+      spawnEnv?: () => Record<string, string | undefined>;
     },
   ) {
     super();
@@ -202,6 +207,7 @@ export class TerminalSessionManager extends EventEmitter {
       };
     }
     this.ptyExitWaitMs = options?.ptyExitWaitMs ?? PTY_EXIT_WAIT_MS;
+    this.spawnEnvSource = options?.spawnEnv ?? (() => childEnvironment.resolve(process.env));
   }
 
   createSession(input: CreateSessionInput): TerminalSessionInfo {
@@ -260,7 +266,7 @@ export class TerminalSessionManager extends EventEmitter {
       );
     }
 
-    const env = buildSpawnEnv(process.env, SPAWN_ENV_SKIP);
+    const env = buildSpawnEnv(this.spawnEnvSource(), SPAWN_ENV_SKIP);
     injectTerminalHintEnv(env, { programName: 'Iris' });
     // Document focus and hub scope are mutually exclusive. Clear the other
     // variable explicitly so a child cannot inherit stale Iris context from

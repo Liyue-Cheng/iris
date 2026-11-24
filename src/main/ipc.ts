@@ -106,6 +106,7 @@ import {
 import { logger } from './logger';
 import { enqueueProjectSwitch } from './project-switch';
 import { createPlatformServices } from './platform';
+import { childEnvironment } from './platform/child-env';
 import {
   buildAppInfo,
   externalLink,
@@ -610,6 +611,10 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
         settingsManager.trustProjectCommands(scope.root, snapshot.revision);
       }
 
+      // Pick up Path changes made since Iris started (e.g. a CLI installer).
+      await childEnvironment.refresh();
+      requireContext(event);
+      requireProjectScope(ctx, payload, CHANNELS.PROJECT_COMMAND_RUN);
       if (action.terminal === 'iris') {
         const session = ctx.terminalSessionManager.createCommandSession({
           actionIndex: payload.actionIndex,
@@ -622,7 +627,11 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
         });
         return { kind: 'iris', session };
       }
-      const pid = await createPlatformServices().systemTerminal.launch(action.command, scope.root);
+      const pid = await createPlatformServices().systemTerminal.launch(
+        action.command,
+        scope.root,
+        childEnvironment.resolve(process.env),
+      );
       return { kind: 'system', pid };
     },
   );
@@ -947,6 +956,9 @@ export function registerIpcHandlers(settingsManager: SettingsManager): void {
         rows: number;
       } & ProjectScopedPayload,
     ): Promise<TerminalSessionInfo> => {
+      // Pick up Path changes made since Iris started (e.g. a CLI installer).
+      // Never rejects; on failure the last known environment is used.
+      await childEnvironment.refresh();
       const ctx = requireContext(event);
       const scope = requireProjectScope(ctx, payload, CHANNELS.SESSION_OPEN);
       return ctx.terminalSessionManager.createSession({

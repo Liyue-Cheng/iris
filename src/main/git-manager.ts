@@ -15,6 +15,7 @@ import { mainT } from './i18n';
 import { logger } from './logger';
 import { parseGitPorcelainV1Z } from './git-porcelain';
 import { createPlatformServices } from './platform';
+import { childEnvironment } from './platform/child-env';
 
 interface RepositoryIdentity {
   projectRoot: string;
@@ -182,7 +183,7 @@ function runGit(
       cwd: options.cwd ?? cwd,
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C', LANG: 'C' },
+      env: { ...childEnvironment.resolve(process.env), GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C', LANG: 'C' },
       detached: process.platform !== 'win32',
     });
     const stdout: Buffer[] = [];

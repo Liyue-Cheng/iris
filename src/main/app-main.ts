@@ -51,6 +51,7 @@ import { serializeIpcError } from './ipc-error';
 import { wireRendererLifecycle, beginWindowShutdown } from './window-lifecycle';
 import { externalUrl } from './app-info';
 import { createPlatformServices } from './platform';
+import { childEnvironment } from './platform/child-env';
 import { guardPreviewNavigation, installHtmlDocProtocol, revokeHtmlPreview } from './html-doc-protocol';
 import type { ServiceHealthChangedEvent } from '@shared/app-error';
 
@@ -588,6 +589,13 @@ app.whenReady().then(async () => {
       createWindow(projectRootsForStartup(settingsManager.get()).at(-1) ?? null);
     }
   });
+});
+
+// Pre-warm the registry environment snapshot when the user comes back to Iris
+// (typically right after installing a CLI elsewhere), so git and the next
+// terminal see the new Path. refresh() never rejects and is throttled.
+app.on('browser-window-focus', () => {
+  void childEnvironment.refresh();
 });
 
 app.on('window-all-closed', () => {
