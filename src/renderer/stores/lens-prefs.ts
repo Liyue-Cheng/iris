@@ -11,11 +11,9 @@ export interface LensPrefs {
   sort: LensSort;
   /** Lowercased substring; '' = no filter. */
   filter: string;
-  /** Whether the filter input row is shown. */
-  filterOpen: boolean;
 }
 
-let state: LensPrefs = { sort: 'mtime', filter: '', filterOpen: false };
+let state: LensPrefs = { sort: 'mtime', filter: '' };
 const subscribers = new Set<() => void>();
 
 function setState(patch: Partial<LensPrefs>): void {
@@ -32,9 +30,6 @@ export const lensPrefs = {
   },
   setFilter(filter: string): void {
     setState({ filter });
-  },
-  toggleFilter(): void {
-    setState({ filterOpen: !state.filterOpen, filter: state.filterOpen ? '' : state.filter });
   },
 };
 

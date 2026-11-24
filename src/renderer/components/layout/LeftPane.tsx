@@ -14,6 +14,7 @@ import {
   Files,
   GitBranch,
   ListChecks,
+  ListTree,
   Loader2,
   MoreHorizontal,
   Search,
@@ -57,7 +58,7 @@ import {
 } from '@renderer/components/ui/lucide-dynamic-icon';
 import { runProjectToolbarAction } from '@renderer/lib/project-command-actions';
 import { alertDialog } from '@renderer/components/ui/confirm-dialog';
-import { useLeftPanePrefs } from '@renderer/lib/left-pane-prefs';
+import { useLeftPanePrefs, type LeftPaneMode } from '@renderer/lib/left-pane-prefs';
 
 function EmptyState({ children }: { children: React.ReactNode }): JSX.Element {
   return (
@@ -178,11 +179,19 @@ export function LeftPane(): JSX.Element {
   const mode = leftPanePrefs.mode ?? 'documents';
   const filesOpen = mode === 'files';
   const gitOpen = mode === 'git';
-  const { sort, filter, filterOpen } = useLensPrefs();
+  const { sort, filter } = useLensPrefs();
   const sortLabel = t(filesOpen
     ? (sort === 'mtime' ? 'layout.fileSortMtime' : 'layout.fileSortAlpha')
     : (sort === 'mtime' ? 'layout.sortMtime' : 'layout.sortAlpha'));
   const filterLabel = t(filesOpen ? 'layout.filterFiles' : 'layout.filterDocuments');
+  // Views are a fixed three-way choice; clicking the active view is a no-op
+  // (no hidden "click again to go back" toggle).
+  const selectMode = (next: LeftPaneMode): void => {
+    if (next === mode) return;
+    void projectStore.setLeftPaneMode(next).catch((err) => {
+      console.warn('[left-pane] view switch failed', err);
+    });
+  };
   const [initOpen, setInitOpen] = useState(false);
   const [wsOpen, setWsOpen] = useState(false);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
@@ -226,7 +235,10 @@ export function LeftPane(): JSX.Element {
         tree's interactive root node (and always-visible in the title-bar crumb),
         so the name is NOT repeated here — that collapsed the stacked "iris ×3".
       */}
-      <div className="flex h-11 shrink-0 items-center gap-1 px-2">
+      {/* Right edge: pr-[13px] puts the rightmost 28px button's center 27px from
+          the pane edge — the same column as the view tool row's sort button and
+          the tree's "+" buttons (see the tool row comment below). */}
+      <div className="flex h-11 shrink-0 items-center gap-1 pl-2 pr-[13px]">
         <div className="flex items-center">
           <DropdownMenu onOpenChange={(open) => open && void refreshRecentProjects()}>
             <Tooltip>
@@ -309,49 +321,26 @@ export function LeftPane(): JSX.Element {
                 <TooltipContent>{t('layout.newWorkspaceHuman')}</TooltipContent>
               </Tooltip>
               {scan.root && (
-                <>
-                  {!gitOpen && (
-                    <>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7"
-                            aria-label={sortLabel}
-                            onClick={() => lensPrefs.toggleSort()}
-                          >
-                            {sort === 'mtime' ? (
-                              <Clock className="!size-4" />
-                            ) : (
-                              <ArrowDownAZ className="!size-4" />
-                            )}
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          {sortLabel}
-                        </TooltipContent>
-                      </Tooltip>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className={cn(
-                              'h-7 w-7',
-                              filterOpen && 'bg-accent text-accent-foreground',
-                            )}
-                            onClick={() => lensPrefs.toggleFilter()}
-                            aria-label={filterLabel}
-                            aria-expanded={filterOpen}
-                          >
-                            <Search className="!size-4" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>{filterLabel}</TooltipContent>
-                      </Tooltip>
-                    </>
-                  )}
+                <div
+                  role="group"
+                  aria-label={t('layout.leftPaneViews')}
+                  className="ml-1 flex items-center gap-px"
+                >
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className={cn('h-7 w-7', mode === 'documents' && 'bg-accent text-accent-foreground')}
+                        aria-label={t('layout.documentsView')}
+                        aria-pressed={mode === 'documents'}
+                        onClick={() => selectMode('documents')}
+                      >
+                        <ListTree className="!size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{t('layout.documentsView')}</TooltipContent>
+                  </Tooltip>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
@@ -360,18 +349,45 @@ export function LeftPane(): JSX.Element {
                         className={cn('h-7 w-7', filesOpen && 'bg-accent text-accent-foreground')}
                         aria-label={t('layout.fileTree')}
                         aria-pressed={filesOpen}
-                        onClick={() => {
-                          void projectStore.setLeftPaneMode(filesOpen ? 'documents' : 'files').catch((err) => {
-                            console.warn('[left-pane] file tree refresh failed', err);
-                          });
-                        }}
+                        onClick={() => selectMode('files')}
                       >
                         <Files className="!size-4" />
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>{t('layout.fileTree')}</TooltipContent>
                   </Tooltip>
-                </>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className={cn(
+                          'relative h-7 w-7',
+                          gitOpen && 'bg-accent text-accent-foreground',
+                          (gitLoading || gitPending) && 'text-primary',
+                        )}
+                        aria-label={t('layout.gitAria', { branch: gitBranch })}
+                        aria-pressed={gitOpen}
+                        aria-busy={gitLoading || !!gitPending}
+                        onClick={() => selectMode('git')}
+                      >
+                        <GitBranch
+                          className={cn('!size-4', (gitLoading || gitPending) && 'animate-pulse')}
+                        />
+                        {gitCount > 0 && (
+                          <span className="absolute -right-px -top-px min-w-3 rounded-sm bg-muted px-0.5 text-[9px] leading-3 text-muted-foreground">
+                            {gitCount}
+                          </span>
+                        )}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {gitSnapshot?.branch
+                        ? t('layout.gitSummary', { branch: gitSnapshot.branch, count: gitCount })
+                        : t('git.sourceControl')}
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
               )}
               {scan.root && (
                 <Tooltip>
@@ -380,7 +396,7 @@ export function LeftPane(): JSX.Element {
                       variant="ghost"
                       size="icon"
                       className={cn(
-                        'relative h-7 w-7',
+                        'relative ml-1 h-7 w-7',
                         view.kind === 'todos' && 'bg-accent text-accent-foreground',
                       )}
                       aria-label={t('layout.todosHint')}
@@ -398,83 +414,71 @@ export function LeftPane(): JSX.Element {
                   <TooltipContent>{t('layout.todosHint')}</TooltipContent>
                 </Tooltip>
               )}
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    disabled={phase !== 'ready'}
-                    className={cn(
-                      'relative h-7 w-7',
-                      gitOpen && 'bg-accent text-accent-foreground',
-                      (gitLoading || gitPending) && 'text-primary',
-                    )}
-                    aria-label={t('layout.gitAria', { branch: gitBranch })}
-                    aria-busy={gitLoading || !!gitPending}
-                    onClick={() => {
-                      void projectStore.setLeftPaneMode(gitOpen ? 'documents' : 'git').catch((err) => {
-                        console.warn('[left-pane] git view refresh failed', err);
-                      });
-                    }}
-                  >
-                    <GitBranch
-                      className={cn(
-                        '!size-4',
-                        (gitLoading || gitPending) && 'animate-pulse',
-                      )}
-                    />
-                    {gitCount > 0 && (
-                      <span className="absolute -right-px -top-px min-w-3 rounded-sm bg-muted px-0.5 text-[9px] leading-3 text-muted-foreground">
-                        {gitCount}
-                      </span>
-                    )}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {gitSnapshot?.branch
-                    ? t('layout.gitSummary', { branch: gitSnapshot.branch, count: gitCount })
-                    : t('git.sourceControl')}
-                </TooltipContent>
-              </Tooltip>
             </>
           )}
         </div>
         <ProjectToolbarActions />
       </div>
 
-      {!gitOpen && phase === 'ready' && scan?.hasIris && filterOpen && (
-        <div className="flex h-8 shrink-0 items-center gap-1 px-2">
-          <Search className="size-3.5 shrink-0 text-muted-foreground" />
-          <input
-            autoFocus
-            value={filter}
-            placeholder={t(filesOpen ? 'layout.fileFilterPlaceholder' : 'layout.filterPlaceholder')}
-            aria-label={filterLabel}
-            onChange={(e) => lensPrefs.setFilter(e.target.value.toLowerCase())}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') lensPrefs.toggleFilter();
-            }}
-            className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/50"
-          />
-          {filter !== '' && (
-            <button
-              type="button"
-              aria-label={t('common.clear')}
-              onClick={() => lensPrefs.setFilter('')}
-              className="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              <X className="size-3.5" />
-            </button>
-          )}
+      {/* View-local tools: they belong to the list below, so they switch with
+          it. The header row above never changes shape between views. 
+          The row's pr-[13px] centers the sort icon on the tree's "+" column:
+          10px reserved scrollbar gutter + LensTree px-1 + row pr-1 + half the
+          18px "+" button = 27px = 13px + half of the 28px sort button. */}
+      {!gitOpen && phase === 'ready' && scan?.hasIris && scan.root && (
+        <div className="flex h-9 shrink-0 items-center gap-1 pb-1 pl-2 pr-[13px]">
+          <div className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md bg-muted/60 px-2">
+            <Search className="size-3.5 shrink-0 text-muted-foreground" />
+            <input
+              value={filter}
+              placeholder={t(filesOpen ? 'layout.fileFilterPlaceholder' : 'layout.filterPlaceholder')}
+              aria-label={filterLabel}
+              onChange={(e) => lensPrefs.setFilter(e.target.value.toLowerCase())}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  lensPrefs.setFilter('');
+                  e.currentTarget.blur();
+                }
+              }}
+              className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
+            />
+            {filter !== '' && (
+              <button
+                type="button"
+                aria-label={t('common.clear')}
+                onClick={() => lensPrefs.setFilter('')}
+                className="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                <X className="size-3.5" />
+              </button>
+            )}
+          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 shrink-0"
+                aria-label={sortLabel}
+                onClick={() => lensPrefs.toggleSort()}
+              >
+                {sort === 'mtime' ? <Clock className="!size-4" /> : <ArrowDownAZ className="!size-4" />}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{sortLabel}</TooltipContent>
+          </Tooltip>
         </div>
       )}
 
+      {/* The tree container always reserves the scrollbar gutter, so the
+          right-edge "+" column (and the sort button aligned to it) does not
+          shift when the list starts or stops overflowing. */}
       {gitOpen ? (
         <div className="min-h-0 flex-1">
           <SourceControlPanel mode="view" refreshOnReady={false} />
         </div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
           {phase === 'idle' && (
             <EmptyState>
               <p>{t('layout.startOpenProject')}</p>
