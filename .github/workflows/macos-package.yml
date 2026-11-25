@@ -1,0 +1,106 @@
+name: macOS package (experimental)
+
+# Builds unsigned (ad-hoc signed) macOS packages on GitHub-hosted Macs.
+#
+# - Manual run (Actions tab → "Run workflow"): builds and keeps the files as
+#   workflow artifacts for download. Use this to test before a release.
+# - Publishing a GitHub Release: builds and attaches the .dmg / .zip files to
+#   that release, next to the Windows installers uploaded from the dev machine.
+#
+# Why one runner per architecture: electron-builder.yml sets
+# `electronDist: node_modules/electron/dist` (a Windows antivirus workaround),
+# so each build packages the Electron that `npm ci` installed for the runner's
+# own CPU. Building x64 on an Apple-silicon runner would ship an arm64
+# Electron inside the x64 app. Each arch is therefore built natively.
+#
+# Signing: no Apple Developer certificate yet. `mac.identity=-` ad-hoc signs
+# the app (required for Apple silicon to launch it at all instead of
+# reporting it as "damaged"); hardened runtime is off because it only applies
+# to real signing and would block loading node-pty's ad-hoc-signed native
+# module. Users still have to allow the app in System Settings → Privacy &
+# Security on first launch. See .iris/issue/2026-09-13-实现Linux和Mac相关功能.md.
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Package (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify runner architecture matches the target
+        run: |
+          actual="$(node -p 'process.arch')"
+          electron_arch="$(file node_modules/electron/dist/Electron.app/Contents/MacOS/Electron)"
+          echo "node: $actual"; echo "electron: $electron_arch"
+          if [ "$actual" != "${{ matrix.arch }}" ]; then
+            echo "::error::runner is $actual but target is ${{ matrix.arch }}"; exit 1
+          fi
+      - name: Build application
+        run: npm run build
+      - name: Package
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: >-
+          npx electron-builder --mac dmg zip --${{ matrix.arch }} --publish never
+          -c.mac.identity=-
+          -c.mac.hardenedRuntime=false
+      - name: Smoke test packaged app.asar
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          asar="$(ls -d dist/release/$version/mac*/Iris.app/Contents/Resources/app.asar | head -1)"
+          echo "smoke: $asar"
+          npm run smoke -- "$asar"
+      - name: Check ad-hoc signature
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          app="$(ls -d dist/release/$version/mac*/Iris.app | head -1)"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv "$app" 2>&1 | grep -E 'Signature=adhoc|Identifier'
+          file "$app/Contents/MacOS/Iris"
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: iris-macos-${{ matrix.arch }}
+          path: |
+            dist/release/*/*.dmg
+            dist/release/*/*.zip
+          if-no-files-found: error
+          retention-days: 14
+      - name: Attach to GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            dist/release/*/*.dmg dist/release/*/*.zip --clobber
