@@ -58,6 +58,11 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      # Electron 43 no longer downloads its binary on install; it is fetched
+      # lazily on first launch. electronDist needs node_modules/electron/dist
+      # before packaging, so download it explicitly (native arch of the runner).
+      - name: Download Electron binary
+        run: node node_modules/electron/install.js
       - name: Verify runner architecture matches the target
         run: |
           actual="$(node -p 'process.arch')"
